@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  api_test:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: api_test_platform
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data:/app/data        # 测试数据卷
+      - ./reports:/app/reports  # 测试报告卷
+      - ./tests:/app/tests      # 挂载测试用例方便热更新
+    entrypoint: ["/app/docker/entrypoint.sh"]
+    command: ["pytest", "tests/api/test_api.py", "--alluredir=/app/reports"]

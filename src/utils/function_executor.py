@@ -1,0 +1,137 @@
+# -*- coding:utf-8 -*-
+import inspect
+from src.utils.platform_utils import execution_time_decorator
+
+@execution_time_decorator
+def exec_func(value, *args, **kwargs):
+    """
+    通用函数执行器，根据 "function:" 前缀调用注册中心函数
+    :param value: 可能包含 "function:" 前缀的字符串
+    :param args: 位置参数（传给目标函数）
+    :param kwargs: 关键字参数（传给目标函数）
+    """
+    if not (isinstance(value, str) and value.startswith("function:")):
+        return value
+
+    f_name = value.split("function:", 1)[1].strip()
+    functions = function_name()
+
+    if f_name not in functions:
+        available = ", ".join(functions.keys())
+        raise ValueError(f"未找到指定的函数 '{f_name}'，可用函数: {available}")
+
+    func = functions[f_name]
+    if not callable(func):
+        raise TypeError(f"注册的 '{f_name}' 不是可调用对象")
+
+    try:
+        sig = inspect.signature(func)
+        # 根据签名匹配参数数量
+        bound_args = sig.bind_partial(*args, **kwargs)
+        bound_args.apply_defaults()
+        return func(*bound_args.args, **bound_args.kwargs)
+    except TypeError as e:
+        raise TypeError(f"调用 '{f_name}' 参数错误: {e}")
+    except Exception as e:
+        raise Exception(f"执行 '{f_name}' 时发生错误: {e}")
+
+def function_name():
+    """
+    注册所有可用的函数，作为 exec_func 的函数库
+    """
+    import pyotp, re, string, redis, time, random
+    from decimal import Decimal, getcontext, ROUND_DOWN, InvalidOperation
+
+    def google_authentication(secret):
+        """
+        生成 Google 身份验证器的当前验证码
+        """
+        return pyotp.TOTP(secret).now()
+
+    def extract_code(text):
+        """
+        匹配6位数字，前后不能有数字
+        """
+        match = re.search(r'(?<!\d)\d{6}(?!\d)', text)
+        return match.group() if match else None
+
+    def generate_account():
+        """
+        生成10位随机字母数字字符串，以字母开头
+        """
+        return (str(random.randint(3, 9)) +
+                ''.join(random.choice('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
+                        for _ in range(9)))
+
+    def generate_num():
+        """
+        生成19位随机数字字符串
+        """
+        return ''.join(str(random.randint(0, 9)) for _ in range(19))
+
+    def generate_email():
+        """
+        生成随机邮箱地址
+        """
+        letters = string.ascii_lowercase
+        domain = ['com', 'net', 'org']
+        username = ''.join(random.choice(letters) for _ in range(8))
+        domain_name = ''.join(random.choice(letters) for _ in range(5))
+        return f"{username}@{domain_name}.{random.choice(domain)}"
+
+    def generate_phone(country_code='63'):
+        """
+        生成随机手机号，默认63手机号
+        """
+        if country_code == '852':
+            return random.choice(['9', '6']) + ''.join(str(random.randint(0, 9)) for _ in range(7))
+        elif country_code == '886':
+            return '09' + ''.join(str(random.randint(0, 9)) for _ in range(8))
+        elif country_code == '63':
+            prefix = random.choice(['917', '918', '919', '920', '921', '922', '923', '925', '926', '927'])
+            return prefix + ''.join(str(random.randint(0, 9)) for _ in range(7))
+        else:
+            raise ValueError("不支持的国家代码")
+
+
+    def converter(money, decimal_places, rate):
+        try:
+            decimal_places = int(decimal_places)
+            getcontext().prec = decimal_places + 10
+            if isinstance(money, float):
+                money = Decimal(str(money))
+            else:
+                money = Decimal(str(money))
+            rate_list = rate.split("=")
+            if len(rate_list) != 2:
+                return None
+            base_rate = Decimal(re.match(r'(\d*\.?\d+)', rate_list[0].strip()).group(1))
+            target_rate = Decimal(re.match(r'(\d*\.?\d+)', rate_list[1].strip()).group(1))
+            if base_rate == 1:
+                r = money * target_rate
+            elif target_rate == 1:
+                if base_rate == 0: return None
+                r = money / base_rate
+            else:
+                return None
+            return str(r.to_integral_value()) if r == r.to_integral_value() \
+                   else str(r.quantize(Decimal(f'0.{"0"*decimal_places}'), rounding=ROUND_DOWN))
+        except (ValueError, ArithmeticError, InvalidOperation):
+            return None
+
+
+    def get_redis_code():
+        return redis.Redis(host='192.168.0.111', port=6379, db=0, password='123456')
+
+    def db_value(value):
+        return value
+
+    def h5_code(code):
+        match = re.search(r'(?<!\d)\d{6}(?!\d)', code)
+        return [f'//android.widget.Button[@text="{i}"]' for i in match.group()] if match else []
+
+    def get_timestamp():
+        return int(time.time() * 1000)
+
+    # 返回注册的所有函数
+    return locals()
