@@ -8,7 +8,3 @@ def create_request_data_processor():
         default_parameters=read_conf.get_dict("default_parameters"),
         ed=read_conf.get_dict("encryption_decryption")
     )
-
-
-if __name__ == '__main__':
-    print(create_request_data_processor())

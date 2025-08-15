@@ -127,10 +127,10 @@ class Client:
 
         try:
             response = res.json()
-            LOGGER.info('JSON Response: %s', response)
+            LOGGER.debug('JSON Response: %s', response)
         except JSONDecodeError:
             response = res.text
-            LOGGER.info('Text Response: %s', response)
+            LOGGER.debug('Text Response: %s', response)
 
         LOGGER.info(
             'Request Details:\n'
