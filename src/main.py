@@ -4,8 +4,6 @@ import sys
 import os
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
-print("PROJECT_ROOT =>", PROJECT_ROOT)
-print("sys.path[0] =>", sys.path[0])
 
 # 各测试类型的 Runner（策略）
 from src.runners import (
@@ -35,10 +33,8 @@ def main():
         "-c", "--case",
         help="测试用例路径（模块/类/方法），例如 ./tests/api/test_api.py::TestApi::test_case"
     )
-    parser.add_argument(
-        "--extra", nargs=argparse.REMAINDER,
-        help="透传给 pytest/locust 的额外参数。例如: --extra -q -k test_login"
-    )
+    parser.add_argument("--extra", nargs="*", default=[])
+    parser.add_argument("--alluredir", default=None, help="Allure report 输出目录")
 
     args = parser.parse_args()
 

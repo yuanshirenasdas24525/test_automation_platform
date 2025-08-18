@@ -1,14 +1,14 @@
 import os
 import sys
 import pytest
-from src.runners._common import ensure_report_dirs
+from src.runners._common import resolve_report_dirs
 
-def run(case=None, extra_args=None, ci_mode=False):
+def run(case=None, extra_args=None, ci_mode=True, alluredir=None):
     """
     运行 API 测试（pytest + allure）
     ci_mode: True 表示在 CI/CD 环境，不启动交互式报告
     """
-    report_data_dir, report_dir = ensure_report_dirs()
+    report_data_dir, report_dir = resolve_report_dirs(alluredir)
 
     pytest_args = []
     if case:

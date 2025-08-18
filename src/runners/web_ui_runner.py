@@ -1,13 +1,13 @@
 import os
 import sys
 import pytest
-from src.runners._common import ensure_report_dirs
+from src.runners._common import resolve_report_dirs
 
-def run(case=None, extra_args=None):
+def run(case=None, extra_args=None, alluredir=None):
     """
     运行 Web UI 测试（pytest + allure）
     """
-    report_data_dir, report_dir = ensure_report_dirs()
+    report_data_dir, report_dir = resolve_report_dirs(alluredir)
 
     pytest_args = []
     if case:
