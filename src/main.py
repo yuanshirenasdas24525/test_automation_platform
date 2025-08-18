@@ -40,7 +40,7 @@ def main():
 
     runner_func = TEST_TYPE_MAP[args.type]
     # 由具体 runner 决定如何组织/补全参数
-    return runner_func(case=args.case, extra_args=args.extra)
+    return runner_func(case=args.case, extra_args=args.extra, alluredir=args.alluredir)
 
 if __name__ == "__main__":
     sys.exit(main())

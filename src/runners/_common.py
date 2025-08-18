@@ -28,13 +28,13 @@ def resolve_report_dirs(alluredir: str = None):
                 return ensure_report_dirs()
             else:
                 report_data_dir = alluredir
-                report_dir = os.path.join(os.path.dirname(alluredir), "report")
+                report_dir = os.path.join(os.path.dirname(os.path.dirname(alluredir)), "report")
                 return report_data_dir, report_dir
         else:
             try:
                 os.makedirs(alluredir, exist_ok=True)
                 report_data_dir = alluredir
-                report_dir = os.path.join(os.path.dirname(alluredir), "report")
+                report_dir = os.path.join(os.path.dirname(os.path.dirname(alluredir)), "report")
                 return report_data_dir, report_dir
             except Exception as e:
                 ERROR_LOGGER.error(f"[ERROR] 无法创建 --alluredir 指定的目录 {alluredir}: {e}, 使用默认目录")
