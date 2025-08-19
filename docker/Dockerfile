@@ -1,10 +1,10 @@
-FROM python:3.12-slim
+FROM python:3.12-bookworm
 
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
 
-# 安装系统依赖（MySQL 客户端等）
-RUN apt-get update && apt-get install -y \
+# 安装 JDK 17 和依赖
+RUN apt-get update --fix-missing && apt-get install -y \
     default-mysql-client \
     curl \
     unzip \
@@ -12,7 +12,26 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     apt-transport-https \
     software-properties-common \
+    openjdk-17-jdk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 自动探测 JAVA_HOME 并写入 profile
+RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) \
+    && echo "export JAVA_HOME=$JAVA_HOME" >> /etc/profile \
+    && echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/profile \
+    && echo "JAVA_HOME=$JAVA_HOME" >> /etc/environment
+
+# 最终设置环境变量（直接硬编码为探测结果）
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+
+# 安装 Allure CLI
+ENV ALLURE_VERSION 2.29.0
+RUN curl -o allure-commandline-$ALLURE_VERSION.tgz -Ls https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.tgz \
+ && tar -zxvf allure-commandline-$ALLURE_VERSION.tgz -C /opt/ \
+ && rm allure-commandline-$ALLURE_VERSION.tgz \
+ && ln -s /opt/allure-$ALLURE_VERSION/bin/allure /usr/bin/allure
 
 # 升级 pip 并安装 Python 依赖
 COPY requirements.txt /app/requirements.txt
