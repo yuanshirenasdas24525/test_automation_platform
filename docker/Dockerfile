@@ -15,15 +15,12 @@ RUN apt-get update --fix-missing && apt-get install -y \
     openjdk-17-jdk \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 自动探测 JAVA_HOME 并写入 profile
-RUN JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java)))) \
-    && echo "export JAVA_HOME=$JAVA_HOME" >> /etc/profile \
-    && echo "export PATH=\$JAVA_HOME/bin:\$PATH" >> /etc/profile \
-    && echo "JAVA_HOME=$JAVA_HOME" >> /etc/environment
 
-# 最终设置环境变量（直接硬编码为探测结果）
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+# 根据平台设置 JAVA_HOME
+ARG TARGETARCH
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-${TARGETARCH}
+ENV PATH="$JAVA_HOME/bin:$PATH"
 
 
 # 安装 Allure CLI
