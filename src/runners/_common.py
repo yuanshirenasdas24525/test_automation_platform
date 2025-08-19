@@ -7,7 +7,7 @@ def ensure_report_dirs():
     """
     创建缓存/报告目录：{CACHE_FILE}/{NOW}/(report_data|report)
     """
-    base = Path(ProjectPaths.CACHE_FILE) / ProjectPaths.NOW
+    base = Path(ProjectPaths.REPORT_DIR) / "allure-results"
     report_data = base / "report_data"
     report_dir = base / "report"
     report_data.mkdir(parents=True, exist_ok=True)

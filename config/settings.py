@@ -15,7 +15,7 @@ class ProjectPaths:
 
     # 数据文件
     DATA_DIR = BASE_DIR / "data"
-    REPORT_DIR = DATA_DIR / "report"
+    REPORT_DIR = DATA_DIR / "reports"
     IMG_DIR = DATA_DIR / "images"
     VIDEO_DIR = DATA_DIR / "video"
     UPLOAD_DIR = DATA_DIR / "upload_file"
