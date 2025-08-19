@@ -16,4 +16,4 @@ services:
       - ./config:/app/config                  # 配置文件
       - ./data/log:/app/data/log              # 日志文件
     working_dir: /app
-    command: ["python", "src/main.py", "-t", "api", "-c", "tests/test_api.py", "--alluredir", "/app/data/reports/allure-results"]
+    command: ["-t", "api", "-c", "tests/test_api.py", "--alluredir", "/app/data/reports/allure-results"]
