@@ -24,7 +24,7 @@ ENV PATH="$JAVA_HOME/bin:$PATH"
 
 
 # 安装 Allure CLI
-ENV ALLURE_VERSION 2.29.0
+ENV ALLURE_VERSION=2.29.0
 RUN curl -o allure-commandline-$ALLURE_VERSION.tgz -Ls https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/$ALLURE_VERSION/allure-commandline-$ALLURE_VERSION.tgz \
  && tar -zxvf allure-commandline-$ALLURE_VERSION.tgz -C /opt/ \
  && rm allure-commandline-$ALLURE_VERSION.tgz \
