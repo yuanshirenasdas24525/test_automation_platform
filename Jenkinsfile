@@ -66,7 +66,7 @@ pipeline {
             steps {
                 script {
                     def result = sh script: '''
-                    docker run --rm -u root --name api_test_platform -u 0:0 \
+                    docker run --rm --name api_test_platform -u 0:0 \
                       -e PYTHONUNBUFFERED=1 -e TZ=Asia/Shanghai -e PYTHONPATH=/app \
                       -v ${WORKSPACE}/data/reports:/app/data/reports \
                       -w /app test_automation_platform-main-api_test:latest \
