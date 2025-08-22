@@ -1,7 +1,5 @@
 pipeline {
-    options {
-        buildDiscarder(logRotator(numToKeepStr: '10'))
-    }
+
     agent { label 'builder' }
 
     environment {
