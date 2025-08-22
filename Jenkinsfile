@@ -12,6 +12,10 @@ pipeline {
         allure 'AllureCommandline'  // 這裡填你設定的 Allure 安裝名稱
     }
 
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
     stages {
         stage('Checkout') {
             steps {
@@ -42,6 +46,19 @@ pipeline {
                        docker build -t ${IMAGE_NAME} -f docker/Dockerfile . 
                        """
                 }
+            }
+        }
+
+        stage('Prepare Allure Result Folder') {
+            steps {
+                sh '''
+                    if [ ! -d "${WORKSPACE}/data/reports/allure-results" ]; then
+                      echo "📁 mkdir building... (${WORKSPACE}/data/reports/allure-results)"
+                      mkdir -p "${WORKSPACE}/data/reports/allure-results"
+                    else
+                      echo "✅ Folder already exists: ${WORKSPACE}/data/reports/allure-results"
+                    fi
+                '''
             }
         }
 
