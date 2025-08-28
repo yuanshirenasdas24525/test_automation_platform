@@ -1,6 +1,7 @@
 # -*- coding:utf-8 -*-
 import inspect
 from src.utils.platform_utils import execution_time_decorator
+from src.captcha_solver import solve_captcha
 
 @execution_time_decorator
 def exec_func(value, *args, **kwargs):
@@ -92,6 +93,9 @@ def function_name():
             return prefix + ''.join(str(random.randint(0, 9)) for _ in range(7))
         else:
             raise ValueError("不支持的国家代码")
+
+    def captcha_solver():
+        return solve_captcha()
 
 
     def converter(money, decimal_places, rate):
