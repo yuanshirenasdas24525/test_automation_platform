@@ -30,7 +30,17 @@ class ProjectPaths:
 
     # API 自动化用例
     API_AUTO_DIR = DATA_DIR / "api_auto"
+    # 项目模块
     UU_API = API_AUTO_DIR / "uu_api" / "uu_api.xlsx"
+    register = API_AUTO_DIR / "uu_api" / "register.xlsx"
+    login = API_AUTO_DIR / "uu_api" / "login.xlsx"
+    userinfo = API_AUTO_DIR / "uu_api" / "userinfo.xlsx"
+    security = API_AUTO_DIR / "uu_api" / "security.xlsx"
+    deposit = API_AUTO_DIR / "uu_api" / "deposit.xlsx"
+    withdraw = API_AUTO_DIR / "uu_api" / "withdraw.xlsx"
+    converter = API_AUTO_DIR / "uu_api" / "converter.xlsx"
+    card = API_AUTO_DIR / "uu_api" / "card.xlsx"
+    agent = API_AUTO_DIR / "uu_api" / "agent.xlsx"
 
 
     # 日志
