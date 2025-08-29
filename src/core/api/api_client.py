@@ -55,7 +55,7 @@ class Client:
         data = self.request_data_processor.handler_data(data, sql, extra)
         file = self.request_data_processor.handler_files(file_path)
 
-        add_allure_step('Request Data', data)
+        add_allure_step('Request', data)
 
         response = self._send_api_with_retry(
             url, method, parametric_type, header, data, file

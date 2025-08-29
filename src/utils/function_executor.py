@@ -2,6 +2,7 @@
 import inspect
 from src.utils.platform_utils import execution_time_decorator
 from src.captcha_solver import solve_captcha
+from src.utils.logger import LOGGER
 
 @execution_time_decorator
 def exec_func(value, *args, **kwargs):
@@ -40,23 +41,29 @@ def function_name():
     """
     注册所有可用的函数，作为 exec_func 的函数库
     """
-    import pyotp, re, string, redis, time, random
+    import pyotp, re, string, time, random
     from decimal import Decimal, getcontext, ROUND_DOWN, InvalidOperation
 
-    def google_authentication(secret):
+    def google_authentication(secret, *args, **kwargs):
         """
         生成 Google 身份验证器的当前验证码
         """
         return pyotp.TOTP(secret).now()
 
-    def extract_code(text):
+    def extract_code(text, *args, **kwargs):
         """
         匹配6位数字，前后不能有数字
         """
-        match = re.search(r'(?<!\d)\d{6}(?!\d)', text)
-        return match.group() if match else None
+        for _ in args:
+            if isinstance(_, list) and _ is not None:
+                match = re.search(r'(?<!\d)\d{6}(?!\d)', _[0])
+                return match.group() if match else None
+            else:
+                match = re.search(r'(?<!\d)\d{6}(?!\d)', text[0])
+                return match.group() if match else None
 
-    def generate_account():
+
+    def generate_account(*args, **kwargs):
         """
         生成10位随机字母数字字符串，以字母开头
         """
@@ -64,13 +71,13 @@ def function_name():
                 ''.join(random.choice('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
                         for _ in range(9)))
 
-    def generate_num():
+    def generate_num(*args, **kwargs):
         """
         生成19位随机数字字符串
         """
         return ''.join(str(random.randint(0, 9)) for _ in range(19))
 
-    def generate_email():
+    def generate_email(*args, **kwargs):
         """
         生成随机邮箱地址
         """
@@ -80,7 +87,7 @@ def function_name():
         domain_name = ''.join(random.choice(letters) for _ in range(5))
         return f"{username}@{domain_name}.{random.choice(domain)}"
 
-    def generate_phone(country_code='63'):
+    def generate_phone(country_code='63', *args, **kwargs):
         """
         生成随机手机号，默认63手机号
         """
@@ -94,11 +101,11 @@ def function_name():
         else:
             raise ValueError("不支持的国家代码")
 
-    def captcha_solver():
-        return solve_captcha()
+    def captcha_solver(*args, **kwargs):
+        token = solve_captcha()
+        return token
 
-
-    def converter(money, decimal_places, rate):
+    def converter(money, decimal_places, rate, *args, **kwargs):
         try:
             decimal_places = int(decimal_places)
             getcontext().prec = decimal_places + 10
@@ -123,18 +130,11 @@ def function_name():
         except (ValueError, ArithmeticError, InvalidOperation):
             return None
 
-
-    def get_redis_code():
-        return redis.Redis(host='192.168.0.111', port=6379, db=0, password='123456')
-
-    def db_value(value):
-        return value
-
-    def h5_code(code):
+    def h5_code(code, *args, **kwargs):
         match = re.search(r'(?<!\d)\d{6}(?!\d)', code)
         return [f'//android.widget.Button[@text="{i}"]' for i in match.group()] if match else []
 
-    def get_timestamp():
+    def get_timestamp(*args, **kwargs):
         return int(time.time() * 1000)
 
     # 返回注册的所有函数
