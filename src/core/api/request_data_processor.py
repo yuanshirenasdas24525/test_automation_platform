@@ -6,6 +6,7 @@ from src.utils.function_executor import exec_func
 from src.utils.sql_handler import SQLHandlerFactory
 from src.utils.read_file import read_conf
 from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.allure_utils import add_allure_step
 import json
 
 
@@ -94,6 +95,8 @@ class RequestDataProcessor:
             return
         extra_dict = self.expr.convert_json(extra_str)
         for k, v in extra_dict.items():
+            if isinstance(v, str) and v.startswith("function:"):
+                self.extra_pool[k] = exec_func(v)
             extracted_value = self.expr.extractor(response, v)
             if extracted_value is not None:
                 self.extra_pool[k] = extracted_value
@@ -102,6 +105,7 @@ class RequestDataProcessor:
         """
         断言响应与预期是否一致
         """
+        add_allure_step("当前可用参数池", self.extra_pool)
         expect_str = self.expr.rep_expr(expect_str, self.extra_pool)
         expect_dict = self.expr.convert_json(expect_str)
         for k, v in expect_dict.items():

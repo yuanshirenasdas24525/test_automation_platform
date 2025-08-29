@@ -1,5 +1,4 @@
 import os
-import sys
 import pytest
 from src.runners._common import resolve_report_dirs
 

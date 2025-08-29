@@ -58,9 +58,12 @@ def function_name():
             if isinstance(_, list) and _ is not None:
                 match = re.search(r'(?<!\d)\d{6}(?!\d)', _[0])
                 return match.group() if match else None
-            else:
-                match = re.search(r'(?<!\d)\d{6}(?!\d)', text[0])
-                return match.group() if match else None
+        if isinstance(text, list) and text is not None:
+            match = re.search(r'(?<!\d)\d{6}(?!\d)', text[0])
+            return match.group() if match else None
+        else:
+            match = re.search(r'(?<!\d)\d{6}(?!\d)', str(text))
+            return match.group() if match else None
 
 
     def generate_account(*args, **kwargs):
