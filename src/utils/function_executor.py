@@ -2,7 +2,6 @@
 import inspect
 from src.utils.platform_utils import execution_time_decorator
 from src.captcha_solver import solve_captcha
-from src.utils.logger import LOGGER
 
 @execution_time_decorator
 def exec_func(value, *args, **kwargs):
@@ -54,10 +53,6 @@ def function_name():
         """
         匹配6位数字，前后不能有数字
         """
-        for _ in args:
-            if isinstance(_, list) and _ is not None:
-                match = re.search(r'(?<!\d)\d{6}(?!\d)', _[0])
-                return match.group() if match else None
         if isinstance(text, list) and text is not None:
             match = re.search(r'(?<!\d)\d{6}(?!\d)', text[0])
             return match.group() if match else None
@@ -70,9 +65,9 @@ def function_name():
         """
         生成10位随机字母数字字符串，以字母开头
         """
-        return (str(random.randint(3, 9)) +
+        return ("AU" + str(random.randint(3, 9)) +
                 ''.join(random.choice('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
-                        for _ in range(9)))
+                        for _ in range(7)))
 
     def generate_num(*args, **kwargs):
         """
@@ -88,7 +83,7 @@ def function_name():
         domain = ['com', 'net', 'org']
         username = ''.join(random.choice(letters) for _ in range(8))
         domain_name = ''.join(random.choice(letters) for _ in range(5))
-        return f"{username}@{domain_name}.{random.choice(domain)}"
+        return f"A_{username}@{domain_name}.{random.choice(domain)}"
 
     def generate_phone(country_code='63', *args, **kwargs):
         """
@@ -97,7 +92,7 @@ def function_name():
         if country_code == '852':
             return random.choice(['9', '6']) + ''.join(str(random.randint(0, 9)) for _ in range(7))
         elif country_code == '886':
-            return '09' + ''.join(str(random.randint(0, 9)) for _ in range(8))
+            return '9' + ''.join(str(random.randint(0, 9)) for _ in range(9))
         elif country_code == '63':
             prefix = random.choice(['917', '918', '919', '920', '921', '922', '923', '925', '926', '927'])
             return prefix + ''.join(str(random.randint(0, 9)) for _ in range(7))

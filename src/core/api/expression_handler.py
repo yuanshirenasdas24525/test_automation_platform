@@ -45,7 +45,7 @@ class ExpressionHandler:
                 return matches[0]
             return matches
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in extractor: {e}")
+            ERROR_LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
             return None
 
     def extract_code(self, text: str, pattern: str) -> Union[str, None]:
