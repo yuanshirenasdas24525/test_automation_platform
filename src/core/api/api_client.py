@@ -17,6 +17,27 @@ class Client:
 
     def __init__(self):
         self.request_data_processor = create_request_data_processor()
+        self.last_module = None
+        self.last_submodule = None
+        self.module_counter = 0
+        self.submodule_counter = 0
+
+    def _add_case_numbering(self, case_module, case_submodule, case_name, case_title):
+        if case_module != self.last_module:
+            self.module_counter += 1
+            self.submodule_counter = 1
+            self.last_module = case_module
+            self.last_submodule = case_submodule
+        else:
+            if case_submodule != self.last_submodule:
+                self.submodule_counter += 1
+                self.last_submodule = case_submodule
+            else:
+                self.submodule_counter += 1
+
+        numbered_module = f"{self.module_counter}_{case_module}"
+        numbered_submodule = f"{self.submodule_counter}_{case_submodule}"
+        return numbered_module, numbered_submodule
 
     def get_session(self, token: str = None) -> requests.Session:
         if token:
@@ -39,13 +60,16 @@ class Client:
             parametric_type, data, file_path, extra, sql, expect, wait
         ) = case
 
+        numbered_module, numbered_submodule = self._add_case_numbering(
+            case_module, case_submodule, case_name, case_title)
+
         LOGGER.info(
-            f"TestCase: {case_module} - {case_submodule} - {case_name} - {case_title}\n"
+            f"TestCase: {numbered_module} - {numbered_submodule} - {case_name} - {case_title}\n"
             f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}"
         )
 
-        set_allure_project(case_module)
-        set_allure_module(case_submodule)
+        set_allure_project(numbered_module)
+        set_allure_module(numbered_submodule)
         set_allure_case(case_name)
         set_allure_title(case_title)
         set_allure_description(description=f"测试点：{case_title}")
