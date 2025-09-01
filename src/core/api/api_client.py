@@ -22,7 +22,7 @@ class Client:
         self.module_counter = 0
         self.submodule_counter = 0
 
-    def _add_case_numbering(self, case_module, case_submodule, case_name, case_title):
+    def _add_case_numbering(self, case_module, case_submodule):
         if case_module != self.last_module:
             self.module_counter += 1
             self.submodule_counter = 1
@@ -61,7 +61,7 @@ class Client:
         ) = case
 
         numbered_module, numbered_submodule = self._add_case_numbering(
-            case_module, case_submodule, case_name, case_title)
+            case_module, case_submodule)
 
         LOGGER.info(
             f"TestCase: {numbered_module} - {numbered_submodule} - {case_name} - {case_title}\n"
