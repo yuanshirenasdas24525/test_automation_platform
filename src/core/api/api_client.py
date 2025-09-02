@@ -35,8 +35,8 @@ class Client:
             else:
                 self.submodule_counter += 1
 
-        numbered_module = f"{self.module_counter}_{case_module}"
-        numbered_submodule = f"{self.submodule_counter}_{case_submodule}"
+        numbered_module = f"{self.module_counter:04d}_{case_module}"
+        numbered_submodule = f"{self.submodule_counter:04d}_{case_submodule}"
         return numbered_module, numbered_submodule
 
     def get_session(self, token: str = None) -> requests.Session:
