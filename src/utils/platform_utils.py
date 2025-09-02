@@ -99,24 +99,27 @@ def delete_error_png_files(folder_path):
         ERROR_LOGGER.error(f"No 'error.png' files found in {folder_path}.")
 
 
-def delete_all_files_in_dir(directory: str):
+def clear_directory(directory: str):
     """
-    删除指定目录下的所有文件，但保留子目录和目录本身。
+    删除指定目录下的所有内容（文件和子文件夹），但保留目录本身。
     :param directory: 需要清理的目录路径
     """
     if not os.path.exists(directory):
-        ERROR_LOGGER.error(f"目录不存在: {directory}")
+        ERROR_LOGGER.info(f"目录不存在: {directory}")
         return
 
     if not os.path.isdir(directory):
-        ERROR_LOGGER.error(f"不是目录: {directory}")
+        ERROR_LOGGER.info(f"不是目录: {directory}")
         return
 
     for filename in os.listdir(directory):
         file_path = os.path.join(directory, filename)
-        if os.path.isfile(file_path):
-            try:
-                os.remove(file_path)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.remove(file_path)  # 删除文件或符号链接
                 LOGGER.info(f"已删除文件: {file_path}")
-            except Exception as e:
-                ERROR_LOGGER.info(f"删除失败 {file_path}: {e}")
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)  # 删除整个子目录
+                LOGGER.info(f"已删除目录: {file_path}")
+        except Exception as e:
+            ERROR_LOGGER.error(f"删除失败 {file_path}: {e}")
