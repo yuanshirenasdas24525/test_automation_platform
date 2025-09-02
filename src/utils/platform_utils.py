@@ -45,9 +45,9 @@ def delete_old_directories(directory_path):
             try:
                 shutil.rmtree(directory_to_delete)
             except Exception as e:
-                print(f'无法删除 {directory_to_delete}。原因: {e}')
+                ERROR_LOGGER.error(f'无法删除 {directory_to_delete}。原因: {e}')
     else:
-        print(f'指定的路径 {directory_path} 不存在或不是一个目录。')
+        ERROR_LOGGER.error(f'指定的路径 {directory_path} 不存在或不是一个目录。')
 
 
 def clear_log_files(log_dir):
@@ -97,3 +97,26 @@ def delete_error_png_files(folder_path):
     # 如果没有找到符合条件的文件
     if not files_deleted:
         ERROR_LOGGER.error(f"No 'error.png' files found in {folder_path}.")
+
+
+def delete_all_files_in_dir(directory: str):
+    """
+    删除指定目录下的所有文件，但保留子目录和目录本身。
+    :param directory: 需要清理的目录路径
+    """
+    if not os.path.exists(directory):
+        ERROR_LOGGER.error(f"目录不存在: {directory}")
+        return
+
+    if not os.path.isdir(directory):
+        ERROR_LOGGER.error(f"不是目录: {directory}")
+        return
+
+    for filename in os.listdir(directory):
+        file_path = os.path.join(directory, filename)
+        if os.path.isfile(file_path):
+            try:
+                os.remove(file_path)
+                LOGGER.info(f"已删除文件: {file_path}")
+            except Exception as e:
+                ERROR_LOGGER.info(f"删除失败 {file_path}: {e}")
