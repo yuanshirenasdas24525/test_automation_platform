@@ -78,7 +78,7 @@ class Client:
         header = self.request_data_processor.handler_header(header, data, sql)
         data = self.request_data_processor.handler_data(data, sql, extra)
         file = self.request_data_processor.handler_files(file_path)
-
+        add_allure_step('Header', header)
         add_allure_step('Request', data)
 
         response = self._send_api_with_retry(
