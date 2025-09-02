@@ -41,6 +41,7 @@ class ProjectPaths:
     converter = API_AUTO_DIR / "uu_api" / "converter.xlsx"
     card = API_AUTO_DIR / "uu_api" / "card.xlsx"
     agent = API_AUTO_DIR / "uu_api" / "agent.xlsx"
+    corporate = API_AUTO_DIR / "uu_api" / "corporate.xlsx"
 
 
     # 日志

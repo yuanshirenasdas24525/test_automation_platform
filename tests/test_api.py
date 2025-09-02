@@ -58,6 +58,11 @@ class TestApi(object):
     def test_uu_apitest_agent_case(self, case):
         client.send_case(case=case)
 
+    @pytest.mark.run(order=10)
+    @pytest.mark.parametrize('case', GenericCaseReader(ProjectPaths.corporate, process_api_row).read())
+    def test_uu_apitest_corporate_case(self, case):
+        client.send_case(case=case)
+
     def teardown_method(self):
         pass
 
