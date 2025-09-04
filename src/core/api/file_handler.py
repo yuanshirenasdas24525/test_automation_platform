@@ -1,4 +1,4 @@
-# file_handler.py
+# coding: utf-8
 import os
 from typing import Any, Dict, List, Union
 from src.utils.logger import LOGGER, ERROR_LOGGER
@@ -18,21 +18,22 @@ class FileHandler:
             return files
         try:
             if isinstance(file_obj, str):
-                file_obj = [file_obj]
+                # 支持逗号分隔的多文件字符串
+                file_obj = [f.strip() for f in file_obj.split(";")]
             for f in file_obj:
                 path = self._parse_path(f, extra_pool)
                 if not os.path.exists(path):
-                    ERROR_LOGGER.error(f"File not found: {path}")
+                    ERROR_LOGGER.error(f"找不到文件: {path}")
                     continue
                 file_info = {
                     "filename": os.path.basename(path),
                     "filepath": path
                 }
                 files.append(file_info)
-            LOGGER.debug(f"FileHandler processed files: {files}")
+            LOGGER.debug(f"FileHandler 已处理的文件: {files}")
             return files
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in FileHandler.process: {e}")
+            ERROR_LOGGER.error(f"FileHandler.process 中的错误: {e}")
             return []
 
     def _parse_path(self, path_str: str, extra_pool: Dict[str, Any]) -> str:
@@ -40,7 +41,7 @@ class FileHandler:
         解析文件路径，支持表达式替换。
         """
         if not isinstance(path_str, str):
-            ERROR_LOGGER.error(f"_parse_path expects a string input, got {type(path_str)}")
+            ERROR_LOGGER.error(f"_parse_path需要一个字符串输入，得到{type(path_str)}")
             return path_str
         try:
             # 简单替换表达式格式${var}
@@ -49,8 +50,8 @@ class FileHandler:
                 if placeholder in path_str:
                     path_str = path_str.replace(placeholder, str(val))
             abs_path = os.path.abspath(path_str)
-            LOGGER.debug(f"_parse_path input: {path_str}, output: {abs_path}")
+            LOGGER.debug(f"_parse_path输入: {path_str}, 输出: {abs_path}")
             return abs_path
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in _parse_path: {e}")
+            ERROR_LOGGER.error(f"_parse_path错误: {e}")
             return path_str
