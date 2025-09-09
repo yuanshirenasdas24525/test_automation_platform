@@ -65,7 +65,7 @@ class Client:
 
         LOGGER.info(
             f"TestCase: {numbered_module} - {numbered_submodule} - {case_name} - {case_title}\n"
-            f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}"
+            f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}\nfile_path: {file_path}"
         )
 
         set_allure_project(numbered_module)
