@@ -65,10 +65,6 @@ class RequestDataProcessor:
 
         if isinstance(data_obj, dict):
             self._process_functions(data_obj, sql, extra_str)
-        elif isinstance(data_obj, list):
-            for item in data_obj:
-                if isinstance(item, dict):
-                    self._process_functions(item, sql, extra_str)
         return data_obj
 
     def _process_functions(self, data: dict, sql: str, extra_str: str):

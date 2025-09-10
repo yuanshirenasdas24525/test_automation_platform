@@ -1,5 +1,7 @@
 # -*- coding:utf-8 -*-
 import inspect
+
+from src.utils.logger import LOGGER
 from src.utils.platform_utils import execution_time_decorator
 from src.captcha_solver import solve_captcha
 
@@ -47,6 +49,18 @@ def function_name():
         """
         生成 Google 身份验证器的当前验证码
         """
+        return pyotp.TOTP(secret).now()
+
+    def google_authentication_new(*args, **kwargs):
+        LOGGER.info(f"看看这是什么 {args} {type(args)}")
+        extra_pool = args[2]
+        LOGGER.info(f"这个呢 {extra_pool} {type(extra_pool)}")
+        secret = extra_pool.get('new_secret', '')
+        return pyotp.TOTP(secret).now()
+
+    def google_authentication_old(*args, **kwargs):
+        extra_pool = args[2]
+        secret = extra_pool.get('secret', '')
         return pyotp.TOTP(secret).now()
 
     def extract_code(text, *args, **kwargs):
