@@ -52,9 +52,7 @@ def function_name():
         return pyotp.TOTP(secret).now()
 
     def google_authentication_new(*args, **kwargs):
-        LOGGER.info(f"看看这是什么 {args} {type(args)}")
         extra_pool = args[2]
-        LOGGER.info(f"这个呢 {extra_pool} {type(extra_pool)}")
         secret = extra_pool.get('new_secret', '')
         return pyotp.TOTP(secret).now()
 
