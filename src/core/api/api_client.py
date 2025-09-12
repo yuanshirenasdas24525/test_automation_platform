@@ -17,27 +17,52 @@ class Client:
 
     def __init__(self):
         self.request_data_processor = create_request_data_processor()
+        # 保存上一次的层级
         self.last_module = None
         self.last_submodule = None
+        self.last_case_name = None
+
+        # 各层计数器
         self.module_counter = 0
         self.submodule_counter = 0
+        self.case_name_counter = 0
+        self.case_title_counter = 0
 
-    def _add_case_numbering(self, case_module, case_submodule):
+    def _add_case_numbering(self, case_module, case_submodule, case_name, case_title):
+        # 模块计数
         if case_module != self.last_module:
             self.module_counter += 1
-            self.submodule_counter = 1
+            self.submodule_counter = 0
+            self.case_name_counter = 0
+            self.case_title_counter = 0
             self.last_module = case_module
-            self.last_submodule = case_submodule
-        else:
-            if case_submodule != self.last_submodule:
-                self.submodule_counter += 1
-                self.last_submodule = case_submodule
-            else:
-                self.submodule_counter += 1
+            self.last_submodule = None
+            self.last_case_name = None
 
+        # 子模块计数
+        if case_submodule != self.last_submodule:
+            self.submodule_counter += 1
+            self.case_name_counter = 0
+            self.case_title_counter = 0
+            self.last_submodule = case_submodule
+            self.last_case_name = None
+
+        # 用例名称计数
+        if case_name != self.last_case_name:
+            self.case_name_counter += 1
+            self.case_title_counter = 0
+            self.last_case_name = case_name
+
+        # 用例标题计数
+        self.case_title_counter += 1
+
+        # 生成带编号的字符串
         numbered_module = f"{self.module_counter:04d}_{case_module}"
         numbered_submodule = f"{self.submodule_counter:04d}_{case_submodule}"
-        return numbered_module, numbered_submodule
+        numbered_case_name = f"{self.case_name_counter:04d}_{case_name}"
+        numbered_case_title = f"{self.case_title_counter:04d}_{case_title}"
+
+        return numbered_module, numbered_submodule, numbered_case_name, numbered_case_title
 
     def get_session(self, token: str = None) -> requests.Session:
         if token:
@@ -60,18 +85,18 @@ class Client:
             parametric_type, data, file_path, extra, sql, expect, wait
         ) = case
 
-        numbered_module, numbered_submodule = self._add_case_numbering(
-            case_module, case_submodule)
+        numbered_module, numbered_submodule, numbered_case_name, numbered_case_title = self._add_case_numbering(
+            case_module, case_submodule, case_name, case_title)
 
         LOGGER.info(
-            f"TestCase: {numbered_module} - {numbered_submodule} - {case_name} - {case_title}\n"
+            f"TestCase: {numbered_module} - {numbered_submodule} - {numbered_case_name} - {numbered_case_title}\n"
             f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}\nfile_path: {file_path}"
         )
 
         set_allure_project(numbered_module)
         set_allure_module(numbered_submodule)
-        set_allure_case(case_name)
-        set_allure_title(case_title)
+        set_allure_case(numbered_case_name)
+        set_allure_title(numbered_case_title)
         set_allure_description(description=f"测试点：{case_title}")
 
         url = self.request_data_processor.handler_path(path_str=path)
