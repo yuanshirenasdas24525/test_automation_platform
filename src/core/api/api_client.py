@@ -107,6 +107,8 @@ class Client:
         data = self.request_data_processor.handler_data(data, sql, extra)
         file = self.request_data_processor.handler_files(file_path)
         add_allure_step('Header', header)
+        add_allure_step('Url', url)
+        add_allure_step(f'Request Time (s): {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}')
         add_allure_step('Request', data)
 
         response = self._send_api_with_retry(
