@@ -49,6 +49,8 @@ def function_name():
         """
         生成 Google 身份验证器的当前验证码
         """
+        if isinstance(secret, list) and secret is not None:
+            secret = secret[0]
         return pyotp.TOTP(secret).now()
 
     def google_authentication_new(*args, **kwargs):

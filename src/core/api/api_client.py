@@ -93,6 +93,9 @@ class Client:
             f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}\nfile_path: {file_path}"
         )
 
+        if wait is not None:
+            time.sleep(float(wait))
+
         set_allure_project(numbered_module)
         set_allure_module(numbered_submodule)
         set_allure_case(numbered_case_name)
@@ -109,9 +112,6 @@ class Client:
         response = self._send_api_with_retry(
             url, method, parametric_type, header, data, file
         )
-
-        if wait is not None:
-            time.sleep(float(wait))
 
         self.request_data_processor.handler_extra(extra, response)
         self.request_data_processor.assert_result(response, expect)

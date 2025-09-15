@@ -9,7 +9,7 @@ def build_slider_request(
     captcha_id: str,
     background_image_b64: str,
     jitter_y: int = 0,
-    annotated_path: str = "bg_annotated.jpg",
+    annotated_path: str = "bg.jpg",
 ) -> Dict[str, Any]:
     """
     根据背景图的分割位置，构造滑块轨迹与时序请求体。
