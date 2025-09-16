@@ -73,9 +73,20 @@ class RequestDataProcessor:
         自动传入 sql 查询结果（可能是多个）、当前变量和参数池。
         """
         sql_results = self.execute_select_fetchone(sql, extra_str)  # 返回 list
-        for k, v in data.items():
-            if isinstance(v, str) and v.startswith("function:"):
-                data[k] = exec_func(v, sql_results, data, self.extra_pool)
+        def _process(item: dict, parent_data):
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    item[k] = _process(v, item)  # 递归，并传当前 dict 给子节点
+                return item
+            elif isinstance(item, list):
+                for i, v in enumerate(item):
+                    item[i] = _process(v, item)  # 递归，并传当前 list 给子节点
+                return item
+            elif isinstance(item, str) and item.startswith("function:"):
+                return exec_func(item, sql_results, parent_data, self.extra_pool)
+            return item
+
+        return _process(data, data)
 
     def handler_files(self, file_obj: Any) -> List[dict]:
         """
@@ -164,3 +175,9 @@ class RequestDataProcessor:
             LOGGER.info(f"SQL 执行完成，更新参数池: {self.extra_pool}")
         finally:
             db_handler.close()
+
+if __name__ == '__main__':
+    data = {"convertOrderVO":{"amountCalcBaseOn": "exchangeAmount", "balanceId": 110733, "balancePwd": "111111", "coinId": 34, "coinSymbol": "USDT", "coinType": 2, "convertedAmount": "function:converter", "convertedBalanceId": 110730, "convertedCoinId": 31, "convertedCoinSymbol": "PHP", "convertedCoinType": 1, "convertMarketId": 68, "convertRate": "52.4", "convertRateExtend": "", "counterpartyId": 602, "counterpartyUserType": 4, "exchangeAmount": "10", "exchangeType": "convert_forex", "orderType": "convert", "orderTypeNext": "forex"}}
+    processor = RequestDataProcessor({}, "")
+    c = processor._process_functions(data, "", "")
+    print(c)

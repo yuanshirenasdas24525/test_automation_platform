@@ -2,7 +2,7 @@
 import json
 import re
 from typing import Any, Dict, List, Union
-from jsonpath_rw_ext import parse
+from jsonpath import jsonpath
 from src.utils.logger import LOGGER, ERROR_LOGGER
 
 class ExpressionHandler:
@@ -36,8 +36,7 @@ class ExpressionHandler:
         使用jsonpath表达式从json对象中提取数据。
         """
         try:
-            jsonpath_expr = parse(json_path)
-            matches = [match.value for match in jsonpath_expr.find(json_obj)]
+            matches = jsonpath(json_obj, json_path)
             if not matches:
                 return None
             if len(matches) == 1:

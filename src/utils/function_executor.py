@@ -117,30 +117,15 @@ def function_name():
         token = solve_captcha()
         return token
 
-    def converter(money, decimal_places, rate, *args, **kwargs):
-        try:
-            decimal_places = int(decimal_places)
-            getcontext().prec = decimal_places + 10
-            if isinstance(money, float):
-                money = Decimal(str(money))
-            else:
-                money = Decimal(str(money))
-            rate_list = rate.split("=")
-            if len(rate_list) != 2:
-                return None
-            base_rate = Decimal(re.match(r'(\d*\.?\d+)', rate_list[0].strip()).group(1))
-            target_rate = Decimal(re.match(r'(\d*\.?\d+)', rate_list[1].strip()).group(1))
-            if base_rate == 1:
-                r = money * target_rate
-            elif target_rate == 1:
-                if base_rate == 0: return None
-                r = money / base_rate
-            else:
-                return None
-            return str(r.to_integral_value()) if r == r.to_integral_value() \
-                   else str(r.quantize(Decimal(f'0.{"0"*decimal_places}'), rounding=ROUND_DOWN))
-        except (ValueError, ArithmeticError, InvalidOperation):
-            return None
+    def converter(*args, **kwargs):
+        data = args[1]
+        LOGGER.info(f"converter 函数参数：{data}")
+        cr = float(data.get("convertRate", ""))
+        ea = float(data.get("exchangeAmount", ""))
+        dp = args[2].get("decimalPrecision", "")
+        if dp:
+            return str(round(ea*cr, dp))
+        return str(int(ea*cr))
 
     def h5_code(code, *args, **kwargs):
         match = re.search(r'(?<!\d)\d{6}(?!\d)', code)
