@@ -119,13 +119,18 @@ def function_name():
 
     def converter(*args, **kwargs):
         data = args[1]
-        LOGGER.info(f"converter 函数参数：{data}")
-        cr = float(data.get("convertRate", ""))
-        ea = float(data.get("exchangeAmount", ""))
+        extra_pool = args[2]
+        cr = data.get("convertRate", "")
+        ea = data.get("exchangeAmount", "")
         dp = args[2].get("decimalPrecision", "")
+        if not cr and isinstance(cr, str):
+            return extra_pool.get("amount_after_convert", "")
         if dp:
-            return str(round(ea*cr, dp))
-        return str(int(ea*cr))
+            result = str(round(float(ea) * float(cr), int(dp)))
+        else:
+            result = str(int(ea * cr))
+        extra_pool["amount_after_convert"] = result
+        return result
 
     def h5_code(code, *args, **kwargs):
         match = re.search(r'(?<!\d)\d{6}(?!\d)', code)
