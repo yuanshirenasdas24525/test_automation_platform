@@ -123,12 +123,14 @@ def function_name():
         cr = data.get("convertRate", "")
         ea = data.get("exchangeAmount", "")
         dp = args[2].get("decimalPrecision", "")
+        pi = args[2].get("integerPrecision", "")
+        pt = args[2].get("precisionType", "")
         if not cr and isinstance(cr, str):
             return extra_pool.get("amount_after_convert", "")
-        if dp:
+        if pt == 2:
             result = str(round(float(ea) * float(cr), int(dp)))
         else:
-            result = str(int(ea * cr))
+            result = str(int(float(ea) * float(cr)))
         extra_pool["amount_after_convert"] = result
         return result
 
