@@ -9,7 +9,7 @@ pipeline {
     }
 
     tools {
-        allure 'AllureCommandline'  // 這裡填你設定的 Allure 安裝名稱
+        allure 'AllureCommandline'  // 这里填 Jenkins 已配置的 Allure 名称
     }
 
     options {
@@ -42,9 +42,9 @@ pipeline {
             steps {
                 script {
                     sh """
-                       echo "Image  building..."
-                       docker build -t ${IMAGE_NAME} -f docker/Dockerfile . 
-                       """
+                       echo "Image building..."
+                       docker build -t ${IMAGE_NAME} -f docker/Dockerfile .
+                    """
                 }
             }
         }
@@ -53,18 +53,23 @@ pipeline {
             steps {
                 script {
                     def allureVolumePath = "${env.WORKSPACE}/data/reports"
-                    sh "echo 📁 確認 WORKSPACE: ${allureVolumePath}"
-            
-                    def result = sh script: '''
-                    docker run --rm --name api_test_platform -u 0:0 \
-                      -e PYTHONUNBUFFERED=1 -e TZ=Asia/Shanghai -e PYTHONPATH=/app \
-                      -v ${WORKSPACE}/data/reports:/app/data/reports \
-                      -w /app test_automation_platform-main-api_test:latest \
-                      -t api -c tests/test_api.py --alluredir /app/data/reports/allure-results
+                    sh "echo 📁 确认 WORKSPACE: ${allureVolumePath}"
+
+                    def result = sh script: """
+                    docker run --rm --name ${CONTAINER_NAME} -u 0:0 \\
+                      -e PYTHONUNBUFFERED=1 -e TZ=Asia/Shanghai -e PYTHONPATH=/app \\
+                      -e CI=true \\
+                      -v ${WORKSPACE}/data/reports:/app/data/reports \\
+                      -v ${WORKSPACE}/tests:/app/tests \\
+                      -v ${WORKSPACE}/config:/app/config \\
+                      -v ${WORKSPACE}/data/api_auto:/app/data/api_auto \\
+                      -v ${WORKSPACE}/data/log:/app/data/log \\
+                      -w /app ${IMAGE_NAME} \\
+                      -t api -c tests/test_api.py
 
                     echo '🧪 Container finished running. Check generated files:'
                     ls -la ${allureVolumePath}/allure-results || echo "❌ Report folder not created!"
-                    ''', returnStatus: true
+                    """, returnStatus: true
 
                     if (result != 0) {
                         echo "Docker container exited with code ${result}, but continue..."
@@ -86,7 +91,7 @@ pipeline {
 
     post {
         always {
-            sh "echo 'good job' || true"
+            sh "echo '✅ Pipeline finished!' || true"
         }
     }
 }

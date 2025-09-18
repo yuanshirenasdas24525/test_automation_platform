@@ -3,43 +3,37 @@ set -e
 
 echo "[INFO] Booting Test Platform..."
 
+RESULT_DIR="/app/data/reports/allure-results"
+REPORT_DIR="/app/data/reports/allure-report"
 
-# 如果没传任何参数，就进入交互模式，避免退出
+# 如果没传任何参数，就进入交互模式
 if [ $# -eq 0 ]; then
   echo "[INFO] No command provided, starting bash for debugging..."
   exec /bin/bash
 fi
 
-## 可选：启动 Appium
-#if [ "$START_APPIUM" = "true" ]; then
-#  echo "[INFO] Starting Appium..."
-#  # 允许自动下载 chromedriver
-#  appium --allow-insecure chromedriver_autodownload --log-level info &
-#  sleep 5
-#fi
-#
-## 可选：启动 Locust（若你想单独用这个容器承载 Locust，也可以在 docker-compose 单独服务）
-#if [ "$START_LOCUST" = "true" ]; then
-#  echo "[INFO] Starting Locust..."
-#  locust -f src/core/load_test/locust_tasks.py --host="${LOCUST_HOST:-http://localhost:8000}" &
-#  sleep 3
-#fi
-#
-## 可选：启动 mitmproxy
-#if [ "$START_MITMPROXY" = "true" ]; then
-#  echo "[INFO] Starting mitmproxy..."
-#  mitmproxy --listen-port 8080 &
-#  sleep 3
-#fi
+# 清理旧的 allure 结果
+echo "[INFO] Cleaning old Allure results..."
+rm -rf ${RESULT_DIR:?}/*
 
-#echo "[INFO] Running main: python src/main.py $*"
-#exec python src/main.py -t api -c tests/test_api.py
+# 如果有历史数据则迁移
+if [ -d "$REPORT_DIR/history" ]; then
+  echo "[INFO] Found history data, migrating..."
+  mkdir -p ${RESULT_DIR}/history
+  cp -r ${REPORT_DIR}/history/* ${RESULT_DIR}/history/ || true
+fi
 
-
+# 执行主程序
 echo "[INFO] Running main.py with args: $@"
-exec python src/main.py "$@" --alluredir="/app/data/reports/allure-results"
+python src/main.py "$@" --alluredir="${RESULT_DIR}"
 
+# 生成 Allure 报告
+echo "[INFO] Generating Allure report..."
+allure generate ${RESULT_DIR} -o ${REPORT_DIR} --clean
 
-
-
-
+if [ "$CI" = "true" ]; then
+  echo "[INFO] CI mode: Report generated at ${REPORT_DIR}"
+else
+  echo "[INFO] Local mode: Starting Allure server..."
+  allure serve ${RESULT_DIR}
+fi
