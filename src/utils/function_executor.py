@@ -122,9 +122,9 @@ def function_name():
         extra_pool = args[2]
         cr = data.get("convertRate", "")
         ea = data.get("exchangeAmount", "")
-        dp = args[2].get("decimalPrecision", "")
-        pi = args[2].get("integerPrecision", "")
-        pt = args[2].get("precisionType", "")
+        dp = extra_pool.get("decimalPrecision", "")
+        pi = extra_pool.get("integerPrecision", "")
+        pt = extra_pool.get("precisionType", "")
         if not cr and isinstance(cr, str):
             return extra_pool.get("amount_after_convert", "")
         if pt == 2:
@@ -132,6 +132,24 @@ def function_name():
         else:
             result = str(int(float(ea) * float(cr)))
         extra_pool["amount_after_convert"] = result
+        return result
+
+    def assert_amount_deduction(*args, **kwargs):
+        extra_pool = args[0]
+        coin = extra_pool.get("assert_coin", "USDT").upper()
+        old_amount = float(extra_pool.get(f"old_amount_{coin}", 0.00))
+        amount_set = float(extra_pool.get("amount_set", 0.00))
+        fee_amount = float(extra_pool.get(f"fee_amount_{coin}", 0.00))
+        result = old_amount - amount_set - fee_amount
+        return result
+
+    def assert_amount_increase(*args, **kwargs):
+        extra_pool = args[0]
+        coin = extra_pool.get("assert_coin", "USDT").upper()
+        old_amount = float(extra_pool.get(f"old_amount_{coin}", 0.00))
+        new_amount = float(extra_pool.get(f"new_amount_{coin}", 0.00))
+        fee_amount = float(extra_pool.get(f"fee_amount_{coin}", 0.00))
+        result = old_amount + new_amount + fee_amount
         return result
 
     def h5_code(code, *args, **kwargs):

@@ -15,7 +15,7 @@ class ExpressionHandler:
         替换文本中的表达式变量，格式为${var}，从extra_pool中取值替换。
         """
         if not isinstance(text, str):
-            ERROR_LOGGER.error(f"rep_expr expects a string input, got {type(text)}")
+            ERROR_LOGGER.error(f"rep_expr需要一个字符串输入，得到 {type(text)}")
             return text
 
         pattern = re.compile(r'\$\{(.*?)\}')
@@ -25,10 +25,10 @@ class ExpressionHandler:
             return str(value)
         try:
             result = pattern.sub(replacer, text)
-            LOGGER.debug(f"rep_expr input: {text}, output: {result}")
+            LOGGER.debug(f"rep_expr 输入: {text}, 输出: {result}")
             return result
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in rep_expr: {e}")
+            ERROR_LOGGER.error(f"rep_expr错误: {e}")
             return text
 
     def extractor(self, json_obj: Union[Dict, List], json_path: str) -> Any:
@@ -44,7 +44,7 @@ class ExpressionHandler:
             return matches
         except Exception as e:
             ERROR_LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
-            return None
+            return json_path
 
     def extract_code(self, text: str, pattern: str) -> Union[str, None]:
         """
@@ -54,11 +54,11 @@ class ExpressionHandler:
             match = re.search(pattern, text)
             if match:
                 code = match.group(1)
-                LOGGER.debug(f"extract_code pattern: {pattern}, code: {code}")
+                LOGGER.debug(f"extract_code 模式: {pattern}, code: {code}")
                 return code
             return None
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in extract_code: {e}")
+            ERROR_LOGGER.error(f"extract_code 错误: {e}")
             return None
 
     def convert_json(self, data: str) -> Any:
@@ -66,12 +66,12 @@ class ExpressionHandler:
         将字符串转换为json对象，支持dict和list。
         """
         if not isinstance(data, str):
-            ERROR_LOGGER.error(f"convert_json expects a string input, got {type(data)}")
+            ERROR_LOGGER.error(f"convert_json 需要一个字符串输入，得到 {type(data)}")
             return data
         try:
             obj = json.loads(data)
-            LOGGER.debug(f"convert_json input: {data}, output: {obj}")
+            LOGGER.debug(f"convert_json 输入: {data}, 输出: {obj}")
             return obj
         except Exception as e:
-            ERROR_LOGGER.error(f"Error in convert_json: {e}")
+            ERROR_LOGGER.error(f"convert_json 错误: {e}")
             return data

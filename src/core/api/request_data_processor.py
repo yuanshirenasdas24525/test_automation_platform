@@ -112,12 +112,19 @@ class RequestDataProcessor:
         """
         断言响应与预期是否一致
         """
+        function_amount_assert = ["function:assert_amount_increase", "function:assert_amount_deduction"]
         add_allure_step("当前可用参数池", self.extra_pool)
         expect_str = self.expr.rep_expr(expect_str, self.extra_pool)
         expect_dict = self.expr.convert_json(expect_str)
         for k, v in expect_dict.items():
             actual = self.expr.extractor(response, k)
+            if isinstance(v, str) and v.startswith("function:"):
+                if v in function_amount_assert:
+                    v = float(exec_func(v, self.extra_pool))
+                else:
+                    v = exec_func(v)
             assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
+            add_allure_step("断言", f"实际值：{k} == 预期值：{v}")
 
     def execute_select_fetchone(self, sql: str, extra_str: str):
         """
