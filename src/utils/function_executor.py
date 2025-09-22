@@ -43,7 +43,6 @@ def function_name():
     注册所有可用的函数，作为 exec_func 的函数库
     """
     import pyotp, re, string, time, random
-    from decimal import Decimal, getcontext, ROUND_DOWN, InvalidOperation
 
     def google_authentication(secret, *args, **kwargs):
         """
@@ -94,9 +93,19 @@ def function_name():
         生成随机邮箱地址
         """
         letters = string.ascii_lowercase
-        domain = ['com', 'net', 'org']
+        domain = ['com', 'net', 'org', 'space']
         username = ''.join(random.choice(letters) for _ in range(8))
         domain_name = ''.join(random.choice(letters) for _ in range(5))
+        return f"A_{username}@{domain_name}.{random.choice(domain)}"
+
+    def generate_email_d(*args, **kwargs):
+        """
+        生成随机邮箱地址
+        """
+        letters = string.ascii_lowercase
+        domain = ['space']
+        username = ''.join(random.choice(letters) for _ in range(9))
+        domain_name = 'xtec'
         return f"A_{username}@{domain_name}.{random.choice(domain)}"
 
     def generate_phone(country_code='63', *args, **kwargs):
@@ -139,17 +148,35 @@ def function_name():
         coin = extra_pool.get("assert_coin", "USDT").upper()
         old_amount = float(extra_pool.get(f"old_amount_{coin}", 0.00))
         amount_set = float(extra_pool.get("amount_set", 0.00))
-        fee_amount = float(extra_pool.get(f"fee_amount_{coin}", 0.00))
-        result = old_amount - amount_set - fee_amount
+        result = old_amount - amount_set
         return result
 
     def assert_amount_increase(*args, **kwargs):
+        import math
+        def truncate(value: float, digits: int) -> float:
+            """截断浮点数到指定小数位，不进位"""
+            factor = 10.0 ** digits
+            return math.trunc(value * factor) / factor
+
         extra_pool = args[0]
         coin = extra_pool.get("assert_coin", "USDT").upper()
         old_amount = float(extra_pool.get(f"old_amount_{coin}", 0.00))
-        new_amount = float(extra_pool.get(f"new_amount_{coin}", 0.00))
+        amount_after_convert = float(extra_pool.get("amount_after_convert", 0.00))
+        accuracy = int(extra_pool.get("accuracy", 0))
         fee_amount = float(extra_pool.get(f"fee_amount_{coin}", 0.00))
-        result = old_amount + new_amount + fee_amount
+        amount_set = float(extra_pool.get("amount_set", 0.00))
+
+        # deposit=1 withdraw=2 converter=3
+        assert_amount_type = extra_pool.get("assert_amount_type", "converter")
+        if assert_amount_type == 1:
+            result = truncate(old_amount + amount_set - fee_amount, accuracy)
+        elif assert_amount_type == 2:
+            result = truncate(old_amount + amount_set - fee_amount, accuracy)
+        elif assert_amount_type == 3:
+            result = truncate(old_amount + amount_after_convert, accuracy)
+        else:
+            result = old_amount
+
         return result
 
     def h5_code(code, *args, **kwargs):

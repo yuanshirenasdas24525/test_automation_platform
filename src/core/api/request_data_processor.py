@@ -124,7 +124,7 @@ class RequestDataProcessor:
                 else:
                     v = exec_func(v)
             assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
-            add_allure_step("断言", f"实际值：{k} == 预期值：{v}")
+            add_allure_step("断言", f"实际值：{actual} == 预期值：{v}")
 
     def execute_select_fetchone(self, sql: str, extra_str: str):
         """
@@ -182,9 +182,3 @@ class RequestDataProcessor:
             LOGGER.info(f"SQL 执行完成，更新参数池: {self.extra_pool}")
         finally:
             db_handler.close()
-
-if __name__ == '__main__':
-    data = {"convertOrderVO":{"amountCalcBaseOn": "exchangeAmount", "balanceId": 110733, "balancePwd": "111111", "coinId": 34, "coinSymbol": "USDT", "coinType": 2, "convertedAmount": "function:converter", "convertedBalanceId": 110730, "convertedCoinId": 31, "convertedCoinSymbol": "PHP", "convertedCoinType": 1, "convertMarketId": 68, "convertRate": "52.4", "convertRateExtend": "", "counterpartyId": 602, "counterpartyUserType": 4, "exchangeAmount": "10", "exchangeType": "convert_forex", "orderType": "convert", "orderTypeNext": "forex"}}
-    processor = RequestDataProcessor({}, "")
-    c = processor._process_functions(data, "", "")
-    print(c)
