@@ -1,4 +1,4 @@
-FROM python:3.12-bookworm
+FROM harbor.innotech-stage.com/forex-infra/python:3.12-bookworm
 
 WORKDIR /app
 ENV DEBIAN_FRONTEND=noninteractive
