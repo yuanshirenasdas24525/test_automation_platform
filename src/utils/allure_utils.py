@@ -36,6 +36,13 @@ def set_allure_description(description: str) -> None:
     """设置 Allure 报告中测试的描述信息"""
     allure.dynamic.description(description)
 
+def set_allure_testcase(testcase: str) -> None:
+    """设置 Allure 展示测试用例具体信息"""
+    allure.dynamic.testcase(testcase)
+
+def set_allure_link(url: str) -> None:
+    """设置 Allure 展示测试用例链接"""
+    allure.dynamic.link(url)
 
 def add_allure_step(step_name: str, content: Optional[Any] = None) -> None:
     """

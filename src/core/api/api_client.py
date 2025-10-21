@@ -4,7 +4,7 @@ from requests.exceptions import JSONDecodeError, ChunkedEncodingError
 from src.utils.allure_utils import (
 
     set_allure_project, set_allure_module, set_allure_case, set_allure_title,
-    set_allure_description, add_allure_step
+    set_allure_description, add_allure_step, set_allure_link
 )
 from src.utils.logger import LOGGER
 from src.core.api.factory import create_request_data_processor
@@ -106,9 +106,9 @@ class Client:
         header = self.request_data_processor.handler_header(header, data, sql)
         data = self.request_data_processor.handler_data(data, sql, extra)
         file = self.request_data_processor.handler_files(file_path)
-        add_allure_step('Header', header)
-        add_allure_step('Url', url)
+        set_allure_link(url)
         add_allure_step(f'Request Time (s): {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}')
+        add_allure_step('Header', header)
         add_allure_step('Request', data)
 
         response = self._send_api_with_retry(
