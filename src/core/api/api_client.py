@@ -100,7 +100,7 @@ class Client:
         set_allure_module(numbered_submodule)
         set_allure_case(numbered_case_name)
         set_allure_title(numbered_case_title)
-        set_allure_description(description=f"测试点：{case_title}")
+        set_allure_description(description=f"{case_title}")
 
         url = self.request_data_processor.handler_path(path_str=path)
         header = self.request_data_processor.handler_header(header, data, sql)
