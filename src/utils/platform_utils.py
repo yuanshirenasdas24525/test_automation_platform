@@ -3,7 +3,38 @@
 import os
 import shutil
 import time
+import subprocess
 from src.utils.logger import LOGGER, ERROR_LOGGER
+
+import subprocess
+import os
+
+
+def run_command_safely(command, log_path, stderr_param=False):
+    """安全运行命令，确保与终端行为一致"""
+    try:
+        # 确保日志目录存在
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        stderr_param = subprocess.STDOUT if stderr_param else subprocess.DEVNULL
+
+        # 使用 check_call 确保命令执行并等待完成
+        with open(log_path, "a+") as log_file:
+            result = subprocess.run(
+                command,
+                shell=True,
+                stdout=log_file,
+                stderr=stderr_param,
+                text=True,
+                check=True  # 如果命令返回非零状态码会抛出异常
+            )
+        return result
+    except subprocess.CalledProcessError as e:
+        ERROR_LOGGER.error(f"命令执行失败，退出码 {e.returncode}: {e}")
+        return None
+    except Exception as e:
+        ERROR_LOGGER.error(f"执行命令时发生错误: {e}")
+        return None
 
 
 def create_directory(path):

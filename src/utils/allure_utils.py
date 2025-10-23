@@ -61,7 +61,7 @@ def add_allure_step(step_name: str, content: Optional[Any] = None) -> None:
             )
 
 
-def add_allure_attachment(name: str, content: Any, attachment_type: allure.attachment_type) -> None:
+def add_allure_attachment(name: str, content: Any, attachment_type: allure.attachment_type = None) -> None:
     """
     添加 Allure 附件
 

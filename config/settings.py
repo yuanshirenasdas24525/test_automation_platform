@@ -48,3 +48,4 @@ class ProjectPaths:
     LOG_DIR = DATA_DIR / "log"
     INFO_LOG = LOG_DIR / "info.log"
     ERROR_LOG = LOG_DIR / "error.log"
+    APPIUM_LOG = LOG_DIR / "appium.log"
