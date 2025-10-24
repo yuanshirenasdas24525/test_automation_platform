@@ -4,8 +4,9 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.common.actions import interaction
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
-from conf.settings import LOGGER, ERROR_LOGGER, IMG_DIR, VID_DIR
-from common.encap_allure_report import allure_image
+from src.utils.logger import LOGGER, ERROR_LOGGER
+from config.settings import ProjectPaths
+from src.utils.allure_utils import add_allure_image
 import os
 import datetime
 import base64
@@ -149,10 +150,10 @@ class DeviceAction:
     def take_screenshot(self, img_name):
         """获取截屏"""
         now = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-        path = str(os.path.join(IMG_DIR, now+img_name))
+        path = str(os.path.join(str(ProjectPaths.IMG_DIR), now+img_name))
         self._driver.get_screenshot_as_file(path)
         LOGGER.info(f"截屏已保存到：{path}")
-        allure_image(path)
+        add_allure_image(path)
 
     def start_screen_recording(self):
         """开始录屏"""
@@ -162,7 +163,7 @@ class DeviceAction:
     def stop_screen_recording(self, pm4_name):
         """停止录屏并保存文件"""
         now = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
-        file_path = str(os.path.join(IMG_DIR, now+pm4_name))
+        file_path = str(os.path.join(str(ProjectPaths.IMG_DIR), now+pm4_name))
         video_raw = self._driver.stop_recording_screen()
         with open(file_path, "wb") as vd:
             vd.write(video_raw)

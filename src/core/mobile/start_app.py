@@ -34,11 +34,7 @@ class AppInitializer:
                     app_package = config['start_confing']['appPackage']
                     try:
                         LOGGER.info(f"正在初始化应用 {app_package}...")
-                        EnvironmentChecker(
-                            config['url'],
-                            config['start_confing']['platformName']
-                        ).check_environment_and_device()
-                        app_manager = AppManager(config)
+                        app_manager = AppManager()
                         self.app_managers[index] = app_manager
                         self.apps[index] = app_manager.get_app()
                         self.initialized.add(index)
@@ -77,17 +73,22 @@ def close_app(index):
 
 
 class AppManager:
-    def __init__(self, app_conf):
+    def __init__(self):
         self.apps = {}
         self.db_connections = {}
-        self.url = app_conf['url']
-        self.start_conf = app_conf['application_start_config']
-        self.db_conf = app_conf['mysql_db']
-        self.identifier = self.start_conf['appPackage']
+        self.appium_config = read_conf.get_dict("appium_config")
+        self.start_conf = read_conf.get_dict("app_start_config")
+        self.db_conf = read_conf.get_dict("mysql_db")
+        self.identifier = self.start_conf.get("apppackage", "iOS")
 
     def get_app(self):
+        if not EnvironmentChecker(self.appium_config,self.start_conf).check_environment_and_device():
+            ERROR_LOGGER.error(f"Appium 环境异常")
+            return
         if self.identifier not in self.apps:
-            app_instance, driver = AppFactory.create_app_with_driver(self.start_conf, self.url)
+            app_instance, driver = AppFactory.create_app_with_driver(
+                self.start_conf, self.appium_config.get("appium_service", "")
+            )
             db_connection = None
             # 如果 db_conf 不是 None 且是字典，则尝试连接数据库
             if self.db_conf and isinstance(self.db_conf, dict):

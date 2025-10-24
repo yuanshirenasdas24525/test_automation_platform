@@ -49,3 +49,7 @@ class ProjectPaths:
     INFO_LOG = LOG_DIR / "info.log"
     ERROR_LOG = LOG_DIR / "error.log"
     APPIUM_LOG = LOG_DIR / "appium.log"
+
+
+    # appium相关
+    APP_PACKAGE= DATA_DIR / "app_package"

@@ -3,38 +3,105 @@
 import os
 import shutil
 import time
+import re
+import os
 import subprocess
+from typing import Optional, NamedTuple
 from src.utils.logger import LOGGER, ERROR_LOGGER
 
-import subprocess
-import os
 
 
-def run_command_safely(command, log_path, stderr_param=False):
-    """安全运行命令，确保与终端行为一致"""
+class CommandResult(NamedTuple):
+    """命令执行结果"""
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+def check_string_format(s: str) -> bool:
+    """
+    检查字符串是否为有效的 IP:端口 格式
+
+    Args:
+        s: 要检查的字符串
+
+    Returns:
+        bool: 如果是有效的 IP:端口 格式返回 True，否则返回 False
+    """
+    if not s or not isinstance(s, str):
+        return False
+
+    # 使用正则表达式进行更精确的匹配
+    pattern = r'^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$'
+    if not re.match(pattern, s):
+        return False
+
     try:
-        # 确保日志目录存在
-        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        ip_part, port_part = s.split(':', 1)
+        ip_parts = ip_part.split('.')
+        port = int(port_part)
 
-        stderr_param = subprocess.STDOUT if stderr_param else subprocess.DEVNULL
+        # 检查IP地址各部分是否在有效范围内
+        ip_valid = all(0 <= int(part) <= 255 for part in ip_parts)
+        # 检查端口是否在有效范围内
+        port_valid = 1 <= port <= 65535
 
-        # 使用 check_call 确保命令执行并等待完成
-        with open(log_path, "a+") as log_file:
-            result = subprocess.run(
-                command,
-                shell=True,
-                stdout=log_file,
-                stderr=stderr_param,
-                text=True,
-                check=True  # 如果命令返回非零状态码会抛出异常
-            )
-        return result
-    except subprocess.CalledProcessError as e:
-        ERROR_LOGGER.error(f"命令执行失败，退出码 {e.returncode}: {e}")
-        return None
+        return ip_valid and port_valid
+
+    except (ValueError, AttributeError):
+        return False
+
+
+def run_command_safely(command, shell=False, capture_output=True, text=True, timeout=None) -> CommandResult:
+    """
+    安全运行命令，返回执行结果
+
+    Args:
+        command: 命令字符串或命令列表
+        shell: 是否使用shell执行
+        capture_output: 是否捕获输出
+        text: 是否以文本模式返回
+        timeout: 命令执行超时时间（秒）
+
+    Returns:
+        CommandResult: 包含执行结果的对象
+    """
+    try:
+        # 执行命令
+        result = subprocess.run(
+            command,
+            shell=shell,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            check=False  # 不自动抛出异常，我们自己处理
+        )
+
+        # 返回标准化的结果
+        return CommandResult(
+            success=result.returncode == 0,
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            returncode=result.returncode
+        )
+
+    except subprocess.TimeoutExpired as e:
+        ERROR_LOGGER.error(f"命令执行超时 ({timeout}秒): {command}")
+        return CommandResult(
+            success=False,
+            stdout=e.stdout.decode('utf-8') if e.stdout else "",
+            stderr=e.stderr.decode('utf-8') if e.stderr else f"命令执行超时: {e}",
+            returncode=-1
+        )
     except Exception as e:
-        ERROR_LOGGER.error(f"执行命令时发生错误: {e}")
-        return None
+        ERROR_LOGGER.error(f"执行命令时发生错误: {e}, 命令: {command}")
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=str(e),
+            returncode=-1
+        )
 
 
 def create_directory(path):

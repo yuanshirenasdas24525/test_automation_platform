@@ -23,7 +23,7 @@ class App:
                 LOGGER.info(f"启动应用 {self._config} --｜-- {self._driver}")
                 return self._driver
             else:
-                self._driver.activate_app(self._config['appPackage'])
+                self._driver.activate_app(self._config['apppackage'])
                 LOGGER.info(f"应用已激活 {self._config}")
                 return self._driver
         except Exception as e:
@@ -42,9 +42,9 @@ class AppFactory:
         :param start_conf: 应用的名称。
         :return: 应用实例。
         """
-        if start_conf['appPackage'] not in AppFactory._apps:
-            AppFactory._apps[start_conf['appPackage']] = App(start_conf, appium_server_url)
-        return AppFactory._apps[start_conf['appPackage']]
+        if start_conf['apppackage'] not in AppFactory._apps:
+            AppFactory._apps[start_conf['apppackage']] = App(start_conf, appium_server_url)
+        return AppFactory._apps[start_conf['apppackage']]
 
     @staticmethod
     def create_app_with_driver(start_conf, appium_server_url):
