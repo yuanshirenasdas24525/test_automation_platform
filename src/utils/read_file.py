@@ -4,6 +4,7 @@ import yaml
 import pandas as pd
 from pathlib import Path
 import configparser
+from typing import List, Dict, Any, Optional
 from src.utils.logger import LOGGER, ERROR_LOGGER
 from config.settings import ProjectPaths
 
@@ -14,7 +15,7 @@ PROJECT = Path(ProjectPaths.BASE_DIR)
 # 公共工具函数
 # =========================================================
 def is_json(text):
-    """判断字符串是否是有效 JSON"""
+    """判断字符串是否有效 JSON"""
     try:
         json.loads(text)
         return True
@@ -28,7 +29,7 @@ def is_path(text):
     absolute_path = absolute_path.resolve()
     try:
         return Path(absolute_path).exists()
-    except Exception:
+    except Exception as e:
         return False
 
 
@@ -141,15 +142,16 @@ class GenericCaseReader:
 # =========================================================
 # 行处理器实现（针对 Excel/CSV 的一行 list）
 # =========================================================
-def process_api_row(row_list, idx):
+def process_api_row(row_list: List[Any], idx: int) -> Optional[List[Any]]:
     """处理 API 用例行（row_list 是一个 list）"""
+    LOGGER.debug(f"执行 {idx} 行用例")
     try:
-        # 假设第5列是 skip
+        # 第5列是 skip
         skip_val = str(row_list[4]).strip().upper() if len(row_list) > 4 else ""
         if skip_val == "Y":
             return None
 
-        # 假设第10列是 data
+        # 第10列是 data
         if len(row_list) > 9:
             data_field = row_list[9]
             if data_field and not is_json(data_field) and is_path(data_field):
@@ -160,19 +162,29 @@ def process_api_row(row_list, idx):
 
         return row_list
     except Exception as e:
-        ERROR_LOGGER.error(f"处理第 {idx + 1} 行 API 用例出错: {e}")
+        ERROR_LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
         return None
 
 
-def process_ui_row(row_list, idx):
+def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
     """处理 UI 用例行（row_list 是一个 list）"""
-    required_indices = [0, 1, 2]  # 假设 0=by, 1=locator, 2=action
-    for i in required_indices:
-        if i >= len(row_list) or not row_list[i]:
-            raise ValueError(f"字段 {i} 不能为空，第 {idx + 1} 行")
+    LOGGER.debug(f"执行 {idx} 行用例")
+    try:
+        # 第5列是 skip
+        skip_val = str(row_list[4]).strip().upper() if len(row_list) > 4 else ""
+        if skip_val == "Y":
+            return {}
 
-    return row_list
+        keys = [
+            "case_module", "case_submodule", "case_name", "case_title", "skip", "by",
+            "locator", "action", "value", "deposit", "retrieve", "expected",
+            "sliding_location", "wait"
+        ]
 
+        return dict(zip(keys, row_list))
+    except Exception as e:
+        ERROR_LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
+        return {}
 
 # =========================================================
 # 使用示例

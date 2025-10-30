@@ -14,3 +14,4 @@ numpy~=2.2.6
 Appium-Python-Client~=5.2.4
 selenium~=4.37.0
 tenacity~=9.1.2
+schemathesis~=4.3.13
