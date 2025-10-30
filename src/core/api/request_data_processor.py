@@ -1,7 +1,7 @@
 
 from typing import Any, List
-from src.core.api.expression_handler import ExpressionHandler
 from src.core.api.file_handler import FileHandler
+from src.utils.platform_utils import rep_expr, extractor, convert_json
 from src.utils.function_executor import exec_func
 from src.utils.sql_handler import SQLHandlerFactory
 from src.utils.read_file import read_conf
@@ -20,20 +20,19 @@ class RequestDataProcessor:
         """
         初始化所需的处理器和配置字典。
         """
-        self.expr = ExpressionHandler()
         self.file_handler = FileHandler()
-        self.encryption_decryption = self.expr.rep_expr(ed, {}) if isinstance(ed, str) else ed or {}
-        self.base_header = self.expr.rep_expr(header_key, {}) if isinstance(header_key, str) else header_key or {}
-        self.base_url = self.expr.rep_expr(host_key, {}) if isinstance(host_key, str) else host_key or {}
-        self.extra_pool = self.expr.rep_expr(default_parameters, {}) if isinstance(default_parameters, str) else default_parameters or {}
+        self.encryption_decryption = rep_expr(ed, {}) if isinstance(ed, str) else ed or {}
+        self.base_header = rep_expr(header_key, {}) if isinstance(header_key, str) else header_key or {}
+        self.base_url = rep_expr(host_key, {}) if isinstance(host_key, str) else host_key or {}
+        self.extra_pool = rep_expr(default_parameters, {}) if isinstance(default_parameters, str) else default_parameters or {}
 
     def handler_path(self, path_str: str) -> str:
         """
         处理请求路径，支持完整url或拼接base_url。
         """
         if path_str.startswith(('http://', 'https://')):
-            return self.expr.rep_expr(path_str, self.extra_pool)
-        return self.base_url.get('url', '') + self.expr.rep_expr(path_str, self.extra_pool)
+            return rep_expr(path_str, self.extra_pool)
+        return self.base_url.get('url', '') + rep_expr(path_str, self.extra_pool)
 
     def handler_header(self, header_str: str, data: str, sql: str) -> dict:
         """
@@ -58,8 +57,8 @@ class RequestDataProcessor:
             return {}
 
         try:
-            variable = self.expr.rep_expr(variable, self.extra_pool)
-            data_obj = self.expr.convert_json(variable)
+            variable = rep_expr(variable, self.extra_pool)
+            data_obj = convert_json(variable)
         except Exception:
             return {}
 
@@ -100,11 +99,11 @@ class RequestDataProcessor:
         """
         if not extra_str:
             return
-        extra_dict = self.expr.convert_json(extra_str)
+        extra_dict = convert_json(extra_str)
         for k, v in extra_dict.items():
             if isinstance(v, str) and v.startswith("function:"):
                 self.extra_pool[k] = exec_func(v)
-            extracted_value = self.expr.extractor(response, v)
+            extracted_value = extractor(response, v)
             if extracted_value is not None:
                 self.extra_pool[k] = extracted_value
 
@@ -114,10 +113,10 @@ class RequestDataProcessor:
         """
         function_amount_assert = ["function:assert_amount_increase", "function:assert_amount_deduction"]
         add_allure_step("当前可用参数池", self.extra_pool)
-        expect_str = self.expr.rep_expr(expect_str, self.extra_pool)
-        expect_dict = self.expr.convert_json(expect_str)
+        expect_str = rep_expr(expect_str, self.extra_pool)
+        expect_dict = convert_json(expect_str)
         for k, v in expect_dict.items():
-            actual = self.expr.extractor(response, k)
+            actual = extractor(response, k)
             if isinstance(v, str) and v.startswith("function:"):
                 if v in function_amount_assert:
                     v = float(exec_func(v, self.extra_pool))
@@ -135,7 +134,7 @@ class RequestDataProcessor:
             return []
 
         results = []
-        sql = self.expr.rep_expr(sql, self.extra_pool)
+        sql = rep_expr(sql, self.extra_pool)
         for sql_statement in sql.split(";"):
             sql_statement = sql_statement.strip()
             if not sql_statement:
