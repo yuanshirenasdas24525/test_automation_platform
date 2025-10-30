@@ -22,11 +22,23 @@ class ProjectPaths:
     CACHE_FILE = DATA_DIR / "cache_file"
     IMG_FILE = DATA_DIR / "images"
 
+    # 日志
+    LOG_DIR = DATA_DIR / "log"
+    INFO_LOG = LOG_DIR / "info.log"
+    ERROR_LOG = LOG_DIR / "error.log"
+    APPIUM_LOG = LOG_DIR / "appium.log"
+
+    # 安装包
+    APP_PACKAGE= DATA_DIR / "app_package"
+
+# =========================================================
+# 项目相关路径配置配置
+# =========================================================
+
     # UI 自动化用例
     APP_UI_DIR = DATA_DIR / "app_ui"
-    UU_PRO_DIR = APP_UI_DIR / "uu"
+    UU_PRO_DIR = APP_UI_DIR / "uu_ui"
     H5_UU_PRO_DIR = APP_UI_DIR / "uu_h5"
-    JUANCASH_PRO_DIR = APP_UI_DIR / "juancash"
 
     # API 自动化用例
     API_AUTO_DIR = DATA_DIR / "api_auto"
@@ -44,12 +56,3 @@ class ProjectPaths:
     corporate = API_AUTO_DIR / "uu_api" / "corporate.xlsx"
 
 
-    # 日志
-    LOG_DIR = DATA_DIR / "log"
-    INFO_LOG = LOG_DIR / "info.log"
-    ERROR_LOG = LOG_DIR / "error.log"
-    APPIUM_LOG = LOG_DIR / "appium.log"
-
-
-    # appium相关
-    APP_PACKAGE= DATA_DIR / "app_package"
