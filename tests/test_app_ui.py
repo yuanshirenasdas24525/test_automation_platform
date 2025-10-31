@@ -14,7 +14,8 @@ class TestUiAutomatic:
     def setup_method(self):
         pass
 
-    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.UU_PRO_DIR, process_ui_row).read())
+    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_register_case, process_ui_row).read())
     def test_android_uu_case(self, cases):
+        # print(cases)
         self.app.app_steps(cases)
 

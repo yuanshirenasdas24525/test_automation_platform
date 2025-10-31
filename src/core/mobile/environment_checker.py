@@ -12,7 +12,7 @@ class EnvironmentChecker:
     def __init__(self, appium_config: dict, app_start_config: dict):
         self.appium_config = appium_config
         self.app_start_config = app_start_config
-        self._device_type = app_start_config.get("platformname", "android").lower()
+        self._device_type = app_start_config.get("platformName", "android").lower()
 
     def check_appium_service(self) -> bool:
         """检查Appium服务是否正常启动"""

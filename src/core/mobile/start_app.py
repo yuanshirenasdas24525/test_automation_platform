@@ -79,7 +79,7 @@ class AppManager:
         self.appium_config = read_conf.get_dict("appium_config")
         self.start_conf = read_conf.get_dict("app_start_config")
         self.db_conf = read_conf.get_dict("mysql_db")
-        self.identifier = self.start_conf.get("apppackage", "iOS")
+        self.identifier = self.start_conf.get("appPackage", "iOS")
 
     def get_app(self):
         if not EnvironmentChecker(self.appium_config,self.start_conf).check_environment_and_device():
@@ -87,7 +87,7 @@ class AppManager:
             return
         if self.identifier not in self.apps:
             app_instance, driver = AppFactory.create_app_with_driver(
-                self.start_conf, self.appium_config.get("appium_service", "")
+                self.start_conf, self.appium_config.get("appium_service")
             )
             db_connection = None
             # 如果 db_conf 不是 None 且是字典，则尝试连接数据库

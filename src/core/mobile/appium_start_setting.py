@@ -23,7 +23,7 @@ class App:
                 LOGGER.info(f"启动应用 {self._config} --｜-- {self._driver}")
                 return self._driver
             else:
-                self._driver.activate_app(self._config['apppackage'])
+                self._driver.activate_app(self._config.get('appPackage'))
                 LOGGER.info(f"应用已激活 {self._config}")
                 return self._driver
         except Exception as e:
@@ -36,24 +36,16 @@ class AppFactory:
 
     @staticmethod
     def create_app(start_conf, appium_server_url):
+        """创建或获取一个应用实例
         """
-        创建或获取一个应用实例。
-        :param appium_server_url: appium服务地址
-        :param start_conf: 应用的名称。
-        :return: 应用实例。
-        """
-        if start_conf['apppackage'] not in AppFactory._apps:
-            AppFactory._apps[start_conf['apppackage']] = App(start_conf, appium_server_url)
-        return AppFactory._apps[start_conf['apppackage']]
+        if start_conf.get('appPackage') not in AppFactory._apps:
+            AppFactory._apps[start_conf.get('appPackage')] = App(start_conf, appium_server_url)
+        return AppFactory._apps[start_conf.get('appPackage')]
 
     @staticmethod
     def create_app_with_driver(start_conf, appium_server_url):
-        """
-        创建应用实例并获取其驱动。
-        :param appium_server_url:
-        :param start_conf: 启动app配置 {"appPackage": "com.appium.android"}。
-        :return: (应用实例, 驱动)
-        """
+        """创建应用实例并获取其驱动"""
         app_instance = AppFactory.create_app(start_conf, appium_server_url)
         driver = app_instance.start()
         return app_instance, driver
+

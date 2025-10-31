@@ -62,6 +62,8 @@ def process_json_files_in_path(relative_path):
 class ReadConf:
     def __init__(self, file_path):
         self.config = configparser.ConfigParser()
+        # 保持原始大小写
+        self.config.optionxform = lambda option: option
         with open(file_path, 'r', encoding='utf-8') as fp:
             self.config.read_file(fp)
 
@@ -144,7 +146,6 @@ class GenericCaseReader:
 # =========================================================
 def process_api_row(row_list: List[Any], idx: int) -> Optional[List[Any]]:
     """处理 API 用例行（row_list 是一个 list）"""
-    LOGGER.debug(f"执行 {idx} 行用例")
     try:
         # 第5列是 skip
         skip_val = str(row_list[4]).strip().upper() if len(row_list) > 4 else ""
@@ -168,7 +169,6 @@ def process_api_row(row_list: List[Any], idx: int) -> Optional[List[Any]]:
 
 def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
     """处理 UI 用例行（row_list 是一个 list）"""
-    LOGGER.debug(f"执行 {idx} 行用例")
     try:
         # 第5列是 skip
         skip_val = str(row_list[4]).strip().upper() if len(row_list) > 4 else ""
@@ -183,13 +183,14 @@ def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
 
         return dict(zip(keys, row_list))
     except Exception as e:
-        ERROR_LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
+        ERROR_LOGGER.error(f"处理第 {idx} 行 UI 用例出错: {e}")
         return {}
 
 # =========================================================
 # 使用示例
 # =========================================================
 if __name__ == "__main__":
-    reader = GenericCaseReader("../../data/api_auto/uu_api/uu_api.xlsx", process_api_row)
-    for case in reader.read():
-        print(case)
+
+    reader = GenericCaseReader(ProjectPaths.ui_register_case, process_ui_row).read()
+    for i in reader:
+        print(i)
