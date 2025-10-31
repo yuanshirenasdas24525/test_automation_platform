@@ -231,7 +231,7 @@ def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
         ERROR_LOGGER.error(f"rep_expr需要一个字符串输入，得到 {type(text)}")
         return text
 
-    pattern = re.compile(r'\$\{(.*?)\\}')
+    pattern = re.compile(r'\$\{(.*?)}')
     def replacer(match):
         key = match.group(1)
         value = extra_pool.get(key, match.group(0))
