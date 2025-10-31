@@ -19,41 +19,6 @@ class CommandResult(NamedTuple):
     stderr: str
     returncode: int
 
-
-def check_string_format(s: str) -> bool:
-    """
-    检查字符串是否为有效的 IP:端口 格式
-
-    Args:
-        s: 要检查的字符串
-
-    Returns:
-        bool: 如果是有效的 IP:端口 格式返回 True，否则返回 False
-    """
-    if not s or not isinstance(s, str):
-        return False
-
-    # 使用正则表达式进行更精确的匹配
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$'
-    if not re.match(pattern, s):
-        return False
-
-    try:
-        ip_part, port_part = s.split(':', 1)
-        ip_parts = ip_part.split('.')
-        port = int(port_part)
-
-        # 检查IP地址各部分是否在有效范围内
-        ip_valid = all(0 <= int(part) <= 255 for part in ip_parts)
-        # 检查端口是否在有效范围内
-        port_valid = 1 <= port <= 65535
-
-        return ip_valid and port_valid
-
-    except (ValueError, AttributeError):
-        return False
-
-
 def run_command_safely(command, shell=False, capture_output=True, text=True, timeout=None) -> CommandResult:
     """
     安全运行命令，返回执行结果
@@ -105,6 +70,32 @@ def run_command_safely(command, shell=False, capture_output=True, text=True, tim
         )
 
 
+def check_string_format(s: str) -> bool:
+    """检查字符串是否为有效的 IP:端口 格式"""
+    if not s or not isinstance(s, str):
+        return False
+
+    # 使用正则表达式进行更精确的匹配
+    pattern = r'^(\d{1,3}\.){3}\d{1,3}:\d{1,5}$'
+    if not re.match(pattern, s):
+        return False
+
+    try:
+        ip_part, port_part = s.split(':', 1)
+        ip_parts = ip_part.split('.')
+        port = int(port_part)
+
+        # 检查IP地址各部分是否在有效范围内
+        ip_valid = all(0 <= int(part) <= 255 for part in ip_parts)
+        # 检查端口是否在有效范围内
+        port_valid = 1 <= port <= 65535
+
+        return ip_valid and port_valid
+
+    except (ValueError, AttributeError):
+        return False
+
+
 def create_directory(path):
     """创建目录，如果不存在的话"""
     if not os.path.isdir(path):
@@ -112,6 +103,7 @@ def create_directory(path):
 
 
 def execution_time_decorator(func):
+    """统计函数运行时间装饰器"""
     def wrapper(*args, **kwargs):
         LOGGER.info(f'运行{func.__name__}，args：{args}；kwargs: {kwargs}')
         start_time = time.perf_counter()
@@ -223,6 +215,7 @@ def clear_directory(directory: str):
         except Exception as e:
             ERROR_LOGGER.error(f"删除失败 {file_path}: {e}")
 
+
 def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
     """
     替换文本中的表达式变量，格式为${var}，从extra_pool中取值替换。
@@ -244,6 +237,7 @@ def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
         ERROR_LOGGER.error(f"rep_expr错误: {e}")
         return text
 
+
 def extractor(json_obj: Union[Dict, List], json_path: str) -> Any:
     """
     使用jsonpath表达式从json对象中提取数据。
@@ -259,6 +253,7 @@ def extractor(json_obj: Union[Dict, List], json_path: str) -> Any:
         ERROR_LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
         return json_path
 
+
 def extract_code(text: str, pattern: str) -> Union[str, None]:
     """
     从文本中使用正则表达式提取验证码。
@@ -273,6 +268,7 @@ def extract_code(text: str, pattern: str) -> Union[str, None]:
     except Exception as e:
         ERROR_LOGGER.error(f"extract_code 错误: {e}")
         return None
+
 
 def convert_json(data: str) -> Any:
     """
