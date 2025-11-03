@@ -40,6 +40,10 @@ class ProjectPaths:
     UU_PRO_DIR = APP_UI_DIR / "uu_ui"
     H5_UU_PRO_DIR = APP_UI_DIR / "uu_h5"
     ui_register_case = UU_PRO_DIR / "1_register.xlsx"
+    ui_login_case = UU_PRO_DIR / "2_login.xlsx"
+    ui_security_case = UU_PRO_DIR / "3_security.xlsx"
+    ui_setup_case = UU_PRO_DIR / "4_setup.xlsx"
+    ui_converter_case = UU_PRO_DIR / "5_converter.xlsx"
 
     # API 自动化用例
     API_AUTO_DIR = DATA_DIR / "api_auto"

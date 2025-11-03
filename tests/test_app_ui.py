@@ -14,8 +14,27 @@ class TestUiAutomatic:
     def setup_method(self):
         pass
 
+    @pytest.mark.run(order=1)
     @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_register_case, process_ui_row).read())
     def test_android_uu_case(self, cases):
-        # print(cases)
         self.app.app_steps(cases)
 
+    @pytest.mark.run(order=2)
+    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_login_case, process_ui_row).read())
+    def test_android_uu_case(self, cases):
+        self.app.app_steps(cases)
+
+    @pytest.mark.run(order=3)
+    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_security_case, process_ui_row).read())
+    def test_android_uu_case(self, cases):
+        self.app.app_steps(cases)
+
+    @pytest.mark.run(order=4)
+    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_setup_case, process_ui_row).read())
+    def test_android_uu_case(self, cases):
+        self.app.app_steps(cases)
+
+    @pytest.mark.run(order=5)
+    @pytest.mark.parametrize('cases', GenericCaseReader(ProjectPaths.ui_converter_case, process_ui_row).read())
+    def test_android_uu_case(self, cases):
+        self.app.app_steps(cases)
