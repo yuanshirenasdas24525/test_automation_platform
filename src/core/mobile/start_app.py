@@ -83,8 +83,7 @@ class AppManager:
 
     def get_app(self):
         if not EnvironmentChecker(self.appium_config,self.start_conf).check_environment_and_device():
-            ERROR_LOGGER.error(f"Appium 环境异常")
-            return
+            LOGGER.warning(f"Appium 环境自检异常")
         if self.identifier not in self.apps:
             app_instance, driver = AppFactory.create_app_with_driver(
                 self.start_conf, self.appium_config.get("appium_service")
