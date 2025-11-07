@@ -13,6 +13,9 @@ RUN apt-get update --fix-missing && apt-get install -y \
     apt-transport-https \
     software-properties-common \
     openjdk-17-jdk \
+    nodejs \
+    npm \
+    netcat \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 
