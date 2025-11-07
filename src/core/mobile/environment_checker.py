@@ -328,11 +328,3 @@ class EnvironmentChecker:
             ERROR_LOGGER.error("❌ 环境检查未通过，请检查上述错误信息")
 
         return checks_passed
-
-if __name__ == '__main__':
-    from src.utils.read_file import read_conf
-
-    appium_service_url =read_conf.get_dict("appium_config")
-    dn = read_conf.get_dict("app_start_config")
-    EnvironmentChecker(appium_config=appium_service_url, app_start_config=dn).check_environment_and_device()
-
