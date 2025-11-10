@@ -13,18 +13,18 @@ def redis_connect():
         decode_responses=True
     )
 
-def clear_captcha_cache():
+def clear_cache(text: str):
     """
-    清理 Redis 中的验证码缓存（captchaGen*）
+    清理 Redis 中的指定缓存
     """
     try:
         r = redis_connect()
-        keys = r.keys("captcha*")
+        keys = r.keys(f"{text}")
         LOGGER.info(f"[Redis] 查询到缓存数据 {keys} ")
         for k in keys:
             r.delete(k)
         if keys:
-            LOGGER.info(f"[Redis] 已清理 {len(keys)} 条 captchaGen* 缓存")
+            LOGGER.info(f"[Redis] 已清理 {len(keys)} 条 {text} 缓存")
         return True
     except Exception as e:
         LOGGER.error(f"[Redis] 清理缓存失败: {e}")

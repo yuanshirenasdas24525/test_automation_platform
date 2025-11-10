@@ -2,6 +2,7 @@
 import inspect
 
 from src.utils.logger import LOGGER
+from src.utils.redis_helper import clear_cache
 from src.utils.platform_utils import execution_time_decorator
 from src.captcha_solver import solve_captcha
 
@@ -68,6 +69,7 @@ def function_name():
         """
         if isinstance(text, list) and text is not None:
             match = re.search(r'(?<!\d)\d{6}(?!\d)', text[0])
+            clear_cache("sendCode")
             return match.group() if match else None
         else:
             match = re.search(r'(?<!\d)\d{6}(?!\d)', str(text))

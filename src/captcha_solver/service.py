@@ -4,7 +4,7 @@ import requests
 from src.utils.logger import LOGGER
 from src.utils.read_file import read_conf
 from src.captcha_solver.request_builder import build_slider_request
-from src.utils.redis_helper import clear_captcha_cache
+from src.utils.redis_helper import clear_cache
 from config.settings import ProjectPaths
 
 bg_annotated = ProjectPaths.IMG_DIR / f"bg_annotated.jpg"
@@ -32,7 +32,7 @@ def gen_captcha(max_retries=15):
         # 如果明确返回失败（success=False），清理缓存
         if not resp.get("success", True):
             LOGGER.warning(f"[Gen] 生成验证码失败，第 {attempt+1} 次重试，清理缓存")
-            clear_captcha_cache()
+            clear_cache("captcha*")
         else:
             LOGGER.warning(f"[Gen] 生成验证码失败，第 {attempt+1} 次重试")
 
@@ -44,7 +44,7 @@ def check_captcha(payload: dict):
     """调用 /check 校验验证码"""
     resp = requests.post(CHECK_URL, headers=HEADERS, json=payload).json()
     if resp.get("errorCode", {}):
-        clear_captcha_cache()
+        clear_cache("captcha*")
     return resp
 
 
