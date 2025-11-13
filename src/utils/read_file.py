@@ -70,6 +70,8 @@ class ReadConf:
     def get_dict(self, section):
         return dict(self.config.items(section))
 
+    def get_list(self, section, key):
+        return self.config.get(section, key).split(",")
 
 read_conf = ReadConf(ProjectPaths.OBJ_CONFIG)
 

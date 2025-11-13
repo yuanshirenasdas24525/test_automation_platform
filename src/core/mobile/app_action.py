@@ -9,6 +9,7 @@ from selenium.common.exceptions import StaleElementReferenceException
 from tenacity import retry, stop_after_attempt, wait_fixed
 from .device_action import DeviceAction
 
+from src.utils.read_file import read_conf
 from src.utils.function_executor import exec_func
 from src.utils.platform_utils import execution_time_decorator
 from src.utils.allure_utils import add_allure_attachment
@@ -18,19 +19,22 @@ from src.utils.logger import LOGGER, ERROR_LOGGER
 
 
 class AppAction:
-    _blacklist = [('id', 'com.wallet.uu:id/close')]  # 黑名单列表，用于处理在case运行过程中可能出现的未知弹窗
-    _whitelist = [('id', 'com.wallet.uu:id/skip'),
-                  ('id', 'com.android.permissioncontroller:id/permission_allow_button')]
     _error_count = 0  # 定位元素的错误次数
     _consecutive_errors = 0  # 类变量用于跟踪连续错误
     _error_max = 10  # 允许进行元素定位的最大错误次数
     _locator_count = 0  # 记录事件点击次数
-    _cache_pool = {"account": "6Xn6wqy6HT", "phone": "9256634156"}  # 缓存池
 
     def __init__(self, driver, db_connection=None):
         self._driver = driver
         self.db_connection = db_connection
         self.device_action = DeviceAction(driver)
+        # 默认参数添加到缓存池
+        self._cache_pool = read_conf.get_dict("default_parameters")
+        # 读取黑名单和白名单配置
+        bl = read_conf.get_list("ui_element_list", "blacklist")
+        wl = read_conf.get_list("ui_element_list", "whitelist")
+        self._blacklist = [(bl[i], bl[i + 1]) for i in range(0, len(bl), 2)]
+        self._whitelist = [(wl[i], wl[i + 1]) for i in range(0, len(wl), 2)]
 
     @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
     def find(self, by, locator):
@@ -127,15 +131,11 @@ class AppAction:
     def _click_blacklisted_elements(self, size):
         elements_clicked = False
         for black in self._blacklist:
-            elements = self._find_blacklist_elements(black)
+            elements = self._driver.find_elements(*black)
             if elements:
                 self._driver.tap([(size['width'] / 10 * 9, size['height'] / 10 * 2)])
                 elements_clicked = True
         return elements_clicked
-
-    def _find_blacklist_elements(self, black):
-        elements = self._driver.find_elements(*black)
-        return elements
 
     def app_steps(self, step: dict):
         required_keys = ['by', 'locator', 'action', 'expected']
