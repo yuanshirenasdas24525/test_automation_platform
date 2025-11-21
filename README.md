@@ -35,6 +35,7 @@ flowchart TD
     class G startEnd;
 ```
 # DinD + Jenkins Pipeline 資料流圖
-![DinD + Jenkins Pipeline 資料流圖](https://git-devops.innotech-stage.com/forex-qa/test_automation_platform/-/raw/main/%E6%88%AA%E5%9C%96%202025-08-22%20%E4%B8%8B%E5%8D%885.22.23.png?ref_type=heads&inline=false)
+![DinD + Jenkins Pipeline 資料流圖](data/images/截圖 2025-08-22 下午5.22.23.png)
 
 ```
+

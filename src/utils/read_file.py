@@ -179,7 +179,7 @@ def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
 
         keys = [
             "case_module", "case_submodule", "case_name", "case_title", "skip", "by",
-            "locator", "action", "value", "deposit", "retrieve", "expected",
+            "finder", "action", "value", "deposit", "retrieve", "expected",
             "sliding_location", "wait"
         ]
 
