@@ -110,10 +110,26 @@ app.app_steps(step)
         "finder": "login_button"
       },
       {
-        "action": "wait",
         "by": "id",
-        "finder": "home_page",
-        "expected": "首页"
+        "finder": "com.wallet.uu:id/verify",
+        "action": "clear",
+        "value": null,
+        "deposit": null,
+        "retrieve": null,
+        "expected": null,
+        "sliding_location": null,
+        "wait": null
+      },
+      {
+        "by": "id",
+        "finder": "com.wallet.uu:id/verify",
+        "action": "send_keys",
+        "value": "function:extract_code",
+        "deposit": null,
+        "retrieve": null,
+        "expected": "sql:SELECT content FROM `forex`.`t_notice_message_record` WHERE `receiver` = '${phone}' ORDER BY `create_time` DESC LIMIT 1;",
+        "sliding_location": null,
+        "wait": null
       }
     ]
   }

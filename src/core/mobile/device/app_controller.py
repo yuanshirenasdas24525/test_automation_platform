@@ -1,32 +1,47 @@
 # -*- coding:utf-8 -*-
-class AppController:
-    """
-    控制 App 相关操作：启动、关闭、安装卸载等
-    """
+from src.utils.logger import LOGGER, ERROR_LOGGER
 
+class AppController:
     def __init__(self, driver):
         self.driver = driver
 
+    def install_app(self, path):
+        try:
+            self.driver.install_app(path)
+            LOGGER.info(f"应用已安装: {path}")
+        except:
+            pass
+
+    def uninstall_app(self, app_id):
+        try:
+            self.driver.remove_app(app_id)
+            LOGGER.info(f"应用已卸载: {app_id}")
+        except:
+            pass
+
     def launch_app(self):
         try:
-            return self.driver.launch_app()
+            self.driver.launch_app()
+            LOGGER.info("应用已启动")
         except:
-            return None
+            pass
 
     def close_app(self):
         try:
-            return self.driver.close_app()
+            self.driver.close_app()
+            LOGGER.info("应用已关闭")
         except:
-            return None
+            pass
 
-    def install_app(self, path):
+    def is_app_installed(self, app_id):
         try:
-            return self.driver.install_app(path)
+            return self.driver.is_app_installed(app_id)
         except:
-            return None
+            return False
 
-    def uninstall_app(self, bundle_id):
+    def reset_app(self):
         try:
-            return self.driver.remove_app(bundle_id)
+            self.driver.reset()
+            LOGGER.info("应用已重置")
         except:
-            return None
+            pass
