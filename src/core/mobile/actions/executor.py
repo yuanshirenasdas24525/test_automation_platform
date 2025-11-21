@@ -36,7 +36,7 @@ ActionRegistry.register("get_attribute", lambda ex, el, v: el.get_attribute(v)) 
 ActionRegistry.register("is_enabled", lambda ex, el, v: el.is_enabled())  # 判断元素是否可用
 ActionRegistry.register("is_disabled", lambda ex, el, v: not el.is_enabled())  # 判断元素是否不可用
 ActionRegistry.register("size", lambda ex, el, v: el.size)  # 获取元素尺寸
-ActionRegistry.register("gesture_unlock", lambda ex, el, v: ex.device.gesture_unlock(el, *v))  # 收拾解锁
+ActionRegistry.register("gesture_unlock", lambda ex, el, v: ex.device.gesture_unlock(el, *v))  # 手势解锁
 ActionRegistry.register("h5_code", lambda ex, el, v: [ex.driver.find_element("xpath", i).click() for i in v])  # H5 页面批量点击
 ActionRegistry.register("get_url", lambda ex, el, v: ex.driver.get(v))  # 打开指定 URL
 ActionRegistry.register("finger_print", lambda ex, el, v: el.finger_print(v))  # Android 指纹解锁
