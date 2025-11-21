@@ -1,5 +1,5 @@
-from string import Template
 from src.utils.function_executor import exec_func
+from src.utils.platform_utils import rep_expr
 from src.utils.logger import LOGGER
 
 
@@ -17,10 +17,5 @@ class ValueResolver:
         if isinstance(raw, str) and raw.startswith("function:"):
             return exec_func(raw, param)
 
-        return self.replace_str(raw)
-
-    def replace_str(self, text):
-        try:
-            return Template(text).safe_substitute(self.cache)
-        except:
-            return text
+        # return self.replace_str(raw)
+        return rep_expr(raw, self.cache.pool)

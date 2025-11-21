@@ -6,6 +6,7 @@ import re
 import os
 import json
 import subprocess
+from string import Template
 from jsonpath import jsonpath
 from typing import NamedTuple, Any, Dict, List, Union
 from src.utils.logger import LOGGER, ERROR_LOGGER
@@ -214,6 +215,14 @@ def clear_directory(directory: str):
                 LOGGER.info(f"已删除目录: {file_path}")
         except Exception as e:
             ERROR_LOGGER.error(f"删除失败 {file_path}: {e}")
+
+
+def replace_str(text: str, extra_pool: Dict[str, Any]) -> str:
+    try:
+        return Template(text).safe_substitute(extra_pool)
+    except Exception as e:
+        ERROR_LOGGER.error(f"replace_str错误: {e}")
+        return text
 
 
 def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:

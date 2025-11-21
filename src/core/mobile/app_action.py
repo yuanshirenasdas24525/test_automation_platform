@@ -5,6 +5,7 @@ from src.core.mobile.actions.value_resolver import ValueResolver
 from src.core.mobile.assertions.assertion import AssertionEngine
 from src.core.mobile.cache.parameter_cache import ParameterCache
 from src.core.mobile.device.device_action import DeviceAction
+from src.utils.platform_utils import rep_expr
 from src.utils.read_file import read_conf
 
 
@@ -24,8 +25,8 @@ class AppAction:
         bl = read_conf.get_list("ui_element_list", "blacklist")
         wl = read_conf.get_list("ui_element_list", "whitelist")
 
-        blacklist = [(bl[i], bl[i+1]) for i in range(0, len(bl), 2)]
-        whitelist = [(wl[i], wl[i+1]) for i in range(0, len(wl), 2)]
+        blacklist = [(bl[i], bl[i+1]) for i in range(0, len(bl), 2)] if bl else []
+        whitelist = [(wl[i], wl[i+1]) for i in range(0, len(wl), 2)] if wl else []
 
         # 核心模块实例化
         self.cache = ParameterCache(default_params)
@@ -49,12 +50,12 @@ class AppAction:
         result = self.executor.execute(step, element, value)
 
         # --- Cache ---
-        if step.get("deposit") == "Y":
-            self.cache.set("id", result)
+        if step.get("deposit"):
+            self.cache.set(step.get("deposit"), result)
 
         # --- Assert ---
         if step.get("expected"):
-            expected = self.value_resolver.replace_str(step["expected"])
+            expected = rep_expr(step["expected"], self.cache.pool)
             self.assert_engine.assert_result(result, expected)
 
         return result
