@@ -12,6 +12,9 @@ class ValueResolver:
         raw = step.get("value")
         retrieve = step.get("retrieve")
 
+        if isinstance(retrieve, str) and retrieve.startswith("sql:"):
+            retrieve = self.db.fetchone(retrieve[4:])
+
         param = self.cache.get(retrieve, "") if retrieve else ""
 
         if isinstance(raw, str) and raw.startswith("function:"):

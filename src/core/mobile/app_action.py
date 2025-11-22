@@ -1,4 +1,5 @@
 # -*- coding:utf-8 -*-
+import time
 from src.core.mobile.finder.finder import Finder
 from src.core.mobile.actions.executor import ActionExecutor
 from src.core.mobile.actions.value_resolver import ValueResolver
@@ -37,11 +38,15 @@ class AppAction:
 
     def app_steps(self, step):
         """完整执行单步骤"""
+        # --- Wait ---
+        if step.get("wait"):
+            time.sleep(float(step.get("wait")))
+
         # --- Find ---
         if step.get("sliding_location"):
             element = self.finder.swipe_find(step)
         else:
-            element = self.finder.find(step["by"], step["finder"])
+            element = self.finder.find(step.get("by"), step.get("finder"))
 
         # --- Value ---
         value = self.value_resolver.resolve(step)
@@ -56,6 +61,6 @@ class AppAction:
         # --- Assert ---
         if step.get("expected"):
             expected = rep_expr(step["expected"], self.cache.pool)
-            self.assert_engine.assert_result(result, expected)
+            self.assert_engine.assert_value(result, expected, assert_type="equal")
 
         return result

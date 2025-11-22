@@ -1,6 +1,6 @@
 import sqlite3
 import pymysql
-from typing import Any, List, Optional, Dict
+from typing import Any, List, Optional, Dict, Union
 from src.utils.logger import LOGGER, ERROR_LOGGER
 
 
@@ -83,7 +83,7 @@ class MySQLHandler(BaseSQLHandler):
             ERROR_LOGGER.error(f"MySQL 连接失败: {e}")
             raise
 
-    def execute_query(self, sql: str, params: Optional[tuple] = None) -> List[tuple]:
+    def execute_query(self, sql: str, params: Optional[tuple] = None) -> Union[tuple[tuple[Any, ...], ...], list[Any]]:
         try:
             cursor = self.conn.cursor()
             if params:

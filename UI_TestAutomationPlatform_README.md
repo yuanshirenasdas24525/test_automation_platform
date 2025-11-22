@@ -116,7 +116,7 @@ app.app_steps(step)
         "value": null,
         "deposit": null,
         "retrieve": null,
-        "expected": null,
+        "expected": "sql:SELECT content FROM `forex`.`t_notice_message_record` WHERE `receiver` = '${phone}' ORDER BY `create_time` DESC LIMIT 1;",,
         "sliding_location": null,
         "wait": null
       },
@@ -126,8 +126,8 @@ app.app_steps(step)
         "action": "send_keys",
         "value": "function:extract_code",
         "deposit": null,
-        "retrieve": null,
-        "expected": "sql:SELECT content FROM `forex`.`t_notice_message_record` WHERE `receiver` = '${phone}' ORDER BY `create_time` DESC LIMIT 1;",
+        "retrieve": "sql:SELECT content FROM `forex`.`t_notice_message_record` WHERE `receiver` = '${phone}' ORDER BY `create_time` DESC LIMIT 1;",
+        "expected": null,
         "sliding_location": null,
         "wait": null
       }
