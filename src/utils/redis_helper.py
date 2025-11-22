@@ -2,7 +2,7 @@ import redis
 from src.utils.logger import LOGGER
 from src.utils.read_file import read_conf
 
-d = read_conf.get_dict("forex_redis")
+d = read_conf.get_dict("redis")
 
 def redis_connect():
     return redis.Redis(
