@@ -20,5 +20,4 @@ class ValueResolver:
         if isinstance(raw, str) and raw.startswith("function:"):
             return exec_func(raw, param)
 
-        # return self.replace_str(raw)
-        return rep_expr(raw, self.cache.pool)
+        return rep_expr(raw, self.cache.all())
