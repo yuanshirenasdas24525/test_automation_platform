@@ -37,5 +37,11 @@ flowchart TD
 # DinD + Jenkins Pipeline 資料流圖
 ![DinD + Jenkins Pipeline 資料流圖](data/images/截圖 2025-08-22 下午5.22.23.png)
 
-```
+# 项目介绍
+## API自动化项目介绍
+[API_TestAutomation_README.md](API_TestAutomation_README.md)
+
+## UI自动化项目介绍
+[UI_TestAutomation_README.md](UI_TestAutomation_README.md)
+
 
