@@ -7,7 +7,7 @@ from src.core.mobile.assertions.assertion import AssertionEngine
 from src.core.mobile.cache.parameter_cache import ParameterCache
 from src.core.mobile.device.device_action import DeviceAction
 from src.utils.platform_utils import rep_expr
-from src.utils.read_file import read_conf
+from src.utils.read_test_cases import read_conf
 
 
 class AppAction:

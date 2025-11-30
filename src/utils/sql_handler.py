@@ -136,7 +136,7 @@ class SQLHandlerFactory:
             raise ValueError(f"不支持的数据库类型: {db_type}")
 
 if __name__ == '__main__':
-    from src.utils.read_file import read_conf
+    from src.utils.read_test_cases import read_conf
 
 
     # 从配置文件读取数据库信息

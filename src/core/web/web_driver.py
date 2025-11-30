@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
 from src.utils.logger import LOGGER
-from src.utils.read_file import read_conf
+from src.utils.read_test_cases import read_conf
 
 c = read_conf.get_dict("wei_ui_headless")
 

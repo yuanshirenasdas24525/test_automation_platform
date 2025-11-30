@@ -1,14 +1,16 @@
 
-# Test Automation Platform
+# Test Automation UI
 
 ## 1. 项目概览
 
-本项目是基于 **Appium + Python** 的移动自动化框架，支持 **Android/iOS/Web**。  
-经过重构后，项目模块清晰，职责分离，便于维护和扩展。
+本项目是基于 **Appium + Python** 的移动自动化框架，支持 **Android/iOS/Web**。
 
 ## 2. 目录结构
 ```
 src/core/mobile/
+├── environment_checker.py        # 启动appium前的环境检查
+├── appium_start_setting.py       # 读取配置，启动appium服务
+├── start_app.py                  # appium启动服务工厂，准备打造多线程服务启动
 ├── app_action.py                 # 核心调度器，执行步骤顺序
 ├── finder/
 │   └── finder.py                 # 元素查找、滑动查找、黑名单处理
@@ -25,6 +27,15 @@ src/core/mobile/
 │   ├── input_controller.py       # 输入类操作（tap, swipe, back, keyevent）
 │   ├── system_controller.py      # 系统操作（截图, 通知栏, TouchID/FaceID 等）
 │   └── app_controller.py         # App 操作（启动/关闭/安装/卸载）
+src/core/mobile/
+├── encrypt.py                 # 加密方法(单独文件)
+├── allure_utils.py            # allure 报告工具
+├── function_executor.py       # 自定义函数工具
+├── logger.py                  # 日志工具
+├── platform_utils.py          # 平台工具
+├── read_test_cases.py         # 读取测试用例工具
+├── redis_utils.py             # redis 工具
+├── sql_handler.py             # sql 工具
 ```
 ## 3. 核心模块说明
 
@@ -92,23 +103,6 @@ app.app_steps(step)
   {
     "name": "登录流程",
     "steps": [
-      {
-        "action": "ac_send",
-        "by": "id",
-        "finder": "username_input",
-        "value": "test_user"
-      },
-      {
-        "action": "ac_send",
-        "by": "id",
-        "finder": "password_input",
-        "value": "123456"
-      },
-      {
-        "action": "click",
-        "by": "id",
-        "finder": "login_button"
-      },
       {
         "by": "id",
         "finder": "com.wallet.uu:id/verify",

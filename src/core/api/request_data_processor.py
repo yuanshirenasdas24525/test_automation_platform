@@ -1,10 +1,10 @@
 
 from typing import Any, List
-from src.core.api.file_handler import FileHandler
+from src.core.api.file_parameter import FileParameter
 from src.utils.platform_utils import rep_expr, extractor, convert_json
 from src.utils.function_executor import exec_func
 from src.utils.sql_handler import SQLHandlerFactory
-from src.utils.read_file import read_conf
+from src.utils.read_test_cases import read_conf
 from src.utils.logger import LOGGER, ERROR_LOGGER
 from src.utils.allure_utils import add_allure_step
 import json
@@ -13,18 +13,24 @@ import json
 
 class RequestDataProcessor:
     """
-    处理请求数据的类，负责路径、请求头、请求数据和文件的处理。
+    统一处理请求数据构建：
+    - host
+    - header
+    - 默认参数
+    - 业务参数
+    - 加密
+    - 文件上传处理
     """
 
     def __init__(self, header_key, host_key, ed=None, default_parameters=None):
         """
         初始化所需的处理器和配置字典。
         """
-        self.file_handler = FileHandler()
-        self.encryption_decryption = rep_expr(ed, {}) if isinstance(ed, str) else ed or {}
-        self.base_header = rep_expr(header_key, {}) if isinstance(header_key, str) else header_key or {}
-        self.base_url = rep_expr(host_key, {}) if isinstance(host_key, str) else host_key or {}
-        self.extra_pool = rep_expr(default_parameters, {}) if isinstance(default_parameters, str) else default_parameters or {}
+        self.extra_pool = default_parameters or {}
+        self.file_parameter = FileParameter(extra_pool=self.extra_pool)
+        self.encryption_decryption = rep_expr(ed, self.extra_pool) if isinstance(ed, str) else ed or {}
+        self.base_header = rep_expr(header_key, self.extra_pool) if isinstance(header_key, str) else header_key or {}
+        self.base_url = rep_expr(host_key, self.extra_pool) if isinstance(host_key, str) else host_key or {}
 
     def handler_path(self, path_str: str) -> str:
         """
@@ -44,7 +50,7 @@ class RequestDataProcessor:
         # 请求头参数加密
         if self.encryption_decryption.get('on_off'):
             variable = self.handler_data(data, sql)
-            from src.utils.encryption_handler import ParameterEncryption
+            from src.utils.encrypt import ParameterEncryption
             pe = ParameterEncryption(data=variable, power_access_key=self.encryption_decryption['key'])
             headers.update(pe.ed_header())
         return headers
@@ -91,7 +97,7 @@ class RequestDataProcessor:
         """
         处理文件上传，返回文件信息列表。
         """
-        return self.file_handler.process(file_obj, self.extra_pool)
+        return self.file_parameter.get_files(file_obj)
 
     def handler_extra(self, extra_str: str, response: dict) -> None:
         """

@@ -2,7 +2,7 @@
 import pytest
 from config.settings import ProjectPaths
 from src.core.mobile.start_app import AppManager
-from src.utils.read_file import GenericCaseReader, process_ui_row
+from src.utils.read_test_cases import GenericCaseReader, process_ui_row
 
 
 

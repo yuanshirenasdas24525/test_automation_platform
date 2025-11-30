@@ -2,9 +2,9 @@
 import time
 import requests
 from src.utils.logger import LOGGER
-from src.utils.read_file import read_conf
+from src.utils.read_test_cases import read_conf
 from src.captcha_solver.request_builder import build_slider_request
-from src.utils.redis_helper import clear_cache
+from src.utils.redis_utils import clear_cache
 from config.settings import ProjectPaths
 
 bg_annotated = ProjectPaths.IMG_DIR / f"bg_annotated.jpg"

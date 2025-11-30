@@ -2,21 +2,20 @@
 import requests
 from requests.exceptions import JSONDecodeError, ChunkedEncodingError
 from src.utils.allure_utils import (
-
     set_allure_project, set_allure_module, set_allure_case, set_allure_title,
     set_allure_description, add_allure_step, set_allure_link
 )
 from src.utils.logger import LOGGER
-from src.core.api.factory import create_request_data_processor
 import time
 
 
-class Client:
+class ApiClient:
     _sessions = {}
     _default_session = None
 
-    def __init__(self):
-        self.request_data_processor = create_request_data_processor()
+    def __init__(self, request_data_processor):
+        self.session = requests.Session()
+        self.processor = request_data_processor
         # 保存上一次的层级
         self.last_module = None
         self.last_submodule = None
@@ -102,10 +101,10 @@ class Client:
         set_allure_title(numbered_case_title)
         set_allure_description(description=f"{case_title}")
 
-        url = self.request_data_processor.handler_path(path_str=path)
-        header = self.request_data_processor.handler_header(header, data, sql)
-        data = self.request_data_processor.handler_data(data, sql, extra)
-        file = self.request_data_processor.handler_files(file_path)
+        url = self.processor.handler_path(path_str=path)
+        header = self.processor.handler_header(header, data, sql)
+        data = self.processor.handler_data(data, sql, extra)
+        file = self.processor.handler_files(file_path)
         set_allure_link(url)
         add_allure_step(f'Request Time (s): {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())}')
         add_allure_step('Header', header)
@@ -115,8 +114,8 @@ class Client:
             url, method, parametric_type, header, data, file
         )
 
-        self.request_data_processor.handler_extra(extra, response)
-        self.request_data_processor.assert_result(response, expect)
+        self.processor.handler_extra(extra, response)
+        self.processor.assert_result(response, expect)
 
         return response, sql
 
@@ -124,28 +123,13 @@ class Client:
         self, url: str, method: str, parametric_type: str,
         header=None, data=None, file=None, retries=3, delay=2
     ) -> dict:
-        """Send an API request with retry logic.
-
-        Args:
-            url (str): The request URL.
-            method (str): The HTTP method.
-            parametric_type (str): The content type of the request.
-            header (dict): The request headers.
-            data (dict): The request data.
-            file (dict): The files to upload.
-            retries (int): Number of retry attempts.
-            delay (int): Delay between retries.
-
-        Returns:
-            dict: The API response.
-        """
         for attempt in range(retries):
             try:
                 return self._send_api(url, method, parametric_type, header, data, file)
             except ChunkedEncodingError as e:
                 LOGGER.warning(f'ChunkedEncodingError: {e}. Retrying {attempt + 1}/{retries}...')
                 time.sleep(delay)
-        raise ChunkedEncodingError('Exceeded maximum retries for ChunkedEncodingError')
+        raise ChunkedEncodingError('超过 ChunkedEncodingError 的最大重试次数')
 
     def _send_api(
         self, url: str, method: str, parametric_type: str,
@@ -178,10 +162,10 @@ class Client:
 
         try:
             response = res.json()
-            LOGGER.debug('JSON Response: %s', response)
+            LOGGER.debug(f'JSON Response: {response}')
         except JSONDecodeError:
             response = res.text
-            LOGGER.debug('Text Response: %s', response)
+            LOGGER.debug(f'Text Response: {response}')
 
         LOGGER.info(
             'Request Details:\n'
@@ -193,6 +177,3 @@ class Client:
         add_allure_step('Response', response)
 
         return response
-
-
-client = Client()
