@@ -20,7 +20,7 @@ class ActionExecutor:
             LOGGER.warning("元素过期，尝试重新查找一次")
             from src.core.mobile.finder.finder import Finder
             finder = Finder(self.driver)
-            new_el = finder.find(step["by"], step["finder"])
+            new_el = finder.find(step["by"], step["locator"])
             return func(self, new_el, value)
 
 # 注册基础动作

@@ -46,7 +46,7 @@ class AppAction:
         if step.get("sliding_location"):
             element = self.finder.swipe_find(step)
         else:
-            element = self.finder.find(step.get("by"), step.get("finder"))
+            element = self.finder.find(step.get("by"), step.get("locator"))
 
         # --- Value ---
         value = self.value_resolver.resolve(step)

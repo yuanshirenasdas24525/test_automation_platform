@@ -76,7 +76,7 @@ class Finder:
         mode = step.get("sliding_location", "vertical").split("_")[0]
 
         by = step["by"]
-        value = step["finder"]
+        value = step["locator"]
 
         for _ in range(attempts):
             try:
