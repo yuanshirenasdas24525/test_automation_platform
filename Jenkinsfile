@@ -1,6 +1,6 @@
 pipeline {
 
-    agent { label 'builder' }
+    agent any
 
     environment {
         CONTAINER_NAME = "api_test_platform"
