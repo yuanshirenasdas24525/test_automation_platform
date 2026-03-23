@@ -243,7 +243,7 @@
                     html += `<div class="project-grid">`;
                     projects.forEach(p => {
                         html += `
-                            <div class="project-card" onclick="router.projectDetail(${p.id})">
+                            <div class="project-card" onclick="router.projectDetail(${p.id}, null)">
                                 <div style="font-size:2.5rem; margin-bottom:10px;">${p.icon || '📁'}</div>
                                 <h3>${p.name}</h3>
                                 <p>${p.description || '暂无简介'}</p>
@@ -274,7 +274,7 @@
                     filtered.forEach(p => {
                         html += `
                             <div class="project-card">
-                                <div onclick="router.projectDetail(${p.id})" style="cursor:pointer">
+                                <div onclick="router.projectDetail(${p.id}, null)" style="cursor:pointer">
                                     <div style="font-size:2rem;">${p.icon || '📁'}</div>
                                     <h3>${p.name}</h3>
                                     <p>${p.description}</p>
@@ -299,7 +299,7 @@
 
                 try {
                     // 2. 获取数据
-                    const url = `${API_BASE}/content/${projId}?parent_id=${moduleId || ''}`;
+                    const url = `${API_BASE}/content/${projId}?parent_id=${moduleId || 0}`;
                     const res = await fetch(url);
                     if (!res.ok) throw new Error("加载失败");
                     const data = await res.json();
