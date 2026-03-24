@@ -192,21 +192,20 @@ def get_module_detail(module_id: int, db: Session = Depends(get_db)):
 
 # --- 编辑模块 ---
 @app.put("/api/modules/{module_id}")
-def update_module(module_id: int, module_name: str = Body(..., embed=True), db: Session = Depends(get_db)):
+def update_module(module_id: int, name: str = Body(..., embed=True), db: Session = Depends(get_db)):
     db_module = db.query(Module).filter(Module.id == module_id).first()
     if not db_module:
         raise HTTPException(status_code=404, detail="模块不存在")
 
-    db_module.name = module_name
+    db_module.name = name
     db.commit()
-    return db_module
+    return {"message": "修改成功"}
 
 
 # --- 删除模块 ---
 @app.delete("/api/modules/{module_id}")
 def delete_module(module_id: int, db: Session = Depends(get_db)):
     db_module = db.query(Module).filter(Module.id == module_id).first()
-    db_test_cases = db.query(TestCase).filter(TestCase.module_id == module_id).all()
     if not db_module:
         raise HTTPException(status_code=404, detail="模块不存在")
 

@@ -436,20 +436,30 @@
         }
 
         function openProjectModal() {
+            window.isEditMode = false;
+            window.currentEditId = null;
+
+            // 清空表单
+            document.getElementById('p-name').value = '';
+            document.getElementById('p-desc').value = '';
+            document.getElementById('modal-title').innerText = "新增项目";
+
             document.getElementById('project-modal').style.display = 'flex';
         }
 
-        function editProject(projectJson) {
-            const p = typeof projectJson === 'string' ? JSON.parse(projectJson) : projectJson;
+        async function editProject(id) {
             window.isEditMode = true;
-            window.currentEditId = p.id;
+            window.currentEditId = id;
+            const res = await fetch(`${API_BASE}/projects/${id}`);
+            const p = await res.json();
+
             document.getElementById('modal-title').innerText = "编辑项目";
-            document.getElementById('p-name').value = p.name;
-            document.getElementById('p-desc').value = p.description;
-            document.getElementById('p-type').value = p.type;
+            document.getElementById('p-name').value = p.name || '';
+            document.getElementById('p-desc').value = p.description || ''; // 确保后端返回的是 description
+            document.getElementById('p-type').value = p.type || 'Web';
             document.getElementById('p-icon').value = p.icon || '📁';
             document.getElementById('project-modal').style.display = 'flex';
-        }
+            }
 
         async function deleteProject(id) {
             if (!confirm("确定要删除该项目吗？这将删除项目下的所有模块和用例！")) return;
@@ -467,6 +477,9 @@
         }
 
         function openModuleModal() {
+            window.isEditMode = false;
+            window.currentEditId = null;
+            document.getElementById('m-name').value = '';
             document.getElementById('module-modal').style.display = 'flex';
         }
 
@@ -514,41 +527,58 @@
         }
 
         async function submitProject() {
-            const data = {
-                name: document.getElementById('p-name').value,
-                description: document.getElementById('p-desc').value,
-                type: document.getElementById('p-type').value,
-                icon: document.getElementById('p-icon').value
-            };
+            const name = document.getElementById('p-name').value;
+            const desc = document.getElementById('p-desc').value;
+            const type = document.getElementById('p-type').value;
+            const icon = document.getElementById('p-icon').value;
+            const payload = { name, description: desc, type, icon };
+            // 【关键修改点】判断是编辑还是新增
+            const url = window.isEditMode
+                ? `${API_BASE}/projects/${window.currentEditId}`
+                : `${API_BASE}/projects`;
+            const method = window.isEditMode ? 'PUT' : 'POST';
 
-            const res = await fetch(`${API_BASE}/projects`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            });
+            try {
+                const res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
 
-            if (res.ok) {
-                closeModal('project-modal');
-                router.home();
-            } else {
-                const err = await res.json();
-                alert("保存失败: " + err.detail);
+                if (res.ok) {
+                    closeModal('project-modal');
+                    router.home(); // 刷新页面
+                }
+            } catch (e) {
+                console.error("提交失败:", e);
             }
         }
 
         async function submitModule() {
-            const data = {
-                project_id: currentProjectId,
-                parent_id: currentParentId,
-                name: document.getElementById('m-name').value
+            const name = document.getElementById('m-name').value;
+            const payload = {
+                name: name,
+                project_id: window.currentProjectId,
+                parent_id: window.currentParentId
             };
-            await fetch(`${API_BASE}/modules`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            });
-            closeModal('module-modal');
-            router.projectDetail(currentProjectId, currentParentId);
+            const url = window.isEditMode
+                ? `${API_BASE}/modules/${window.currentEditId}`
+                : `${API_BASE}/modules`;
+            const method = window.isEditMode ? 'PUT' : 'POST';
+
+            try {
+                const res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    closeModal('module-modal');
+                    router.projectDetail(window.currentProjectId, window.currentParentId);
+                }
+            } catch (e) {
+                console.error(e);
+            }
         }
 
         // 提交用例
