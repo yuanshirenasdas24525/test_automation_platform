@@ -350,27 +350,27 @@
                                     <td>
                                         ${isMod ?
                                             `<button class="btn btn-primary" style="font-size:12px; padding:2px 6px;" onclick="alert('模块编辑待实现')">编辑</button>` :
-                                            `<button class="btn btn-primary" style="font-size:12px; padding:2px 6px;" onclick='openCaseModal(${JSON.stringify(item)})'>编辑</button>`
+                                            `<button class="btn btn-primary" style="font-size:12px; padding:2px 6px;" onclick='editCaseModal(${JSON.stringify(item)})'>编辑</button>`
                                         }
                                         <button class="btn btn-danger" style="font-size:12px; padding:2px 6px;" onclick="confirmDelete('${item.type}', ${item.id})">删除</button>
                                     </td>
                                 </tr>`;
                         });
-        }
+                    }
 
-        html += `</tbody></table>`;
+                    html += `</tbody></table>`;
 
-        // 4. 渲染到页面
-        document.getElementById('view-container').innerHTML = html;
+                    // 4. 渲染到页面
+                    document.getElementById('view-container').innerHTML = html;
 
-        // 5. 初始化拖拽
-        if (typeof initDragging === 'function') initDragging();
+                    // 5. 初始化拖拽
+                    if (typeof initDragging === 'function') initDragging();
 
-    } catch (err) {
-        console.error("加载详情失败:", err);
-        alert("无法加载项目内容，请检查网络或后端接口。");
-    }
-}
+                } catch (err) {
+                    console.error("加载详情失败:", err);
+                    alert("无法加载项目内容，请检查网络或后端接口。");
+                }
+            }
         };
 
         // --- 功能函数 ---
@@ -490,7 +490,7 @@
             if (!payload.name || !payload.path || !payload.assertion) { alert("请填写必填项：名称、路径、断言"); return; }
 
             // 3. 发送请求
-            const url = window.isEditMode ? `/api/test_cases/${window.currentEditId}` : '/api/test_cases';
+            const url = window.isEditMode ? `${API_BASE}/test_cases/${window.currentEditId}` : `${API_BASE}/test_cases`;
             const method = window.isEditMode ? 'PUT' : 'POST';
 
             try {
@@ -523,17 +523,17 @@
             if (caseData) {
                 // 编辑模式：回填数据 (根据你的TestCaseCreate模型)
                 document.getElementById('c-name').value = caseData.name;
-                document.getElementById('c-desc').value = caseData.name;
+                document.getElementById('c-desc').value = caseData.description;
                 document.getElementById('c-method').value = caseData.method;
                 document.getElementById('c-path').value = caseData.path;
-                document.getElementById('c-headers').value = caseData.method;
-                document.getElementById('c-data-type').value = caseData.method;
-                document.getElementById('c-params').value = caseData.method;
-                document.getElementById('c-file-path').value = caseData.method;
-                document.getElementById('c-extract').value = caseData.method;
-                document.getElementById('c-sql').value = caseData.method;
-                document.getElementById('c-assertion').value = caseData.method;
-                document.getElementById('c-wait-time').value = caseData.method;
+                document.getElementById('c-headers').value = caseData.headers;
+                document.getElementById('c-data-type').value = caseData.data_type;
+                document.getElementById('c-params').value = caseData.params;
+                document.getElementById('c-file-path').value = caseData.file_path;
+                document.getElementById('c-extract').value = caseData.extract_data;
+                document.getElementById('c-sql').value = caseData.sql_query;
+                document.getElementById('c-assertion').value = caseData.assertion;
+                document.getElementById('c-wait-time').value = caseData.wait_time;
             } else {
                 // 新增模式：清空表单
                 document.querySelectorAll('#case-modal input, #case-modal textarea').forEach(el => el.value = '');
@@ -547,13 +547,20 @@
             window.isEditMode = false;
             document.getElementById('case-modal-title').innerText = "新增测试用例";
             // 清空表单
-            const fields = ['c-name','c-desc','c-path','c-headers','c-params','c-extract','c-sql','c-assertion','c-file-path'];
+            // const fields = ['c-name','c-desc','c-path','c-headers','c-params','c-extract','c-sql','c-assertion','c-file-path'];
             // fields.forEach(f => document.getElementById(f).value = '');
             // document.getElementById('c-skip').checked = false;
 
             document.querySelectorAll('#case-modal input, #case-modal textarea').forEach(el => el.value = '');
             document.getElementById('case-modal').style.display = 'flex';
 
+        }
+
+        function editCaseModal(caseData) {
+            window.isEditMode = true;
+            window.currentEditId = caseData.id;
+            document.getElementById('case-modal-title').innerText = "编辑测试用例";
+            openCaseModal(caseData);
         }
 
         // --- 拖拽排序逻辑 ---
@@ -617,8 +624,12 @@
             checkboxes.forEach(cb => cb.checked = master.checked);
         }
 
+        window.router = router;
+
         // 初始化
-        window.onload = () => router.home();
+        window.onload = () => {
+            window.router.home();
+        };
     </script>
 </body>
 </html>

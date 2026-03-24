@@ -145,7 +145,7 @@ def create_module(module: ModuleCreate, db: Session = Depends(get_db)):
 # 初始化数据库
 Base.metadata.create_all(bind=engine)
 # --- 核心业务接口 ---
-@app.post("/api/test_case")
+@app.post("/api/test_cases")
 def create_cases_content(case: TestCaseCreate, db: Session = Depends(get_db)):
     # 获取子模块
     db_test_cases = TestCase(**case.dict())
@@ -154,13 +154,20 @@ def create_cases_content(case: TestCaseCreate, db: Session = Depends(get_db)):
     db.refresh(db_test_cases)
     return db_test_cases
 
+@app.put("/api/test_cases/{case_id}")
+def edit_case_content(case_id: int, case: TestCaseCreate, db: Session = Depends(get_db)):
+    db.query(TestCase).filter(TestCase.module_id == case.dict().get("module_id"), TestCase.id == case_id).update(case.dict())
+    db.commit()
+    return {"status": "success"}
 
 @app.get("/api/content/{project_id}")
-def get_folder_content(project_id: int, parent_id: int = None, db: Session = Depends(get_db)):
+def get_folder_content(project_id: int, parent_id: Optional[int] = None, db: Session = Depends(get_db)):
     """
-    获取当前层级的子模块和测试用例，按 sort_order 排序
+    获取当前层级的子模块和测试用例
     """
-    # 获取子模块
+    if parent_id == 0:  # 假设你的 ID 从 1 开始，0 可以作为根目录标识
+        parent_id = None
+
     modules = db.query(Module).filter(
         Module.project_id == project_id,
         Module.parent_id == parent_id
@@ -169,21 +176,45 @@ def get_folder_content(project_id: int, parent_id: int = None, db: Session = Dep
     # 获取当前层级的测试用例 (如果是顶级模块 parent_id 为 None，则 module_id 匹配 project 的逻辑需按需调整)
     # 这里假设只有进入了 module 才能看到 test_cases
     cases = []
-    if parent_id:
+    if parent_id is not None:
         cases = db.query(TestCase).filter(TestCase.module_id == parent_id).all()
+    else:
+        pass
 
-    # 合并并标记类型以便前端渲染
+    # 3. 合并数据
     result = []
     for m in modules:
-        result.append({"id": m.id, "name": m.name, "type": "module", "sort_order": m.sort_order})
-    for c in cases:
         result.append({
-            "id": c.id, "name": c.name, "type": "case",
-            "method": c.method, "path": c.path, "sort_order": c.sort_order
+            "id": m.id,
+            "name": m.name,
+            "type": "module",
+            "sort_order": m.sort_order,
+            "parent_id": m.parent_id
         })
 
-    # 按 sort_order 排序
-    return sorted(result, key=lambda x: x['sort_order'])
+    for c in cases:
+        result.append({
+            "id": c.id,
+            "module_id": c.module_id,
+            "type": "case",
+            "name": c.name,
+            "description": c.description,
+            "skip":c.skip,
+            "method": c.method,
+            "path": c.path,
+            "headers":c.headers,
+            "data_type": c.data_type,
+            "params": c.params,
+            "file_path": c.file_path,
+            "extract_data": c.extract_data,
+            "sql_query":c.sql_query,
+            "assertion": c.assertion,
+            "wait_time": c.wait_time,
+            "sort_order": c.sort_order
+        })
+
+    # 4. 排序返回
+    return sorted(result, key=lambda x: x.get('sort_order', 0))
 
 @app.patch("/api/reorder")
 def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
@@ -195,7 +226,6 @@ def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
             db.query(Module).filter(Module.id == item['id']).update({"sort_order": item['new_order']})
         else:
             db.query(TestCase).filter(TestCase.id == item['id']).update({"sort_order": item['new_order']})
-    print(db)
     db.commit()
     return {"status": "success"}
 
