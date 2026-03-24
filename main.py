@@ -4,7 +4,7 @@ from fastapi import Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker, Session, relationship
 from typing import List, Optional
 import pydantic
 
@@ -65,6 +65,7 @@ class Project(Base):
     icon = Column(String)
     type = Column(String, nullable=False) # Mobile, API, Web
     sort_order = Column(Integer, default=0)
+    modules = relationship("Module", back_populates="project", cascade="all, delete-orphan")
 
 class Module(Base):
     __tablename__ = "modules"
@@ -73,6 +74,9 @@ class Module(Base):
     parent_id = Column(Integer, ForeignKey("modules.id"), nullable=True)
     name = Column(String, nullable=False)
     sort_order = Column(Integer, default=0)
+    project = relationship("Project", back_populates="modules")
+    # 模块删除时，也自动删除下的用例
+    test_cases = relationship("TestCase", back_populates="module", cascade="all, delete-orphan")
 
 class TestCase(Base):
     __tablename__ = "test_cases"
@@ -92,6 +96,7 @@ class TestCase(Base):
     assertion = Column(String)
     wait_time = Column(Integer, default=0)
     sort_order = Column(Integer, default=0)
+    module = relationship("Module", back_populates="test_cases")
 
 
 # --- 核心接口示例 ---
@@ -125,6 +130,32 @@ def create_project(project: ProjectCreate, db: Session = Depends(get_db)):
     db.refresh(db_project)
     return db_project
 
+@app.put("/api/projects/{project_id}")
+def update_project(project_id: int, project_data: ProjectCreate, db: Session = Depends(get_db)):
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 更新字段
+    for key, value in project_data.dict().items():
+        setattr(db_project, key, value)
+
+    db.commit()
+    db.refresh(db_project)
+    return db_project
+
+
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)):
+    db_project = db.query(Project).filter(Project.id == project_id).first()
+    if not db_project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    # 注意：如果设置了级联删除(cascade)，删除项目会自动删除关联的模块和用例
+    db.delete(db_project)
+    db.commit()
+    return {"message": "项目已删除"}
+
 @app.get("/api/modules/{project_id}")
 def get_modules(project_id: int, parent_id: Optional[int] = None, db: Session = Depends(get_db)):
     modules = db.query(Module).filter(Module.project_id == project_id, Module.parent_id == parent_id).all()
@@ -141,6 +172,41 @@ def create_module(module: ModuleCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_module)
     return db_module
+
+
+# --- 获取单个模块详情 (用于编辑回填) ---
+@app.get("/api/modules/{module_id}")
+def get_module_detail(module_id: int, db: Session = Depends(get_db)):
+    module = db.query(Module).filter(Module.id == module_id).first()
+    if not module:
+        raise HTTPException(status_code=404, detail="模块不存在")
+    return module
+
+
+# --- 编辑模块 ---
+@app.put("/api/modules/{module_id}")
+def update_module(module_id: int, module_name: str = Body(..., embed=True), db: Session = Depends(get_db)):
+    db_module = db.query(Module).filter(Module.id == module_id).first()
+    if not db_module:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    db_module.name = module_name
+    db.commit()
+    return db_module
+
+
+# --- 删除模块 ---
+@app.delete("/api/modules/{module_id}")
+def delete_module(module_id: int, db: Session = Depends(get_db)):
+    db_module = db.query(Module).filter(Module.id == module_id).first()
+    db_test_cases = db.query(TestCase).filter(TestCase.module_id == module_id).all()
+    if not db_module:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    # 逻辑建议：这里可以递归删除子模块，或者简单删除当前模块
+    db.delete(db_module)
+    db.commit()
+    return {"message": "模块已删除"}
 
 # 初始化数据库
 Base.metadata.create_all(bind=engine)
@@ -215,6 +281,15 @@ def get_folder_content(project_id: int, parent_id: Optional[int] = None, db: Ses
 
     # 4. 排序返回
     return sorted(result, key=lambda x: x.get('sort_order', 0))
+
+@app.delete("/api/test_cases/{content_id}")
+def delete_case_content(content_id: int, db: Session = Depends(get_db)):
+    """
+    删除用例或模块
+    """
+    db.query(TestCase).filter(TestCase.id == content_id).delete()
+    db.commit()
+    return {"status": "success"}
 
 @app.patch("/api/reorder")
 def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
