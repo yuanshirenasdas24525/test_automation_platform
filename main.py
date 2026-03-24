@@ -144,6 +144,18 @@ def update_project(project_id: int, project_data: ProjectCreate, db: Session = D
     db.refresh(db_project)
     return db_project
 
+@app.get("/api/projects/{project_id}")
+def get_project_info(project_id: int, db: Session = Depends(get_db)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {
+        "id": project.id,
+        "name": project.name,
+        "type": project.type,
+        "description": project.description
+    }
+
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: int, db: Session = Depends(get_db)):

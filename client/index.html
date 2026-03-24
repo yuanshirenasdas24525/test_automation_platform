@@ -300,43 +300,40 @@
 
                 try {
                     let parentIdForBack = null;
-                    let currentModuleName = "项目根目录";
+                    let displayName = ""; // 用于显示在面包屑上的名称
 
-                    // --- 关键修改点：只有当 moduleId 真正存在（数字型）时才去请求 ---
-                    if (moduleId !== null) {
-                        console.log("正在请求模块详情，ID:", moduleId);
+                    if (moduleId) {
                         const modRes = await fetch(`${API_BASE}/modules/${moduleId}`);
-
                         if (modRes.ok) {
                             const modData = await modRes.json();
-                            console.log("获取成功 modData:", modData);
                             parentIdForBack = modData.parent_id;
-                            currentModuleName = modData.name;
-                        } else {
-                            // 如果接口返回 404，打印错误详情
-                            const err = await modRes.json();
-                            console.error("模块接口报错:", err);
+                            displayName = `📂 ${modData.name}`;
+                        }
+                    } else {
+                        // 场景 B：在项目根目录，获取项目详情
+                        const projRes = await fetch(`${API_BASE}/projects/${projId}`);
+                        if (projRes.ok) {
+                            const projData = await projRes.json();
+                            displayName = `🚀 ${projData.name}`;
                         }
                     }
 
-                    // --- 获取列表内容 ---
                     let contentUrl = `${API_BASE}/content/${projId}`;
                     if (moduleId) contentUrl += `?parent_id=${moduleId}`;
                     const res = await fetch(contentUrl);
                     const data = await res.json();
 
 
-                    // 3. 构建 HTML (确保标签闭合逻辑正确)
                     let html = `
-                        <div class="header-actions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <div class="header-actions">
                             <div class="breadcrumb">
                                 <button class="btn btn-ghost" onclick="window.router.home()">🏠 首页</button>
-                                <span style="margin: 0 10px; color: #ccc;">/</span>
+                                <span style="margin: 0 5px; color: #ccc;">/</span>
                                 ${moduleId ?
-                                    `<button class="btn btn-ghost" onclick="window.router.projectDetail(${projId}, ${parentIdForBack})">⬅️ 返回上一级</button>
-                                     <span style="margin-left:10px; font-weight:bold; color:var(--accent-color)">📂 ${currentModuleName}</span>` :
-                                    `<span style="font-weight:bold;">🚀 项目根目录</span>`
+                                    `<button class="btn btn-ghost" onclick="window.router.projectDetail(${projId}, ${parentIdForBack})">⬅️ 返回上一级</button>` :
+                                    ''
                                 }
+                                <span style="margin-left:10px; font-weight:bold; color:var(--accent-color)">${displayName}</span>
                             </div>
                             <div>
                                 <button class="btn btn-primary" onclick="openModuleModal()">+ 新增模块</button>
