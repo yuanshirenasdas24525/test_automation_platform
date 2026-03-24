@@ -264,7 +264,7 @@
                 let html = `
                     <div class="header-actions">
                         <h2>${type} 自动化项目管理</h2>
-                        <button class="btn btn-primary" onclick="openProjectModal('${type}')">+ 新增${type}项目</button>
+                        <button class="btn btn-primary" onclick="openProjectModal('${type}')">+ 新增项目 ${type}</button>
                     </div>
                     <div class="project-grid">`;
 
@@ -325,7 +325,7 @@
 
 
                     let html = `
-                        <div class="header-actions">
+                        <div class="header-actions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                             <div class="breadcrumb">
                                 <button class="btn btn-ghost" onclick="window.router.home()">🏠 首页</button>
                                 <span style="margin: 0 5px; color: #ccc;">/</span>
@@ -337,18 +337,20 @@
                             </div>
                             <div>
                                 <button class="btn btn-primary" onclick="openModuleModal()">+ 新增模块</button>
-                                <button class="btn btn-primary" style="background:#27ae60" onclick="newCaseModal()">+ 新增用例</button>
+                                ${moduleId !== null ?
+                                    `<button class="btn btn-primary" style="background:#27ae60; margin-left:10px;" onclick="newCaseModal()">+ 新增用例</button>` :
+                                    ''
+                                }
                             </div>
                         </div>
-                        <table>
+                        <table class="main-table">
                             <thead>
                                 <tr>
-                                    <th width="40"><input type="checkbox" id="selectAll" onclick="toggleAll(this)"></th>
-                                    <th width="60">ID</th>
-                                    <th>名称/路径</th>
-                                    <th>方法</th>
-                                    <th>类型</th>
-                                    <th>操作</th>
+                                    <th width="40"><input type="checkbox" id="selectAll"></th>
+                                    <th width="80">ID</th>
+                                    <th>名称</th>
+                                    <th width="120">类型</th>
+                                    <th width="150">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="sortable-list">`;
