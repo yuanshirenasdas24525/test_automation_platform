@@ -1,12 +1,14 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse
-from fastapi import Body
+from fastapi import Body, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from typing import List, Optional
+import pandas as pd
 import pydantic
+import io
 
 # 数据库配置
 SQLALCHEMY_DATABASE_URL = "sqlite:///./data/db/sqlite.db"
@@ -295,6 +297,49 @@ def delete_case_content(content_id: int, db: Session = Depends(get_db)):
     db.query(TestCase).filter(TestCase.id == content_id).delete()
     db.commit()
     return {"status": "success"}
+
+
+@app.post("/api/projects/{project_id}/import_cases")
+async def import_test_cases(
+        project_id: int,
+        module_id: int,  # 导入到哪个子模块下
+        file: UploadFile = File(...),
+        db: Session = Depends(get_db)
+):
+    # 1. 读取上传的文件
+    contents = await file.read()
+    df = pd.read_excel(io.BytesIO(contents))
+
+    # 2. 字段映射（根据你的模板列名）
+    # 模板列名: case_module, case_submodule, case_name, case_title, skip, method, path...
+    import_count = 0
+    try:
+        for index, row in df.iterrows():
+            # 创建用例对象
+            new_case = TestCase(
+                module_id=module_id,
+                name=str(row['case_title']) if pd.notna(row['case_title']) else "未命名",
+                description=row['case_name'],
+                method=row['method'].upper(),
+                path=str(row['path']).strip(),
+                data_type=row['parametric_type'] if pd.notna(row['parametric_type']) else "application/json",
+                headers=str(row['header']) if pd.notna(row['header']) else None,
+                params=str(row['data']) if pd.notna(row['data']) else None,
+                extract_data=str(row['extra']) if pd.notna(row['extra']) else None,
+                assertion=str(row['expect']) if pd.notna(row['expect']) else None,
+                sql_query=str(row['sql']) if pd.notna(row['sql']) else None,
+                skip=True if row['skip'] == 'y' or row['skip'] == 'Y' else False,
+                wait_time=int(row['wait']) if pd.notna(row['wait']) else 0,
+                sort_order=int(index)
+            )
+            db.add(new_case)
+            import_count += 1
+
+        db.commit()
+        return {"message": f"成功导入 {import_count} 条用例"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
 
 @app.patch("/api/reorder")
 def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
