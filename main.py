@@ -156,13 +156,6 @@ def delete_project(project_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "项目已删除"}
 
-@app.get("/api/modules/{project_id}")
-def get_modules(project_id: int, parent_id: Optional[int] = None, db: Session = Depends(get_db)):
-    modules = db.query(Module).filter(Module.project_id == project_id, Module.parent_id == parent_id).all()
-    if modules:
-        return modules
-    raise HTTPException(status_code=404, detail="模块不存在")
-
 @app.post("/api/modules")
 def create_module(module: ModuleCreate, db: Session = Depends(get_db)):
     db_module = Module(**module.dict())

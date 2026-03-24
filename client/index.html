@@ -293,28 +293,54 @@
 
             // 3. 进入项目/模块详情
             async projectDetail(projId, moduleId = null) {
+                if (moduleId === "null" || moduleId === "undefined") moduleId = null;
                 // 1. 统一更新全局状态
                 window.currentProjectId = projId;
                 window.currentParentId = moduleId;
 
                 try {
-                    // 2. 获取数据
-                    const url = `${API_BASE}/content/${projId}?parent_id=${moduleId || 0}`;
-                    const res = await fetch(url);
-                    if (!res.ok) throw new Error("加载失败");
+                    let parentIdForBack = null;
+                    let currentModuleName = "项目根目录";
+
+                    // --- 关键修改点：只有当 moduleId 真正存在（数字型）时才去请求 ---
+                    if (moduleId !== null) {
+                        console.log("正在请求模块详情，ID:", moduleId);
+                        const modRes = await fetch(`${API_BASE}/modules/${moduleId}`);
+
+                        if (modRes.ok) {
+                            const modData = await modRes.json();
+                            console.log("获取成功 modData:", modData);
+                            parentIdForBack = modData.parent_id;
+                            currentModuleName = modData.name;
+                        } else {
+                            // 如果接口返回 404，打印错误详情
+                            const err = await modRes.json();
+                            console.error("模块接口报错:", err);
+                        }
+                    }
+
+                    // --- 获取列表内容 ---
+                    let contentUrl = `${API_BASE}/content/${projId}`;
+                    if (moduleId) contentUrl += `?parent_id=${moduleId}`;
+                    const res = await fetch(contentUrl);
                     const data = await res.json();
+
 
                     // 3. 构建 HTML (确保标签闭合逻辑正确)
                     let html = `
-                        <div class="header-actions">
-                            <div>
-                                <span style="color:#666; cursor:pointer" onclick="window.router.home()">首页</span> /
-                                <span style="font-weight:bold">${moduleId ? '模块详情 (ID:'+moduleId+')' : '项目根目录'}</span>
+                        <div class="header-actions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <div class="breadcrumb">
+                                <button class="btn btn-ghost" onclick="window.router.home()">🏠 首页</button>
+                                <span style="margin: 0 10px; color: #ccc;">/</span>
+                                ${moduleId ?
+                                    `<button class="btn btn-ghost" onclick="window.router.projectDetail(${projId}, ${parentIdForBack})">⬅️ 返回上一级</button>
+                                     <span style="margin-left:10px; font-weight:bold; color:var(--accent-color)">📂 ${currentModuleName}</span>` :
+                                    `<span style="font-weight:bold;">🚀 项目根目录</span>`
+                                }
                             </div>
                             <div>
                                 <button class="btn btn-primary" onclick="openModuleModal()">+ 新增模块</button>
-                                <button class="btn btn-primary" style="background:#27ae60" onclick="newCaseModal()">+ 新增测试用例</button>
-                                <button class="btn btn-ghost" onclick="toggleAll(document.getElementById('selectAll'))">批量执行勾选</button>
+                                <button class="btn btn-primary" style="background:#27ae60" onclick="newCaseModal()">+ 新增用例</button>
                             </div>
                         </div>
                         <table>
@@ -461,32 +487,6 @@
         function closeModal(id) {
             document.getElementById(id).style.display = 'none';
         }
-
-
-        // function validateJson(el) {
-        //     const errorSpan = el.nextElementSibling;
-        //     if (!el.value.trim()) {
-        //         errorSpan.style.display = 'none';
-        //         return true;
-        //     }
-        //     try {
-        //         JSON.parse(el.value);
-        //         errorSpan.style.display = 'none';
-        //         el.style.borderColor = '#ccc';
-        //         return true;
-        //     } catch (e) {
-        //         errorSpan.style.display = 'block';
-        //         el.style.borderColor = 'red';
-        //         return false;
-        //     }
-        // }
-
-        // function toggleAll(mainBox) {
-        //     const checkboxes = document.querySelectorAll('.item-checkbox');
-        //     checkboxes.forEach(box => {
-        //         box.checked = mainBox.checked;
-        //     });
-        // }
 
         async function submitProject() {
             const data = {
