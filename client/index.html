@@ -382,31 +382,74 @@
 
                             const clickAction = isMod
                                 ? `window.router.projectDetail(${projId}, ${item.id})`
-                                : `editCase(${item.id})`;
+                                : `toggleCasePreview(${item.id})`;
 
                             html += `
                                 <tr class="draggable" data-id="${item.id}" data-type="${item.type}" draggable="true">
                                     <td><input type="checkbox" class="item-checkbox" value="${item.id}"></td>
                                     <td>${item.id}</td>
-                                    <td onclick="${clickAction}" style="cursor:pointer; ${isMod ? 'font-weight:bold; color:#3498db;' : ''}">
-                                        ${isMod ? '📁' : '📄'} ${item.type}
-                                    </td>
-                                    <td onclick="${isMod ? `window.router.projectDetail(${projId}, ${item.id})` : ''}"
-                                        style="${isMod ? 'color:#3498db; cursor:pointer; font-weight:bold;' : ''}">
+                                    <td style="color: #666;">${isMod ? '📁 模块' : '📄 用例'}</td>
+                                    <td onclick="${clickAction}"
+                                        style="cursor:pointer; ${isMod ? 'font-weight:bold; color:#3498db;' : 'color:#2c3e50;'}">
                                         ${item.name}
+                                        ${!isMod ? '<small style="color:#999;margin-left:8px;">(点击预览)</small>' : ''}
                                     </td>
-                                    <td>${isMod ? '-' : (item.path || '')}</td>
-                                    <td>${isMod ? '-' : (item.method || 'GET')}</td>
-                                    <td><small style="color:#999; font-weight:normal;">${item.params || '{}'}</small></td>
+                                    <td>${isMod ? '-' : (item.path || '/')}</td>
+                                    <td><span class="badge">${isMod ? '-' : (item.method || 'GET')}</span></td>
+                                    <td>${isMod ? '-' : 'JSON...'}</td>
                                     <td>
-                                        ${isMod ?
-                                            `<button class="btn btn-primary" style="font-size:12px; padding:2px 6px;" onclick="editModule(${item.id})">编辑</button>` :
-                                            `<button class="btn btn-primary" style="font-size:12px; padding:2px 6px;" onclick="handleEditCase(${item.id})">编辑</button>`
-                                        }
-                                        <button class="btn btn-danger" style="font-size:12px; padding:2px 6px;" onclick="confirmDelete('${item.type}', ${item.id})">删除</button>
-                                        <button class="btn btn-primary" style="font-size:12px; padding:2px 6px; background:#069f2d" onclick="runModuleCases(${item.id})">执行</button>
+                                        <button class="btn btn-primary" style="font-size:12px; padding:2px 6px;"
+                                            onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}">编辑</button>
+                                        <button class="btn btn-danger" style="font-size:12px; padding:2px 6px;"
+                                            onclick="confirmDelete('${item.type}', ${item.id})">删除</button>
                                     </td>
-                                </tr>`;
+                                </tr>
+                                ${!isMod ? `
+                                <tr id="preview-row-${item.id}" style="display:none; background-color: #f9f9f9;">
+                                    <td colspan="8">
+                                        <div style="padding: 20px; border-left: 5px solid #3498db; margin: 10px 20px; background: white; border-radius: 4px; box-shadow: inset 0 0 10px rgba(0,0,0,0.05);">
+
+                                            <div style="margin-bottom: 15px; border-bottom: 1px dashed #ddd; padding-bottom: 10px;">
+                                                <strong style="color:#555;">📝 用例描述:</strong>
+                                                <span style="color:#333; margin-left:10px;">${item.description || '暂无描述'}</span>
+                                            </div>
+
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+                                                <div>
+                                                    <strong style="color:#555;">🔗 请求头 (Headers):</strong>
+                                                    <pre style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px;">${formatAndHighlight(item.headers)}</pre>
+                                                </div>
+                                                <div>
+                                                    <strong style="color:#555;">🔍 提取参数 (Extract):</strong>
+                                                    <pre style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px;">${formatAndHighlight(item.extract_data)}</pre>
+                                                </div>
+                                                <div>
+                                                    <strong style="color:#555;">📁 文件路径:</strong>
+                                                    <div style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px; color:#e83e8c;">
+                                                        ${item.file_path || '无'}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                                                <div>
+                                                    <strong style="color:#555;">📤 请求参数 (Payload):</strong>
+                                                    <pre style="background:#2d2d2d; color:#ccc; padding:10px; border-radius:4px; font-size:12px; margin-top:5px; max-height:200px; overflow:auto;">${formatAndHighlight(item.params)}</pre>
+                                                </div>
+                                                <div>
+                                                    <strong style="color:#555;">🗄️ 预置 SQL:</strong>
+                                                    <pre style="background:#2d2d2d; color:#7ec699; padding:10px; border-radius:4px; font-size:12px; margin-top:5px; max-height:200px; overflow:auto;">${formatAndHighlight(item.sql_query)}</pre>
+                                                </div>
+                                            </div>
+
+                                            <div style="margin-top: 15px; font-size: 12px; color: #888;">
+                                                <span>⏱️ 等待时间: <b style="color:#333">${item.wait_time || 0}s</b></span>
+                                                <span style="margin-left: 20px;">✅ 断言校验: <b style="color:#28a745">${item.assertion || '默认 200'}</b></span>
+                                            </div>
+                                        </div>
+                                        </td>
+                                </tr>` : ''}
+                                `;
                         });
                     }
 
@@ -637,8 +680,30 @@
             alert("项目运行按钮功能还在开发中。。。");
         }
 
-        function runModuleCases() {
-            alert("模块运行按钮还在开发中。。。");
+        async function runModuleCases(id) {
+            const payload = {
+                    id: parseInt(id)
+                };
+            const url = `${API_BASE}/run_cases`
+            const method = 'POST';
+            try {
+                const res = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (res.ok) {
+                    closeModal('case-modal');
+                    window.router.projectDetail(window.currentProjectId, window.currentParentId);
+                } else {
+                    const err = await res.json();
+                    alert("提交失败: " + JSON.stringify(err.detail));
+                }
+            } catch (e) {
+                alert("网络异常或后端接口未实现");
+            }
+
+            // alert("模块运行按钮还在开发中。。。");
         }
 
         function runCase() {
@@ -706,40 +771,47 @@
             }
         }
 
-        async function editCase(caseId) {
-            window.isEditMode = true;
-            window.currentEditId = caseId;
+        function toggleCasePreview(id) {
+            const previewRow = document.getElementById(`preview-row-${id}`);
+            if (previewRow) {
+                // 切换显示状态
+                const isHidden = previewRow.style.display === 'none';
+                previewRow.style.display = isHidden ? 'table-row' : 'none';
 
-            try {
-                // 从后端接口获取最新的、完整的用例数据
-                const res = await fetch(`${API_BASE}/test_cases/${caseId}`);
-                if (!res.ok) throw new Error("获取用例详情失败");
-                const c = await res.json();
-
-                // 安全地回填数据
-                document.getElementById('c-name').value = c.name || '';
-                document.getElementById('c-desc').value = c.description || '';
-                document.getElementById('c-method').value = c.method || 'POST';
-                document.getElementById('c-path').value = c.path || '';
-                document.getElementById('c-data-type').value = c.data_type || 'application/json';
-
-                // 处理可能是对象或字符串的内容
-                document.getElementById('c-headers').value = typeof c.headers === 'object' ? JSON.stringify(c.headers, null, 2) : (c.headers || '');
-                document.getElementById('c-params').value = typeof c.params === 'object' ? JSON.stringify(c.params, null, 2) : (c.params || '');
-                document.getElementById('c-extract').value = typeof c.extract_data === 'object' ? JSON.stringify(c.extract_data, null, 2) : (c.extract_data || '');
-                document.getElementById('c-assertion').value = typeof c.assertion === 'object' ? JSON.stringify(c.assertion, null, 2) : (c.assertion || '');
-
-                document.getElementById('c-sql').value = c.sql_query || ''; // 这里的换行符现在可以正常显示在 textarea 中了
-                document.getElementById('c-wait-time').value = c.wait_time || 0;
-                document.getElementById('c-skip').checked = !!c.skip;
-
-                // 修改弹窗标题并显示
-                document.getElementById('case-modal-title').innerText = `编辑用例 (ID: ${caseId})`;
-                document.getElementById('case-modal').style.display = 'flex';
-            } catch (e) {
-                console.error(e);
-                alert("加载用例失败，请检查后端接口");
+                // 给主行添加高亮样式
+                const mainRow = previewRow.previousElementSibling;
+                if (isHidden) {
+                    mainRow.style.backgroundColor = "#f0f7ff";
+                } else {
+                    mainRow.style.backgroundColor = "";
+                }
             }
+        }
+
+        function formatAndHighlight(text) {
+            if (!text) return '<span style="color:#999">空</span>';
+
+            // 1. 尝试 JSON 格式化
+            let displayed = text;
+            try {
+                const obj = JSON.parse(text);
+                displayed = JSON.stringify(obj, null, 2);
+            } catch (e) {
+                // 不是 JSON 则保持原样
+            }
+
+            // 2. 转义 HTML 标签防止脚本注入
+            displayed = displayed.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+            // 3. 正则高亮
+            // ${variable} -> 蓝色
+            displayed = displayed.replace(/\$\{[a-zA-Z0-9_]+\}/g, '<span style="color: #007bff; font-weight: bold;">$&</span>');
+            // $.json.path -> 绿色
+            displayed = displayed.replace(/\$\.[a-zA-Z0-9_.*\[\]]+/g, '<span style="color: #28a745; font-weight: bold;">$&</span>');
+            // function:name -> 橙色
+            displayed = displayed.replace(/function:[a-zA-Z0-9_]+/g, '<span style="color: #fd7e14; font-weight: bold;">$&</span>');
+
+            return displayed;
         }
 
         async function submitImport() {

@@ -228,7 +228,8 @@ def create_cases_content(case: TestCaseCreate, db: Session = Depends(get_db)):
 
 @app.put("/api/test_cases/{case_id}")
 def edit_case_content(case_id: int, case: TestCaseCreate, db: Session = Depends(get_db)):
-    db.query(TestCase).filter(TestCase.module_id == case.dict().get("module_id"), TestCase.id == case_id).update(case.dict())
+    db.query(TestCase).filter(TestCase.module_id == case.dict().get("module_id"),
+                              TestCase.id == case_id).update(case.dict())
     db.commit()
     return {"status": "success"}
 
@@ -296,6 +297,14 @@ def delete_case_content(content_id: int, db: Session = Depends(get_db)):
     db.query(TestCase).filter(TestCase.id == content_id).delete()
     db.commit()
     return {"status": "success"}
+
+@app.post("/api/run_cases")
+def run_cases(cases_id: int = Body(..., embed=True), db: Session = Depends(get_db)):
+    # 获取用例详情
+    print(cases_id)
+    case = db.query(TestCase).filter(TestCase.id == cases_id).first()
+    print(case)
+    pass
 
 
 @app.post("/api/projects/{project_id}/import_cases")
