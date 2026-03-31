@@ -1,154 +1,108 @@
-import sqlite3
-import pymysql
+# -*- coding:utf-8 -*-
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 from typing import Any, List, Optional, Dict, Union
 from src.utils.logger import LOGGER, ERROR_LOGGER
 
 
 class BaseSQLHandler:
     """SQL Handler 抽象基类"""
-    def execute_query(self, sql: str, params: Optional[tuple] = None) -> List[tuple]:
+    def execute_query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """执行查询并返回字典列表"""
         raise NotImplementedError
 
-    def fetchone(self, sql: str) -> Any:
-        raise NotImplementedError
-
-    def fetchall(self, sql: str) -> List[Any]:
+    def execute_db(self, sql: str, params: Optional[Dict[str, Any]] = None):
+        """执行增删改操作"""
         raise NotImplementedError
 
     def close(self):
+        """关闭连接"""
         raise NotImplementedError
 
 
-class SQLiteHandler(BaseSQLHandler):
-    """SQLite 数据库处理"""
-    def __init__(self, db_path: str):
+class SQLAlchemyHandler(BaseSQLHandler):
+    """
+    基于 SQLAlchemy 的通用数据库处理类
+    兼容：MySQL, SQLite, PostgreSQL 等
+    """
+    def __init__(self, db_url: str):
         try:
-            LOGGER.info(f"连接 SQLite 数据库: {db_path}")
-            self.conn = sqlite3.connect(db_path, timeout=5)
-            LOGGER.info("SQLite 连接成功")
+            LOGGER.info(f"正在通过 SQLAlchemy 初始化数据库连接: {db_url}")
+            # pool_pre_ping=True 解决 MySQL 经典的 8 小时断连问题
+            self.engine = create_engine(db_url, pool_pre_ping=True, echo=False)
+            self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
+            LOGGER.info("数据库引擎创建成功")
         except Exception as e:
-            ERROR_LOGGER.error(f"连接 SQLite 数据库失败: {e}")
+            ERROR_LOGGER.error(f"数据库引擎创建失败: {e}")
             raise
 
-    def execute_query(self, sql: str, params: Optional[tuple] = None) -> List[tuple]:
-        try:
-            cursor = self.conn.cursor()
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            results = cursor.fetchall()
-            LOGGER.debug(f"SQLite 执行 SQL 成功: {sql}, 返回 {len(results)} 条数据")
-            return results
-        except Exception as e:
-            ERROR_LOGGER.error(f"SQLite 执行 SQL 失败: {e} | SQL: {sql}")
-            return []
+    def execute_query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """执行查询，返回结果集字典列表"""
+        with self.SessionLocal() as session:
+            try:
+                # 使用 text() 包装 SQL 以支持 :variable 命名占位符
+                result = session.execute(text(sql), params or {})
+                # _mapping 将结果行转换为字典，方便 key 访问
+                return [dict(row._mapping) for row in result]
+            except Exception as e:
+                ERROR_LOGGER.error(f"SQL查询执行失败: {e} | SQL: {sql}")
+                return []
 
-    def fetchone(self, sql: str) -> Any:
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql)
-            result = cursor.fetchone()
-            LOGGER.debug(f"SQLite fetchone 成功: {sql}, 结果: {result}")
-            return result
-        except Exception as e:
-            ERROR_LOGGER.error(f"SQLite fetchone 失败: {e} | SQL: {sql}")
-            return None
-
-    def fetchall(self, sql: str) -> List[Any]:
-        return self.execute_query(sql)
+    def execute_db(self, sql: str, params: Optional[Dict[str, Any]] = None):
+        """执行 Insert/Update/Delete 操作"""
+        with self.SessionLocal() as session:
+            try:
+                session.execute(text(sql), params or {})
+                session.commit()
+                LOGGER.debug(f"SQL执行成功: {sql}")
+            except Exception as e:
+                session.rollback()
+                ERROR_LOGGER.error(f"SQL执行事务回滚: {e} | SQL: {sql}")
+                raise e
 
     def close(self):
-        if self.conn:
-            self.conn.close()
-            LOGGER.info("SQLite 连接已关闭")
-
-
-class MySQLHandler(BaseSQLHandler):
-    """MySQL 数据库处理"""
-    def __init__(self, host: str, port: int, user: str, password: str, db: str):
-        try:
-            LOGGER.info(f"连接 MySQL 数据库: {host}:{port}/{db}")
-            self.conn = pymysql.connect(
-                host=host,
-                port=port,
-                user=user,
-                password=password,
-                database=db,
-                charset="utf8mb4",
-                connect_timeout=5
-            )
-            LOGGER.info("MySQL 连接成功")
-        except pymysql.MySQLError as e:
-            ERROR_LOGGER.error(f"MySQL 连接失败: {e}")
-            raise
-
-    def execute_query(self, sql: str, params: Optional[tuple] = None) -> Union[tuple[tuple[Any, ...], ...], list[Any]]:
-        try:
-            cursor = self.conn.cursor()
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            results = cursor.fetchall()
-            LOGGER.debug(f"MySQL 执行 SQL 成功: {sql}, 返回 {len(results)} 条数据")
-            return results
-        except Exception as e:
-            ERROR_LOGGER.error(f"MySQL 执行 SQL 失败: {e} | SQL: {sql}")
-            return []
-
-    def fetchone(self, sql: str) -> Any:
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(sql)
-            result = cursor.fetchone()
-            LOGGER.debug(f"MySQL fetchone 成功: {sql}, 结果: {result}")
-            return result
-        except Exception as e:
-            ERROR_LOGGER.error(f"MySQL fetchone 失败: {e} | SQL: {sql}")
-            return None
-
-    def fetchall(self, sql: str) -> List[Any]:
-        return self.execute_query(sql)
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            LOGGER.info("MySQL 连接已关闭")
+        """SQLAlchemy 通过连接池管理，通常不需要手动关闭 engine"""
+        pass
 
 
 class SQLHandlerFactory:
-    """工厂类：根据配置创建不同类型的数据库连接"""
+    """工厂类：根据配置动态生成处理器"""
+
     @staticmethod
     def create(db_conf: Dict[str, Any]) -> BaseSQLHandler:
         db_type = db_conf.get("type", "").lower()
-        if db_type == "sqlite":
-            return SQLiteHandler(db_conf["path"])
-        elif db_type == "mysql":
-            return MySQLHandler(
-                host=db_conf["host"],
-                port=int(db_conf["port"]),
-                user=db_conf["user"],
-                password=db_conf["password"],
-                db=db_conf["database"]
-            )
+
+        # 1. 如果配置中直接给出了完整的 URL (推荐)
+        if "url" in db_conf:
+            return SQLAlchemyHandler(db_conf["url"])
+
+        # 2. 如果是旧版拆分配置，自动拼装 URL
+        if db_type == "mysql":
+            url = f"mysql+pymysql://{db_conf['user']}:{db_conf['password']}@{db_conf['host']}:{db_conf['port']}/{db_conf['database']}?charset=utf8mb4"
+            return SQLAlchemyHandler(url)
+        elif db_type == "sqlite":
+            # 兼容绝对路径和相对路径
+            path = db_conf.get("path", "test.db")
+            url = f"sqlite:///{path}"
+            return SQLAlchemyHandler(url)
         else:
             raise ValueError(f"不支持的数据库类型: {db_type}")
 
+# =========================================================
+# 使用示例
+# =========================================================
 if __name__ == '__main__':
     from src.utils.read_test_cases import read_conf
 
-
-    # 从配置文件读取数据库信息
-    mysql_conf = read_conf.get_dict("db")
     sqlite_conf = read_conf.get_dict("sqlite_local")
 
-    # MySQL 测试
-    mysql_db = SQLHandlerFactory.create(mysql_conf)
-    print(mysql_db.fetchone("SELECT * FROM t_user_info WHERE id = 1000;"))
-    mysql_db.close()
+    # 1. 创建处理器
+    db = SQLHandlerFactory.create(sqlite_conf)
 
-    # # SQLite 测试
-    # sqlite_db = SQLHandlerFactory.create(sqlite_conf)
-    # print(sqlite_db.fetchall("select * from users;"))
-    # sqlite_db.close()
+    # 2. 执行查询 (注意使用 :id 这种占位符，安全且跨数据库通用)
+    sql_str = "SELECT * FROM test_cases WHERE id = :case_id"
+    data = db.execute_query(sql_str, {"case_id": 195})
+
+    print(data)
+    for row in data:
+        print(f"用例名称: {row['name']}")  # 字典访问，比 row[1] 稳健得多

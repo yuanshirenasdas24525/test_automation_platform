@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import HTMLResponse
 from fastapi import Body, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from typing import List, Optional
@@ -39,6 +39,12 @@ class ModuleCreate(pydantic.BaseModel):
     project_id: int
     parent_id: Optional[int] = None
     name: str
+
+
+class RunTestRequest(pydantic.BaseModel):
+    project: int
+    module: Optional[int] = None
+    case: Optional[int] = None
 
 
 class TestCaseCreate(pydantic.BaseModel):
@@ -298,15 +304,6 @@ def delete_case_content(content_id: int, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "success"}
 
-@app.post("/api/run_cases")
-def run_cases(cases_id: int = Body(..., embed=True), db: Session = Depends(get_db)):
-    # 获取用例详情
-    print(cases_id)
-    case = db.query(TestCase).filter(TestCase.id == cases_id).first()
-    print(case)
-    pass
-
-
 @app.post("/api/projects/{project_id}/import_cases")
 async def import_test_cases(
         project_id: int,
@@ -348,6 +345,62 @@ async def import_test_cases(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
+
+@app.post("/api/test_cases")
+def create_test_case(case_data: TestCaseCreate, db: Session = Depends(get_db)):
+    # 1. 如果指定了插入位置
+    if case_data.sort_order is not None:
+        # 将当前模块下，顺序号大于等于新用例的所有用例后移一位
+        db.query(TestCase).filter(
+            TestCase.module_id == case_data.module_id,
+            TestCase.sort_order >= case_data.sort_order
+        ).update({TestCase.sort_order: TestCase.sort_order + 1})
+    else:
+        # 如果没指定，默认放到最后
+        max_order = db.query(func.max(TestCase.sort_order)).filter(
+            TestCase.module_id == case_data.module_id
+        ).scalar() or 0
+        case_data.sort_order = max_order + 1
+
+    # 2. 创建新用例
+    new_case = TestCase(**case_data.dict())
+    db.add(new_case)
+    db.commit()
+    return new_case
+
+
+@app.post("/api/run_test")
+async def run_test(req: RunTestRequest):
+    from src.utils.read_test_cases import read_conf
+    from src.utils.read_test_cases import get_cases_from_db
+    con_sqlite = read_conf.get_dict("sqlite_local")
+    try:
+        # 1. 调用之前重构的函数获取用例列表 (嵌套列表格式)
+        # 逻辑：case_id > module_id > project_id
+        params = {
+            "project": req.project,
+            "module": req.module,
+            "case": req.case
+        }
+        print("params", params)
+        print("con_sqlite", con_sqlite)
+
+        cases_to_run = get_cases_from_db(params, con_sqlite)
+
+
+        if not cases_to_run:
+            return {"status": "error", "message": "未找到可执行的用例"}
+
+        # 2. 这里触发你的自动化测试执行引擎 (如 Pytest 或自定义 Runner)
+        # 示例：results = test_runner.execute(cases_to_run)
+
+        return {
+            "status": "success",
+            "total": cases_to_run,
+            "message": f"成功启动 {len(cases_to_run)} 条用例的测试"
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.patch("/api/reorder")
 def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):

@@ -27,7 +27,7 @@ class FileParameter:
         root_dir: 图片文件根目录，可用于统一管理文件路径
         extra_pool: 额外参数池，用于替换路径中的动态参数
         """
-        self.root_dir = root_dir or ProjectPaths.IMG_FILE
+        self.root_dir = root_dir or ProjectPaths.IMG_DIR
         self.extra_pool = extra_pool or {}
 
     # ---------------------------------------------------

@@ -6,6 +6,7 @@ window.currentParentId = null;
 window.isEditMode = false;
 window.currentEditId = null;
 window.currentListData = [];
+window.insertIndex = null;
 
 // --- 路由与视图控制 ---
 const router = {
@@ -64,7 +65,7 @@ const router = {
                         <div style="margin-top:15px; border-top:1px solid #eee; padding-top:10px; display:flex; gap:5px; justify-content:center;">
                             <button class="btn btn-primary" style="font-size:12px; padding:4px 8px;" onclick="editProject(${p.id})">编辑</button>
                             <button class="btn btn-danger" style="font-size:12px; padding:4px 8px;" onclick="deleteProject(${p.id})">删除</button>
-                            <button class="btn btn-primary" style="font-size:12px; padding:4px 8px; background:#f39c12" onclick="runProjectCases()">执行</button>
+                            <button class="btn btn-primary" style="font-size:12px; padding:4px 8px; background:#f39c12" onclick="runProjectCases(${p.id})">执行</button>
                         </div>
                     </div>`;
             });
@@ -132,7 +133,7 @@ const router = {
                     <thead>
                         <tr>
                             <th width="40"><input type="checkbox" id="selectAll"></th>
-                            <th width="80">ID</th>
+                            <th width="80">执行顺序</th>
                             <th width="120">名称</th>
                             <th width="120">请求地址</th>
                             <th width="150">请求类型</th>
@@ -145,8 +146,10 @@ const router = {
             if (data.length === 0) {
                 html += `<tr><td colspan="6" style="text-align:center; padding:30px;">该目录下暂无内容</td></tr>`;
             } else {
-                data.forEach(item => {
+                data.forEach((item, index) => {
                     const isMod = item.type === 'module';
+                    const projId = window.currentProjectId;
+                    const belongsToModuleId = isMod ? item.id : (item.module_id || window.currentParentId);
 
                     const clickAction = isMod
                         ? `window.router.projectDetail(${projId}, ${item.id})`
@@ -157,7 +160,7 @@ const router = {
                     html += `
                         <tr class="draggable" data-id="${item.id}" data-type="${item.type}" draggable="true">
                             <td><input type="checkbox" class="item-checkbox" value="${item.id}"></td>
-                            <td>${item.id}</td>
+                            <td style="color: #888; font-family: monospace;">${index + 1}</td>
                             
                             <td onclick="${clickAction}"
                                 style="cursor:pointer; ${isMod ? 'font-weight:bold; color:#3498db;' : 'color:#2c3e50;'}">
@@ -175,8 +178,19 @@ const router = {
                             </td>
                             
                             <td>
+                                <button class="btn btn-success" style="font-size:12px; padding:2px 6px; background-color: #27ae60; color: white;" 
+                                    onclick="runTestHandler(${projId}, ${belongsToModuleId}, ${isMod ? 'null' : item.id})">
+                                    ▶ 运行
+                                </button>
+                            
                                 <button class="btn btn-primary" style="font-size:12px; padding:2px 6px;"
                                     onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}">编辑</button>
+                                
+                                ${!isMod ? `
+                                <button class="btn btn-ghost" style="font-size:12px; padding:2px 6px; border:1px solid #ddd;" 
+                                    onclick="insertCaseAfter(${index})">插入</button>
+                                ` : ''}
+                            
                                 <button class="btn btn-danger" style="font-size:12px; padding:2px 6px;"
                                     onclick="confirmDelete('${item.type}', ${item.id})">删除</button>
                             </td>
@@ -427,6 +441,11 @@ async function submitCase() {
             wait_time: parseInt(document.getElementById('c-wait-time').value) || 0
         };
 
+    // 如果是插入模式，告诉后端插入位置
+    if (window.insertIndex !== null) {
+        payload.sort_order = window.insertIndex;
+    }
+
     // 2. 基础校验
     if (!payload.module_id) { alert("错误：无法在根目录下创建用例，请先进入模块"); return; }
     if (!payload.name || !payload.path || !payload.assertion) { alert("请填写必填项：名称、路径、断言"); return; }
@@ -442,6 +461,7 @@ async function submitCase() {
             body: JSON.stringify(payload)
         });
         if (res.ok) {
+            window.insertIndex = null; // 重置插入标记
             closeModal('case-modal');
             window.router.projectDetail(window.currentProjectId, window.currentParentId);
         } else {
@@ -453,38 +473,30 @@ async function submitCase() {
     }
 }
 
-function runProjectCases() {
-    alert("项目运行按钮功能还在开发中。。。");
-}
-
-async function runModuleCases(id) {
-    const payload = {
-            id: parseInt(id)
-        };
-    const url = `${API_BASE}/run_cases`
-    const method = 'POST';
+async function executeRun(payload) {
     try {
-        const res = await fetch(url, {
-            method: method,
+        const res = await fetch(`${API_BASE}/run_test`, {
+            method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        if (res.ok) {
-            closeModal('case-modal');
-            window.router.projectDetail(window.currentProjectId, window.currentParentId);
+        const data = await res.json();
+        if (data.status === 'success') {
+            alert(`测试已启动：共 ${data.total} 条用例`);
         } else {
-            const err = await res.json();
-            alert("提交失败: " + JSON.stringify(err.detail));
+            alert(`启动失败：${data.message}`);
         }
-    } catch (e) {
-        alert("网络异常或后端接口未实现");
+    } catch (err) {
+        console.error("执行测试出错:", err);
     }
-
-    // alert("模块运行按钮还在开发中。。。");
 }
 
-function runCase() {
-    alert("用例运行按钮还在开发中。。。");
+function runProjectCases(projectId) {
+    executeRun({ project: projectId });
+}
+
+function runTestHandler(projectId, moduleId, caseId){
+    executeRun({ project: projectId, module: moduleId, case: caseId });
 }
 
 // --- 编辑用例 ---
@@ -514,6 +526,9 @@ function openCaseModal(caseData = null) {
 // --- 新增用例 ---
 function newCaseModal() {
     window.isEditMode = false;
+    window.currentEditId = null;
+    window.insertIndex = null; // 普通新增不需要插入位置
+    resetCaseModal();
     document.getElementById('case-modal-title').innerText = "新增测试用例";
     document.querySelectorAll('#case-modal input, #case-modal textarea').forEach(el => el.value = '');
     document.getElementById('case-modal').style.display = 'flex';
@@ -534,35 +549,6 @@ function editCaseModal(item) {
     document.getElementById('case-modal-title').innerText = "编辑用例";
     document.getElementById('case-modal').style.display = 'flex';
     openCaseModal(item);
-}
-
-// 处理点击编辑按钮的逻辑
-function handleEditCase(id) {
-    // 从刚才保存的全局变量中找到对应的 item 对象
-    const item = window.currentListData.find(i => i.id === id);
-
-    if (item) {
-        editCaseModal(item);
-    } else {
-        console.error("未找到该用例数据，ID:", id);
-    }
-}
-
-function toggleCasePreview(id) {
-    const previewRow = document.getElementById(`preview-row-${id}`);
-    if (previewRow) {
-        // 切换显示状态
-        const isHidden = previewRow.style.display === 'none';
-        previewRow.style.display = isHidden ? 'table-row' : 'none';
-
-        // 给主行添加高亮样式
-        const mainRow = previewRow.previousElementSibling;
-        if (isHidden) {
-            mainRow.style.backgroundColor = "#f0f7ff";
-        } else {
-            mainRow.style.backgroundColor = "";
-        }
-    }
 }
 
 function formatAndHighlight(text) {
@@ -626,28 +612,69 @@ async function submitImport() {
     }
 }
 
+function insertCaseAfter(index) {
+    window.insertIndex = index + 1; // 在当前行之后插入
+    window.isEditMode = false;      // 插入本质是新增
+    window.currentEditId = null;
+
+    // 重置并打开新增用例弹窗
+    newCaseModal();
+    document.getElementById('case-modal-title').innerText = `在第 ${index + 1} 行后插入新用例`;
+    document.getElementById('case-modal').style.display = 'flex';
+}
+
+function resetCaseModal() {
+    // 1. 清空所有输入框
+    document.getElementById('c-name').value = '';
+    document.getElementById('c-desc').value = '';
+    document.getElementById('c-path').value = '';
+    document.getElementById('c-headers').value = '';
+    document.getElementById('c-params').value = '';
+    document.getElementById('c-extract').value = '';
+    document.getElementById('c-sql').value = '';
+    document.getElementById('c-assertion').value = '';
+    document.getElementById('c-wait-time').value = 0;
+
+    // 2. 恢复默认选项
+    document.getElementById('c-method').value = 'POST';
+    document.getElementById('c-data-type').value = 'application/json';
+    document.getElementById('c-skip').checked = false;
+
+    // 3. 隐藏错误提示（如果有 JSON 校验的话）
+    const errors = document.querySelectorAll('.error-msg');
+    errors.forEach(err => err.style.display = 'none');
+}
+
 // --- 拖拽排序逻辑 ---
 function initDragging() {
     const list = document.getElementById('sortable-list');
     let draggingEle = null;
 
+    // 1. 开始拖拽
     list.addEventListener('dragstart', (e) => {
-        // 确保只允许 class 为 draggable 的行进行拖拽
         draggingEle = e.target.closest('.draggable');
         if (draggingEle) {
             e.dataTransfer.effectAllowed = 'move';
+            draggingEle.classList.add('dragging'); // 可选：添加拖拽中样式
         }
     });
 
+    // 2. 拖拽过程中计算位置（这是实现“实质排序”的关键）
     list.addEventListener('dragover', (e) => {
         e.preventDefault();
         const target = e.target.closest('.draggable');
+
+        // 确保目标是另一行且不是正在拖拽的行
         if (target && target !== draggingEle) {
             const rect = target.getBoundingClientRect();
+            // 计算鼠标在目标行上的位置，超过一半则移到目标行后面
             const next = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5;
-            list.insertBefore(draggingEle, next ? target.nextSibling : target);
 
-            // 重要：如果 draggingEle 后面跟着预览行，也要把预览行带过去
+            // 移动主行
+            const nodeToInsert = next ? target.nextSibling : target;
+            list.insertBefore(draggingEle, nodeToInsert);
+
+            // 【重要】联动移动预览行：确保预览详情始终紧跟在主行下方
             const previewRow = document.getElementById(`preview-row-${draggingEle.dataset.id}`);
             if (previewRow) {
                 list.insertBefore(previewRow, draggingEle.nextSibling);
@@ -655,26 +682,44 @@ function initDragging() {
         }
     });
 
+    // 3. 拖拽结束，保存数据并更新序号
     list.addEventListener('dragend', async () => {
-        // 【核心修复】只查询带有 data-id 的 .draggable 行，排除掉预览行
-        const rows = Array.from(list.querySelectorAll('tr.draggable'));
+        if (draggingEle) draggingEle.classList.remove('dragging');
 
+        // 只获取带 ID 的主行进行排序上报
+        const rows = Array.from(list.querySelectorAll('tr.draggable'));
         const updateData = rows.map((row, index) => ({
             id: parseInt(row.dataset.id),
             type: row.dataset.type,
             new_order: index
         }));
 
-        // 过滤掉任何可能解析失败的无效数据
         const cleanData = updateData.filter(item => !isNaN(item.id));
 
-        console.log("发送排序数据:", cleanData);
+        // 发送后端请求
+        try {
+            const res = await fetch(`${API_BASE}/reorder`, {
+                method: 'PATCH',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(cleanData)
+            });
 
-        await fetch(`${API_BASE}/reorder`, {
-            method: 'PATCH',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(cleanData)
-        });
+            if (res.ok) {
+                // 【实时更新序号】
+                const currentRows = list.querySelectorAll('tr.draggable');
+                currentRows.forEach((row, index) => {
+                    const orderCell = row.cells[1]; // 假设序号在第2列
+                    if (orderCell) {
+                        orderCell.innerText = index + 1;
+                    }
+                });
+                console.log("排序保存成功");
+            }
+        } catch (error) {
+            console.error("排序保存失败:", error);
+        }
+
+        draggingEle = null;
     });
 }
 
