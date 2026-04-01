@@ -9,6 +9,14 @@ from src.utils.logger import LOGGER
 import time
 
 
+def clean_val(val):
+    if val is None:
+        return None
+    # strip() 会去掉前后的空格、换行符
+    s_val = str(val).strip()
+    return s_val if s_val != "" else None
+
+
 class ApiClient:
     _sessions = {}
     _default_session = None
@@ -78,28 +86,40 @@ class ApiClient:
                 self._default_session = requests.Session()
             return self._default_session
 
-    def send_case(self, case: list) -> object:
-        (
-            case_module, case_submodule, case_name, case_title, skip, method, path, header,
-            parametric_type, data, file_path, extra, sql, expect, wait
-        ) = case
+    def send_case(self, case: dict) -> object:
+        case_project = case.get("project_name", None)  # 对应你之前 JOIN 查出来的项目名
+        case_module = case.get("module_name", None)  # 对应模块名
+        case_name = clean_val(case.get("name"))  # 用例名称
+        case_description= case.get("description", None)  # 对应描述
 
-        numbered_module, numbered_submodule, numbered_case_name, numbered_case_title = self._add_case_numbering(
-            case_module, case_submodule, case_name, case_title)
+        skip = clean_val(case.get("skip"))
+        method = clean_val(case.get("method"))
+        path = clean_val(case.get("path"))
+        header = clean_val(case.get("headers"))
+        parametric_type = clean_val(case.get("data_type"))
+        data = clean_val(case.get("params"))
+        file_path = clean_val(case.get("file_path"))
+        extra = clean_val(case.get("extract_data"))
+        sql = clean_val(case.get("sql_query"))
+        expect = clean_val(case.get("assertion"))
+        wait = clean_val(case.get("wait_time"))
+
+        numbered_project, numbered_module, numbered_case_name, numbered_case_description = self._add_case_numbering(
+            case_project, case_module, case_name, case_description)
 
         LOGGER.info(
-            f"TestCase: {numbered_module} - {numbered_submodule} - {numbered_case_name} - {numbered_case_title}\n"
+            f"TestCase: {numbered_project} - {numbered_module} - {numbered_case_name} - {numbered_case_description}\n"
             f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}\nfile_path: {file_path}"
         )
 
         if wait is not None:
             time.sleep(float(wait))
 
-        set_allure_project(numbered_module)
-        set_allure_module(numbered_submodule)
+        set_allure_project(numbered_project)
+        set_allure_module(numbered_module)
         set_allure_case(numbered_case_name)
-        set_allure_title(numbered_case_title)
-        set_allure_description(description=f"{case_title}")
+
+        set_allure_description(description=f"{numbered_case_description}")
 
         url = self.processor.handler_path(path_str=path)
         header = self.processor.handler_header(header, data, sql)

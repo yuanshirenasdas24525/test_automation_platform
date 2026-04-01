@@ -7,7 +7,7 @@ import os
 import json
 import subprocess
 from string import Template
-from jsonpath import jsonpath
+from jsonpath_ng import jsonpath, parse
 from typing import NamedTuple, Any, Dict, List, Union
 from src.utils.logger import LOGGER, ERROR_LOGGER
 
@@ -249,16 +249,32 @@ def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
 
 def extractor(json_obj: Union[Dict, List], json_path: str) -> Any:
     """
-    使用jsonpath表达式从json对象中提取数据。
+    使用 jsonpath-ng 表达式从 json 对象中提取数据。
     """
+    LOGGER.info(f"使用 jsonpath-ng 提取数据: {json_path},{json_obj}")
     try:
-        matches = jsonpath(json_obj, json_path)
+        # 1. 解析 json_path 字符串
+        jsonpath_expr = parse(json_path)
+
+        # 2. 在 json_obj 中寻找匹配项
+        # .find() 返回的是一个 DatumInContext 对象的列表
+        matches = jsonpath_expr.find(json_obj)
+
         if not matches:
             return None
-        if len(matches) == 1:
-            return matches[0]
-        return matches
+
+        # 3. 提取具体的值
+        # match.value 才是我们真正需要的数据
+        results = [match.value for match in matches]
+
+        # 保持你原有的逻辑：单个结果返回对象，多个结果返回列表
+        if len(results) == 1:
+            return results[0]
+        LOGGER.info(f"提取器返回结果: {results}")
+        return results
+
     except Exception as e:
+        # 这里的错误通常是 json_path 语法错误
         ERROR_LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
         return json_path
 

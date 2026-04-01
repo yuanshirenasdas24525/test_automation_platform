@@ -243,37 +243,34 @@ def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
     # 执行查询
     rows = db.execute_query(sql_base, query_params)
 
-    # 3. 格式改造：生成列表
-    # 字段顺序严格对应你要求的：[项目名, 模块名, 用例名, 描述, skip, ...]
-    fields_order = [
-        "project_name", "module_name", "name", "description", "skip",
-        "method", "path", "headers", "data_type", "params",
-        "file_path", "extract_data", "sql_query", "assertion", "wait_time"
-    ]
+    # # 3. 格式改造：生成列表
+    # # 字段顺序严格对应你要求的：[项目名, 模块名, 用例名, 描述, skip, ...]
+    # fields_order = [
+    #     "project_name", "module_name", "name", "description", "skip",
+    #     "method", "path", "headers", "data_type", "params",
+    #     "file_path", "extract_data", "sql_query", "assertion", "wait_time"
+    # ]
+    #
+    # result_list = []
+    # for row in rows:
+    #     # row 已经是字典，直接按 key 取出值
+    #     case_row = [row.get(f) for f in fields_order]
+    #     result_list.append(case_row)
 
-    result_list = []
-    for row in rows:
-        # row 已经是字典，直接按 key 取出值
-        case_row = [row.get(f) for f in fields_order]
-        result_list.append(case_row)
-
-    return result_list
+    return rows
 
 # =========================================================
 # 使用示例
 # =========================================================
 if __name__ == "__main__":
     con_sqlite = read_conf.get_dict("sqlite_local")
-    print(con_sqlite)
 
     # reader = GenericCaseReader(ProjectPaths.ui_register_case, process_ui_row).read()
     # for i in reader:
     #     print(i)
-    params = {"project":17,"module":19,"case":67}
-    try:
-        final_data = get_cases_from_db(params, con_sqlite)
-        print(f"\n最终返回列表总数: {len(final_data)}")
-        for i in final_data:
-            print(i)
-    except Exception as e:
-        print(f"发生错误: {e}")
+    # params = {"project":19,"module":27,"case":195}
+    # try:
+    #     final_data = get_cases_from_db(params, con_sqlite)
+    #     print(final_data)
+    # except Exception as e:
+    #     print(f"发生错误: {e}")

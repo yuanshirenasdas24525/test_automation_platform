@@ -612,6 +612,35 @@ async function submitImport() {
     }
 }
 
+// 处理点击编辑按钮的逻辑
+function handleEditCase(id) {
+    // 从刚才保存的全局变量中找到对应的 item 对象
+    const item = window.currentListData.find(i => i.id === id);
+
+    if (item) {
+        editCaseModal(item);
+    } else {
+        console.error("未找到该用例数据，ID:", id);
+    }
+}
+
+function toggleCasePreview(id) {
+    const previewRow = document.getElementById(`preview-row-${id}`);
+    if (previewRow) {
+        // 切换显示状态
+        const isHidden = previewRow.style.display === 'none';
+        previewRow.style.display = isHidden ? 'table-row' : 'none';
+
+        // 给主行添加高亮样式
+        const mainRow = previewRow.previousElementSibling;
+        if (isHidden) {
+            mainRow.style.backgroundColor = "#f0f7ff";
+        } else {
+            mainRow.style.backgroundColor = "";
+        }
+    }
+}
+
 function insertCaseAfter(index) {
     window.insertIndex = index + 1; // 在当前行之后插入
     window.isEditMode = false;      // 插入本质是新增
