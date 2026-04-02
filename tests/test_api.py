@@ -13,9 +13,6 @@ class TestApi(object):
     def setup_method(self):
         pass
 
-    def test_api_runner(self, case): # 参数名必须叫 case
-        create_api_client().send_case(case=case)
-
     @pytest.mark.run(order=1)
     @pytest.mark.parametrize('case', GenericCaseReader(ProjectPaths.register, process_api_row).read())
     def test_uu_apitest_register_case(self, case):

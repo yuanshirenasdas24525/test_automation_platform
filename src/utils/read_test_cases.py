@@ -1,6 +1,7 @@
 # -*- coding:utf-8 -*-
 import json
 import yaml
+import numpy as np
 import pandas as pd
 from pathlib import Path
 import configparser
@@ -114,57 +115,51 @@ class GenericCaseReader:
             yield json.load(f)
 
     def _read_excel(self):
-        df = pd.read_excel(self.file_path, header=None, dtype=str)  # 一行一个 list
-        df = df.replace('\n', '', regex=True).replace(pd.NA, None)
-        for idx, row in enumerate(df.itertuples(index=False, name=None)):
-            if idx == 0:  # 跳过第一行表头
-                continue
-            row_list = list(row)
+        df = pd.read_excel(self.file_path, dtype=str)
+        df = df.replace('\n', '', regex=True).replace({np.nan: None, pd.NA: None})
+        df = df.infer_objects(copy=False)
+        for idx, row_dict in enumerate(df.to_dict('records'), start=2):
             if self.row_processor:
-                processed = self.row_processor(row_list, idx)
+                processed = self.row_processor(row_dict, idx)
                 if processed is None:
                     continue
                 yield processed
             else:
-                yield row_list
+                yield row_dict
 
     def _read_csv(self):
         df = pd.read_csv(self.file_path, header=None, dtype=str)
-        df = df.replace('\n', '', regex=True).replace(pd.NA, None)
-        for idx, row in enumerate(df.itertuples(index=False, name=None)):
-            if idx == 0:  # 跳过第一行表头
-                continue
-            row_list = list(row)
+        df = df.replace('\n', '', regex=True).replace({np.nan: None, pd.NA: None})
+        df = df.infer_objects(copy=False)
+        for idx, row_dict in enumerate(df.to_dict('records'), start=2):
             if self.row_processor:
-                processed = self.row_processor(row_list, idx)
+                processed = self.row_processor(row_dict, idx)
                 if processed is None:
                     continue
                 yield processed
             else:
-                yield row_list
+                yield row_dict
 
 
 # =========================================================
 # 行处理器实现（针对 Excel/CSV 的一行 list）
 # =========================================================
-def process_api_row(row_list: List[Any], idx: int) -> Optional[List[Any]]:
-    """处理 API 用例行（row_list 是一个 list）"""
+def process_api_row(row_dict: Dict[str, Any], idx: int) -> Optional[Dict[str, Any]]:
     try:
         # 第5列是 skip
-        skip_val = str(row_list[4]).strip().upper() if len(row_list) > 4 else ""
-        if skip_val == "Y":
+        if row_dict.get("skip"):
             return None
 
         # 第10列是 data
-        if len(row_list) > 9:
-            data_field = row_list[9]
-            if data_field and not is_json(data_field) and is_path(data_field):
-                json_data = process_json_files_in_path(data_field)
-                if json_data:
-                    # 这里可对 json_data 做特殊处理
-                    pass
 
-        return row_list
+        data_field = row_dict.get("data")
+        if data_field and not is_json(data_field) and is_path(data_field):
+            json_data = process_json_files_in_path(data_field)
+            if json_data:
+                # 这里可对 json_data 做特殊处理
+                pass
+
+        return row_dict
     except Exception as e:
         ERROR_LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
         return None
@@ -243,21 +238,7 @@ def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
     # 执行查询
     rows = db.execute_query(sql_base, query_params)
 
-    # # 3. 格式改造：生成列表
-    # # 字段顺序严格对应你要求的：[项目名, 模块名, 用例名, 描述, skip, ...]
-    # fields_order = [
-    #     "project_name", "module_name", "name", "description", "skip",
-    #     "method", "path", "headers", "data_type", "params",
-    #     "file_path", "extract_data", "sql_query", "assertion", "wait_time"
-    # ]
-    #
-    # result_list = []
-    # for row in rows:
-    #     # row 已经是字典，直接按 key 取出值
-    #     case_row = [row.get(f) for f in fields_order]
-    #     result_list.append(case_row)
-
-    return rows
+    return [row for row in rows if not row.get("skip")]
 
 # =========================================================
 # 使用示例
@@ -265,12 +246,10 @@ def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
 if __name__ == "__main__":
     con_sqlite = read_conf.get_dict("sqlite_local")
 
-    # reader = GenericCaseReader(ProjectPaths.ui_register_case, process_ui_row).read()
+    # reader = GenericCaseReader(ProjectPaths.register, process_api_row).read()
     # for i in reader:
     #     print(i)
-    # params = {"project":19,"module":27,"case":195}
-    # try:
-    #     final_data = get_cases_from_db(params, con_sqlite)
-    #     print(final_data)
-    # except Exception as e:
-    #     print(f"发生错误: {e}")
+    # params = {"project": 17, "module": 17}
+    # cases_to_run = get_cases_from_db(params, con_sqlite)
+    # for i in cases_to_run:
+    #     print(i)
