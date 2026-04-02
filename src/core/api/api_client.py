@@ -5,7 +5,7 @@ from src.utils.allure_utils import (
     set_allure_project, set_allure_module, set_allure_case, set_allure_title,
     set_allure_description, add_allure_step, set_allure_link
 )
-from src.utils.logger import LOGGER
+from src.utils.logger import LOGGER, ERROR_LOGGER
 import time
 
 
@@ -177,8 +177,13 @@ class ApiClient:
                 'Unsupported parametric_type. Choose from: '
                 'application/x-www-form-urlencoded, application/json, multipart/form-data'
             )
-
-        res = session.request(**request_kwargs)
+        try:
+            res = session.request(**request_kwargs,timeout=5)
+        except Exception as e:
+            # 打印具体的异常类型，比如是 Timeout 还是 ConnectionRefusedError
+            ERROR_LOGGER.error(f'请求失败类型: {type(e).__name__}')
+            ERROR_LOGGER.error(f'错误详细信息: {str(e)}')
+            raise
 
         try:
             response = res.json()

@@ -1,5 +1,4 @@
 # config/pytest_config.py
-import pytest
 import json
 
 def pytest_addoption(parser):

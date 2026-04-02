@@ -1,14 +1,20 @@
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import HTMLResponse
-from fastapi import Body, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi import Body, UploadFile, File, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN, func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from typing import List, Optional
 import pandas as pd
+import subprocess
 import pydantic
 import io
+import json
+import uuid
+import os
+import time
 
 # 数据库配置
 SQLALCHEMY_DATABASE_URL = "sqlite:///./data/db/sqlite.db"
@@ -16,7 +22,13 @@ engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=True, connect_args={"check_
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+if not os.path.exists("data/reports"):
+    os.makedirs("data/reports")
+
 app = FastAPI(title="Automation Test Platform")
+app.mount("/static", StaticFiles(directory="client"), name="static")
+app.mount("/reports", StaticFiles(directory="data/reports"), name="reports")
+
 
 # 跨域配置
 app.add_middleware(
@@ -118,8 +130,9 @@ def get_db():
 
 @app.get("/", response_class=HTMLResponse)
 def get_home():
-    html_file = open("client/index.html", 'r').read()
-    return html_file
+    # 确保路径正确
+    with open("client/index.html", 'r', encoding='utf-8') as f:
+        return f.read()
 
 @app.get("/api/projects")
 def get_projects(db: Session = Depends(get_db)):
@@ -370,20 +383,18 @@ def create_test_case(case_data: TestCaseCreate, db: Session = Depends(get_db)):
 
 
 @app.post("/api/run_test")
-async def run_test(req: RunTestRequest):
-    from src.utils.read_test_cases import read_conf
-    from src.utils.read_test_cases import get_cases_from_db
+async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks):
+    from src.utils.read_test_cases import read_conf, get_cases_from_db
     con_sqlite = read_conf.get_dict("sqlite_local")
+    # 1. 生成唯一任务 ID
+    task_id = str(uuid.uuid4())[:8]
     try:
-        # 1. 调用之前重构的函数获取用例列表 (嵌套列表格式)
-        # 逻辑：case_id > module_id > project_id
+
         params = {
             "project": req.project,
             "module": req.module,
             "case": req.case
         }
-        print("params", params)
-        print("con_sqlite", con_sqlite)
 
         cases_to_run = get_cases_from_db(params, con_sqlite)
 
@@ -391,13 +402,34 @@ async def run_test(req: RunTestRequest):
         if not cases_to_run:
             return {"status": "error", "message": "未找到可执行的用例"}
 
-        # 2. 这里触发你的自动化测试执行引擎 (如 Pytest 或自定义 Runner)
-        # 示例：results = test_runner.execute(cases_to_run)
+        def execute_pytest_workflow(task_id, cases):
+            import pytest
+            import json
+
+            # 结果路径和报告路径
+            result_path = f"data/results/{task_id}"
+            report_path = f"data/reports/{task_id}"
+
+            # A. 运行 Pytest 并生成 Allure 源数据 (JSON)
+            pytest_args = [
+                "-s", "-v",
+                "-p", "config.pytest_config",
+                "--alluredir", result_path,  # 动态指定结果目录
+                "tests/service_run_executor.py::TestServiceApi::test_api_runner",
+                f"--cases_data={json.dumps(cases)}"
+            ]
+            pytest.main(pytest_args)
+
+            os.system(f"allure generate {result_path} -o {report_path} --clean")
+            print(f"任务 {task_id} 报告生成完毕")
+
+        background_tasks.add_task(execute_pytest_workflow, task_id, cases_to_run)
 
         return {
             "status": "success",
-            "total": cases_to_run,
-            "message": f"成功启动 {len(cases_to_run)} 条用例的测试"
+            "task_id": task_id,
+            "report_url": f"/reports/{task_id}/index.html",
+            "message": "测试已在后台启动，完成后可访问 report_url"
         }
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -420,4 +452,4 @@ def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=54351)
+    uvicorn.run("main:app", host="127.0.0.1", port=54351, workers=2)
