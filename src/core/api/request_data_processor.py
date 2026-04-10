@@ -5,6 +5,7 @@ from src.utils.platform_utils import rep_expr, extractor, convert_json
 from src.utils.function_executor import exec_func
 from src.utils.logger import LOGGER
 from src.utils.allure_utils import add_allure_step
+from src.database.db_engine import SQLHandlerFactory
 
 
 
@@ -53,7 +54,7 @@ class RequestDataProcessor:
             headers.update(pe.ed_header())
         return headers
 
-    def handler_data(self, variable: str, sql: str) -> Any:
+    def handler_data(self, variable: str, sql: str, extra_str: str = None) -> Any:
         """
         处理请求数据，替换表达式并执行函数。
         """
@@ -67,15 +68,29 @@ class RequestDataProcessor:
             return {}
 
         if isinstance(data_obj, dict):
-            self._process_functions(data_obj, sql)
+            self._process_functions(data_obj, sql, extra_str)
         return data_obj
 
-    def _process_functions(self, data: dict, sql: str):
+    def _process_functions(self, data: dict, sql: str, extra_str: str = None):
         """
         处理字典中以 function: 开头的值，执行对应函数。
         自动传入 sql 查询结果（可能是多个）、当前变量和参数池。
         """
-        sql_results = self.execute_select_fetchone(sql)  # 返回 list
+        variable = rep_expr(extra_str, self.extra_pool)
+        data_obj = convert_json(variable)
+        if data_obj and data_obj.get('CustomDatabaseLink') is not None:
+            db = SQLHandlerFactory.create(data_obj.get('CustomDatabaseLink'))
+            sql = rep_expr(sql, self.extra_pool)
+            sql_results = []
+            for sql_statement in sql.split(";"):
+                sql_statement = sql_statement.strip()
+                if not sql_statement:
+                    continue
+                sql_result = db.execute_query(sql)
+                if sql_result:
+                    sql_results.append(sql_result[0] if isinstance(sql_result, (list, tuple)) else sql_result)
+        else:
+            sql_results = self.execute_select_fetchone(sql)  # 返回 list
         def _process(item: dict, parent_data):
             if isinstance(item, dict):
                 for k, v in item.items():
