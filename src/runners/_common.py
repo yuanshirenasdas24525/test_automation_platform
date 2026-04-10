@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 from config.settings import ProjectPaths
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 def ensure_report_dirs():
     """
@@ -37,7 +37,7 @@ def resolve_report_dirs(alluredir: str = None):
                 report_dir = os.path.join(os.path.dirname(os.path.dirname(alluredir)), "report")
                 return report_data_dir, report_dir
             except Exception as e:
-                ERROR_LOGGER.error(f"[ERROR] 无法创建 --alluredir 指定的目录 {alluredir}: {e}, 使用默认目录")
+                LOGGER.error(f"[ERROR] 无法创建 --alluredir 指定的目录 {alluredir}: {e}, 使用默认目录")
                 return ensure_report_dirs()
     else:
         return ensure_report_dirs()

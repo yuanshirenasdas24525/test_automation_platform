@@ -9,7 +9,7 @@ import subprocess
 from string import Template
 from jsonpath_ng import jsonpath, parse
 from typing import NamedTuple, Any, Dict, List, Union
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 
@@ -54,7 +54,7 @@ def run_command_safely(command, shell=False, capture_output=True, text=True, tim
         )
 
     except subprocess.TimeoutExpired as e:
-        ERROR_LOGGER.error(f"命令执行超时 ({timeout}秒): {command}")
+        LOGGER.error(f"命令执行超时 ({timeout}秒): {command}")
         return CommandResult(
             success=False,
             stdout=e.stdout.decode('utf-8') if e.stdout else "",
@@ -62,7 +62,7 @@ def run_command_safely(command, shell=False, capture_output=True, text=True, tim
             returncode=-1
         )
     except Exception as e:
-        ERROR_LOGGER.error(f"执行命令时发生错误: {e}, 命令: {command}")
+        LOGGER.error(f"执行命令时发生错误: {e}, 命令: {command}")
         return CommandResult(
             success=False,
             stdout="",
@@ -116,7 +116,7 @@ def execution_time_decorator(func):
                          f"返回结果：{result}")
             return result
         except Exception as e:
-            ERROR_LOGGER.error(f"{func.__name__}: {e}")
+            LOGGER.error(f"{func.__name__}: {e}")
             raise
 
     return wrapper
@@ -137,9 +137,9 @@ def delete_old_directories(directory_path):
             try:
                 shutil.rmtree(directory_to_delete)
             except Exception as e:
-                ERROR_LOGGER.error(f'无法删除 {directory_to_delete}。原因: {e}')
+                LOGGER.error(f'无法删除 {directory_to_delete}。原因: {e}')
     else:
-        ERROR_LOGGER.error(f'指定的路径 {directory_path} 不存在或不是一个目录。')
+        LOGGER.error(f'指定的路径 {directory_path} 不存在或不是一个目录。')
 
 
 def clear_log_files(log_dir):
@@ -150,7 +150,7 @@ def clear_log_files(log_dir):
     """
     # 检查文件夹是否存在
     if not os.path.isdir(log_dir):
-        ERROR_LOGGER.error(f"Error: {log_dir} is not a valid directory.")
+        LOGGER.error(f"Error: {log_dir} is not a valid directory.")
         return
     # 遍历文件夹中的所有文件
     files_found = False  # 标记是否找到符合条件的文件
@@ -163,7 +163,7 @@ def clear_log_files(log_dir):
 
     # 如果没有找到符合条件的文件
     if not files_found:
-        ERROR_LOGGER.error(f"No '.log' files found in {log_dir}.")
+        LOGGER.error(f"No '.log' files found in {log_dir}.")
 
 
 def delete_error_png_files(folder_path):
@@ -174,7 +174,7 @@ def delete_error_png_files(folder_path):
     """
     # 检查文件夹是否存在
     if not os.path.isdir(folder_path):
-        ERROR_LOGGER.error(f"Error: {folder_path} is not a valid directory.")
+        LOGGER.error(f"Error: {folder_path} is not a valid directory.")
         return
 
     # 遍历文件夹中的所有文件
@@ -188,7 +188,7 @@ def delete_error_png_files(folder_path):
 
     # 如果没有找到符合条件的文件
     if not files_deleted:
-        ERROR_LOGGER.error(f"No 'error.png' files found in {folder_path}.")
+        LOGGER.error(f"No 'error.png' files found in {folder_path}.")
 
 
 def clear_directory(directory: str):
@@ -197,11 +197,11 @@ def clear_directory(directory: str):
     :param directory: 需要清理的目录路径
     """
     if not os.path.exists(directory):
-        ERROR_LOGGER.info(f"目录不存在: {directory}")
+        LOGGER.info(f"目录不存在: {directory}")
         return
 
     if not os.path.isdir(directory):
-        ERROR_LOGGER.info(f"不是目录: {directory}")
+        LOGGER.info(f"不是目录: {directory}")
         return
 
     for filename in os.listdir(directory):
@@ -214,14 +214,14 @@ def clear_directory(directory: str):
                 shutil.rmtree(file_path)  # 删除整个子目录
                 LOGGER.info(f"已删除目录: {file_path}")
         except Exception as e:
-            ERROR_LOGGER.error(f"删除失败 {file_path}: {e}")
+            LOGGER.error(f"删除失败 {file_path}: {e}")
 
 
 def replace_str(text: str, extra_pool: Dict[str, Any]) -> str:
     try:
         return Template(text).safe_substitute(extra_pool)
     except Exception as e:
-        ERROR_LOGGER.error(f"replace_str错误: {e}")
+        LOGGER.error(f"replace_str错误: {e}")
         return text
 
 
@@ -230,7 +230,7 @@ def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
     替换文本中的表达式变量，格式为${var}，从extra_pool中取值替换。
     """
     if not isinstance(text, str):
-        ERROR_LOGGER.error(f"rep_expr需要一个字符串输入，得到 {type(text)}")
+        LOGGER.error(f"rep_expr需要一个字符串输入，得到 {type(text)}")
         return text
 
     pattern = re.compile(r'\$\{(.*?)}')
@@ -243,7 +243,7 @@ def rep_expr(text: str, extra_pool: Dict[str, Any]) -> str:
         LOGGER.debug(f"rep_expr 输入: {text}, 输出: {result}")
         return result
     except Exception as e:
-        ERROR_LOGGER.error(f"rep_expr错误: {e}")
+        LOGGER.error(f"rep_expr错误: {e}")
         return text
 
 
@@ -275,7 +275,7 @@ def extractor(json_obj: Union[Dict, List], json_path: str) -> Any:
 
     except Exception as e:
         # 这里的错误通常是 json_path 语法错误
-        ERROR_LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
+        LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
         return json_path
 
 
@@ -291,7 +291,7 @@ def extract_code(text: str, pattern: str) -> Union[str, None]:
             return code
         return None
     except Exception as e:
-        ERROR_LOGGER.error(f"extract_code 错误: {e}")
+        LOGGER.error(f"extract_code 错误: {e}")
         return None
 
 
@@ -300,12 +300,12 @@ def convert_json(data: str) -> Any:
     将字符串转换为json对象，支持dict和list。
     """
     if not isinstance(data, str):
-        ERROR_LOGGER.error(f"convert_json 需要一个字符串输入，得到 {type(data)}")
+        LOGGER.error(f"convert_json 需要一个字符串输入，得到 {type(data)}")
         return data
     try:
         obj = json.loads(data)
         LOGGER.debug(f"convert_json 输入: {data}, 输出: {obj}")
         return obj
     except Exception as e:
-        ERROR_LOGGER.error(f"convert_json 错误: {e}")
+        LOGGER.error(f"convert_json 错误: {e}")
         return data

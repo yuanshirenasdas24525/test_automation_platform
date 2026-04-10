@@ -2,7 +2,7 @@ import time
 import random
 import string
 import hashlib
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class ParameterEncryption:
     def __init__(self, data: dict, power_access_key="sJVgS8RdIBIBKbUD3dscfdez0iSrUhX1"):

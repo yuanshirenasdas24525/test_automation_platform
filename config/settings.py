@@ -20,7 +20,7 @@ class ProjectPaths:
     VIDEO_DIR = DATA_DIR / "video"
     UPLOAD_DIR = DATA_DIR / "upload_file"
     CACHE_FILE = DATA_DIR / "cache_file"
-    DB_FILE = DATA_DIR / "db"/"sqlite.db"
+    SQLITE_DB_PATH = DATA_DIR / "db"/"sqlite.db"
 
     # 日志
     LOG_DIR = DATA_DIR / "log"

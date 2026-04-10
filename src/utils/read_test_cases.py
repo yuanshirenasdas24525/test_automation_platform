@@ -6,9 +6,9 @@ import pandas as pd
 from pathlib import Path
 import configparser
 from typing import List, Dict, Any, Optional
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 from config.settings import ProjectPaths
-from src.utils.sql_handler import SQLHandlerFactory
+from src.database.db_engine import SQLHandlerFactory
 
 PROJECT = Path(ProjectPaths.BASE_DIR)
 
@@ -54,10 +54,10 @@ def process_json_files_in_path(relative_path):
                 with file.open('r', encoding='utf-8') as f:
                     data.extend(json.load(f))
             except Exception as e:
-                ERROR_LOGGER.error(f"读取 JSON 文件时出错 {file}: {e}")
+                LOGGER.error(f"读取 JSON 文件时出错 {file}: {e}")
         return data
     except Exception as e:
-        ERROR_LOGGER.error(f"错误处理路径 {relative_path}: {e}")
+        LOGGER.error(f"错误处理路径 {relative_path}: {e}")
         return None
 
 
@@ -161,7 +161,7 @@ def process_api_row(row_dict: Dict[str, Any], idx: int) -> Optional[Dict[str, An
 
         return row_dict
     except Exception as e:
-        ERROR_LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
+        LOGGER.error(f"处理第 {idx} 行 API 用例出错: {e}")
         return None
 
 
@@ -181,7 +181,7 @@ def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
 
         return dict(zip(keys, row_list))
     except Exception as e:
-        ERROR_LOGGER.error(f"处理第 {idx} 行 UI 用例出错: {e}")
+        LOGGER.error(f"处理第 {idx} 行 UI 用例出错: {e}")
         return {}
 
 

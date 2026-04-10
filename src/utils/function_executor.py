@@ -1,8 +1,7 @@
 # -*- coding:utf-8 -*-
 import inspect
 
-from src.utils.logger import LOGGER
-from src.utils.redis_utils import clear_cache
+from src.database.redis_utils import clear_cache
 from src.utils.platform_utils import execution_time_decorator
 from src.captcha_solver import solve_captcha
 

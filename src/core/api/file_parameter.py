@@ -3,7 +3,7 @@ import os
 import mimetypes
 from config.settings import ProjectPaths
 from src.utils.platform_utils import rep_expr
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class FileParameter:
     """
@@ -37,7 +37,7 @@ class FileParameter:
         path = rep_expr(path, self.extra_pool) if isinstance(path, str) else path or {}
         """自动处理相对路径/绝对路径"""
         if not path:
-            ERROR_LOGGER.error("文件路径为空")
+            LOGGER.error("文件路径为空")
 
         # 已经是绝对路径
         if os.path.isabs(path):
@@ -47,7 +47,7 @@ class FileParameter:
             full_path = os.path.join(self.root_dir, path)
 
         if not os.path.exists(full_path):
-            ERROR_LOGGER.error(f"文件未找到: {full_path}")
+            LOGGER.error(f"文件未找到: {full_path}")
 
         return full_path
 
@@ -97,7 +97,7 @@ class FileParameter:
                     files[key] = file_value
 
                 else:
-                    ERROR_LOGGER.error(f"文件格式不合法: {item}")
+                    LOGGER.error(f"文件格式不合法: {item}")
 
             return files
 
@@ -115,7 +115,7 @@ class FileParameter:
         file_list = [{"key": "file1", "path": "a.png"}] → 自定义 key
         """
         if not file_list:
-            ERROR_LOGGER.info(f"文件列表为空: {file_list}")
+            LOGGER.info(f"文件列表为空: {file_list}")
             return None
         file_list = [list_path.strip() for list_path in file_list.split(";")]
 

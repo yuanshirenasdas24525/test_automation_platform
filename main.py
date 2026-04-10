@@ -1,20 +1,20 @@
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import Body, UploadFile, File, APIRouter
+from fastapi import Body, UploadFile, File, APIRouter, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN, func
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import create_engine, Column, Integer, String, ForeignKey, BOOLEAN, func, JSON, DateTime, Float
 from sqlalchemy.orm import sessionmaker, Session, relationship
+from sqlalchemy.ext.declarative import declarative_base
+from src.utils.reload_config import config_center
+from src.utils.logger import LOGGER
+from src.common.context import ctx
 from typing import List, Optional
 import pandas as pd
-import subprocess
 import pydantic
 import io
-import json
 import uuid
 import os
-import time
 
 # 数据库配置
 SQLALCHEMY_DATABASE_URL = "sqlite:///./data/db/sqlite.db"
@@ -26,6 +26,7 @@ if not os.path.exists("data/reports"):
     os.makedirs("data/reports")
 
 app = FastAPI(title="Automation Test Platform")
+router = APIRouter(prefix="/api/config", tags=["配置管理"])
 app.mount("/static", StaticFiles(directory="client"), name="static")
 app.mount("/reports", StaticFiles(directory="data/reports"), name="reports")
 
@@ -45,7 +46,6 @@ class ProjectCreate(pydantic.BaseModel):
     icon: Optional[str]
     type: str
 
-
 # --- 更多 Pydantic 模型 ---
 class ModuleCreate(pydantic.BaseModel):
     project_id: int
@@ -53,9 +53,59 @@ class ModuleCreate(pydantic.BaseModel):
     name: str
 
 
+class ConfigUpdateItem(pydantic.BaseModel):
+    config_group: str
+    config_key: str
+    config_value: str
+
+
+class ConfigItem(pydantic.BaseModel):
+    id: Optional[int] = None
+    config_group: str
+    config_key: str
+    config_value: str
+    value_type: str = "str"
+    category: str
+    description: Optional[str] = ""
+
+
+class TestReport(Base):
+    __tablename__ = "test_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # 关联信息
+    project_id = Column(Integer, ForeignKey("projects.id"), index=True)
+    category = Column(String, index=True)  # api, web, mobile (方便首页按类型统计)
+
+    # 执行信息
+    scene_name = Column(String)  # 场景名称或执行任务名称
+    executor = Column(String, default="Admin")  # 执行人
+    start_time = Column(DateTime, server_default=func.now())
+    end_time = Column(DateTime)
+    duration = Column(Float)  # 耗时（秒）
+
+    # 统计数据 (核心：用于计算通过率)
+    total_count = Column(Integer, default=0)  # 总用例数
+    pass_count = Column(Integer, default=0)  # 成功数
+    fail_count = Column(Integer, default=0)  # 失败数
+    error_count = Column(Integer, default=0)  # 错误数（程序异常）
+    skip_count = Column(Integer, default=0)  # 跳过数
+
+    # 状态与结果
+    status = Column(String)  # success, fail, running
+    summary = Column(String)  # 简短的错误摘要
+
+    # 详细数据 (可选)
+    allure_url = Column(String)  # 如果集成了 Allure，存储报告链接
+
+    # 时间戳
+    create_time = Column(DateTime, server_default=func.now())
+
 class RunTestRequest(pydantic.BaseModel):
     project: int
     module: Optional[int] = None
+    type: Optional[str] = None
     case: Optional[int] = None
 
 
@@ -134,9 +184,53 @@ def get_home():
     with open("client/index.html", 'r', encoding='utf-8') as f:
         return f.read()
 
-@app.get("/api/projects")
-def get_projects(db: Session = Depends(get_db)):
-    return db.query(Project).order_by(Project.sort_order).all()
+
+# 修改后端代码
+@app.get("/api/projects/list")
+def get_projects(type: str = None, db: Session = Depends(get_db)):
+    # 1. 查询项目基础列表
+    query = db.query(Project)
+    LOGGER.info(f"asd: {query}")
+    if type:
+        query = query.filter(Project.type.ilike(type))
+
+    projects = query.order_by(Project.sort_order).all()
+
+    results = []
+    for proj in projects:
+        # --- 核心修改：使用方案一（跨表 Join）统计用例总数 ---
+        # 逻辑：统计所有属于“该项目下的模块”的用例
+        case_count = db.query(func.count(TestCase.id)) \
+            .join(Module, TestCase.module_id == Module.id) \
+            .filter(Module.project_id == proj.id) \
+            .scalar()
+
+        # 获取上次执行记录 (TestReport 直接关联了 project_id)
+        last_report = db.query(TestReport).filter(TestReport.project_id == proj.id) \
+            .order_by(TestReport.create_time.desc()).first()
+
+        # 计算通过率
+        pass_rate = 0
+        if last_report and last_report.total_count > 0:
+            pass_rate = round((last_report.pass_count / last_report.total_count) * 100, 1)
+
+        # 构建返回给前端的字典
+        proj_data = {
+            "id": proj.id,
+            "name": proj.name,
+            "type": proj.type,
+            "desc": proj.description,
+            "case_count": case_count or 0,
+            "pass_rate": pass_rate,
+            "last_status": last_report.status if last_report else "unknown",
+            "last_run_time": last_report.create_time.strftime("%Y-%m-%d %H:%M") if last_report else "从未执行"
+        }
+        results.append(proj_data)
+
+    return {
+        "status": "success",
+        "data": results
+    }
 
 @app.post("/api/projects")
 def create_project(project: ProjectCreate, db: Session = Depends(get_db)):
@@ -393,6 +487,7 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks):
         params = {
             "project": req.project,
             "module": req.module,
+            "category": req.type,
             "case": req.case
         }
 
@@ -446,6 +541,86 @@ def reorder_items(data: list = Body(...), db: Session = Depends(get_db)):
             db.query(TestCase).filter(TestCase.id == item['id']).update({"sort_order": item['new_order']})
     db.commit()
     return {"status": "success"}
+
+
+@app.get("/api/config/all")
+async def get_all_configs(category: Optional[str] = Query(None)):
+
+    if category:
+        # 根据类型筛选
+        sql = "SELECT * FROM config_store WHERE category = :category ORDER BY config_group"
+        params = {"category": category.lower()}
+    else:
+        # 返回所有数据
+        sql = "SELECT * FROM config_store ORDER BY category, config_group"
+        params = {}
+    data = ctx.db.execute_query(sql, params)
+    return {"status": "success", "data": data}
+
+
+@app.post("/api/config/save")
+async def save_configs(configs: List[ConfigItem]):
+    try:
+        for item in configs:
+            sql = """
+                  UPDATE config_store
+                  SET config_value = :val, \
+                      description  = :desc
+                  WHERE config_group = :group \
+                    AND config_key = :key \
+                  """
+            params = {"val": item.config_value, "desc": item.description, "group": item.config_group,
+                      "key": item.config_key}
+            ctx.db.execute_db(sql, params)
+
+        config_center.reload(ctx.db)  # 触发热更新
+        return {"status": "success", "message": "保存成功"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/config/add")
+async def add_config(item: ConfigItem):
+    # 1. 确保 SQL 占位符和 Params 的 Key 一一对应
+    sql = """
+          INSERT INTO config_store (config_group, config_key, config_value, category)
+          VALUES (:g, :k, :v, :c) \
+          """
+    params = {
+        "g": item.config_group,
+        "k": item.config_key,
+        "v": item.config_value,
+        "c": item.category or 'api'
+    }
+
+    ctx.db.execute_db(sql, params)
+    return {"status": "success"}
+
+
+# --- 删除 (Delete) ---
+@app.delete("/api/config/delete/{config_id}")
+async def delete_config(config_id: int):
+    ctx.db.execute_db("DELETE FROM config_store WHERE id = :id", {"id": config_id})
+    ctx.config.reload(ctx.db)
+    return {"status": "success"}
+
+
+# @app.post("/api/run/project/{proj_id}")
+# async def run_project(proj_id: int, category: str, background_tasks: BackgroundTasks):
+#     # 使用后台任务执行测试，避免前端请求超时
+#     background_tasks.add_task(execute_pytest, proj_id, category)
+#     return {"status": "success", "message": "测试任务已下发"}
+
+# def execute_pytest(proj_id, category):
+#     # 动态构建 pytest 参数
+#     # -q: 静默模式, --project_id: 自定义参数
+#     args = [
+#         f"tests/project_{proj_id}/",
+#         "-q",
+#         f"--project_id={proj_id}",
+#         f"--category={category}"
+#     ]
+#     pytest.main(args)
 
 
 

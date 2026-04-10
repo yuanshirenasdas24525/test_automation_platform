@@ -7,255 +7,461 @@ window.isEditMode = false;
 window.currentEditId = null;
 window.currentListData = [];
 window.insertIndex = null;
-
+window.viewProjectDetails = (id) => router.projectDetail(id);
 // --- 路由与视图控制 ---
 const router = {
     // 1. 首页：展示所有项目
-    async home() {
-        window.currentProjectId = null;
-        window.currentParentId = null;
-        const projects = await fetch(`${API_BASE}/projects`).then(r => r.json());
-        let html = `<h1>欢迎使用自动化测试平台</h1>`;
-        if (projects.length === 0) {
-            html += `
-                <div style="margin-top:50px; text-align:center;">
-                    <p>目前还没有项目，请先创建。</p>
-                    <button class="btn btn-primary" onclick="openProjectModal('API')">创建第一个项目</button>
-                </div>`;
-        } else {
-            html += `<div class="project-grid">`;
-            projects.forEach(p => {
-                html += `
-                    <div class="project-card" onclick="router.projectDetail(${p.id}, null)">
-                        <div style="font-size:2.5rem; margin-bottom:10px;">${p.icon || '📁'}</div>
-                        <h3>${p.name}</h3>
-                        <p>${p.description || '暂无简介'}</p>
-                        <span class="project-type">${p.type}</span>
-                    </div>`;
-            });
-            html += `</div>`;
-        }
-        render(html);
+    home: function() {
+        const container = document.getElementById('view-container');
+
+        container.innerHTML = `
+            <div class="home-container" style="padding: 30px;">
+                <div class="project-intro-card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 16px; margin-bottom: 30px; box-shadow: 0 10px 20px rgba(0,0,0,0.1);">
+                    <h1 style="margin: 0; font-size: 28px;">一站式质量保障中心</h1>
+                    <p style="margin-top: 15px; opacity: 0.9; line-height: 1.6; max-width: 800px;">
+                        本平台旨在解决测试过程中的复杂业务逻辑验证痛点。
+                        集成 <b>API、Web、Mobile</b> 三端自动化能力，支持热加载配置中心，
+                        实现从需求分析到测试报告的全链路闭环。
+                    </p>
+                    <div style="margin-top: 20px; display: flex; gap: 20px;">
+                        <div class="badge">当前版本: v2.0.4</div>
+                        <div class="badge">运行环境: macOS / Python 3.9</div>
+                    </div>
+                </div>
+    
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px;">
+                    ${renderStatCard('项目总数', '12', 'fa-folder', '#3b82f6')}
+                    ${renderStatCard('API用例', '856', 'fa-api', '#10b981')}
+                    ${renderStatCard('Web项目', '4', 'fa-chrome', '#f59e0b')}
+                    ${renderStatCard('执行成功率', '98.5%', 'fa-check-circle', '#ef4444')}
+                </div>
+    
+                <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 30px;">
+                    <div class="card" style="background:white; padding:20px; border-radius:12px; border:1px solid #eee;">
+                        <h3 style="margin-bottom:15px; display:flex; align-items:center;"><i class="fas fa-history" style="margin-right:10px; color:#6366f1;"></i> 最近动态</h3>
+                        <ul style="list-style:none; padding:0; font-size:14px; color:#475569;">
+                            <li style="padding:10px 0; border-bottom:1px solid #f1f5f9;">🚀 API 自动化配置已更新 [category: api]</li>
+                            <li style="padding:10px 0; border-bottom:1px solid #f1f5f9;">✅ 登录模块测试用例执行完成</li>
+                            <li style="padding:10px 0;">🔧 用户新增了 Web 自动化配置组</li>
+                        </ul>
+                    </div>
+                    <div class="card" style="background:white; padding:20px; border-radius:12px; border:1px solid #eee;">
+                        <h3 style="margin-bottom:15px;">系统负载</h3>
+                        <div style="margin-bottom:15px;">
+                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px;"><span>数据库连接 (SQLite)</span><span>正常</span></div>
+                            <div style="height:6px; background:#f1f5f9; border-radius:3px;"><div style="width:20%; height:100%; background:#10b981; border-radius:3px;"></div></div>
+                        </div>
+                        <div style="margin-bottom:15px;">
+                            <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:5px;"><span>热加载内存占用</span><span>24MB</span></div>
+                            <div style="height:6px; background:#f1f5f9; border-radius:3px;"><div style="width:45%; height:100%; background:#3b82f6; border-radius:3px;"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
     },
 
     // 2. 项目管理：按类型（API/Web/Mobile）过滤
-    async projectList(type) {
-        window.currentProjectId = null;
-        const allProjects = await fetch(`${API_BASE}/projects`).then(r => r.json());
-        const filtered = allProjects.filter(p => p.type === type);
+    projectList: async function(category) {
+        const container = document.getElementById('view-container');
+        container.innerHTML = `<div style="padding:40px; text-align:center; color:#94a3b8;"><i class="fas fa-spinner fa-spin"></i> 正在调取 ${category} 用例库...</div>`;
 
-        let html = `
-            <div class="header-actions">
-                <h2>${type} 自动化项目管理</h2>
-                <button class="btn btn-primary" onclick="openProjectModal('${type}')">+ 新增项目 ${type}</button>
-            </div>
-            <div class="project-grid">`;
+        try {
+            // 假设接口支持按类型获取项目列表
+            const response = await fetch(`/api/projects/list?type=${category}`);
+            const result = await response.json();
 
-        if (filtered.length === 0) {
-            html += `<p style="grid-column: 1/-1; text-align: center; padding: 40px;">暂无 ${type} 项目。</p>`;
-        } else {
-            filtered.forEach(p => {
+            let html = `
+                <div style="padding: 24px 30px; display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <h2 style="margin:0; font-size:22px; color:#1e293b;">${category} 自动化用例库</h2>
+                        <p style="margin:5px 0 0 0; font-size:13px; color:#64748b;">管理、执行并监控您的测试套件</p>
+                    </div>
+                    <button class="btn btn-primary" onclick="newProjectModal('${category}')">
+                        <i class="fas fa-plus"></i> 创建新项目
+                    </button>
+                </div>
+                <div class="project-grid">
+            `;
+
+            // 循环渲染卡片
+            result.data.forEach(proj => {
+                const caseCount = proj.case_count || 0;
+                const passRate = proj.pass_rate || 0;
+                const lastRun = proj.last_run_time || '从未执行';
+                const statusColor = proj.last_status === 'success' ? '#10b981' : (proj.last_status === 'fail' ? '#ef4444' : '#cbd5e1');
+                const icon = category === 'API' ? 'fa-bolt' : (category === 'Web' ? 'fa-desktop' : 'fa-mobile-alt');
+
                 html += `
                     <div class="project-card">
-                        <div onclick="router.projectDetail(${p.id}, null)" style="cursor:pointer">
-                            <div style="font-size:2rem;">${p.icon || '📁'}</div>
-                            <h3>${p.name}</h3>
-                            <p>${p.description}</p>
+                        <div class="project-status-bar" style="background: ${statusColor}"></div>
+                        <div class="project-header">
+                            <div class="project-icon-box" style="background: ${statusColor}15; color: ${statusColor}">
+                                <i class="fas ${icon}"></i>
+                            </div>
+                            <div class="dropdown" onclick="toggleProjectMenu(event, this)">
+                                <i class="fas fa-ellipsis-v" style="color:#cbd5e1; cursor:pointer; padding:5px;"></i>
+                                <ul class="dropdown-menu">
+                                    <li onclick="editProject(${proj.id})"><i class="fas fa-edit"></i> 编辑项目</li>
+                                    <li class="text-danger" onclick="deleteProject(${proj.id})">
+                                        <i class="fas fa-trash"></i> 删除项目
+                                    </li>
+                                </ul>
+                            </div>
                         </div>
-                        <div style="margin-top:15px; border-top:1px solid #eee; padding-top:10px; display:flex; gap:5px; justify-content:center;">
-                            <button class="btn btn-primary" style="font-size:12px; padding:4px 8px;" onclick="editProject(${p.id})">编辑</button>
-                            <button class="btn btn-danger" style="font-size:12px; padding:4px 8px;" onclick="deleteProject(${p.id})">删除</button>
-                            <button class="btn btn-primary" style="font-size:12px; padding:4px 8px; background:#f39c12" onclick="runProjectCases(${p.id})">执行</button>
+                        
+                        <h3 style="margin: 0 0 8px 0; font-size: 16px; color: #1e293b;">${proj.name}</h3>
+                        <p style="font-size: 12px; color: #64748b; line-height: 1.5; height: 36px; overflow: hidden;">
+                            ${proj.desc || '暂无项目描述，点击设置添加内容'}
+                        </p>
+    
+                        <div class="project-stats">
+                            <div class="stat-item">
+                                <div class="stat-label">用例总数</div>
+                                <div class="stat-value">${caseCount}</div>
+                            </div>
+                            <div class="stat-item" style="border-left: 1px solid #e2e8f0; border-right: 1px solid #e2e8f0;">
+                                <div class="stat-label">通过率</div>
+                                <div class="stat-value" style="color: ${statusColor}">${passRate}%</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">上次执行</div>
+                                <div class="stat-value" style="font-size:11px;">${lastRun}</div>
+                            </div>
                         </div>
-                    </div>`;
+    
+                        <div class="project-actions">
+                            <button class="action-btn-mini btn-run" onclick="runProjectCases(${proj.id},  ${proj.type})">
+                                <i class="fas fa-play"></i> 执行
+                            </button>
+                            <button class="action-btn-mini" onclick="viewProjectDetails(${proj.id})">
+                                <i class="fas fa-eye"></i> 详情
+                            </button>
+                            <button class="action-btn-mini" onclick="editProject(${proj.id})">
+                                <i class="fas fa-edit"></i> 编辑
+                            </button>
+                        </div>
+                    </div>
+                `;
             });
+
+            html += `</div>`;
+            container.innerHTML = html;
+        } catch (err) {
+            container.innerHTML = `<div style="padding:100px; text-align:center; color:#ef4444;">加载失败，请检查后端服务</div>`;
         }
-        html += `</div>`;
-        render(html);
     },
 
     // 3. 进入项目/模块详情
     async projectDetail(projId, moduleId = null) {
-        if (moduleId === "null" || moduleId === "undefined") moduleId = null;
-        // 1. 统一更新全局状态
+        // 严谨的参数处理
+        if (!moduleId || moduleId === "null" || moduleId === "undefined") moduleId = null;
+
         window.currentProjectId = projId;
         window.currentParentId = moduleId;
 
         try {
             let parentIdForBack = null;
-            let displayName = ""; // 用于显示在面包屑上的名称
+            let displayName = "";
 
+            // 1. 获取面包屑名称逻辑
             if (moduleId) {
-                const modRes = await fetch(`${API_BASE}/modules/${moduleId}`);
+                const modRes = await fetch(`/api/modules/${moduleId}`);
                 if (modRes.ok) {
                     const modData = await modRes.json();
                     parentIdForBack = modData.parent_id;
                     displayName = `📂 ${modData.name}`;
                 }
             } else {
-                // 场景 B：在项目根目录，获取项目详情
-                const projRes = await fetch(`${API_BASE}/projects/${projId}`);
+                const projRes = await fetch(`/api/projects/${projId}`);
                 if (projRes.ok) {
                     const projData = await projRes.json();
                     displayName = `🚀 ${projData.name}`;
                 }
             }
 
-            let contentUrl = `${API_BASE}/content/${projId}`;
+            // 2. 获取列表数据
+            let contentUrl = `/api/content/${projId}`;
             if (moduleId) contentUrl += `?parent_id=${moduleId}`;
             const res = await fetch(contentUrl);
             const data = await res.json();
-
             window.currentListData = data;
 
+            // 3. 构建沉浸式 UI
             let html = `
-                <div class="header-actions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                    <div class="breadcrumb">
-                        <button class="btn btn-ghost" onclick="window.router.home()">🏠 首页</button>
-                        <span style="margin: 0 5px; color: #ccc;">/</span>
-                        ${moduleId ?
-                            `<button class="btn btn-ghost" onclick="window.router.projectDetail(${projId}, ${parentIdForBack})">⬅️ 返回上一级</button>` :
-                            ''
-                        }
-                        <span style="margin-left:10px; font-weight:bold; color:var(--accent-color)">${displayName}</span>
-                    </div>
-                    <div>
-                        <button class="btn btn-primary" onclick="openModuleModal()">+ 新增模块</button>
-                        ${moduleId !== null ?
-                            `
-                            <button class="btn btn-ghost" onclick="document.getElementById('import-modal').style.display='flex'">📥 导入用例</button>
-                            <button class="btn btn-primary" style="background:#27ae60; margin-left:10px;" onclick="newCaseModal()">+ 新增用例</button>` :
-                            ''
-                        }
+                <div class="detail-header" style="padding: 24px 30px; background: white; border-bottom: 1px solid #e2e8f0;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div class="breadcrumb-nav" style="display: flex; align-items: center; gap: 8px;">
+                            <button class="btn-icon" onclick="router.home()"><i class="fas fa-home"></i></button>
+                            <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>
+                            ${moduleId ? 
+                                `<button class="btn-text" onclick="router.projectDetail(${projId}, ${parentIdForBack})">返回上级</button>
+                                 <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>` : ''
+                            }
+                            <span style="font-weight: 600; color: #1e293b; font-size: 18px;">${displayName}</span>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-outline" onclick="newModuleModal()"><i class="fas fa-folder-plus"></i> 新增模块</button>
+                            ${moduleId !== null ? `
+                                <button class="btn btn-outline" onclick="document.getElementById('import-modal').style.display='flex'"><i class="fas fa-file-import"></i> 导入</button>
+                                <button class="btn btn-primary" onclick="newCaseModal()"><i class="fas fa-plus"></i> 新增用例</button>
+                            ` : ''}
+                        </div>
                     </div>
                 </div>
-                <table class="main-table">
-                    <thead>
-                        <tr>
-                            <th width="40"><input type="checkbox" id="selectAll"></th>
-                            <th width="80">执行顺序</th>
-                            <th width="120">名称</th>
-                            <th width="120">请求地址</th>
-                            <th width="150">请求类型</th>
-                            <th width="150">请求参数</th>
-                            <th width="150">操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="sortable-list">`;
+    
+                <div style="padding: 20px 30px;">
+                    <table class="modern-table">
+                        <thead>
+                            <tr>
+                                <th width="40"><input type="checkbox" id="selectAll"></th>
+                                <th width="60">#</th>
+                                <th>名称 / 路径</th>
+                                <th width="100">方法</th>
+                                <th width="200">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sortable-list">
+            `;
 
-            if (data.length === 0) {
-                html += `<tr><td colspan="6" style="text-align:center; padding:30px;">该目录下暂无内容</td></tr>`;
+            if (!data || data.length === 0) {
+                html += `<tr><td colspan="5" style="text-align:center; padding:60px; color:#94a3b8;">
+                    <i class="fas fa-inbox" style="font-size:48px; display:block; margin-bottom:10px;"></i>
+                    暂无内容，点击上方按钮开始添加
+                </td></tr>`;
             } else {
                 data.forEach((item, index) => {
                     const isMod = item.type === 'module';
-                    const projId = window.currentProjectId;
-                    const belongsToModuleId = isMod ? item.id : (item.module_id || window.currentParentId);
-
-                    const clickAction = isMod
-                        ? `window.router.projectDetail(${projId}, ${item.id})`
-                        : `toggleCasePreview(${item.id})`;
-
-                    const icon = isMod ? '📁' : '📄';
+                    const clickAction = isMod ? `router.projectDetail(${projId}, ${item.id})` : `toggleCasePreview(${item.id})`;
+                    const icon = isMod ? 'fa-folder' : 'fa-file-alt';
+                    const iconColor = isMod ? '#3b82f6' : '#94a3b8';
 
                     html += `
-                        <tr class="draggable" data-id="${item.id}" data-type="${item.type}" draggable="true">
+                        <tr class="draggable-row" data-id="${item.id}" data-type="${item.type}">
                             <td><input type="checkbox" class="item-checkbox" value="${item.id}"></td>
-                            <td style="color: #888; font-family: monospace;">${index + 1}</td>
-                            
-                            <td onclick="${clickAction}"
-                                style="cursor:pointer; ${isMod ? 'font-weight:bold; color:#3498db;' : 'color:#2c3e50;'}">
-                                <span style="margin-right: 5px;">${icon}</span>
-                                ${item.name}
-                                ${!isMod ? '<small style="color:#999;margin-left:8px;">(点击预览)</small>' : ''}
-                            </td>
-                            
-                            <td>${isMod ? '-' : (item.path || '/')}</td>
-                            
-                            <td><span class="badge">${isMod ? '-' : (item.method || 'GET')}</span></td>
-                            
+                            <td style="color:#cbd5e1; font-family:monospace;">${(index + 1).toString().padStart(2, '0')}</td>
                             <td>
-                                <small style="color:#999;">${isMod ? '-' : (item.params ? 'JSON...' : '{}')}</small>
+                                <div onclick="${clickAction}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
+                                    <i class="fas ${icon}" style="color:${iconColor}; font-size:16px;"></i>
+                                    <div>
+                                        <div style="font-weight: ${isMod ? '600' : '400'}; color:#1e293b;">${item.name}</div>
+                                        ${!isMod ? `<div style="font-size:11px; color:#94a3b8; font-family:monospace;">${item.path || '/'}</div>` : ''}
+                                    </div>
+                                </div>
                             </td>
-                            
                             <td>
-                                <button class="btn btn-success" style="font-size:12px; padding:2px 6px; background-color: #27ae60; color: white;" 
-                                    onclick="runTestHandler(${projId}, ${belongsToModuleId}, ${isMod ? 'null' : item.id})">
-                                    ▶ 运行
-                                </button>
-                            
-                                <button class="btn btn-primary" style="font-size:12px; padding:2px 6px;"
-                                    onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}">编辑</button>
-                                
-                                ${!isMod ? `
-                                <button class="btn btn-ghost" style="font-size:12px; padding:2px 6px; border:1px solid #ddd;" 
-                                    onclick="insertCaseAfter(${index})">插入</button>
-                                ` : ''}
-                            
-                                <button class="btn btn-danger" style="font-size:12px; padding:2px 6px;"
-                                    onclick="confirmDelete('${item.type}', ${item.id})">删除</button>
+                                ${!isMod ? `<span class="method-badge method-${item.method?.toLowerCase() || 'get'}">${item.method || 'GET'}</span>` : '<span style="color:#cbd5e1">—</span>'}
+                            </td>
+                            <td>
+                                <div style="display:flex; gap:8px;">
+                                    <button class="btn-circle btn-run" title="运行" onclick="runTestHandler(${projId}, ${moduleId}, ${item.id})"><i class="fas fa-play"></i></button>
+                                    <button class="btn-circle btn-edit" title="编辑" onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}"><i class="fas fa-edit"></i></button>
+                                    <button class="btn-circle btn-delete" title="删除" onclick="confirmDelete('${item.type}', ${item.id})"><i class="fas fa-trash"></i></button>
+                                </div>
                             </td>
                         </tr>
                         ${!isMod ? `
-                        <tr id="preview-row-${item.id}" style="display:none; background-color: #f9f9f9;">
-                            <td colspan="8">
-                                <div style="padding: 20px; border-left: 5px solid #3498db; margin: 10px 20px; background: white; border-radius: 4px; box-shadow: inset 0 0 10px rgba(0,0,0,0.05);">
-
-                                    <div style="margin-bottom: 15px; border-bottom: 1px dashed #ddd; padding-bottom: 10px;">
-                                        <strong style="color:#555;">📝 用例描述:</strong>
-                                        <span style="color:#333; margin-left:10px;">${item.description || '暂无描述'}</span>
+                        <tr id="preview-row-${item.id}" style="display:none; background: #fcfcfd;">
+                            <td colspan="5">
+                                <div class="case-preview-card" style="margin: 10px 20px; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; background: white;">
+                                    
+                                    <div style="margin-bottom: 15px; display: flex; gap: 20px; border-bottom: 1px solid #f1f5f9; padding-bottom: 10px;">
+                                        <div style="flex: 1;">
+                                            <span style="color: #64748b; font-size: 12px; display: block;">请求完整路径</span>
+                                            <code style="color: #1e293b; font-family: monospace;">${highlightSpecialSyntax(item.path || '/')}</code>
+                                        </div>
+                                        ${item.description ? `
+                                        <div style="flex: 1;">
+                                            <span style="color: #64748b; font-size: 12px; display: block;">用例描述</span>
+                                            <span style="color: #475569;">${item.description}</span>
+                                        </div>` : ''}
                                     </div>
-
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 15px;">
-                                        <div>
-                                            <strong style="color:#555;">🔗 请求头 (Headers):</strong>
-                                            <pre style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px;">${formatAndHighlight(item.headers)}</pre>
-                                        </div>
-                                        <div>
-                                            <strong style="color:#555;">🔍 提取参数 (Extract):</strong>
-                                            <pre style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px;">${formatAndHighlight(item.extract_data)}</pre>
-                                        </div>
-                                        <div>
-                                            <strong style="color:#555;">📁 文件路径:</strong>
-                                            <div style="background:#f4f4f4; padding:8px; border-radius:4px; font-size:12px; margin-top:5px; color:#e83e8c;">
-                                                ${item.file_path || '无'}
+                        
+                                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                                        
+                                        ${item.headers ? `
+                                        <div class="preview-box">
+                                            <label>Headers / Content-Type</label>
+                                            <pre>${formatAndHighlight(item.headers)}</pre>
+                                        </div>` : ''}
+                        
+                                        ${item.params ? `
+                                        <div class="preview-box">
+                                            <label>请求参数 (Payload)</label>
+                                            <pre>${formatAndHighlight(item.params)}</pre>
+                                        </div>` : ''}
+                        
+                                        ${item.extract_data ? `
+                                        <div class="preview-box">
+                                            <label>数据提取 (Extract)</label>
+                                            <pre>${formatAndHighlight(item.extract_data)}</pre>
+                                        </div>` : ''}
+                        
+                                        ${item.assertion ? `
+                                        <div class="preview-box">
+                                            <label>断言校验 (Assertion)</label>
+                                            <pre>${formatAndHighlight(item.assertion)}</pre>
+                                        </div>` : ''}
+                        
+                                        ${item.sql_query ? `
+                                        <div class="preview-box">
+                                            <label>预置 SQL 语句</label>
+                                            <pre style="color: #059669;">${highlightSpecialSyntax(item.sql_query)}</pre>
+                                        </div>` : ''}
+                        
+                                        ${item.file_path ? `
+                                        <div class="preview-box">
+                                            <label>上传文件路径</label>
+                                            <div style="padding: 8px; background: #fff1f2; color: #e11d48; border-radius: 4px; font-size: 12px; font-family: monospace;">
+                                                <i class="fas fa-paperclip"></i> ${item.file_path}
                                             </div>
-                                        </div>
+                                        </div>` : ''}
                                     </div>
-
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                                        <div>
-                                            <strong style="color:#555;">📤 请求参数 (Payload):</strong>
-                                            <pre style="background:#2d2d2d; color:#ccc; padding:10px; border-radius:4px; font-size:12px; margin-top:5px; max-height:200px; overflow:auto;">${formatAndHighlight(item.params)}</pre>
-                                        </div>
-                                        <div>
-                                            <strong style="color:#555;">🗄️ 预置 SQL:</strong>
-                                            <pre style="background:#2d2d2d; color:#7ec699; padding:10px; border-radius:4px; font-size:12px; margin-top:5px; max-height:200px; overflow:auto;">${formatAndHighlight(item.sql_query)}</pre>
-                                        </div>
-                                    </div>
-
-                                    <div style="margin-top: 15px; font-size: 12px; color: #888;">
-                                        <span>⏱️ 等待时间: <b style="color:#333">${item.wait_time || 0}s</b></span>
-                                        <span style="margin-left: 20px;">✅ 断言校验: <b style="color:#28a745">${item.assertion || '默认 200'}</b></span>
+                        
+                                    <div style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #f1f5f9; display: flex; gap: 20px; font-size: 12px; color: #94a3b8;">
+                                        <span>等待时间: <b style="color: #1e293b;">${item.wait_time || 0}s</b></span>
+                                        <span>创建人: <b style="color: #1e293b;">${item.creator || 'Admin'}</b></span>
                                     </div>
                                 </div>
-                                </td>
+                            </td>
                         </tr>` : ''}
-                        `;
+                    `;
                 });
             }
 
-            html += `</tbody></table>`;
-
-            // 4. 渲染到页面
+            html += `</tbody></table></div>`;
             document.getElementById('view-container').innerHTML = html;
-
-            // 5. 初始化拖拽
-            if (typeof initDragging === 'function') initDragging();
+            if (window.initDragging) initDragging();
 
         } catch (err) {
             console.error("加载详情失败:", err);
-            alert("无法加载项目内容，请检查网络或后端接口。");
         }
+    },
+
+    configManager: async function(type = null) {
+        console.log("路由跳转：配置管理");
+        const container = document.getElementById('view-container');
+
+        let url = '/api/config/all';
+        if (type) {
+            url += `?category=${type}`;
+        }
+
+        try {
+            // 调用你之前写好的获取所有配置的接口
+            const response = await fetch(url);
+            const result = await response.json();
+
+            if (result.status === 'success') {
+            // 传入 type 以便在 UI 上显示当前分类标题
+                this.renderConfigView(result.data, type);
+            }
+        } catch (err) {
+            container.innerHTML = '<div class="error">网络错误，无法连接到后端配置接口</div>';
+            console.error(err);
+        }
+    },
+
+    renderConfigView: function(data, type) {
+        const container = document.getElementById('view-container');
+
+        // 按 config_group 分组逻辑
+        const groups = data.reduce((acc, item) => {
+                (acc[item.config_group] = acc[item.config_group] || []).push(item);
+                return acc;
+        }, {});
+
+
+
+        let html = `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:20px 30px;">
+                <div>
+                    <h2 style="margin:0; color:#1e293b;">${type ? type.toUpperCase() : '全部'} 配置中心</h2>
+                    <p style="margin:5px 0 0 0; font-size:13px; color:#64748b;">分类管理自动化环境参数</p>
+                </div>
+                <div style="display:flex; gap:12px;">
+                    <button class="btn" onclick="showAddGroupModal('${type}')" style="background:#f8fafc; border:1px solid #e2e8f0; color:#475569;">
+                        <i class="fas fa-folder-plus"></i> 新增配置组
+                    </button>
+                    <button class="btn btn-primary" onclick="submitGlobalConfigs()">
+                        <i class="fas fa-save"></i> 保存全部修改
+                    </button>
+                </div>
+            </div>
+            <div class="config-container">
+        `;
+
+        Object.keys(groups).forEach(groupName => {
+            html += `
+                <div class="config-card">
+                    <div class="card-header">
+                        <span class="card-title"><i class="fas fa-server" style="color:#4299e1; margin-right:8px;"></i>${groupName}</span>
+                        <button onclick="addInlineRow('${groupName}','${type}')" style="background:#edf2f7; border:none; padding:5px 12px; border-radius:4px; cursor:pointer; font-size:12px; font-weight:bold; color:#4a5568;">
+                            <i class="fas fa-plus"></i> 新增项
+                        </button>
+                    </div>
+                    <div class="card-body" id="group-content-${groupName}">
+                        ${groups[groupName].map(item => `
+                            <div class="config-row" id="config-item-${item.id}">
+                                <div class="config-info">
+                                    <div class="config-key-label">${item.config_key}</div>
+                                    <input type="${(item.config_key.includes('pass') || item.config_key.includes('key')) ? 'password' : 'text'}" 
+                                           class="config-input config-data-field"
+                                           data-id="${item.id}" data-group="${item.config_group}" data-key="${item.config_key}"
+                                           value="${item.config_value}">
+                                </div>
+                                <div class="delete-btn" onclick="deleteHistoryConfig(${item.id})" title="永久删除">
+                                    <i class="fas fa-trash-alt"></i>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        });
+
+        html += `</div>`;
+        container.innerHTML = html;
+    },
+
+    // 在 router 对象中增加工具模块处理函数
+    toolModule: function(type) {
+        const container = document.getElementById('view-container');
+        let title = "";
+        let description = "";
+
+        switch(type) {
+            case 'requirement':
+                title = "需求分析助手";
+                description = "基于自然语言处理，自动提取测试点及业务逻辑";
+                break;
+            case 'generator':
+                title = "智能用例生成";
+                description = "根据接口定义或 UI 路径，自动填充测试步骤与断言";
+                break;
+            case 'analysis':
+                title = "用例覆盖度分析";
+                description = "分析当前自动化用例对业务场景的覆盖比例";
+                break;
+        }
+
+        container.innerHTML = `
+            <div style="padding: 30px;">
+                <div style="border-bottom: 1px solid #eee; padding-bottom: 20px; margin-bottom: 20px;">
+                    <h2 style="color: #1e293b; margin: 0;">${title}</h2>
+                    <p style="color: #64748b; margin-top: 5px;">${description}</p>
+                </div>
+                <div class="tool-content-placeholder" style="height: 400px; display: flex; align-items: center; justify-content: center; background: #f8fafc; border: 2px dashed #e2e8f0; border-radius: 12px; color: #94a3b8;">
+                    <div style="text-align: center;">
+                        <i class="fas fa-tools" style="font-size: 40px; margin-bottom: 15px;"></i>
+                        <p>该功能正在接入 AI 引擎，请稍候...</p>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // 记录日志，方便排查用户点击偏好
+        console.log(`[Router] 进入测试工具子模块: ${type}`);
     }
 };
 
@@ -269,7 +475,8 @@ function toggleSubNav(id) {
     el.style.display = el.style.display === 'block' ? 'none' : 'block';
 }
 
-function openProjectModal() {
+// --- 新增项目 ---
+function newProjectModal() {
     window.isEditMode = false;
     window.currentEditId = null;
 
@@ -281,6 +488,7 @@ function openProjectModal() {
     document.getElementById('project-modal').style.display = 'flex';
 }
 
+// --- 编辑项目 ---
 async function editProject(id) {
     window.isEditMode = true;
     window.currentEditId = id;
@@ -295,6 +503,7 @@ async function editProject(id) {
     document.getElementById('project-modal').style.display = 'flex';
     }
 
+// --- 删除项目 ---
 async function deleteProject(id) {
     if (!confirm("确定要删除该项目吗？这将删除项目下的所有模块和用例！")) return;
 
@@ -310,7 +519,8 @@ async function deleteProject(id) {
     }
 }
 
-function openModuleModal() {
+// --- 新增模块 ---
+function newModuleModal() {
     window.isEditMode = false;
     window.currentEditId = null;
     document.getElementById('m-name').value = '';
@@ -474,6 +684,7 @@ async function submitCase() {
 }
 
 async function executeRun(payload) {
+    console.log("执行测试:", payload)
     try {
         const res = await fetch(`${API_BASE}/run_test`, {
             method: 'POST',
@@ -491,8 +702,8 @@ async function executeRun(payload) {
     }
 }
 
-function runProjectCases(projectId) {
-    executeRun({ project: projectId });
+function runProjectCases(projectId, caseType) {
+    executeRun({ project: projectId ,  type: caseType});
 }
 
 function runTestHandler(projectId, moduleId, caseId){
@@ -551,6 +762,8 @@ function editCaseModal(item) {
     openCaseModal(item);
 }
 
+
+// 格式化文本并高亮
 function formatAndHighlight(text) {
     if (!text) return '<span style="color:#999">空</span>';
 
@@ -771,11 +984,295 @@ function validateJson(el) {
     }
 }
 
-// --- 全选逻辑 ---
-function toggleAll(master) {
-    const checkboxes = document.querySelectorAll('.item-checkbox');
-    checkboxes.forEach(cb => cb.checked = master.checked);
+
+// config全局保存函数
+window.submitGlobalConfigs = async function() {
+    const inputs = document.querySelectorAll('.config-input-field');
+    const configs = Array.from(inputs).map(el => ({
+        config_group: el.dataset.group,
+        config_key: el.dataset.key,
+        config_value: el.value
+    }));
+
+    try {
+        const response = await fetch('/api/config/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(configs)
+        });
+        const res = await response.json();
+        if(res.status === 'success') {
+            alert("✅ 配置已存入 SQLite 并完成内存热重载！");
+        }
+    } catch (e) {
+        alert("保存失败，请检查后端 API 状态");
+    }
+};
+
+// --- config删除逻辑 ---
+window.deleteConfig = async function(id) {
+    if (!confirm("确定要删除该配置吗？这将影响相关自动化用例的执行。")) return;
+
+    const res = await fetch(`/api/config/delete/${id}`, { method: 'DELETE' });
+    const result = await res.json();
+    if (result.status === 'success') {
+        router.configManager(); // 刷新页面
+    }
+};
+
+// --- config新增逻辑 (复用你现有的 Modal 体系) ---
+window.showAddConfigModal = function() {
+    // 你可以复用 index.html 里的 project-modal 结构，或者新写一个简单的 prompt
+    const group = prompt("请输入配置组 (如: mysql_db):");
+    const key = prompt("请输入配置键 (如: port):");
+    const val = prompt("请输入配置值:");
+
+    if (group && key && val) {
+        saveNewConfig(group, key, val);
+    }
+};
+
+// --- 内联新增一行 (不需要弹出框，直接在组内画输入框) ---
+window.addNewRowInline = function(groupName) {
+    const body = document.getElementById(`group-body-${groupName}`);
+    const div = document.createElement('div');
+    div.className = "config-row animate-pulse"; // 加入动画效果
+    div.style.background = "#fffbeb"; // 临时高亮新行
+
+    div.innerHTML = `
+        <div style="flex:1;">
+            <input type="text" placeholder="新 Key" class="new-key-input input-minimal" style="color:#b45309; font-weight:bold;">
+            <input type="text" placeholder="新 Value" class="new-val-input input-minimal">
+        </div>
+        <button onclick="saveNewInline(this, '${groupName}')" style="color:#059669;"><i class="fas fa-check-circle"></i></button>
+        <button onclick="this.parentElement.remove()" style="color:#94a3b8;"><i class="fas fa-minus-circle"></i></button>
+    `;
+    body.prepend(div); // 在最前面插入新项
+};
+
+window.saveNewInline = async function(btn, groupName) {
+    const row = btn.parentElement;
+    const key = row.querySelector('.new-key-input').value;
+    const val = row.querySelector('.new-val-input').value;
+
+    if(!key || !val) return alert("Key 和 Value 不能为空");
+
+    const category = window.currentCategory || 'api';
+
+    const res = await fetch('/api/config/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config_group: groupName, config_key: key, config_value: val, category: category })
+    });
+
+    const result = await res.json();
+    if(result.status === 'success') {
+        // 重新加载当前分类的视图，防止跳回全量视图
+        router.configManager(category);
+    } else {
+        alert("保存失败: " + (result.message || "未知错误"));
+    }
+};
+
+async function saveNewConfig(group, key, val) {
+    const res = await fetch('/api/config/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config_group: group, config_key: key, config_value: val })
+    });
+    const result = await res.json();
+    if (result.status === 'success') {
+        router.configManager();
+    }
 }
+
+// --- 功能1：内联新增（带取消功能） ---
+// --- 功能：内联新增（无需刷新即可撤销） ---
+// --- 1. 点击“新增项”按钮触发的函数 ---
+window.addInlineRow = function(groupName, type) {
+    const body = document.getElementById(`group-content-${groupName}`);
+    const tempId = 'temp-' + Date.now();
+    const div = document.createElement('div');
+
+    // 设置样式类名，方便在 CSS 中统一定义样式
+    div.className = "new-row-highlight";
+    div.id = tempId;
+
+    div.innerHTML = `
+        <div style="display: flex; gap: 10px; align-items: center; padding: 12px; background: #fffbeb; border: 1px dashed #f6ad55; border-radius: 10px; margin-bottom: 10px;">
+            <div style="flex: 1;">
+                <input type="text" placeholder="Key (必填)" class="new-key-in" style="width:100%; border:none; border-bottom:1px solid #f6ad55; background:transparent; font-weight:bold; outline:none; margin-bottom:8px;">
+                <input type="text" placeholder="Value (必填)" class="new-val-in" style="width:100%; border:none; background:transparent; outline:none; font-size:13px;">
+            </div>
+            
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+                <button onclick="confirmAndSaveRow('${tempId}', '${groupName}', '${type}')" 
+                        style="background: #38a169; color: white; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">
+                    确认
+                </button>
+                <button onclick="document.getElementById('${tempId}').remove()" 
+                        style="background: #e53e3e; color: white; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px;">
+                    取消
+                </button>
+            </div>
+        </div>
+    `;
+    body.prepend(div);
+};
+
+// --- 2. 核心：执行“确认”并提交后端 ---
+window.confirmAndSaveRow = async function(tempId, groupName, type) {
+    const row = document.getElementById(tempId);
+    const key = row.querySelector('.new-key-in').value.trim();
+    const val = row.querySelector('.new-val-in').value.trim();
+
+    if (!key || !val) {
+        alert("Key 和 Value 都不能为空！");
+        return;
+    }
+
+    // 调用后端接口保存到数据库
+    try {
+        const response = await fetch('/api/config/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                config_group: groupName,
+                config_key: key,
+                config_value: val,
+                category: type
+            })
+        });
+
+        const res = await response.json();
+        if (res.status === 'success') {
+            // 刷新页面看到新数据
+            router.configManager();
+            console.log(`已成功添加配置：${key}`);
+        } else {
+            alert("保存失败：" + (res.message || "未知错误"));
+        }
+    } catch (e) {
+        alert("网络错误，提交失败");
+    }
+};
+
+// --- 功能：删除历史数据 ---
+window.deleteHistoryConfig = async function(id) {
+    if (!confirm("警告：确定要从数据库中永久删除此项吗？")) return;
+
+    try {
+        const response = await fetch(`/api/config/delete/${id}`, { method: 'DELETE' });
+        const res = await response.json();
+        if (res.status === 'success') {
+            const row = document.getElementById(`config-item-${id}`);
+            row.style.transform = "translateX(20px)";
+            row.style.opacity = "0";
+            setTimeout(() => {
+                router.configManager(); // 刷新视图
+                console.log(`[Config] 已删除配置项ID: ${id}`);
+            }, 300);
+        }
+    } catch (e) {
+        alert("删除失败，请检查后端 API");
+    }
+};
+
+// --- 功能3：保存新增 ---
+window.saveNewRow = async function(rowId, groupName) {
+    const row = document.getElementById(rowId);
+    const key = row.querySelector('.new-key-in').value;
+    const val = row.querySelector('.new-val-in').value;
+
+    if(!key || !val) return alert("请填写完整");
+
+    const res = await fetch('/api/config/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config_group: groupName, config_key: key, config_value: val })
+    });
+
+    if((await res.json()).status === 'success') {
+        router.configManager();
+    }
+};
+
+// 弹出新增组的对话框
+window.showAddGroupModal = async function(currentType) {
+    const groupName = prompt("请输入新配置组名称 (例如: web_server):");
+    if (!groupName) return;
+
+    const firstKey = prompt(`在 [${groupName}] 中创建第一个 Key:`);
+    const firstValue = prompt(`请输入 [${firstKey}] 的初始值:`);
+
+    if (groupName && firstKey && firstValue) {
+        // 调用你之前写好的 add 接口
+        try {
+            const response = await fetch('/api/config/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    config_group: groupName,
+                    config_key: firstKey,
+                    config_value: firstValue,
+                    category: currentType || 'api' // 自动带入当前页面的分类
+                })
+            });
+
+            const res = await response.json();
+            if (res.status === 'success') {
+                router.configManager(currentType); // 刷新当前分类页面
+                console.log(`[ConfigCenter] 成功创建新组: ${groupName}`);
+            }
+        } catch (e) {
+            alert("创建失败，请检查网络");
+        }
+    }
+};
+
+// 辅助函数：渲染统计卡片
+function renderStatCard(title, value, icon, color) {
+    return `
+        <div style="background: white; padding: 20px; border-radius: 12px; border: 1px solid #eee; display: flex; align-items: center; gap: 15px;">
+            <div style="width: 45px; height: 45px; border-radius: 10px; background: ${color}20; color: ${color}; display: flex; align-items: center; justify-content: center; font-size: 20px;">
+                <i class="fas ${icon}"></i>
+            </div>
+            <div>
+                <div style="font-size: 13px; color: #64748b;">${title}</div>
+                <div style="font-size: 22px; font-weight: 700; color: #1e293b;">${value}</div>
+            </div>
+        </div>
+    `;
+}
+
+// 字符串高亮工具函数
+function highlightSpecialSyntax(text) {
+    if (!text || typeof text !== 'string') return text;
+
+    return text
+        .replace(/(\${[^}]+})/g, '<span style="color:#3b82f6; font-weight:bold;">$1</span>') // 变量
+        .replace(/(\$\.[a-zA-Z0-9._[\]]+)/g, '<span style="color:#f59e0b; font-weight:bold;">$1</span>') // JSONPath
+        .replace(/(function:[a-zA-Z0-9_]+)/g, '<span style="color:#8b5cf6; font-weight:bold;">$1</span>'); // 自定义函数
+}
+
+// 切换三个点菜单的显示
+window.toggleProjectMenu = function(event, element) {
+    event.stopPropagation(); // 阻止事件冒泡，防止触发卡片本身的点击
+
+    // 先关闭其他已经打开的菜单
+    document.querySelectorAll('.dropdown').forEach(el => {
+        if (el !== element) el.classList.remove('active');
+    });
+
+    element.classList.toggle('active');
+};
+
+// 点击页面其他地方关闭菜单
+document.addEventListener('click', () => {
+    document.querySelectorAll('.dropdown').forEach(el => el.classList.remove('active'));
+});
+
+// --- 全选逻辑 ---
 
 window.router = router;
 

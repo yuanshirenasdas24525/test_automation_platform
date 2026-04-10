@@ -2,7 +2,7 @@
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from typing import Any, List, Optional, Dict, Union
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 class BaseSQLHandler:
@@ -33,7 +33,7 @@ class SQLAlchemyHandler(BaseSQLHandler):
             self.SessionLocal = sessionmaker(bind=self.engine, autocommit=False, autoflush=False)
             LOGGER.info("数据库引擎创建成功")
         except Exception as e:
-            ERROR_LOGGER.error(f"数据库引擎创建失败: {e}")
+            LOGGER.error(f"数据库引擎创建失败: {e}")
             raise
 
     def execute_query(self, sql: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
@@ -45,7 +45,7 @@ class SQLAlchemyHandler(BaseSQLHandler):
                 # _mapping 将结果行转换为字典，方便 key 访问
                 return [dict(row._mapping) for row in result]
             except Exception as e:
-                ERROR_LOGGER.error(f"SQL查询执行失败: {e} | SQL: {sql}")
+                LOGGER.error(f"SQL查询执行失败: {e} | SQL: {sql}")
                 return []
 
     def execute_db(self, sql: str, params: Optional[Dict[str, Any]] = None):
@@ -57,7 +57,7 @@ class SQLAlchemyHandler(BaseSQLHandler):
                 LOGGER.debug(f"SQL执行成功: {sql}")
             except Exception as e:
                 session.rollback()
-                ERROR_LOGGER.error(f"SQL执行事务回滚: {e} | SQL: {sql}")
+                LOGGER.error(f"SQL执行事务回滚: {e} | SQL: {sql}")
                 raise e
 
     def close(self):

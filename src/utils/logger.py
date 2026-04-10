@@ -3,70 +3,61 @@
 import logging.config
 from config.settings import ProjectPaths
 
-
-
-LEVEL = 'DEBUG'
+# 如果之后要实现热更，这里可以改为从 config_center 获取
+# LOG_LEVEL = config_center.get('system', 'log_level', 'DEBUG')
+LOG_LEVEL = 'DEBUG'
 
 LOGGING_DIC = {
-    'version': 1.0,
+    'version': 1,
     'disable_existing_loggers': False,
-    # 日志格式
     'formatters': {
         'standard': {
-            'format': '%(asctime)s.%(msecs)03d %(threadName)s:%(thread)d [%(name)s] %(levelname)s [%(pathname)s:%(lineno)d] %(message)s',
+            'format': '%(asctime)s.%(msecs)03d %(threadName)s [%(name)s] %(levelname)s [%(pathname)s:%(lineno)d] %(message)s',
             'datefmt': '%Y-%m-%d %H:%M:%S',
         },
         'simple': {
-            'format': '%(asctime)s.%(msecs)03d [%(name)s] %(levelname)s - %(message)s',
-            'datefmt': '%Y-%m-%d %H:%M:%S',
-        },
-        'test': {
-            'format': '%(asctime)s %(message)s',
+            'format': '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s',
+            'datefmt': '%H:%M:%S',
         },
     },
-    'filters': {},
-    # 日志处理器
     'handlers': {
-        'console_debug_handler': {
-            'level': LEVEL,  # 日志处理的级别限制
-            'class': 'logging.StreamHandler',  # 输出到终端
-            'formatter': 'simple'  # 日志格式
+        # 1. 开发阶段在控制台看详细信息
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple'
         },
-        'file_info_handler': {
+        # 2. 所有的业务流水日志（INFO及以上）
+        'file_info': {
             'level': 'INFO',
-            'class': 'logging.handlers.RotatingFileHandler',  # 保存到文件,日志轮转
-            'filename': ProjectPaths.INFO_LOG,
-            'maxBytes': 1024 * 1024 * 10,  # 日志大小 10M
-            'backupCount': 10,  # 日志文件保存数量限制
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': ProjectPaths.INFO_LOG, #
+            'maxBytes': 1024 * 1024 * 10,
+            'backupCount': 10,
             'encoding': 'utf-8',
             'formatter': 'standard',
         },
-        'file_error_handler': {
-            'level': 'DEBUG',
-            'class': 'logging.handlers.RotatingFileHandler',  # 保存到文件,日志轮转
-            'filename': ProjectPaths.ERROR_LOG,
-            'maxBytes': 1024 * 1024 * 10,  # 日志大小 10M
-            'backupCount': 10,  # 日志文件保存数量限制
+        # 3. 专门收集报错，方便排查崩溃问题
+        'file_error': {
+            'level': 'ERROR',
+            'class': 'logging.handlers.RotatingFileHandler',
+            'filename': ProjectPaths.ERROR_LOG, #
+            'maxBytes': 1024 * 1024 * 5,
+            'backupCount': 5,
             'encoding': 'utf-8',
             'formatter': 'standard',
         },
     },
-    # 日志记录器
     'loggers': {
-        '': {  # 导入时logging.getLogger时使用的app_name
-            'handlers': ['console_debug_handler', 'file_info_handler'],  # 日志分配到哪个handlers中
-            'level': 'DEBUG',  # 日志记录的级别限制
-            'propagate': False,  # 默认为True，向上（更高级别的logger）传递，设置为False即可，否则会一份日志向上层层传递
+        # 根记录器：捕获所有日志
+        '': {
+            'handlers': ['console', 'file_info', 'file_error'],
+            'level': LOG_LEVEL,
+            'propagate': True,
         },
-        'error_logger': {  # 导入时logging.getLogger时使用的app_name
-            'handlers': ['file_error_handler'],  # 日志分配到哪个handlers中
-            'level': 'ERROR',  # 日志记录的级别限制
-            'propagate': False,  # 默认为True，向上（更高级别的logger）传递，设置为False即可，否则会一份日志向上层层传递
-        },
-
     }
 }
 
 logging.config.dictConfig(LOGGING_DIC)
-LOGGER = logging.getLogger('info')
-ERROR_LOGGER = logging.getLogger('error_logger')
+# 统一使用这一个实例即可，内部会自动分流
+LOGGER = logging.getLogger('API_PLATFORM')

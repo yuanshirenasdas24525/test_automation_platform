@@ -3,11 +3,8 @@ from typing import Any, List
 from src.core.api.file_parameter import FileParameter
 from src.utils.platform_utils import rep_expr, extractor, convert_json
 from src.utils.function_executor import exec_func
-from src.utils.sql_handler import SQLHandlerFactory
-from src.utils.read_test_cases import read_conf
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 from src.utils.allure_utils import add_allure_step
-import json
 
 
 
@@ -22,7 +19,7 @@ class RequestDataProcessor:
     - 文件上传处理
     """
 
-    def __init__(self, header_key, host_key, ed=None, default_parameters=None):
+    def __init__(self, header_key, host_key, ed=None, default_parameters=None, db=None):
         """
         初始化所需的处理器和配置字典。
         """
@@ -31,6 +28,7 @@ class RequestDataProcessor:
         self.encryption_decryption = rep_expr(ed, self.extra_pool) if isinstance(ed, str) else ed or {}
         self.base_header = rep_expr(header_key, self.extra_pool) if isinstance(header_key, str) else header_key or {}
         self.base_url = rep_expr(host_key, self.extra_pool) if isinstance(host_key, str) else host_key or {}
+        self.db = db
 
     def handler_path(self, path_str: str) -> str:
         """
@@ -55,7 +53,7 @@ class RequestDataProcessor:
             headers.update(pe.ed_header())
         return headers
 
-    def handler_data(self, variable: str, sql: str, extra_str: str = None) -> Any:
+    def handler_data(self, variable: str, sql: str) -> Any:
         """
         处理请求数据，替换表达式并执行函数。
         """
@@ -69,15 +67,15 @@ class RequestDataProcessor:
             return {}
 
         if isinstance(data_obj, dict):
-            self._process_functions(data_obj, sql, extra_str)
+            self._process_functions(data_obj, sql)
         return data_obj
 
-    def _process_functions(self, data: dict, sql: str, extra_str: str):
+    def _process_functions(self, data: dict, sql: str):
         """
         处理字典中以 function: 开头的值，执行对应函数。
         自动传入 sql 查询结果（可能是多个）、当前变量和参数池。
         """
-        sql_results = self.execute_select_fetchone(sql, extra_str)  # 返回 list
+        sql_results = self.execute_select_fetchone(sql)  # 返回 list
         def _process(item: dict, parent_data):
             if isinstance(item, dict):
                 for k, v in item.items():
@@ -128,10 +126,14 @@ class RequestDataProcessor:
                     v = float(exec_func(v, self.extra_pool))
                 else:
                     v = exec_func(v)
+            elif isinstance(v, str) and v.startswith("sql:"):
+                sql = v.split("sql:", 1)[1].strip()
+                results = self.execute_select_fetchone(sql)
+                v = results[0] if results else None
             assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
             add_allure_step("断言", f"实际值：{actual} == 预期值：{v}")
 
-    def execute_select_fetchone(self, sql: str, extra_str: str):
+    def execute_select_fetchone(self, sql: str):
         """
         执行查询语句（支持多条），返回每条SQL的第一行结果。
         如果只需要第一条SQL的结果，可取 [0]。
@@ -145,35 +147,16 @@ class RequestDataProcessor:
             sql_statement = sql_statement.strip()
             if not sql_statement:
                 continue
-            db_handler = self._get_db_handler_from_extra(extra_str)
-            result = db_handler.fetchone(sql_statement)
+
+            result = self.db.execute_query(sql_statement)
             if result:
                 results.append(result[0] if isinstance(result, (list, tuple)) else result)
 
         return results
 
-    def _get_db_handler_from_extra(self, extra_str: str):
-        """从 extra 字段获取 db_key 并创建数据库连接，默认使用 mysql_db"""
-        try:
-            db_key = "mysql_db"  # 默认数据库 key
-
-            if extra_str:
-                extra_dict = json.loads(extra_str)
-                db_key = extra_dict.get("db", db_key)
-
-            db_conf = read_conf.get_dict(db_key)
-            return SQLHandlerFactory.create(db_conf)
-
-        except Exception as e:
-            ERROR_LOGGER.error(f"获取数据库连接失败: {e}")
-            return None
 
     def execute_sql_from_case(self, sql: str, extra_str: str):
         """执行 SQL 并更新参数池"""
-        db_handler = self._get_db_handler_from_extra(extra_str)
-        if not db_handler:
-            ERROR_LOGGER.warning("未获取到数据库连接，跳过 SQL 执行")
-            return
         try:
             index = 0
             for statement in sql.split(";"):
@@ -181,9 +164,9 @@ class RequestDataProcessor:
                 if not stmt:
                     continue
                 index += 1
-                result = db_handler.execute_query(stmt)
+                result = self.db.execute_query(stmt)
                 if result:
                     self.extra_pool[f"sql_query_results_{index}"] = result
             LOGGER.info(f"SQL 执行完成，更新参数池: {self.extra_pool}")
         finally:
-            db_handler.close()
+            self.db.close()

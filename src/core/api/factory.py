@@ -1,13 +1,15 @@
 from src.core.api.request_data_processor import RequestDataProcessor
 from src.core.api.api_client import ApiClient
-from src.utils.read_test_cases import read_conf
+from src.common.context import ctx
 
 def create_request_data_processor():
+    ctx.warm_up(category="api")
     return RequestDataProcessor(
-        header_key=read_conf.get_dict("header"),
-        host_key=read_conf.get_dict("host"),
-        default_parameters=read_conf.get_dict("default_parameters"),
-        ed=read_conf.get_dict("encryption_decryption")
+        header_key=ctx.config.get("header"),
+        host_key=ctx.config.get("host"),
+        default_parameters=ctx.config.get("default_parameters"),
+        ed=ctx.config.get("encryption_decryption"),
+        db=ctx.db
     )
 
 def create_api_client():

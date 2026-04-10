@@ -4,32 +4,69 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>自动化测试平台</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
     <div id="sidebar">
-        <div class="logo">自动化测试平台</div>
-        <div class="nav-item" onclick="router.home()">首页</div>
+        <div class="logo">
+            <i class="fas fa-cubes" style="color:#3b82f6;"></i>
+            <span>One-Stop QA</span>
+        </div>
+
+        <div class="nav-item active" onclick="router.home(); setActive(this)">
+            <i class="fas fa-th-large"></i> 平台总览
+        </div>
+
+        <div class="nav-section-title">Automation Core</div>
 
         <div class="nav-group">
-            <div class="nav-item" onclick="toggleSubNav('api-sub')">API 自动化 ▼</div>
+            <div class="nav-item" onclick="toggleSubNav('api-sub', this)">
+                <i class="fas fa-network-wired"></i> API 自动化
+                <i class="fas fa-chevron-down arrow"></i>
+            </div>
             <ul id="api-sub" class="sub-nav">
-                <li onclick="alert('配置模块开发中...')">API 全局配置</li>
-                <li onclick="router.projectList('API')">项目管理</li>
-                <li onclick="alert('报告模块开发中...')">测试报告</li>
+                <li onclick="router.configManager('api')">环境变量配置</li>
+                <li onclick="router.projectList('API')">接口用例库</li>
             </ul>
         </div>
 
-        <div class="nav-item" onclick="toggleSubNav('web-sub')">WEB 自动化 ▼</div>
-        <ul id="web-sub" class="sub-nav">
-            <li onclick="router.projectList('Web')">项目管理</li>
-        </ul>
+        <div class="nav-group">
+            <div class="nav-item" onclick="toggleSubNav('web-sub', this)">
+                <i class="fas fa-globe"></i> WEB 自动化
+                <i class="fas fa-chevron-down arrow"></i>
+            </div>
+            <ul id="web-sub" class="sub-nav">
+                <li onclick="router.configManager('web')">浏览器驱动参数</li>
+                <li onclick="router.projectList('Web')">UI 项目管理</li>
+            </ul>
+        </div>
 
-        <div class="nav-item" onclick="toggleSubNav('mobile-sub')">MOBILE 自动化 ▼</div>
-        <ul id="mobile-sub" class="sub-nav">
-            <li onclick="router.projectList('Mobile')">项目管理</li>
-        </ul>
+        <div class="nav-group">
+            <div class="nav-item" onclick="toggleSubNav('app-sub', this)">
+                <i class="fas fa-mobile-alt"></i> MOBILE 自动化
+                <i class="fas fa-chevron-down arrow"></i>
+            </div>
+            <ul id="app-sub" class="sub-nav">
+                <li onclick="router.configManager('mobile')">真机/模拟器参数</li>
+                <li onclick="router.projectList('App')">App 自动化项目</li>
+            </ul>
+        </div>
+
+        <div class="nav-section-title">Intelligent Tools</div>
+
+        <div class="nav-group">
+            <div class="nav-item" onclick="toggleSubNav('tools-sub', this)">
+                <i class="fas fa-bolt"></i> 效能工具箱
+                <i class="fas fa-chevron-down arrow"></i>
+            </div>
+            <ul id="tools-sub" class="sub-nav">
+                <li onclick="router.toolModule('requirement')">需求逻辑分析</li>
+                <li onclick="router.toolModule('generator')">AI 用例生成</li>
+                <li onclick="router.toolModule('analysis')">覆盖度可视化</li>
+            </ul>
+        </div>
     </div>
 
     <div id="main-content">

@@ -1,12 +1,13 @@
 # coding: utf-8
 import requests
+import time
+import pytest
 from requests.exceptions import JSONDecodeError, ChunkedEncodingError
 from src.utils.allure_utils import (
-    set_allure_project, set_allure_module, set_allure_case, set_allure_title,
+    set_allure_project, set_allure_module, set_allure_case,
     set_allure_description, add_allure_step, set_allure_link
 )
-from src.utils.logger import LOGGER, ERROR_LOGGER
-import time
+from src.utils.logger import LOGGER
 
 
 def clean_val(val):
@@ -86,6 +87,7 @@ class ApiClient:
                 self._default_session = requests.Session()
             return self._default_session
 
+    @pytest.hookimpl(tryfirst=True, hookwrapper=True)
     def send_case(self, case: dict) -> object:
         case_project = case.get("project_name", None)  # 对应你之前 JOIN 查出来的项目名
         case_module = case.get("module_name", None)  # 对应模块名
@@ -107,10 +109,7 @@ class ApiClient:
         numbered_project, numbered_module, numbered_case_name, numbered_case_description = self._add_case_numbering(
             case_project, case_module, case_name, case_description)
 
-        LOGGER.info(
-            f"TestCase: {numbered_project} - {numbered_module} - {numbered_case_name} - {numbered_case_description}\n"
-            f"Path: {path}\nData: {data}\nExtra: {extra}\nSQL: {sql}\nExpected: {expect}\nfile_path: {file_path}"
-        )
+        LOGGER.info(f"开始运行测试用例: {numbered_project} - {numbered_module} - {numbered_case_name} \n")
 
         if wait is not None:
             time.sleep(float(wait))
@@ -181,22 +180,16 @@ class ApiClient:
             res = session.request(**request_kwargs,timeout=5)
         except Exception as e:
             # 打印具体的异常类型，比如是 Timeout 还是 ConnectionRefusedError
-            ERROR_LOGGER.error(f'请求失败类型: {type(e).__name__}')
-            ERROR_LOGGER.error(f'错误详细信息: {str(e)}')
+            LOGGER.error(f'请求失败类型: {type(e).__name__}')
+            LOGGER.error(f'错误详细信息: {str(e)}')
             raise
 
         try:
             response = res.json()
-            LOGGER.debug(f'JSON Response: {response}')
+            LOGGER.info(f'请求发送成功, 响应体: {response}')
         except JSONDecodeError:
             response = res.text
-            LOGGER.debug(f'Text Response: {response}')
-
-        LOGGER.info(
-            'Request Details:\n'
-            f'URL: {res.url}\nMethod: {method}\nHeaders: {header}\n'
-            f'Data: {data}\nFiles: {file}\nResponse: {response}'
-        )
+            LOGGER.error(f'响应格式错误, 响应体: {response}')
 
         add_allure_step(f'Response Time (s): {res.elapsed.total_seconds()}')
         add_allure_step('Response', response)
