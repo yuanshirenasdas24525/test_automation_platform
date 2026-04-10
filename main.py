@@ -479,9 +479,12 @@ def create_test_case(case_data: TestCaseCreate, db: Session = Depends(get_db)):
 @app.post("/api/run_test")
 async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks):
     from src.utils.read_test_cases import read_conf, get_cases_from_db
+    from datetime import datetime
+
     con_sqlite = read_conf.get_dict("sqlite_local")
     # 1. 生成唯一任务 ID
-    task_id = str(uuid.uuid4())[:8]
+    now = datetime.now()
+    task_id = f"{now.strftime('%Y%m%d%H%M%S')}_{str(uuid.uuid4())[:8]}"
     try:
 
         params = {
@@ -516,7 +519,6 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks):
             pytest.main(pytest_args)
 
             os.system(f"allure generate {result_path} -o {report_path} --clean")
-            print(f"任务 {task_id} 报告生成完毕")
 
         background_tasks.add_task(execute_pytest_workflow, task_id, cases_to_run)
 
