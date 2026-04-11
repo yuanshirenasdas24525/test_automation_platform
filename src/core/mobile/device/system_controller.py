@@ -1,6 +1,6 @@
 # -*- coding:utf-8 -*-
 import base64
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class SystemController:
     def __init__(self, driver):

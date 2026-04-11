@@ -2,7 +2,7 @@
 # Create on
 from appium import webdriver
 from appium.options.android import UiAutomator2Options
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 class App:
@@ -27,7 +27,7 @@ class App:
                 LOGGER.info(f"应用已激活 {self._config}")
                 return self._driver
         except Exception as e:
-            ERROR_LOGGER.error(f"无法启动应用 {self._config}: {e}")
+            LOGGER.error(f"无法启动应用 {self._config}: {e}")
             # 可以添加重试逻辑或其他异常处理
 
 

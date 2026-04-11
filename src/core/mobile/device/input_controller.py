@@ -3,7 +3,7 @@ from selenium.webdriver import ActionChains
 from selenium.webdriver.common.actions.action_builder import ActionBuilder
 from selenium.webdriver.common.actions.pointer_input import PointerInput
 from selenium.webdriver.common.actions import interaction
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class InputController:
     def __init__(self, driver):
@@ -46,7 +46,7 @@ class InputController:
                 actions.send_keys(char)
             actions.perform()
         except Exception as e:
-            ERROR_LOGGER.error(f"ac_send 执行失败: {e}")
+            LOGGER.error(f"ac_send 执行失败: {e}")
 
     def touch_action(self, *args):
         try:
@@ -60,7 +60,7 @@ class InputController:
             actions.w3c_actions.pointer_action.release()
             actions.perform()
         except Exception as e:
-            ERROR_LOGGER.error(f"touch_action 执行失败: {e}")
+            LOGGER.error(f"touch_action 执行失败: {e}")
 
     def gesture_unlock(self, element=None, *args):
         try:
@@ -94,7 +94,7 @@ class InputController:
             points = [mapping[i] for i in args]
             self.touch_action(*points)
         except Exception as e:
-            ERROR_LOGGER.error(f"gesture_unlock 执行失败: {e}")
+            LOGGER.error(f"gesture_unlock 执行失败: {e}")
 
     def send_key_event(self, keycode):
         try:

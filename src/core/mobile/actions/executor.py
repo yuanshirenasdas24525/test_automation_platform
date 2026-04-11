@@ -1,6 +1,6 @@
 from selenium.common.exceptions import StaleElementReferenceException
 from src.core.mobile.actions.registry import ActionRegistry
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 class ActionExecutor:

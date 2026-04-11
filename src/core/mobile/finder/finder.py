@@ -4,7 +4,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from tenacity import retry, stop_after_attempt, wait_fixed
 from src.utils.allure_utils import add_allure_attachment
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 class _AppiumBy:
@@ -60,7 +60,7 @@ class Finder:
                 return "whitelist"
 
             self._error_count += 1
-            ERROR_LOGGER.error(f"定位失败: {by}_{value}")
+            LOGGER.error(f"定位失败: {by}_{value}")
 
             if self._error_count % 3 == 0 and self.device_action:
                 self.device_action.take_screenshot("find_error.png")

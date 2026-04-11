@@ -5,7 +5,7 @@ import re
 from typing import List, Optional, Tuple
 from src.utils.platform_utils import run_command_safely
 from config.settings import ProjectPaths
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 
 class EnvironmentChecker:
@@ -18,7 +18,7 @@ class EnvironmentChecker:
         """检查Appium服务是否正常启动"""
         appium_service_url = self.appium_config.get("appium_service", "")
         if not appium_service_url:
-            ERROR_LOGGER.error("Appium服务URL未配置")
+            LOGGER.error("Appium服务URL未配置")
             return False
 
         try:
@@ -33,11 +33,11 @@ class EnvironmentChecker:
                 LOGGER.info(f"Appium服务正常：{appium_service_url}")
                 return True
             else:
-                ERROR_LOGGER.info(f"Appium服务异常响应：{response}")
+                LOGGER.info(f"Appium服务异常响应：{response}")
                 return False
 
         except Exception as e:
-            ERROR_LOGGER.error(f"检查Appium服务时发生异常：{e}")
+            LOGGER.error(f"检查Appium服务时发生异常：{e}")
             return False
 
     def check_device_connection(self) -> Tuple[bool, List[str]]:
@@ -72,7 +72,7 @@ class EnvironmentChecker:
                 return True, connected_devices
 
         except Exception as e:
-            ERROR_LOGGER.error(f"检查设备连接时发生异常：{e}")
+            LOGGER.error(f"检查设备连接时发生异常：{e}")
             return False, []
 
     def check_app_installed(self) -> bool:
@@ -109,7 +109,7 @@ class EnvironmentChecker:
                 return is_installed
 
             except Exception as e:
-                ERROR_LOGGER.error(f"检查应用安装时发生异常：{e}")
+                LOGGER.error(f"检查应用安装时发生异常：{e}")
                 return False
 
     def check_appium_doctor(self) -> bool:
@@ -123,11 +123,11 @@ class EnvironmentChecker:
                     LOGGER.info("所有必要组件都已安装")
                 return True
             else:
-                ERROR_LOGGER.error(f"Appium环境检查失败：{result.stderr}")
+                LOGGER.error(f"Appium环境检查失败：{result.stderr}")
                 return False
 
         except Exception as e:
-            ERROR_LOGGER.error(f"执行appium-doctor时发生异常：{e}")
+            LOGGER.error(f"执行appium-doctor时发生异常：{e}")
             return False
 
     def start_appium_service(self) -> bool:
@@ -137,7 +137,7 @@ class EnvironmentChecker:
             # 从URL中提取端口
             port_match = re.search(r':(\d+)$', appium_service_url)
             if not port_match:
-                ERROR_LOGGER.error(f"无法从URL中解析端口：{appium_service_url}")
+                LOGGER.error(f"无法从URL中解析端口：{appium_service_url}")
                 return False
 
             port = port_match.group(1)
@@ -161,11 +161,11 @@ class EnvironmentChecker:
                 return True
             else:
                 stdout, stderr = process.communicate()
-                ERROR_LOGGER.error(f"Appium服务启动失败：{stderr}")
+                LOGGER.error(f"Appium服务启动失败：{stderr}")
                 return False
 
         except Exception as e:
-            ERROR_LOGGER.error(f"启动Appium服务时发生异常：{e}")
+            LOGGER.error(f"启动Appium服务时发生异常：{e}")
             return False
 
     def install_app_package(self) -> bool:
@@ -177,7 +177,7 @@ class EnvironmentChecker:
         """
         package_path = self.appium_config.get("package_path", "")
         if not package_path:
-            ERROR_LOGGER.error("未配置应用包路径")
+            LOGGER.error("未配置应用包路径")
             return False
 
         # 判断是全路径还是包名
@@ -192,7 +192,7 @@ class EnvironmentChecker:
 
         # 检查应用包文件是否存在
         if not os.path.exists(full_package_path):
-            ERROR_LOGGER.error(f"应用包文件不存在: {full_package_path}")
+            LOGGER.error(f"应用包文件不存在: {full_package_path}")
             return False
 
         # 执行安装命令
@@ -204,7 +204,7 @@ class EnvironmentChecker:
             LOGGER.info(f"应用安装成功: {package_path}")
             return True
         else:
-            ERROR_LOGGER.error(f"应用安装失败: {package_path}, 错误: {result.stderr}")
+            LOGGER.error(f"应用安装失败: {package_path}, 错误: {result.stderr}")
             return False
 
     def try_connect_device(self) -> bool:
@@ -219,14 +219,14 @@ class EnvironmentChecker:
                     LOGGER.info(f"设备连接成功: {device_name}")
                     return True
                 else:
-                    ERROR_LOGGER.error(f"设备连接失败: {result.stderr}")
+                    LOGGER.error(f"设备连接失败: {result.stderr}")
                     return False
             else:
                 # 尝试启动模拟器
                 return self._start_emulator()
 
         except Exception as e:
-            ERROR_LOGGER.error(f"连接设备时发生异常: {e}")
+            LOGGER.error(f"连接设备时发生异常: {e}")
             return False
 
     def _is_network_device(self, device_name: str) -> bool:
@@ -242,12 +242,12 @@ class EnvironmentChecker:
         try:
             result = run_command_safely(["emulator", "-list-avds"])
             if not result.success:
-                ERROR_LOGGER.error("无法获取模拟器列表")
+                LOGGER.error("无法获取模拟器列表")
                 return False
 
             avds = [avd.strip() for avd in result.stdout.split('\n') if avd.strip()]
             if not avds:
-                ERROR_LOGGER.error("未找到可用的模拟器")
+                LOGGER.error("未找到可用的模拟器")
                 return False
 
             # 使用第一个可用的模拟器
@@ -264,7 +264,7 @@ class EnvironmentChecker:
             return True
 
         except Exception as e:
-            ERROR_LOGGER.error(f"启动模拟器时发生异常: {e}")
+            LOGGER.error(f"启动模拟器时发生异常: {e}")
             return False
 
     def check_environment_and_device(self) -> bool:
@@ -279,10 +279,10 @@ class EnvironmentChecker:
         if not self.check_appium_service():
             LOGGER.warning("Appium服务未运行，尝试启动...")
             if not self.start_appium_service():
-                ERROR_LOGGER.error("Appium服务启动失败")
+                LOGGER.error("Appium服务启动失败")
                 checks_passed = False
             elif not self.check_appium_service():
-                ERROR_LOGGER.error("Appium服务启动后仍然不可用")
+                LOGGER.error("Appium服务启动后仍然不可用")
                 checks_passed = False
 
         # 2. 检查设备连接
@@ -291,13 +291,13 @@ class EnvironmentChecker:
         if not device_connected:
             LOGGER.warning("设备未连接，尝试连接...")
             if not self.try_connect_device():
-                ERROR_LOGGER.error("设备连接失败")
+                LOGGER.error("设备连接失败")
                 checks_passed = False
             else:
                 # 重新检查设备连接
                 device_connected, connected_devices = self.check_device_connection()
                 if not device_connected:
-                    ERROR_LOGGER.error("设备连接后仍然不可用")
+                    LOGGER.error("设备连接后仍然不可用")
                     checks_passed = False
 
         # 3. 检查应用安装（仅当设备连接正常时）
@@ -309,7 +309,7 @@ class EnvironmentChecker:
                     LOGGER.info("应用安装成功")
                     # 再次检查应用是否安装成功
                     if not self.check_app_installed():
-                        ERROR_LOGGER.error("应用安装后仍然无法检测到")
+                        LOGGER.error("应用安装后仍然无法检测到")
                         checks_passed = False
                 else:
                     LOGGER.error("应用安装失败")
@@ -325,6 +325,6 @@ class EnvironmentChecker:
         if checks_passed:
             LOGGER.info("✅ 所有环境检查通过")
         else:
-            ERROR_LOGGER.error("❌ 环境检查未通过，请检查上述错误信息")
+            LOGGER.error("❌ 环境检查未通过，请检查上述错误信息")
 
         return checks_passed

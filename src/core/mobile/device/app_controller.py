@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class AppController:
     def __init__(self, driver):

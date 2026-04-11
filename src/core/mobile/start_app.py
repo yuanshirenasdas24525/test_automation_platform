@@ -40,7 +40,7 @@ class AppInitializer:
                         self.initialized.add(index)
                         LOGGER.info(f"应用程序 {app_package} 已成功初始化")
                     except Exception as e:
-                        ERROR_LOGGER.error(f"设置测试环境失败 ({app_package}): {e}")
+                        LOGGER.error(f"设置测试环境失败 ({app_package}): {e}")
                         raise
                 else:
                     raise IndexError(f"配置索引 {index} 超出范围，总配置数: {len(config_list)}")
@@ -55,7 +55,7 @@ class AppInitializer:
                     self.app_managers[index].close_all_apps()
                     LOGGER.info(f"应用程序 {index} 已关闭")
                 except Exception as e:
-                    ERROR_LOGGER.error(f"关闭应用程序 {index} 时出错: {e}")
+                    LOGGER.error(f"关闭应用程序 {index} 时出错: {e}")
                 del self.app_managers[index]
                 del self.apps[index]
                 self.initialized.remove(index)

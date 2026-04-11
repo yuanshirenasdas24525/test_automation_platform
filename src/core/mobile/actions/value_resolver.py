@@ -1,6 +1,5 @@
 from src.utils.function_executor import exec_func
 from src.utils.platform_utils import rep_expr
-from src.utils.logger import LOGGER
 
 
 class ValueResolver:
@@ -10,7 +9,7 @@ class ValueResolver:
 
     def resolve(self, step):
         raw = step.get("value")
-        retrieve = step.get("retrieve")
+        retrieve = step.get("extract_var")
 
         if isinstance(retrieve, str) and retrieve.startswith("sql:"):
             retrieve = self.db.fetchone(retrieve[4:])

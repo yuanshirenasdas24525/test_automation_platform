@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-from src.utils.logger import LOGGER, ERROR_LOGGER
+from src.utils.logger import LOGGER
 
 class AssertionEngine:
     def __init__(self, db_connection=None, device_action=None):
@@ -28,7 +28,7 @@ class AssertionEngine:
         except AssertionError as e:
             if self.device:
                 self.device.take_screenshot("assert_fail.png")
-            ERROR_LOGGER.error(f"断言失败：{e}")
+            LOGGER.error(f"断言失败：{e}")
             raise e
 
 
