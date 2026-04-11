@@ -7,7 +7,7 @@ window.isEditMode = false;
 window.currentEditId = null;
 window.currentListData = [];
 window.insertIndex = null;
-window.viewProjectDetails = (id) => router.projectDetail(id);
+window.viewProjectDetails = (id, mid, category) => router.projectDetail(id, mid, category);
 // --- 路由与视图控制 ---
 const router = {
     // 1. 首页：展示所有项目
@@ -131,10 +131,10 @@ const router = {
                         </div>
     
                         <div class="project-actions">
-                            <button class="action-btn-mini btn-run" onclick="runProjectCases(${proj.id},  ${proj.type})">
+                            <button class="action-btn-mini btn-run" onclick="runProjectCases(${proj.id},  '${category}')">
                                 <i class="fas fa-play"></i> 执行
                             </button>
-                            <button class="action-btn-mini" onclick="viewProjectDetails(${proj.id})">
+                            <button class="action-btn-mini" onclick="viewProjectDetails(${proj.id}, null, '${category}')">
                                 <i class="fas fa-eye"></i> 详情
                             </button>
                             <button class="action-btn-mini" onclick="editProject(${proj.id})">
@@ -153,7 +153,7 @@ const router = {
     },
 
     // 3. 进入项目/模块详情
-    async projectDetail(projId, moduleId = null) {
+    async projectDetail(projId, moduleId = null, category) {
         // 严谨的参数处理
         if (!moduleId || moduleId === "null" || moduleId === "undefined") moduleId = null;
 
@@ -195,7 +195,7 @@ const router = {
                             <button class="btn-icon" onclick="router.home()"><i class="fas fa-home"></i></button>
                             <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>
                             ${moduleId ? 
-                                `<button class="btn-text" onclick="router.projectDetail(${projId}, ${parentIdForBack})">返回上级</button>
+                                `<button class="btn-text" onclick="router.projectDetail(${projId}, ${parentIdForBack}, '${category}')">返回上级</button>
                                  <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>` : ''
                             }
                             <span style="font-weight: 600; color: #1e293b; font-size: 18px;">${displayName}</span>
@@ -232,9 +232,10 @@ const router = {
             } else {
                 data.forEach((item, index) => {
                     const isMod = item.type === 'module';
-                    const clickAction = isMod ? `router.projectDetail(${projId}, ${item.id})` : `toggleCasePreview(${item.id})`;
+                    const clickAction = isMod ? `router.projectDetail(${projId}, ${item.id}, '${category}')` : `toggleCasePreview(${item.id})`;
                     const icon = isMod ? 'fa-folder' : 'fa-file-alt';
                     const iconColor = isMod ? '#3b82f6' : '#94a3b8';
+                    const belongsToModuleId = isMod ? item.id : (item.module_id || window.currentParentId);
 
                     html += `
                         <tr class="draggable-row" data-id="${item.id}" data-type="${item.type}">
@@ -254,7 +255,7 @@ const router = {
                             </td>
                             <td>
                                 <div style="display:flex; gap:8px;">
-                                    <button class="btn-circle btn-run" title="运行" onclick="runTestHandler(${projId}, ${moduleId}, ${item.id})"><i class="fas fa-play"></i></button>
+                                    <button class="btn-circle btn-run" title="运行" onclick="runTestHandler(${projId}, ${belongsToModuleId}, ${isMod ? 'null' : item.id}, '${category}')"><i class="fas fa-play"></i></button>
                                     <button class="btn-circle btn-edit" title="编辑" onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}"><i class="fas fa-edit"></i></button>
                                     <button class="btn-circle btn-delete" title="删除" onclick="confirmDelete('${item.type}', ${item.id})"><i class="fas fa-trash"></i></button>
                                 </div>
@@ -684,7 +685,7 @@ async function submitCase() {
 }
 
 async function executeRun(payload) {
-    console.log("执行测试:", payload)
+
     try {
         const res = await fetch(`${API_BASE}/run_test`, {
             method: 'POST',
@@ -702,12 +703,12 @@ async function executeRun(payload) {
     }
 }
 
-function runProjectCases(projectId, caseType) {
-    executeRun({ project: projectId ,  type: caseType});
+function runProjectCases(projectId, category) {
+    executeRun({ project: projectId ,  category: category});
 }
 
-function runTestHandler(projectId, moduleId, caseId){
-    executeRun({ project: projectId, module: moduleId, case: caseId });
+function runTestHandler(projectId, moduleId, caseId, category){
+    executeRun({ project: projectId, module: moduleId, case: caseId , category: category});
 }
 
 // --- 编辑用例 ---
