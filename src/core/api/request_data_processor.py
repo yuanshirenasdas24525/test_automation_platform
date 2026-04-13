@@ -153,7 +153,6 @@ class RequestDataProcessor:
             assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
             add_allure_step("断言", f"实际值：{actual} == 预期值：{v}")
             assertion_results.append(f"实际值：{actual} == 预期值：{v}")
-
         ctx.record("assertion_results", assertion_results)
 
     def execute_select_fetchone(self, sql: str):

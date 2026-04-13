@@ -424,10 +424,10 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: D
                 f"--cases_data={json.dumps(cases)}"
             ]
             pytest.main(pytest_args)
-            # 写入test_step_reports 表
-            # sync_allure_to_db(report_id, result_path, db.session)
 
             os.system(f"allure generate {result_path} -o {report_path} --clean")
+            # 写入test_step_reports 表
+            # sync_allure_to_db(report_id, result_path, db.session)
             # 写入test_reports
             # finalize_report(r_id, db.session)
 

@@ -4,13 +4,10 @@ import yaml
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import configparser
 from typing import List, Dict, Any, Optional
 
-from src.database.db import DB
 from src.utils.logger import LOGGER
 from config.settings import ProjectPaths
-# from src.database.db import DB
 
 PROJECT = Path(ProjectPaths.BASE_DIR)
 
@@ -61,23 +58,6 @@ def process_json_files_in_path(relative_path):
     except Exception as e:
         LOGGER.error(f"错误处理路径 {relative_path}: {e}")
         return None
-
-
-class ReadConf:
-    def __init__(self, file_path):
-        self.config = configparser.ConfigParser()
-        # 保持原始大小写
-        self.config.optionxform = lambda option: option
-        with open(file_path, 'r', encoding='utf-8') as fp:
-            self.config.read_file(fp)
-
-    def get_dict(self, section):
-        return dict(self.config.items(section))
-
-    def get_list(self, section, key):
-        return self.config.get(section, key).split(",")
-
-read_conf = ReadConf(ProjectPaths.OBJ_CONFIG)
 
 
 # =========================================================
@@ -203,6 +183,7 @@ def get_cases_from_db(params: Dict[str, Any], db):
     # p.name 为项目名，m.name 为模块名
     sql_base = """
                SELECT p.name as project_name, \
+                      t.id, \
                       m.name as module_name, \
                       t.name, \
                       t.description, \
@@ -241,17 +222,3 @@ def get_cases_from_db(params: Dict[str, Any], db):
 
     return [row for row in rows if not row.get("skip")]
 
-# =========================================================
-# 使用示例
-# =========================================================
-if __name__ == "__main__":
-    con_sqlite = read_conf.get_dict("sqlite_local")
-    print(con_sqlite)
-
-    # reader = GenericCaseReader(ProjectPaths.register, process_api_row).read()
-    # for i in reader:
-    #     print(i)
-    # params = {"project": 17, "module": 17}
-    # cases_to_run = get_cases_from_db(params, con_sqlite)
-    # for i in cases_to_run:
-    #     print(i)

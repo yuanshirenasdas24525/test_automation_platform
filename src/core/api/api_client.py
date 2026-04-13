@@ -21,10 +21,10 @@ class ApiClient:
     _sessions = {}
     _default_session = None
 
-    def __init__(self, request_data_processor, record_property):
+    def __init__(self, request_data_processor, ctx):
         self.session = requests.Session()
         self.processor = request_data_processor
-        self.record_property = record_property
+        self.ctx = ctx
         # 保存上一次的层级
         self.last_module = None
         self.last_submodule = None
@@ -94,6 +94,7 @@ class ApiClient:
         case_description= case.get("description", None)  # 对应描述
 
         skip = clean_val(case.get("skip"))
+        case_id = clean_val(case.get("id"))
         method = clean_val(case.get("method"))
         path = clean_val(case.get("path"))
         header = clean_val(case.get("headers"))
@@ -132,15 +133,15 @@ class ApiClient:
             url, method, parametric_type, header, data, file
         )
 
-        self.processor.handler_extra(extra, response)
-        self.processor.assert_result(response, expect)
+        self.processor.handler_extra(extra, response, self.ctx)
+        self.processor.assert_result(response, expect, self.ctx)
 
-        self.record_property("action", method)
-        self.record_property("target", url)
-        self.record_property("input_data", {"Header":header,"Request":data})
-        self.record_property("output_data", response)
-        self.record_property("assertion_results", response.status_code)
-
+        self.ctx.record("case_id", case_id)
+        self.ctx.record("page_info", case)
+        self.ctx.record("action", method)
+        self.ctx.record("target", url)
+        self.ctx.record("input_data", {"Header":header,"Request":data,"FileParam":file,"Sql": sql})
+        self.ctx.record("output_data", response)
         return response, sql
 
     def _send_api_with_retry(
@@ -191,6 +192,7 @@ class ApiClient:
 
         try:
             response = res.json()
+            self.ctx.record("status_code", res.status_code)
             LOGGER.info(f'请求发送成功, 响应体: {response}')
         except JSONDecodeError:
             response = res.text

@@ -7,6 +7,14 @@ from sqlalchemy import create_engine
 from src.database.models.test_step_report import TestStepReport
 from src.utils.logger import LOGGER
 from src.database.db import DB
+import json
+
+def safe_json_dumps(data):
+    if data is None:
+        return None
+    if isinstance(data, (dict, list)):
+        return json.dumps(data, ensure_ascii=False)
+    return str(data)
 
 db = DB()
 
@@ -67,18 +75,18 @@ def pytest_runtest_makereport(item, call):
 
         props = dict(report.user_properties)
 
-        step_data.action = props.get("action")
-        step_data.target = props.get("target")
-        step_data.input_data = props.get("input_data")
-        step_data.output_data = props.get("output_data")
-        step_data.status_code = props.get("status_code")
-        step_data.extract_values = props.get("extract_values")
-        step_data.assert_result = props.get("assert_result")
-        step_data.page_info = props.get("page_info")
+        step_data.case_id = safe_json_dumps(props.get("case_id"))
+        step_data.action = safe_json_dumps(props.get("action"))
+        step_data.target = safe_json_dumps(props.get("target"))
+        step_data.input_data = safe_json_dumps(props.get("input_data"))
+        step_data.output_data = safe_json_dumps(props.get("output_data"))
+        step_data.status_code = safe_json_dumps(props.get("status_code"))
+        step_data.extract_values = safe_json_dumps(props.get("extract_values"))
+        step_data.assertion_results = safe_json_dumps(props.get("assertion_results"))
+        step_data.page_info = safe_json_dumps(props.get("page_info"))
 
         if report.failed:
-            step_data.error_message = str(report.longrepr)
-
+            step_data.error_message = str(report.longrepr)[:2000]
         db.session.add(step_data)
         db.session.commit()
 

@@ -4,7 +4,7 @@ import threading
 from src.core.mobile.environment_checker import EnvironmentChecker
 from src.core.mobile.appium_start_setting import AppFactory
 from src.core.mobile.app_action import AppAction
-from src.utils.read_test_cases import read_conf
+from src.utils.read_conf import read_conf
 from src.database.db_engine import SQLHandlerFactory
 from src.utils.logger import LOGGER
 
