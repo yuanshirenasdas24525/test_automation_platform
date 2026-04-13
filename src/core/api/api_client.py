@@ -1,7 +1,6 @@
 # coding: utf-8
 import requests
 import time
-import pytest
 from requests.exceptions import JSONDecodeError, ChunkedEncodingError
 from src.utils.allure_utils import (
     set_allure_project, set_allure_module, set_allure_case,
@@ -22,9 +21,10 @@ class ApiClient:
     _sessions = {}
     _default_session = None
 
-    def __init__(self, request_data_processor):
+    def __init__(self, request_data_processor, record_property):
         self.session = requests.Session()
         self.processor = request_data_processor
+        self.record_property = record_property
         # 保存上一次的层级
         self.last_module = None
         self.last_submodule = None
@@ -87,7 +87,6 @@ class ApiClient:
                 self._default_session = requests.Session()
             return self._default_session
 
-    @pytest.hookimpl(tryfirst=True, hookwrapper=True)
     def send_case(self, case: dict) -> object:
         case_project = case.get("project_name", None)  # 对应你之前 JOIN 查出来的项目名
         case_module = case.get("module_name", None)  # 对应模块名
@@ -135,6 +134,12 @@ class ApiClient:
 
         self.processor.handler_extra(extra, response)
         self.processor.assert_result(response, expect)
+
+        self.record_property("action", method)
+        self.record_property("target", url)
+        self.record_property("input_data", {"Header":header,"Request":data})
+        self.record_property("output_data", response)
+        self.record_property("assertion_results", response.status_code)
 
         return response, sql
 

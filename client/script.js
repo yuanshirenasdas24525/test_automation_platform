@@ -89,11 +89,11 @@ const router = {
                 const caseCount = proj.case_count || 0;
                 const passRate = proj.pass_rate || 0;
                 const lastRun = proj.last_run_time || '从未执行';
-                const statusColor = proj.last_status === 'success' ? '#10b981' : (proj.last_status === 'fail' ? '#ef4444' : '#cbd5e1');
+                const statusColor = proj.last_status === 'passed' ? '#10b981' : (proj.last_status === 'fail' ? '#ef4444' : '#cbd5e1');
                 const icon = category === 'API' ? 'fa-bolt' : (category === 'Web' ? 'fa-desktop' : 'fa-mobile-alt');
 
                 html += `
-                    <div class="project-card">
+                    <div class="project-card" onclick="handleCardClick(event, ${proj.id}, '${category}')">
                         <div class="project-status-bar" style="background: ${statusColor}"></div>
                         <div class="project-header">
                             <div class="project-icon-box" style="background: ${statusColor}15; color: ${statusColor}">
@@ -144,6 +144,14 @@ const router = {
                     </div>
                 `;
             });
+            // 新增全局处理函数
+            window.handleCardClick = function(event, projId, category) {
+                // 如果点击的是按钮、图标或下拉菜单，则不触发跳转
+                if (event.target.closest('button') || event.target.closest('.dropdown') || event.target.closest('li')) {
+                    return;
+                }
+                window.viewProjectDetails(projId, null, category);
+            };
 
             html += `</div>`;
             container.innerHTML = html;
@@ -186,6 +194,16 @@ const router = {
             const res = await fetch(contentUrl);
             const data = await res.json();
             window.currentListData = data;
+
+            const breadcrumbHtml = `
+                <div class="breadcrumb-nav" style="display: flex; align-items: center; gap: 8px;">
+                    <button class="btn-text" onclick="${moduleId ? `router.projectDetail(${projId}, ${parentIdForBack}, '${category}')` : `router.projectList('${category}')`}">
+                        <i class="fas fa-arrow-left"></i> ${moduleId ? '返回上级' : '返回列表'}
+                    </button>
+                    <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>
+                    <span style="font-weight: 600; color: #1e293b; font-size: 18px;">${displayName}</span>
+                </div>
+            `;
 
             // 3. 构建沉浸式 UI
             let html = `
@@ -696,6 +714,7 @@ async function executeRun(payload) {
         if (data.status === 'success') {
             alert(`测试已启动：共 ${data.total} 条用例`);
         } else {
+            console.log(data.message)
             alert(`启动失败：${data.message}`);
         }
     } catch (err) {
@@ -1272,6 +1291,20 @@ window.toggleProjectMenu = function(event, element) {
 document.addEventListener('click', () => {
     document.querySelectorAll('.dropdown').forEach(el => el.classList.remove('active'));
 });
+
+window.togglePasswordVisibility = function(id) {
+    const input = document.getElementById(`input-val-${id}`);
+    const icon = event.target;
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.replace('fa-eye-slash', 'fa-eye');
+        icon.style.color = '#3b82f6';
+    } else {
+        input.type = 'password';
+        icon.classList.replace('fa-eye', 'fa-eye-slash');
+        icon.style.color = '#94a3b8';
+    }
+};
 
 // --- 全选逻辑 ---
 

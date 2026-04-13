@@ -29,7 +29,7 @@ class ConfigCenter:
             self._configs = {}  # 全量重载时才清空所有内容
             LOGGER.info("正在执行全量配置重载...")
 
-        rows = db.execute_query(sql, params)
+        rows = db.query(sql, params)
 
         # 将查询结果映射到内存字典中
         for row in rows:
@@ -60,15 +60,3 @@ class ConfigCenter:
 
 config_center = ConfigCenter()
 
-if __name__ == '__main__':
-
-    from src.database.db_engine import SQLHandlerFactory
-    from config.settings import ProjectPaths
-    sqlite_conf = {
-        "type": "sqlite",
-        "path": ProjectPaths.SQLITE_DB_PATH
-    }
-    db_handler = SQLHandlerFactory.create(sqlite_conf)
-    # 3. 传入实例进行初始化加载
-    config_center.reload(db_handler)
-    print(config_center.get("redis"))

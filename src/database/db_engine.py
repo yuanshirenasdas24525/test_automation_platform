@@ -91,18 +91,3 @@ class SQLHandlerFactory:
 # =========================================================
 # 使用示例
 # =========================================================
-if __name__ == '__main__':
-    from src.utils.read_test_cases import read_conf
-
-    sqlite_conf = read_conf.get_dict("sqlite_local")
-
-    # 1. 创建处理器
-    db = SQLHandlerFactory.create(sqlite_conf)
-
-    # 2. 执行查询 (注意使用 :id 这种占位符，安全且跨数据库通用)
-    sql_str = "SELECT * FROM test_cases WHERE id = :case_id"
-    data = db.execute_query(sql_str, {"case_id": 195})
-
-    print(data)
-    for row in data:
-        print(f"用例名称: {row['name']}")  # 字典访问，比 row[1] 稳健得多

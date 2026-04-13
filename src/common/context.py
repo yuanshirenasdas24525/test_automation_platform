@@ -1,5 +1,5 @@
 # -*- coding:utf-8 -*-
-from src.database.db_manager import DBManager
+from src.database.db import DB
 from src.utils.reload_config import config_center
 from src.utils.logger import LOGGER
 
@@ -8,7 +8,7 @@ class AppContext:
     def __init__(self):
         # 1. 内部持有数据库处理器 (单例模式)
         try:
-            self.db = DBManager().get_db()
+            self.db = DB().sql
             LOGGER.info("AppContext: 数据库处理器初始化成功")
         except Exception as e:
             LOGGER.error(f"AppContext: 数据库初始化失败: {e}")

@@ -6,9 +6,11 @@ import pandas as pd
 from pathlib import Path
 import configparser
 from typing import List, Dict, Any, Optional
+
+from src.database.db import DB
 from src.utils.logger import LOGGER
 from config.settings import ProjectPaths
-from src.database.db_engine import SQLHandlerFactory
+# from src.database.db import DB
 
 PROJECT = Path(ProjectPaths.BASE_DIR)
 
@@ -185,11 +187,10 @@ def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
         return {}
 
 
-def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
+def get_cases_from_db(params: Dict[str, Any], db):
     """
     查询用例并将 ID 转换为对应的项目名称和模块名称返回
     """
-    db = SQLHandlerFactory.create(con_sqlite)
 
     project_id = params.get("project")
     module_id = params.get("module")
@@ -236,7 +237,7 @@ def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
     sql_base += " ORDER BY t.sort_order ASC"
 
     # 执行查询
-    rows = db.execute_query(sql_base, query_params)
+    rows = db.query(sql_base, query_params)
 
     return [row for row in rows if not row.get("skip")]
 
@@ -245,6 +246,7 @@ def get_cases_from_db(params: Dict[str, Any], con_sqlite: Dict[str, Any]):
 # =========================================================
 if __name__ == "__main__":
     con_sqlite = read_conf.get_dict("sqlite_local")
+    print(con_sqlite)
 
     # reader = GenericCaseReader(ProjectPaths.register, process_api_row).read()
     # for i in reader:

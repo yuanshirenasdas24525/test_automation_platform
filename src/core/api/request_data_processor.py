@@ -5,7 +5,7 @@ from src.utils.platform_utils import rep_expr, extractor, convert_json
 from src.utils.function_executor import exec_func
 from src.utils.logger import LOGGER
 from src.utils.allure_utils import add_allure_step
-from src.database.db_engine import SQLHandlerFactory
+from src.database.db import DB
 
 
 
@@ -79,14 +79,14 @@ class RequestDataProcessor:
         variable = rep_expr(extra_str, self.extra_pool)
         data_obj = convert_json(variable)
         if data_obj and data_obj.get('CustomDatabaseLink') is not None:
-            db = SQLHandlerFactory.create(data_obj.get('CustomDatabaseLink'))
+            db = DB(data_obj.get('CustomDatabaseLink'))
             sql = rep_expr(sql, self.extra_pool)
             sql_results = []
             for sql_statement in sql.split(";"):
                 sql_statement = sql_statement.strip()
                 if not sql_statement:
                     continue
-                sql_result = db.execute_query(sql)
+                sql_result = db.sql.query(sql)
                 if sql_result:
                     sql_results.append(sql_result[0] if isinstance(sql_result, (list, tuple)) else sql_result)
         else:
@@ -163,7 +163,7 @@ class RequestDataProcessor:
             if not sql_statement:
                 continue
 
-            result = self.db.execute_query(sql_statement)
+            result = self.db.sql.query(sql_statement)
             if result:
                 results.append(result[0] if isinstance(result, (list, tuple)) else result)
 
@@ -179,7 +179,7 @@ class RequestDataProcessor:
                 if not stmt:
                     continue
                 index += 1
-                result = self.db.execute_query(stmt)
+                result = self.db.sql.query(stmt)
                 if result:
                     self.extra_pool[f"sql_query_results_{index}"] = result
             LOGGER.info(f"SQL 执行完成，更新参数池: {self.extra_pool}")
