@@ -112,12 +112,13 @@ class RequestDataProcessor:
         """
         return self.file_parameter.get_files(file_obj)
 
-    def handler_extra(self, extra_str: str, response: dict) -> None:
+    def handler_extra(self, extra_str: str, response: dict, ctx) -> None:
         """
         从响应中提取参数，加入 extra_pool
         """
         if not extra_str:
             return
+        extract_values = {}
         extra_dict = convert_json(extra_str)
         for k, v in extra_dict.items():
             if isinstance(v, str) and v.startswith("function:"):
@@ -125,8 +126,10 @@ class RequestDataProcessor:
             extracted_value = extractor(response, v)
             if extracted_value is not None:
                 self.extra_pool[k] = extracted_value
+            extract_values[k] = extracted_value
+        ctx.record("extract_values", {"new_extract": extract_values, "extra_pool": self.extra_pool})
 
-    def assert_result(self, response: dict, expect_str: str) -> None:
+    def assert_result(self, response: dict, expect_str: str, ctx) -> None:
         """
         断言响应与预期是否一致
         """
@@ -134,6 +137,7 @@ class RequestDataProcessor:
         add_allure_step("当前可用参数池", self.extra_pool)
         expect_str = rep_expr(expect_str, self.extra_pool)
         expect_dict = convert_json(expect_str)
+        assertion_results = []
         for k, v in expect_dict.items():
             actual = extractor(response, k)
             if isinstance(v, str) and v.startswith("function:"):
@@ -141,12 +145,16 @@ class RequestDataProcessor:
                     v = float(exec_func(v, self.extra_pool))
                 else:
                     v = exec_func(v)
-            elif isinstance(v, str) and v.startswith("sql:"):
-                sql = v.split("sql:", 1)[1].strip()
-                results = self.execute_select_fetchone(sql)
-                v = results[0] if results else None
+            elif isinstance(k, str) and k.startswith("sql:"):
+                sql = k.split("sql:", 1)[1].strip()
+                results = self.db.sql.query(sql)
+                actual = str(results[0]) if results else "db_error"
+
             assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
             add_allure_step("断言", f"实际值：{actual} == 预期值：{v}")
+            assertion_results.append(f"实际值：{actual} == 预期值：{v}")
+
+        ctx.record("assertion_results", assertion_results)
 
     def execute_select_fetchone(self, sql: str):
         """

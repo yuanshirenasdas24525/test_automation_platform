@@ -72,6 +72,9 @@ def pytest_runtest_makereport(item, call):
         step_data.input_data = props.get("input_data")
         step_data.output_data = props.get("output_data")
         step_data.status_code = props.get("status_code")
+        step_data.extract_values = props.get("extract_values")
+        step_data.assert_result = props.get("assert_result")
+        step_data.page_info = props.get("page_info")
 
         if report.failed:
             step_data.error_message = str(report.longrepr)

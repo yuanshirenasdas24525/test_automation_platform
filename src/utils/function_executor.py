@@ -109,10 +109,11 @@ def function_name():
         domain_name = 'xtec'
         return f"A_{username}@{domain_name}.{random.choice(domain)}"
 
-    def generate_phone(country_code='63', *args, **kwargs):
+    def generate_phone(*args, **kwargs):
         """
         生成随机手机号，默认63手机号
         """
+        country_code = '852'
         if country_code == '852':
             return random.choice(['9', '6']) + ''.join(str(random.randint(0, 9)) for _ in range(7))
         elif country_code == '886':

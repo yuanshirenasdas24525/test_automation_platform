@@ -1,25 +1,17 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+import os
+from typing import List, Optional
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, UploadFile, File, Depends, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi import Body, UploadFile, File, APIRouter, Query
 from fastapi.middleware.cors import CORSMiddleware
 from src.utils.reload_config import config_center
-from fastapi import Depends
 from src.database.models import (Project,Module,TestCase,
                                  ProjectCreate,ModuleCreate,TestCaseCreate,
                                  RunTestRequest,ConfigItem,
                                  TestReport)
 from src.database.db import DB
 from sqlalchemy import func
-# from src.database.base import Base
-# from src.database.engine import engine
-from fastapi import Depends, Query
-from typing import List, Optional
-from datetime import datetime
-import pandas as pd
-import io
-import uuid
-import os
 
 def get_db(db_type: str = Query("sqlite")):
 
@@ -137,7 +129,7 @@ def create_project(project: ProjectCreate, db: DB = Depends(get_db)):
     db.session.add(db_project)
     db.session.commit()
     db.session.refresh(db_project)
-    return db_project
+    return {"status": "success", "data": db_project}
 
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: int, project_data: ProjectCreate, db: DB = Depends(get_db)):
@@ -151,18 +143,20 @@ def update_project(project_id: int, project_data: ProjectCreate, db: DB = Depend
 
     db.session.commit()
     db.session.refresh(db_project)
-    return db_project
+    return {"status": "success", "data": db_project}
 
 @app.get("/api/projects/{project_id}")
 def get_project_info(project_id: int, db: DB = Depends(get_db)):
     project = db.session.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
-    return {
-        "id": project.id,
-        "name": project.name,
-        "type": project.type,
-        "description": project.description
+    return {"status": "success",
+            "data": {
+                "id": project.id,
+                "name": project.name,
+                "type": project.type,
+                "description": project.description
+            }
     }
 
 
@@ -175,7 +169,7 @@ def delete_project(project_id: int, db: DB = Depends(get_db)):
     # 注意：如果设置了级联删除(cascade)，删除项目会自动删除关联的模块和用例
     db.session.delete(db_project)
     db.session.commit()
-    return {"message": "项目已删除"}
+    return {"status": "success","message": "项目已删除"}
 
 @app.post("/api/modules")
 def create_module(module: ModuleCreate, db: DB = Depends(get_db)):
@@ -185,7 +179,7 @@ def create_module(module: ModuleCreate, db: DB = Depends(get_db)):
     db.session.add(db_module)
     db.session.commit()
     db.session.refresh(db_module)
-    return db_module
+    return {"status": "success", "data": db_module}
 
 
 # --- 获取单个模块详情 (用于编辑回填) ---
@@ -194,7 +188,7 @@ def get_module_detail(module_id: int, db: DB = Depends(get_db)):
     module = db.session.query(Module).filter(Module.id == module_id).first()
     if not module:
         raise HTTPException(status_code=404, detail="模块不存在")
-    return module
+    return {"status": "success", "data": module}
 
 
 # --- 编辑模块 ---
@@ -206,7 +200,7 @@ def update_module(module_id: int, name: str = Body(..., embed=True), db: DB = De
 
     db_module.name = name
     db.commit()
-    return {"message": "修改成功"}
+    return {"status": "success", "message": "修改成功"}
 
 
 # --- 删除模块 ---
@@ -219,7 +213,7 @@ def delete_module(module_id: int, db: DB = Depends(get_db)):
     # 逻辑建议：这里可以递归删除子模块，或者简单删除当前模块
     db.session.delete(db_module)
     db.session.commit()
-    return {"message": "模块已删除"}
+    return {"status": "success", "message": "模块已删除"}
 
 # --- 核心业务接口 ---
 @app.post("/api/test_cases")
@@ -229,14 +223,14 @@ def create_cases_content(case: TestCaseCreate, db: DB = Depends(get_db)):
     db.session.add(db_test_cases)
     db.session.commit()
     db.session.refresh(db_test_cases)
-    return db_test_cases
+    return {"status": "success", "data": db_test_cases}
 
 @app.put("/api/test_cases/{case_id}")
 def edit_case_content(case_id: int, case: TestCaseCreate, db: DB = Depends(get_db)):
     db.session.query(TestCase).filter(TestCase.module_id == case.dict().get("module_id"),
                               TestCase.id == case_id).update(case.dict())
     db.session.commit()
-    return {"status": "success"}
+    return {"status": "success", "message": "修改成功"}
 
 @app.get("/api/content/{project_id}")
 def get_folder_content(project_id: int, parent_id: Optional[int] = None, db: DB = Depends(get_db)):
@@ -301,7 +295,7 @@ def delete_case_content(content_id: int, db: DB = Depends(get_db)):
     """
     db.session.query(TestCase).filter(TestCase.id == content_id).delete()
     db.session.commit()
-    return {"status": "success"}
+    return {"status": "success", "message": "删除成功"}
 
 @app.post("/api/projects/{project_id}/import_cases")
 async def import_test_cases(
@@ -311,6 +305,8 @@ async def import_test_cases(
         db: DB = Depends(get_db)
 ):
     # 1. 读取上传的文件
+    import pandas as pd
+    import io
     contents = await file.read()
     df = pd.read_excel(io.BytesIO(contents))
 
@@ -340,7 +336,7 @@ async def import_test_cases(
             import_count += 1
 
         db.session.commit()
-        return {"message": f"成功导入 {import_count} 条用例"}
+        return {"status": "success", "message": f"成功导入 {import_count} 条用例"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
@@ -365,13 +361,14 @@ def create_test_case(case_data: TestCaseCreate, db: DB = Depends(get_db)):
     new_case = TestCase(**case_data.dict())
     db.session.add(new_case)
     db.session.commit()
-    return new_case
+    return {"status": "success", "data": new_case}
 
 
 @app.post("/api/run_test")
 async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: DB = Depends(get_db)):
     from src.utils.read_test_cases import get_cases_from_db
     from src.database.data_sync import sync_allure_to_db, finalize_report
+    import uuid
 
     # 1. 生成唯一任务 ID
     now = datetime.now()
@@ -388,6 +385,7 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: D
         }
 
         cases_to_run = get_cases_from_db(params, db.sql)
+        caseNumber = len(cases_to_run)
 
 
         if not cases_to_run:
@@ -427,17 +425,18 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: D
             ]
             pytest.main(pytest_args)
             # 写入test_step_reports 表
-            sync_allure_to_db(report_id, result_path, db.session)
+            # sync_allure_to_db(report_id, result_path, db.session)
 
             os.system(f"allure generate {result_path} -o {report_path} --clean")
             # 写入test_reports
-            finalize_report(r_id, db.session)
+            # finalize_report(r_id, db.session)
 
         background_tasks.add_task(execute_pytest_workflow, task_id, report_id, cases_to_run)
 
         return {
             "status": "success",
             "report_id": report_id,
+            "task_id": caseNumber,
             "message": "测试已在后台启动"
         }
     except Exception as e:

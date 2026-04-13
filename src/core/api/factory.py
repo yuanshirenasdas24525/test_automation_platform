@@ -3,9 +3,13 @@ from src.core.api.api_client import ApiClient
 from src.utils.reload_config import config_center
 from src.database.db import DB
 
-def create_request_data_processor():
-    platform_db = DB()
-    config_center.reload(db=platform_db.sql, category="api")
+def create_request_data_processor(db=None):
+
+    if db is None:
+        db = DB()
+
+    config_center.reload(db=db.sql, category="api")
+
     return RequestDataProcessor(
         header_key=config_center.get("header"),
         host_key=config_center.get("host"),
@@ -15,8 +19,12 @@ def create_request_data_processor():
     )
 
 def create_api_client(record_property):
-    """
-    将 RequestDataProcessor 注入 ApiClient
-    """
-    processor = create_request_data_processor()
-    return ApiClient(processor, record_property)
+    from src.core.context.execution_context import ExecutionContext
+
+    ctx = ExecutionContext(record_property)
+
+    platform_db = DB()
+
+    processor = create_request_data_processor(platform_db)
+
+    return ApiClient(processor, ctx)
