@@ -13,30 +13,8 @@ from src.database.models import (Project,Module,TestCase,
 from src.database.db import DB
 from sqlalchemy import func
 
-def get_db(db_type: str = Query("sqlite")):
-
-    if db_type == "sqlite":
-        db_conf = {
-            'type': 'sqlite',
-            'database': 'sqlite.db',
-            'path': '/Users/Apple/Documents/test_automation_platform/data/db/sqlite.db'
-        }
-
-    elif db_type == "mysql":
-        db_conf = {
-            "type": "mysql",
-            "user": "root",
-            "password": "123456",
-            "host": "localhost",
-            "port": 3306,
-            "database": "TestAutomationPlatform"
-        }
-
-    else:
-        raise ValueError("不支持的数据库")
-
-    db = DB(db_conf)
-
+def get_db():
+    db = DB()
     try:
         yield db
         db.commit()
@@ -50,9 +28,7 @@ if not os.path.exists("data/reports"):
     os.makedirs("data/reports")
 
 app = FastAPI(title="Automation Test Platform")
-# router = APIRouter(prefix="/api/config", tags=["配置管理"])
 app.mount("/static", StaticFiles(directory="client"), name="static")
-# app.mount("/reports", StaticFiles(directory="data/reports"), name="reports")
 
 
 # 跨域配置

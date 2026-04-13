@@ -2,6 +2,7 @@
 from src.database.engine import get_engine
 from sqlalchemy.orm import sessionmaker
 from src.database.sql_handler import SQLHandler
+from src.utils.read_conf import read_conf
 
 
 class DB:
@@ -9,11 +10,7 @@ class DB:
     def __init__(self, db_conf: dict = None):
 
         if db_conf is None:
-            db_conf = {
-                'type': 'sqlite',
-                'database': 'sqlite.db',
-                'path': '/Users/Apple/Documents/test_automation_platform/data/db/sqlite.db'
-            }
+            db_conf = read_conf.get_dict("sqlite_local")
         engine = get_engine(db_conf)
 
         SessionLocal = sessionmaker(
