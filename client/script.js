@@ -420,20 +420,44 @@ const router = {
                         </button>
                     </div>
                     <div class="card-body" id="group-content-${groupName}">
-                        ${groups[groupName].map(item => `
+                        ${groups[groupName].map(item => {
+                            // 1. 判断是否敏感字段（包含 pass 或 key）
+                            const isSensitive = item.config_key.toLowerCase().includes('pass') || 
+                                                item.config_key.toLowerCase().includes('key');
+                            
+                            return `
                             <div class="config-row" id="config-item-${item.id}">
                                 <div class="config-info">
-                                    <div class="config-key-label">${item.config_key}</div>
-                                    <input type="${(item.config_key.includes('pass') || item.config_key.includes('key')) ? 'password' : 'text'}" 
-                                           class="config-input config-data-field"
-                                           data-id="${item.id}" data-group="${item.config_group}" data-key="${item.config_key}"
-                                           value="${item.config_value}">
+                                    <div class="config-key-label" style="display: flex; align-items: center; gap: 6px;">
+                                        ${item.config_key}
+                                        ${isSensitive ? `
+                                            <i class="fas fa-eye-slash toggle-eye-icon" 
+                                               id="eye-icon-${item.id}" 
+                                               onclick="toggleConfigVisibility(${item.id})" 
+                                               style="cursor: pointer; color: #a0aec0; font-size: 12px;"></i>
+                                        ` : ''}
+                                    </div>
+                                    <div style="display: flex; align-items: center; gap: 8px; flex: 1;">
+                                        <input type="${isSensitive ? 'password' : 'text'}" 
+                                               class="config-input config-data-field"
+                                               id="cfg-input-${item.id}"
+                                               data-id="${item.id}" 
+                                               data-group="${item.config_group}" 
+                                               data-key="${item.config_key}"
+                                               value="${item.config_value}"
+                                               oninput="showSaveTick(${item.id})"> <i class="fas fa-check" 
+                                           id="tick-${item.id}" 
+                                           onclick="submitSingleConfig(this, '${item.category}')"
+                                           style="display: none; color: #48bb78; cursor: pointer;"
+                                           title="保存修改"></i>
+                                    </div>
                                 </div>
                                 <div class="delete-btn" onclick="deleteHistoryConfig(${item.id})" title="永久删除">
                                     <i class="fas fa-trash-alt"></i>
                                 </div>
                             </div>
-                        `).join('')}
+                            `;
+                        }).join('')}
                     </div>
                 </div>
             `;
@@ -1292,18 +1316,71 @@ document.addEventListener('click', () => {
     document.querySelectorAll('.dropdown').forEach(el => el.classList.remove('active'));
 });
 
-window.togglePasswordVisibility = function(id) {
-    const input = document.getElementById(`input-val-${id}`);
-    const icon = event.target;
-    if (input.type === 'password') {
-        input.type = 'text';
-        icon.classList.replace('fa-eye-slash', 'fa-eye');
-        icon.style.color = '#3b82f6';
+window.toggleConfigVisibility = function(id) {
+    const inputField = document.getElementById(`cfg-input-${id}`);
+    const eyeIcon = document.getElementById(`eye-icon-${id}`);
+
+    if (inputField.type === 'password') {
+        // 切换为明文
+        inputField.type = 'text';
+        eyeIcon.classList.remove('fa-eye-slash');
+        eyeIcon.classList.add('fa-eye');
+        eyeIcon.style.color = '#3b82f6'; // 激活状态颜色
     } else {
-        input.type = 'password';
-        icon.classList.replace('fa-eye', 'fa-eye-slash');
-        icon.style.color = '#94a3b8';
+        // 切换为密文
+        inputField.type = 'password';
+        eyeIcon.classList.remove('fa-eye');
+        eyeIcon.classList.add('fa-eye-slash');
+        eyeIcon.style.color = '#94a3b8'; // 默认状态颜色
     }
+};
+window.showSaveTick = function(id) {
+    const tick = document.getElementById(`tick-${id}`);
+    if (tick) {
+        tick.style.display = 'inline-block';
+    }
+};
+
+/**
+ * 提交单个配置修改
+ */
+window.submitSingleConfig = function(el, category) {
+    const row = el.closest('.config-row');
+    const input = row.querySelector('.config-data-field');
+    const tick = el; // el 本身就是那个对勾图标
+    if (!input) {
+        console.error("在该行内未找到输入框");
+        return;
+    }
+
+    const payload = {
+        config_value: input.value,
+        config_group: input.dataset.group,
+        config_key: input.dataset.key,
+        category: category
+    };
+
+    // 调用你现有的保存接口（这里假设接口为 api/config/save）
+    fetch('/api/config/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.status === 'success') {
+            // 保存成功后隐藏对勾，并可以给个简单的视觉反馈
+            tick.style.display = 'none';
+            input.style.borderColor = '#48bb78'; // 瞬间变绿表示成功
+            setTimeout(() => { input.style.borderColor = '#e2e8f0'; }, 2000);
+        } else {
+            alert('保存失败: ' + data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('网络错误，保存失败');
+    });
 };
 
 // --- 全选逻辑 ---
