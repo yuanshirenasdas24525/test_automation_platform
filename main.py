@@ -6,10 +6,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from src.utils.reload_config import config_center
-from src.database.models import (Project,Module,TestCase,
-                                 ProjectCreate,ModuleCreate,TestCaseCreate,
-                                 RunTestRequest,ConfigItem,
-                                 TestReport)
+from src.database.models import (Project, Module, TestCase,
+                                 ProjectCreate, ModuleCreate, TestCaseCreate,
+                                 RunTestRequest, ConfigStore, ConfigUpdateItem,
+                                 TestReport, ResponseModel)
 from src.database.db import DB
 from sqlalchemy import func
 
@@ -423,28 +423,48 @@ async def get_all_configs(category: Optional[str] = Query(None), db: DB = Depend
 
 
 @app.post("/api/config/save")
-async def save_configs(configs: List[ConfigItem], db: DB = Depends(get_db)):
+async def save_configs(configs: ConfigUpdateItem, db: DB = Depends(get_db)):
+    group = configs.config_group
+    key = configs.config_key
+    val = configs.config_value
+    category = configs.category
+    if not category:
+        return {"status": "error", "message": "category 不能为空"}
+    if not group or not key :
+        return {"status": "error", "message": "Group 和 Key 不能为空"}
     try:
-        for item in configs:
-            sql = """
-                  UPDATE config_store
-                  SET config_value = :val, \
-                      description  = :desc
-                  WHERE config_group = :group \
-                    AND config_key = :key \
-                  """
-            params = {"val": item.config_value, "desc": item.description, "group": item.config_group,
-                      "key": item.config_key}
-            db.sql.execute(sql, params)
+        db_item = db.session.query(ConfigStore).filter(
+            ConfigStore.config_group == group,
+            ConfigStore.config_key == key,
+            ConfigStore.category == category
+        ).first()
 
+        if db_item:
+            # 2. 如果存在，执行修改
+            db_item.config_value = val
+            db_item.update_time = datetime.now()
+        else:
+            # 3. 如果不存在，执行新增
+            new_item = ConfigStore(
+                config_group=group,
+                config_key=key,
+                config_value=val,
+                category=category
+            )
+            db.session.add(new_item)
+        db.session.commit()
         config_center.reload(db.sql)  # 触发热更新
         return {"status": "success", "message": "保存成功"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/api/config/add")
-def add_config(item: ConfigItem, db: DB = Depends(get_db)):
+def add_config(item: ConfigUpdateItem, db: DB = Depends(get_db)):
+    group = item.config_group
+    if not group:
+        return {"status": "error", "message": "category 不能为空"}
 
     sql = """
           INSERT INTO config_store (config_group, config_key, config_value, category)
