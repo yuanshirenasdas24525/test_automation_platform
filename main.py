@@ -1,7 +1,7 @@
 import os
 from typing import List, Optional
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, UploadFile, File, Depends, Query
+from fastapi import FastAPI, HTTPException, Body, UploadFile, File, Depends, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -341,9 +341,8 @@ def create_test_case(case_data: TestCaseCreate, db: DB = Depends(get_db)):
 
 
 @app.post("/api/run_test")
-async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: DB = Depends(get_db)):
+async def run_test(req: RunTestRequest, db: DB = Depends(get_db)):
     from src.utils.read_test_cases import get_cases_from_db
-    from src.database.data_sync import sync_allure_to_db, finalize_report
     import uuid
 
     # 1. 生成唯一任务 ID
@@ -381,38 +380,8 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: D
         db.session.refresh(new_report)
         report_id = new_report.id
 
-        def execute_pytest_workflow(t_id, r_id, cases):
-            import pytest
-            import json
-
-            # 结果路径和报告路径
-            try:
-                result_path = f"data/results/{t_id}"
-                report_path = f"data/reports/{t_id}"
-
-                # A. 运行 Pytest 并生成 Allure 源数据 (JSON)
-                pytest_args = [
-                    "-s", "-v",
-                    "-p", "config.pytest_config",
-                    "--report_id", str(r_id),  # 自定义参数
-                    "--category", req.category,  # 传类型，方便钩子判断逻辑
-                    "--alluredir", result_path,  # 动态指定结果目录
-                    f"tests/service_run_executor.py::TestService::test_{str(req.category).lower()}_runner",
-                    f"--cases_data={json.dumps(cases)}"
-                ]
-                pytest.main(pytest_args)
-
-                os.system(f"allure generate {result_path} -o {report_path} --clean")
-                # 写入test_step_reports 表
-                # sync_allure_to_db(report_id, result_path, db.session)
-                # 写入test_reports
-                finalize_report(r_id, db.session, task_id)
-            except Exception as e:
-                print(f"Pytest 执行失败: {e}")
-            finally:
-                db.session.close()
-
-        background_tasks.add_task(execute_pytest_workflow, task_id, report_id, cases_to_run)
+        from tasks import run_test_task
+        run_test_task.delay(task_id, report_id, cases_to_run, req.category)
 
         return {
             "status": "success",
@@ -504,4 +473,4 @@ async def delete_config(config_id: int, db: DB = Depends(get_db)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=54351, workers=2)
+    uvicorn.run("main:app", host="127.0.0.1", port=54351)
