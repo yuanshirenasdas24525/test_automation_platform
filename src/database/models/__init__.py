@@ -18,3 +18,5 @@ from .module import Module
 from .test_case import TestCase
 
 from .response_model import ResponseModel
+from .reorder_item import ReorderItem
+from .reorder_item import ReorderRequest

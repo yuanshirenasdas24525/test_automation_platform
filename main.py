@@ -9,7 +9,7 @@ from src.utils.reload_config import config_center
 from src.database.models import (Project, Module, TestCase,
                                  ProjectCreate, ModuleCreate, TestCaseCreate,
                                  RunTestRequest, ConfigStore, ConfigUpdateItem,
-                                 TestReport, ResponseModel)
+                                 TestReport, ReorderRequest)
 from src.database.db import DB
 from sqlalchemy import func
 
@@ -394,15 +394,16 @@ async def run_test(req: RunTestRequest, db: DB = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 @app.patch("/api/reorder")
-def reorder_items(data: list = Body(...), db: DB = Depends(get_db)):
-    """
-    批量更新排序。前端发送格式: [{"id": 1, "type": "module", "new_order": 0}, ...]
-    """
-    for item in data:
-        if item['type'] == 'module':
-            db.session.query(Module).filter(Module.id == item['id']).update({"sort_order": item['new_order']})
+def reorder_items(req: ReorderRequest, db: DB = Depends(get_db)):
+    for item in req.items:
+        if item.type == 'module':
+            db.session.query(Module).filter(Module.id == item.id).update({
+                "sort_order": item.new_order
+            })
         else:
-            db.session.query(TestCase).filter(TestCase.id == item['id']).update({"sort_order": item['new_order']})
+            db.session.query(TestCase).filter(TestCase.id == item.id).update({
+                "sort_order": item.new_order
+            })
     db.session.commit()
     return {"status": "success"}
 

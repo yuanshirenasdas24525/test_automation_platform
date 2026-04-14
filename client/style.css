@@ -510,3 +510,21 @@ tr.draggable:active { background: #f0f0f0; }
     from { opacity: 0; transform: translateY(-5px); }
     to { opacity: 1; transform: translateY(0); }
 }
+/* 强制禁止序号列的文字选中，确保拖拽响应 */
+.drag-handle, .drag-handle * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+    -webkit-user-drag: element !important; /* 强制 Chrome 将其视为可拖拽元素 */
+}
+
+.draggable-row {
+    transition: background 0.2s;
+}
+
+/* 提高拖拽时的视觉效果 */
+.draggable-row.dragging {
+    background-color: #f8fafc !important;
+    border: 2px dashed #3b82f6 !important;
+    opacity: 0.6;
+    z-index: 999;
+}

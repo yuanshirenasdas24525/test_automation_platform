@@ -178,13 +178,13 @@ const router = {
                 if (modRes.ok) {
                     const modData = await modRes.json();
                     parentIdForBack = modData.parent_id;
-                    displayName = `📂 ${modData.name}`;
+                    displayName = `📂 ${modData.data.name}`;
                 }
             } else {
                 const projRes = await fetch(`/api/projects/${projId}`);
                 if (projRes.ok) {
                     const projData = await projRes.json();
-                    displayName = `🚀 ${projData.name}`;
+                    displayName = `🚀 ${projData.data.name}`;
                 }
             }
 
@@ -256,9 +256,14 @@ const router = {
                     const belongsToModuleId = isMod ? item.id : (item.module_id || window.currentParentId);
 
                     html += `
-                        <tr class="draggable-row" data-id="${item.id}" data-type="${item.type}">
+                        <tr class="draggable-row" data-id="${item.id}" data-type="${item.type}" draggable="true">
                             <td><input type="checkbox" class="item-checkbox" value="${item.id}"></td>
-                            <td style="color:#cbd5e1; font-family:monospace;">${(index + 1).toString().padStart(2, '0')}</td>
+                            
+                            <td class="drag-handle" style="cursor: move; color:#94a3b8; user-select: none;">
+                                <i class="fas fa-grip-vertical" style="margin-right: 6px; font-size: 12px; color: #cbd5e1;"></i>
+                                <span class="row-index" style="font-family:monospace;">${(index + 1).toString().padStart(2, '0')}</span>
+                            </td>
+                            
                             <td>
                                 <div onclick="${clickAction}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
                                     <i class="fas ${icon}" style="color:${iconColor}; font-size:16px;"></i>
@@ -274,6 +279,11 @@ const router = {
                             <td>
                                 <div style="display:flex; gap:8px;">
                                     <button class="btn-circle btn-run" title="运行" onclick="runTestHandler(${projId}, ${belongsToModuleId}, ${isMod ? 'null' : item.id}, '${category}')"><i class="fas fa-play"></i></button>
+                                    <button class="btn-circle btn-insert" title="在此下方插入用例" 
+                                            onclick="insertCaseAfter(${index})"
+                                            style="color: #6366f1; border-color: #e0e7ff;">
+                                        <i class="fas fa-level-down-alt"></i>
+                                    </button>
                                     <button class="btn-circle btn-edit" title="编辑" onclick="${isMod ? `editModule(${item.id})` : `handleEditCase(${item.id})`}"><i class="fas fa-edit"></i></button>
                                     <button class="btn-circle btn-delete" title="删除" onclick="confirmDelete('${item.type}', ${item.id})"><i class="fas fa-trash"></i></button>
                                 </div>
@@ -578,7 +588,7 @@ async function editModule(moduleId) {
     const res = await fetch(`${API_BASE}/modules/${moduleId}`);
     const m = await res.json();
 
-    document.getElementById('m-name').value = m.name;
+    document.getElementById('m-name').value = m.data.name;
     document.getElementById('module-modal').style.display = 'flex';
 }
 
@@ -934,79 +944,96 @@ function resetCaseModal() {
 // --- 拖拽排序逻辑 ---
 function initDragging() {
     const list = document.getElementById('sortable-list');
+    if (!list) return;
+
     let draggingEle = null;
 
-    // 1. 开始拖拽
-    list.addEventListener('dragstart', (e) => {
-        draggingEle = e.target.closest('.draggable');
-        if (draggingEle) {
-            e.dataTransfer.effectAllowed = 'move';
-            draggingEle.classList.add('dragging'); // 可选：添加拖拽中样式
+    // --- 关键：手动强制激活拖拽 ---
+    list.addEventListener('mousedown', (e) => {
+        const row = e.target.closest('.draggable-row');
+        const handle = e.target.closest('.drag-handle');
+
+        if (handle && row) {
+            row.setAttribute('draggable', 'true'); // 确保属性存在
+        } else if (row) {
+            row.setAttribute('draggable', 'false'); // 点击非手柄区域禁止拖拽
         }
     });
 
-    // 2. 拖拽过程中计算位置（这是实现“实质排序”的关键）
-    list.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        const target = e.target.closest('.draggable');
+    // 1. 开始拖拽
+    list.ondragstart = (e) => {
+        const row = e.target.closest('.draggable-row');
+        const handle = e.target.closest('.drag-handle');
 
-        // 确保目标是另一行且不是正在拖拽的行
+        // 严格校验：必须点击了手柄
+        if (!handle || !row) {
+            e.preventDefault();
+            return;
+        }
+
+        console.log("✔ [Debug] 拖拽开始:", row.dataset.id);
+
+        draggingEle = row;
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', ''); // 必须，否则 Chrome 有时不触发
+
+        // 样式处理：延时确保预览图正常
+        setTimeout(() => row.classList.add('dragging'), 0);
+    };
+
+    // 2. 悬浮排序逻辑 (保持不变)
+    list.ondragover = (e) => {
+        e.preventDefault();
+        if (!draggingEle) return;
+
+        const target = e.target.closest('.draggable-row');
         if (target && target !== draggingEle) {
             const rect = target.getBoundingClientRect();
-            // 计算鼠标在目标行上的位置，超过一半则移到目标行后面
             const next = (e.clientY - rect.top) / (rect.bottom - rect.top) > 0.5;
 
-            // 移动主行
-            const nodeToInsert = next ? target.nextSibling : target;
-            list.insertBefore(draggingEle, nodeToInsert);
+            list.insertBefore(draggingEle, next ? target.nextSibling : target);
 
-            // 【重要】联动移动预览行：确保预览详情始终紧跟在主行下方
+            // 联动移动预览行
             const previewRow = document.getElementById(`preview-row-${draggingEle.dataset.id}`);
             if (previewRow) {
                 list.insertBefore(previewRow, draggingEle.nextSibling);
             }
         }
-    });
+    };
 
-    // 3. 拖拽结束，保存数据并更新序号
-    list.addEventListener('dragend', async () => {
-        if (draggingEle) draggingEle.classList.remove('dragging');
+    // 3. 结束同步
+    list.ondragend = async () => {
+        if (!draggingEle) return;
+        console.log("✔ [Debug] 拖拽结束");
 
-        // 只获取带 ID 的主行进行排序上报
-        const rows = Array.from(list.querySelectorAll('tr.draggable'));
-        const updateData = rows.map((row, index) => ({
+        draggingEle.classList.remove('dragging');
+
+        // 立即刷新序号
+        const rows = Array.from(list.querySelectorAll('tr.draggable-row'));
+        rows.forEach((row, i) => {
+            const span = row.querySelector('.row-index');
+            if (span) span.innerText = (i + 1).toString().padStart(2, '0');
+        });
+
+        // 准备数据
+        const cleanData = rows.map((row, index) => ({
             id: parseInt(row.dataset.id),
             type: row.dataset.type,
-            new_order: index
+            new_order: index + 1
         }));
 
-        const cleanData = updateData.filter(item => !isNaN(item.id));
-
-        // 发送后端请求
         try {
-            const res = await fetch(`${API_BASE}/reorder`, {
+            await fetch('/api/reorder', {
                 method: 'PATCH',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(cleanData)
+                body: JSON.stringify({ items: cleanData })
             });
-
-            if (res.ok) {
-                // 【实时更新序号】
-                const currentRows = list.querySelectorAll('tr.draggable');
-                currentRows.forEach((row, index) => {
-                    const orderCell = row.cells[1]; // 假设序号在第2列
-                    if (orderCell) {
-                        orderCell.innerText = index + 1;
-                    }
-                });
-                console.log("排序保存成功");
-            }
+            console.log("✅ 后端同步成功");
         } catch (error) {
-            console.error("排序保存失败:", error);
+            console.error("❌ 后端同步失败:", error);
         }
-
         draggingEle = null;
-    });
+    };
 }
 
 // --- JSON 校验 ---
