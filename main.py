@@ -386,33 +386,39 @@ async def run_test(req: RunTestRequest, background_tasks: BackgroundTasks, db: D
             import json
 
             # 结果路径和报告路径
-            result_path = f"data/results/{t_id}"
-            report_path = f"data/reports/{t_id}"
+            try:
+                result_path = f"data/results/{t_id}"
+                report_path = f"data/reports/{t_id}"
 
-            # A. 运行 Pytest 并生成 Allure 源数据 (JSON)
-            pytest_args = [
-                "-s", "-v",
-                "-p", "config.pytest_config",
-                "--report_id", str(r_id),  # 自定义参数
-                "--category", req.category,  # 传类型，方便钩子判断逻辑
-                "--alluredir", result_path,  # 动态指定结果目录
-                f"tests/service_run_executor.py::TestService::test_{str(req.category).lower()}_runner",
-                f"--cases_data={json.dumps(cases)}"
-            ]
-            pytest.main(pytest_args)
+                # A. 运行 Pytest 并生成 Allure 源数据 (JSON)
+                pytest_args = [
+                    "-s", "-v",
+                    "-p", "config.pytest_config",
+                    "--report_id", str(r_id),  # 自定义参数
+                    "--category", req.category,  # 传类型，方便钩子判断逻辑
+                    "--alluredir", result_path,  # 动态指定结果目录
+                    f"tests/service_run_executor.py::TestService::test_{str(req.category).lower()}_runner",
+                    f"--cases_data={json.dumps(cases)}"
+                ]
+                pytest.main(pytest_args)
 
-            os.system(f"allure generate {result_path} -o {report_path} --clean")
-            # 写入test_step_reports 表
-            # sync_allure_to_db(report_id, result_path, db.session)
-            # 写入test_reports
-            # finalize_report(r_id, db.session)
+                os.system(f"allure generate {result_path} -o {report_path} --clean")
+                # 写入test_step_reports 表
+                # sync_allure_to_db(report_id, result_path, db.session)
+                # 写入test_reports
+                finalize_report(r_id, db.session, task_id)
+            except Exception as e:
+                print(f"Pytest 执行失败: {e}")
+            finally:
+                db.session.close()
 
         background_tasks.add_task(execute_pytest_workflow, task_id, report_id, cases_to_run)
 
         return {
             "status": "success",
             "report_id": report_id,
-            "task_id": caseNumber,
+            "task_id": task_id,
+            "case_number": caseNumber,
             "message": "测试已在后台启动"
         }
     except Exception as e:
