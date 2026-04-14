@@ -24,6 +24,35 @@ def get_db():
     finally:
         db.close()
 
+def get_module_ancestors(module, db):
+    ancestors = []
+
+    current = module
+    while current.parent_id:
+        parent = db.session.query(Module).filter(Module.id == current.parent_id).first()
+        if not parent:
+            break
+        ancestors.append({
+            "id": parent.id,
+            "name": parent.name
+        })
+        current = parent
+
+    # 反转顺序（从根 → 当前父级）
+    ancestors.reverse()
+
+    return ancestors
+
+def get_project_root(module, db):
+    project = db.session.query(Project).filter(Project.id == module.project_id).first()
+    if not project:
+        return None
+
+    return {
+        "id": None,  # 你定义的根节点
+        "name": project.name
+    }
+
 if not os.path.exists("data/reports"):
     os.makedirs("data/reports")
 
@@ -164,7 +193,25 @@ def get_module_detail(module_id: int, db: DB = Depends(get_db)):
     module = db.session.query(Module).filter(Module.id == module_id).first()
     if not module:
         raise HTTPException(status_code=404, detail="模块不存在")
-    return {"status": "success", "data": module}
+
+    # 获取祖先链
+    ancestors = get_module_ancestors(module, db)
+
+    # 拼上项目根节点
+    project_root = get_project_root(module, db)
+    if project_root:
+        ancestors.insert(0, project_root)
+
+    return {
+        "status": "success",
+        "data": {
+            "id": module.id,
+            "name": module.name,
+            "parent_id": module.parent_id,
+            "project_id": module.project_id,
+            "ancestors": ancestors
+        }
+    }
 
 
 # --- 编辑模块 ---

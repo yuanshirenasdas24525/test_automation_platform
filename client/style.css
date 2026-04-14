@@ -528,3 +528,71 @@ tr.draggable:active { background: #f0f0f0; }
     opacity: 0.6;
     z-index: 999;
 }
+/* 面包屑容器 */
+.breadcrumb-nav {
+    background: #f8fafc;
+    padding: 8px 16px;
+    border-radius: 8px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* 面包屑中的按钮 */
+.breadcrumb-nav .btn-text {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    border-radius: 6px;
+    color: #64748b;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.breadcrumb-nav .btn-text:hover {
+    background: #e2e8f0;
+    color: #1e293b;
+}
+
+/* 最后一级文本 */
+.breadcrumb-current {
+    padding: 4px 12px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* 分隔符 */
+.breadcrumb-separator {
+    color: #cbd5e1;
+    font-size: 10px;
+    margin: 0 2px;
+}
+
+/* 列表图标按钮微调 */
+.breadcrumb-nav .btn-icon {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    color: #64748b;
+    background: white;
+    border: 1px solid #e2e8f0;
+    transition: all 0.2s;
+}
+
+.breadcrumb-nav .btn-icon:hover {
+    background: #f1f5f9;
+    color: #3b82f6;
+    border-color: #3b82f6;
+}

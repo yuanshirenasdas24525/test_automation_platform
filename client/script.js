@@ -169,22 +169,21 @@ const router = {
         window.currentParentId = moduleId;
 
         try {
-            let parentIdForBack = null;
-            let displayName = "";
+            let breadcrumbList = []; // 用于存储路径链条 [{id, name}]
 
             // 1. 获取面包屑名称逻辑
             if (moduleId) {
                 const modRes = await fetch(`/api/modules/${moduleId}`);
                 if (modRes.ok) {
                     const modData = await modRes.json();
-                    parentIdForBack = modData.parent_id;
-                    displayName = `📂 ${modData.data.name}`;
+                    const info = modData.data;
+                    breadcrumbList = [...(info.ancestors || []), { id: info.id, name: info.name }];
                 }
             } else {
                 const projRes = await fetch(`/api/projects/${projId}`);
                 if (projRes.ok) {
                     const projData = await projRes.json();
-                    displayName = `🚀 ${projData.data.name}`;
+                    breadcrumbList = [{ id: null, name: projData.data.name }];
                 }
             }
 
@@ -195,34 +194,61 @@ const router = {
             const data = await res.json();
             window.currentListData = data;
 
-            const breadcrumbHtml = `
-                <div class="breadcrumb-nav" style="display: flex; align-items: center; gap: 8px;">
-                    <button class="btn-text" onclick="${moduleId ? `router.projectDetail(${projId}, ${parentIdForBack}, '${category}')` : `router.projectList('${category}')`}">
-                        <i class="fas fa-arrow-left"></i> ${moduleId ? '返回上级' : '返回列表'}
-                    </button>
-                    <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>
-                    <span style="font-weight: 600; color: #1e293b; font-size: 18px;">${displayName}</span>
-                </div>
-            `;
+            const breadcrumbHtml = breadcrumbList.map((node, index) => {
+                const isFirst = index === 0;
+                const isLast = index === breadcrumbList.length - 1;
+
+                // 图标逻辑：第一项是项目(Rocket)，中间项是文件夹(Folder)，最后一项根据类型判断
+                let iconHtml = '';
+                if (isFirst && !node.id) {
+                    iconHtml = '<i class="fas fa-rocket" style="color: #3b82f6; font-size: 12px;"></i>';
+                } else if (!isLast) {
+                    iconHtml = '<i class="far fa-folder" style="color: #94a3b8; font-size: 12px;"></i>';
+                }
+
+                if (isLast) {
+                    // 最后一级：当前位置
+                    const lastIcon = node.id ? '<i class="fas fa-folder-open" style="color: #3b82f6;"></i>' : '<i class="fas fa-rocket" style="color: #3b82f6;"></i>';
+                    return `
+                        <div class="breadcrumb-current">
+                            ${lastIcon}
+                            <span>${node.name}</span>
+                        </div>
+                    `;
+                } else {
+                    // 中间级：跳转链接
+                    return `
+                        <button class="btn-text" onclick="router.projectDetail(${projId}, ${node.id}, '${category}')">
+                            ${iconHtml}
+                            <span>${node.name}</span>
+                        </button>
+                        <i class="fas fa-chevron-right breadcrumb-separator"></i>
+                    `;
+                }
+            }).join('');
 
             // 3. 构建沉浸式 UI
             let html = `
                 <div class="detail-header" style="padding: 24px 30px; background: white; border-bottom: 1px solid #e2e8f0;">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div class="breadcrumb-nav" style="display: flex; align-items: center; gap: 8px;">
-                            <button class="btn-icon" onclick="router.home()"><i class="fas fa-home"></i></button>
-                            <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>
-                            ${moduleId ? 
-                                `<button class="btn-text" onclick="router.projectDetail(${projId}, ${parentIdForBack}, '${category}')">返回上级</button>
-                                 <i class="fas fa-chevron-right" style="font-size: 10px; color: #cbd5e1;"></i>` : ''
-                            }
-                            <span style="font-weight: 600; color: #1e293b; font-size: 18px;">${displayName}</span>
+                        <div class="breadcrumb-nav">
+                            <button class="btn-icon" title="返回项目列表" onclick="router.projectList('${category}')">
+                                <i class="fas fa-th-list"></i>
+                            </button>
+                            <i class="fas fa-chevron-right breadcrumb-separator"></i>
+                            ${breadcrumbHtml}
                         </div>
                         <div style="display: flex; gap: 10px;">
-                            <button class="btn btn-outline" onclick="newModuleModal()"><i class="fas fa-folder-plus"></i> 新增模块</button>
+                            <button class="btn btn-outline" style="padding: 8px 16px; font-size: 13px;" onclick="newModuleModal()">
+                                <i class="fas fa-folder-plus"></i> 新增模块
+                            </button>
                             ${moduleId !== null ? `
-                                <button class="btn btn-outline" onclick="document.getElementById('import-modal').style.display='flex'"><i class="fas fa-file-import"></i> 导入</button>
-                                <button class="btn btn-primary" onclick="newCaseModal()"><i class="fas fa-plus"></i> 新增用例</button>
+                                <button class="btn btn-outline" style="padding: 8px 16px; font-size: 13px;" onclick="document.getElementById('import-modal').style.display='flex'">
+                                    <i class="fas fa-file-import"></i> 导入
+                                </button>
+                                <button class="btn btn-primary" style="padding: 8px 16px; font-size: 13px;" onclick="newCaseModal()">
+                                    <i class="fas fa-plus"></i> 新增用例
+                                </button>
                             ` : ''}
                         </div>
                     </div>
