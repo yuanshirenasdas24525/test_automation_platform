@@ -63,6 +63,10 @@ const router = {
 
     // 2. 项目管理：按类型（API/Web/Mobile）过滤
     projectList: async function(category) {
+        if (!category || category === "undefined") {
+        category = window.currentCategory || new URLSearchParams(window.location.search).get('type');
+        }
+        window.currentCategory = category;
         const container = document.getElementById('view-container');
         container.innerHTML = `<div style="padding:40px; text-align:center; color:#94a3b8;"><i class="fas fa-spinner fa-spin"></i> 正在调取 ${category} 用例库...</div>`;
 
@@ -589,7 +593,9 @@ async function deleteProject(id) {
     try {
         const res = await fetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
         if (res.ok) {
-            router.home(); // 删除后返回首页
+            // router.home(); // 删除后返回首页
+            const currentType = window.currentCategory || 'api';
+            router.projectList(currentType);
         } else {
             alert("删除失败");
         }
@@ -670,7 +676,9 @@ async function submitProject() {
 
         if (res.ok) {
             closeModal('project-modal');
-            router.home(); // 刷新页面
+            // 刷新页面
+            const currentType = window.currentCategory || 'api';
+            router.projectList(currentType);
         }
     } catch (e) {
         console.error("提交失败:", e);
