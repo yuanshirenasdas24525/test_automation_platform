@@ -579,10 +579,10 @@ async function editProject(id) {
     const p = await res.json();
 
     document.getElementById('modal-title').innerText = "编辑项目";
-    document.getElementById('p-name').value = p.name || '';
-    document.getElementById('p-desc').value = p.description || ''; // 确保后端返回的是 description
-    document.getElementById('p-type').value = p.type || 'Web';
-    document.getElementById('p-icon').value = p.icon || '📁';
+    document.getElementById('p-name').value = p.data.name || '';
+    document.getElementById('p-desc').value = p.data.description || ''; // 确保后端返回的是 description
+    document.getElementById('p-type').value = p.data.type || 'Web';
+    document.getElementById('p-icon').value = p.data.icon || '📁';
     document.getElementById('project-modal').style.display = 'flex';
     }
 
