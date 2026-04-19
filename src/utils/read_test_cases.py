@@ -222,3 +222,115 @@ def get_cases_from_db(params: Dict[str, Any], db):
 
     return [row for row in rows if not row.get("skip")]
 
+
+# =========================================================
+# v2：查询带 steps / environment 的完整用例字典
+# =========================================================
+def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
+    """查询 v2 形态的 case。返回每条 case 都是一个**自包含的字典**，
+    里面嵌套了 steps、environment，可以直接 JSON 序列化后扔给 Celery / pytest。
+
+    目的：避免 Celery 端还要再连数据库拉 steps，降低耦合、方便进程隔离。
+
+    返回结构：
+        [
+            {
+                "id": 1, "name": "...", "case_type": "api",
+                "project_name": "...", "module_name": "...",
+                "skip": False,
+                "timeout": 60, "retry": 0,
+                "variables": {...}, "pre_hook": [...], "post_hook": [...],
+                "environment": {"id":3,"name":"dev","host":"...", "variables":{...}},
+                "steps": [
+                    {"id":101, "step_order":0, "step_type":"http_request",
+                     "config": {...}, "extract":[...], "assertion":[...], ...},
+                    ...
+                ],
+                # v1 兼容字段（没迁的老用例仍然保留，以便 CaseExecutor 合成 step）
+                "method": "POST", "path": "/login", ...
+            },
+            ...
+        ]
+    """
+    from sqlalchemy.orm import selectinload, joinedload
+    from src.database.models.test_case import TestCase
+    from src.database.models.module import Module
+    from src.database.models.project import Project
+
+    project_id = params.get("project")
+    module_id = params.get("module")
+    case_id = params.get("case")
+    if not project_id:
+        raise ValueError("错误：必须提供项目 ID ('project')。")
+
+    # 我们 piggy-back 老的 db.sql 只能跑 raw SQL；这里用 ORM session
+    session = getattr(db, "session", None) or db  # 兼容 SQLHandler / Session 两种入参
+
+    q = (
+        session.query(TestCase)
+        .join(Module, Module.id == TestCase.module_id)
+        .join(Project, Project.id == Module.project_id)
+        .options(
+            selectinload(TestCase.steps),
+            joinedload(TestCase.environment),
+        )
+        .filter(Project.id == project_id)
+    )
+    if case_id:
+        q = q.filter(TestCase.id == case_id)
+    elif module_id:
+        q = q.filter(Module.id == module_id)
+    q = q.order_by(TestCase.sort_order.asc())
+
+    # 项目名 / 模块名用一次性子查询拿到，避免 N+1
+    proj = session.query(Project).get(project_id)
+    proj_name = proj.name if proj else None
+
+    cases = q.all()
+    result: List[Dict[str, Any]] = []
+    for c in cases:
+        if c.skip:
+            continue
+        steps = [s.to_dict() for s in sorted(
+            (c.steps or []), key=lambda s: s.step_order or 0
+        )]
+        env = None
+        if c.environment is not None:
+            env = {
+                "id": c.environment.id,
+                "name": c.environment.name,
+                "host": c.environment.host,
+                "variables": c.environment.variables,
+                "secrets": None,   # secrets 不下发给 worker，以避免日志/序列化泄漏
+            }
+        result.append({
+            "id": c.id,
+            "name": c.name,
+            "description": c.description,
+            "case_type": c.case_type or "api",
+            "project_name": proj_name,
+            "module_name": c.module.name if c.module else None,
+            "skip": bool(c.skip),
+            "tags": c.tags,
+            "priority": c.priority,
+            "timeout": c.timeout,
+            "retry": c.retry,
+            "variables": c.variables,
+            "pre_hook": c.pre_hook,
+            "post_hook": c.post_hook,
+            "environment": env,
+            "steps": steps,
+            # v1 兼容字段 —— 没有 steps 的老用例靠这些字段被 CaseExecutor 合成 http_request
+            "method": c.method,
+            "path": c.path,
+            "headers": c.headers,
+            "data_type": c.data_type,
+            "params": c.params,
+            "file_path": c.file_path,
+            "extract_data": c.extract_data,
+            "sql_query": c.sql_query,
+            "assertion": c.assertion,
+            "wait_time": c.wait_time,
+        })
+    return result
+

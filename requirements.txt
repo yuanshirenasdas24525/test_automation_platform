@@ -21,3 +21,4 @@ sqlalchemy~=2.0.48
 pydantic~=2.12.5
 psycopg2-binary~=2.9.11
 celery~=5.6.3
+alembic~=1.13.1

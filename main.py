@@ -389,7 +389,7 @@ def create_test_case(case_data: TestCaseCreate, db: DB = Depends(get_db)):
 
 @app.post("/api/run_test")
 async def run_test(req: RunTestRequest, db: DB = Depends(get_db)):
-    from src.utils.read_test_cases import get_cases_from_db
+    from src.utils.read_test_cases import get_cases_from_db, get_cases_v2_from_db
     import uuid
 
     # 1. 生成唯一任务 ID
@@ -406,7 +406,12 @@ async def run_test(req: RunTestRequest, db: DB = Depends(get_db)):
             "case": req.case
         }
 
-        cases_to_run = get_cases_from_db(params, db.sql)
+        # v2=True 用新 loader（带 steps / environment 的完整 case 字典）；
+        # 否则保留 v1 raw SQL，老调用方零感知。
+        if req.v2:
+            cases_to_run = get_cases_v2_from_db(params, db.session)
+        else:
+            cases_to_run = get_cases_from_db(params, db.sql)
         caseNumber = len(cases_to_run)
 
 
