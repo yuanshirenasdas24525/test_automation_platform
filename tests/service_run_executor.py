@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.api.factory import create_api_client
-from src.core.context.execution_context import ExecutionContext
-from src.runners.case_executor import CaseExecutor
-from src.runners.protocol import StepStatus
+from core.api.factory import create_api_client
+from core.context.execution_context import ExecutionContext
+from runners.case_executor import CaseExecutor
+from runners.protocol import StepStatus
 
 
 class TestService:

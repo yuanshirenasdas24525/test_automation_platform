@@ -1,7 +1,7 @@
 # coding: utf-8
 import pytest
-from src.utils.read_test_cases import GenericCaseReader, process_api_row
-from src.core.api.factory import create_api_client
+from utils.read_test_cases import GenericCaseReader, process_api_row
+from core.api.factory import create_api_client
 from config.settings import ProjectPaths
 
 

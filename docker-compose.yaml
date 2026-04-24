@@ -1,6 +1,7 @@
 version: "3.8"
 
 services:
+  # 🧩 1️⃣ API 测试容器
   api_test:
     build:
       context: .
@@ -17,3 +18,65 @@ services:
       - ./data/log:/app/data/log              # 日志文件
     working_dir: /app
     command: ["-t", "api", "-c", "tests/test_api.py", "--alluredir", "/app/data/reports/allure-results"]
+#    networks:
+#      - testnet
+#
+#  # 📱 2️⃣ Android 模拟器容器
+#  android_emulator:
+#    image: budtmo/docker-android:emulator_13.0
+#    container_name: android_emulator
+#    privileged: true
+#    environment:
+#      DEVICE: "Google Pixel 7"
+#      EMULATOR_ARGS: "-gpu swiftshader_indirect -noaudio -no-window"
+#      APPIUM: "false"
+#    ports:
+#      - "6080:6080"      # Web VNC
+#      - "5554-5555:5554-5555"  # adb 端口
+#    networks:
+#      - testnet
+#
+#  # 🤖 3️⃣ Appium 服务容器
+#  appium_server:
+#    image: appium/appium
+#    container_name: appium_server
+#    privileged: true
+#    depends_on:
+#      - android_emulator
+#    environment:
+#      - ANDROID_HOME=/opt/android
+#      - PATH=$PATH:/opt/android/platform-tools
+#    ports:
+#      - "4723:4723"
+#    networks:
+#      - testnet
+#
+#  # 🧪 4️⃣ Python UI 自动化容器
+#  ui_test:
+#    build:
+#      context: .
+#      dockerfile: docker/Dockerfile
+#    container_name: ui_test_platform
+#    depends_on:
+#      - appium_server
+#      - android_emulator
+#    environment:
+#      PYTHONUNBUFFERED: "1"
+#      TZ: "Asia/Shanghai"
+#      APPIUM_HOST: appium_server
+#      APPIUM_PORT: 4723
+#      DEVICE_NAME: "emulator-5554"
+#      PLATFORM_NAME: "Android"
+#    volumes:
+#      - ./data/ui_auto:/app/data/ui_auto
+#      - ./tests:/app/tests
+#      - ./data/reports:/app/data/reports
+#      - ./config:/app/config
+#      - ./data/log:/app/data/log
+#    working_dir: /app
+#    command: ["-t", "mobile", "-c", "tests/test_app_ui.py::TestUiAutomatic::test_android_register_case", "--alluredir", "/app/data/reports/allure-results"]
+#    networks:
+#      - testnet
+#
+#networks:
+#  testnet:

@@ -22,13 +22,13 @@ from typing import Any
 
 import pytest
 
-from src.core.context.execution_context import ExecutionContext
-from src.runners.app.session import AppSession
-from src.runners.case_executor import CaseExecutor
-from src.runners.dispatcher import StepDispatcher
-from src.runners.protocol import StepStatus
-from src.runners.steps.app_actions import build_app_runners
-from src.runners.steps.generic import AssertStepRunner, SleepStepRunner
+from core.context.execution_context import ExecutionContext
+from runners.app.session import AppSession
+from runners.case_executor import CaseExecutor
+from runners.dispatcher import StepDispatcher
+from runners.protocol import StepStatus
+from runners.steps.app_actions import build_app_runners
+from runners.steps.generic import AssertStepRunner, SleepStepRunner
 
 
 # =============================================================================

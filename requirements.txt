@@ -13,6 +13,10 @@ opencv-python~=4.12.0.88
 numpy~=2.2.6
 Appium-Python-Client~=5.2.4
 selenium~=4.37.0
+# Playwright 是 Web UI 自动化的默认引擎（Selenium 作为兼容/降级路径）。
+# 装完 pip 还要手动拉浏览器内核：`playwright install`。
+# 如果环境里只用 Selenium，可以注释掉这一行，代码层面会自动降级。
+playwright~=1.48.0
 tenacity~=9.1.2
 schemathesis~=4.3.13
 python-multipart~=0.0.22

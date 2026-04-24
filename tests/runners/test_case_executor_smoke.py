@@ -22,11 +22,11 @@ from typing import Any
 import pytest
 import requests
 
-from src.core.api.request_data_processor import RequestDataProcessor
-from src.runners.case_executor import CaseExecutor
-from src.runners.dispatcher import StepDispatcher
-from src.runners.protocol import StepStatus
-from src.runners.steps.http_request import HttpRequestStepRunner
+from core.api.request_data_processor import RequestDataProcessor
+from runners.case_executor import CaseExecutor
+from runners.dispatcher import StepDispatcher
+from runners.protocol import StepStatus
+from runners.steps.http_request import HttpRequestStepRunner
 
 
 # ===================================================================
@@ -80,7 +80,7 @@ def _build_dispatcher(http_runner):
     d = StepDispatcher()
     d.register(http_runner)
     # 也注册 sleep/assert，方便跨 step 测试
-    from src.runners.steps.generic import SleepStepRunner, AssertStepRunner
+    from runners.steps.generic import SleepStepRunner, AssertStepRunner
     d.register(SleepStepRunner())
     d.register(AssertStepRunner())
     return d
