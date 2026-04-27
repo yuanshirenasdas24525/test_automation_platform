@@ -2604,3 +2604,24 @@ INFO     runners.case_executor:case_executor.py:149 â–  CaseExecutor.run case=ä¸
 [2026-04-27 21:25:36,246: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
 [2026-04-27 21:25:36,252: INFO/MainProcess] Task tasks.probe_devices[500d38b1-e913-483f-b74a-867466696730] received
 [2026-04-27 21:25:36,278: INFO/ForkPoolWorker-2] Task tasks.probe_devices[500d38b1-e913-483f-b74a-867466696730] succeeded in 0.0253839169999992s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:26:06,246: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:26:06,252: INFO/MainProcess] Task tasks.probe_devices[c5282067-87d5-4264-ab75-0e0d89bb10c3] received
+[2026-04-27 21:26:06,280: INFO/ForkPoolWorker-2] Task tasks.probe_devices[c5282067-87d5-4264-ab75-0e0d89bb10c3] succeeded in 0.02673745899937785s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:26:36,246: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:26:36,261: INFO/MainProcess] Task tasks.probe_devices[f96aa157-e03c-4efb-b4aa-8bf639b22aeb] received
+[2026-04-27 21:26:36,285: INFO/ForkPoolWorker-2] Task tasks.probe_devices[f96aa157-e03c-4efb-b4aa-8bf639b22aeb] succeeded in 0.02404216600007203s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:27:06,246: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:27:06,260: INFO/MainProcess] Task tasks.probe_devices[c05a1a14-de4a-4182-b693-9ad78bbcf341] received
+[2026-04-27 21:27:06,285: INFO/ForkPoolWorker-2] Task tasks.probe_devices[c05a1a14-de4a-4182-b693-9ad78bbcf341] succeeded in 0.023977083999852766s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:27:13,937: INFO/MainProcess] beat: Shutting down...
+[2026-04-27 21:27:59,057: INFO/Beat] beat: Starting...
+[2026-04-27 21:27:59,137: INFO/MainProcess] Connected to redis://127.0.0.1:6379/0
+[2026-04-27 21:27:59,141: INFO/MainProcess] mingle: searching for neighbors
+[2026-04-27 21:28:00,156: INFO/MainProcess] mingle: all alone
+[2026-04-27 21:28:00,178: INFO/MainProcess] celery@MacBook-Pro-2.local ready.
+[2026-04-27 21:28:29,093: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:28:29,105: INFO/MainProcess] Task tasks.probe_devices[57ad2142-2f82-4fbe-939f-c50e5480667a] received
+[2026-04-27 21:28:29,164: INFO/ForkPoolWorker-2] Task tasks.probe_devices[57ad2142-2f82-4fbe-939f-c50e5480667a] succeeded in 0.05713808299999812s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:28:59,081: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:28:59,088: INFO/MainProcess] Task tasks.probe_devices[08643664-7dce-4f1e-8876-c0254ad577de] received
+[2026-04-27 21:28:59,112: INFO/ForkPoolWorker-2] Task tasks.probe_devices[08643664-7dce-4f1e-8876-c0254ad577de] succeeded in 0.02372433299999699s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
