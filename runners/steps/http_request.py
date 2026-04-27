@@ -41,7 +41,7 @@ from typing import Any
 import requests
 from requests.exceptions import JSONDecodeError
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from utils.allure_utils import add_allure_step, set_allure_link
 from utils.logger import LOGGER
@@ -76,7 +76,7 @@ class HttpRequestStepRunner(BaseStepRunner):
     @property
     def processor(self):
         if self._processor is None:
-            from core.api.factory import create_request_data_processor
+            from runners.api.factory import create_request_data_processor
             self._processor = create_request_data_processor()
         return self._processor
 

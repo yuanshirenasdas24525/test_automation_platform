@@ -89,15 +89,17 @@ from .test_step_report import TestStepReport
 
 # ============ 配置 ============
 from .config_store import ConfigStore
-from .config_update_item import ConfigUpdateItem
 
-# ============ Pydantic 请求模型（v1 遗留，v2 将迁移到 schemas/） ============
-from .project_create import ProjectCreate
-from .module_create import ModuleCreate
-from .test_case_create import TestCaseCreate
-from .run_test_request import RunTestRequest
-from .response_model import ResponseModel
-from .reorder_item import ReorderItem, ReorderRequest
+# ============ Pydantic 请求模型 —— 实际放在 database/schemas/ 下 =========
+# 这里只做 re-export，让历史 `from database.models import XxxCreate` 路径
+# 不破。新代码请直接 `from database.schemas.xxx import ...`。
+from database.schemas.config_update_item import ConfigUpdateItem
+from database.schemas.project_create import ProjectCreate
+from database.schemas.module_create import ModuleCreate
+from database.schemas.test_case_create import TestCaseCreate
+from database.schemas.run_test_request import RunTestRequest
+from database.schemas.response_model import ResponseModel
+from database.schemas.reorder_item import ReorderItem, ReorderRequest
 
 
 __all__ = [

@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.app.session import AppSession
 from runners.protocol import BaseStepRunner, StepResult
 from runners.steps.app_actions import _find_element
@@ -62,8 +62,8 @@ class AppActionStepRunner(BaseStepRunner):
     def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
         # 进 ActionExecutor 之前先触发一次 import：保证注册表里有内容
         # （ActionRegistry.register 调用都在 executor.py 模块级，import 即注册）
-        from core.mobile.actions.registry import ActionRegistry
-        from core.mobile.actions import executor as _executor_mod  # noqa: F401  确保副作用
+        from runners.app.actions.registry import ActionRegistry
+        from runners.app.actions import executor as _executor_mod  # noqa: F401  确保副作用
 
         session = AppSession.require(ctx)
         config = step.get("config") or {}
@@ -155,7 +155,7 @@ class AppAssertStepRunner(BaseStepRunner):
     )
 
     def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
-        from core.mobile.assertions.assertion import AssertionEngine
+        from runners.app.assertions.assertion import AssertionEngine
 
         config = step.get("config") or {}
         assert_type = config.get("assert_type") or "equal"

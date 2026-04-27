@@ -32,7 +32,7 @@ import logging
 import time
 from typing import Any
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.app.session import AppSession
 from runners.protocol import BaseStepRunner, StepResult
 from utils.value_resolver import resolve_value

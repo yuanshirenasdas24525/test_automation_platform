@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.app.session import AppSession
 from runners.case_executor import CaseExecutor
 from runners.dispatcher import StepDispatcher

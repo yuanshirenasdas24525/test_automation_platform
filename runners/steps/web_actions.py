@@ -53,7 +53,7 @@ import re
 import time
 from typing import Any
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from runners.web.session import WebSession
 from utils.value_resolver import resolve_value

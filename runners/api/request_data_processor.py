@@ -1,0 +1,194 @@
+
+from typing import Any, List
+from runners.api.file_parameter import FileParameter
+from utils.platform_utils import rep_expr, extractor, convert_json
+from utils.function_executor import exec_func
+from utils.logger import LOGGER
+from utils.allure_utils import add_allure_step
+from database.db import DB
+
+
+
+class RequestDataProcessor:
+    """
+    统一处理请求数据构建：
+    - host
+    - header
+    - 默认参数
+    - 业务参数
+    - 加密
+    - 文件上传处理
+    """
+
+    def __init__(self, header_key, host_key, ed=None, default_parameters=None, db=None):
+        """
+        初始化所需的处理器和配置字典。
+        """
+        self.extra_pool = default_parameters or {}
+        self.file_parameter = FileParameter(extra_pool=self.extra_pool)
+        self.encryption_decryption = rep_expr(ed, self.extra_pool) if isinstance(ed, str) else ed or {}
+        self.base_header = rep_expr(header_key, self.extra_pool) if isinstance(header_key, str) else header_key or {}
+        self.base_url = rep_expr(host_key, self.extra_pool) if isinstance(host_key, str) else host_key or {}
+        self.db = db
+
+    def handler_path(self, path_str: str) -> str:
+        """
+        处理请求路径，支持完整url或拼接base_url。
+        """
+        if path_str.startswith(('http://', 'https://')):
+            return rep_expr(path_str, self.extra_pool)
+        return self.base_url.get('url', '') + rep_expr(path_str, self.extra_pool)
+
+    def handler_header(self, header_str: str, data: str, sql: str) -> dict:
+        """
+        处理请求头，合并base_header和传入header，支持加密处理。
+        """
+        if not header_str:
+            header_str = '{}'
+        headers = {**self.base_header, **self.handler_data(header_str, sql)}
+        # 请求头参数加密
+        if self.encryption_decryption.get('on_off'):
+            variable = self.handler_data(data, sql)
+            from utils.encrypt import ParameterEncryption
+            pe = ParameterEncryption(data=variable, power_access_key=self.encryption_decryption['key'])
+            headers.update(pe.ed_header())
+        return headers
+
+    def handler_data(self, variable: str, sql: str, extra_str: str = None) -> Any:
+        """
+        处理请求数据，替换表达式并执行函数。
+        """
+        if not variable:
+            return {}
+
+        try:
+            variable = rep_expr(variable, self.extra_pool)
+            data_obj = convert_json(variable)
+        except Exception:
+            return {}
+
+        if isinstance(data_obj, dict):
+            self._process_functions(data_obj, sql, extra_str)
+        return data_obj
+
+    def _process_functions(self, data: dict, sql: str, extra_str: str = None):
+        """
+        处理字典中以 function: 开头的值，执行对应函数。
+        自动传入 sql 查询结果（可能是多个）、当前变量和参数池。
+        """
+        variable = rep_expr(extra_str, self.extra_pool)
+        data_obj = convert_json(variable)
+        if data_obj and data_obj.get('CustomDatabaseLink') is not None:
+            db = DB(data_obj.get('CustomDatabaseLink'))
+            sql = rep_expr(sql, self.extra_pool)
+            sql_results = []
+            for sql_statement in sql.split(";"):
+                sql_statement = sql_statement.strip()
+                if not sql_statement:
+                    continue
+                sql_result = db.sql.query(sql)
+                if sql_result:
+                    sql_results.append(sql_result[0] if isinstance(sql_result, (list, tuple)) else sql_result)
+        else:
+            sql_results = self.execute_select_fetchone(sql)  # 返回 list
+        def _process(item: dict, parent_data):
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    item[k] = _process(v, item)  # 递归，并传当前 dict 给子节点
+                return item
+            elif isinstance(item, list):
+                for i, v in enumerate(item):
+                    item[i] = _process(v, item)  # 递归，并传当前 list 给子节点
+                return item
+            elif isinstance(item, str) and item.startswith("function:"):
+                return exec_func(item, sql_results, parent_data, self.extra_pool)
+            return item
+
+        return _process(data, data)
+
+    def handler_files(self, file_obj: Any) -> List[dict]:
+        """
+        处理文件上传，返回文件信息列表。
+        """
+        return self.file_parameter.get_files(file_obj)
+
+    def handler_extra(self, extra_str: str, response: dict, ctx) -> None:
+        """
+        从响应中提取参数，加入 extra_pool
+        """
+        if not extra_str:
+            return
+        extract_values = {}
+        extra_dict = convert_json(extra_str)
+        for k, v in extra_dict.items():
+            if isinstance(v, str) and v.startswith("function:"):
+                self.extra_pool[k] = exec_func(v)
+            extracted_value = extractor(response, v)
+            if extracted_value is not None:
+                self.extra_pool[k] = extracted_value
+            extract_values[k] = extracted_value
+        ctx.record("extract_values", {"new_extract": extract_values, "extra_pool": self.extra_pool})
+
+    def assert_result(self, response: dict, expect_str: str, ctx) -> None:
+        """
+        断言响应与预期是否一致
+        """
+        function_amount_assert = ["function:assert_amount_increase", "function:assert_amount_deduction"]
+        add_allure_step("当前可用参数池", self.extra_pool)
+        expect_str = rep_expr(expect_str, self.extra_pool)
+        expect_dict = convert_json(expect_str)
+        assertion_results = []
+        for k, v in expect_dict.items():
+            actual = extractor(response, k)
+            if isinstance(v, str) and v.startswith("function:"):
+                if v in function_amount_assert:
+                    v = float(exec_func(v, self.extra_pool))
+                else:
+                    v = exec_func(v)
+            elif isinstance(k, str) and k.startswith("sql:"):
+                sql = k.split("sql:", 1)[1].strip()
+                results = self.db.sql.query(sql)
+                actual = str(results[0]) if results else "db_error"
+
+            assert actual == v, f"断言失败: 实际值 {actual} != 预期值 {v}"
+            add_allure_step("断言", f"实际值：{actual} == 预期值：{v}")
+            assertion_results.append(f"实际值：{actual} == 预期值：{v}")
+        ctx.record("assertion_results", assertion_results)
+
+    def execute_select_fetchone(self, sql: str):
+        """
+        执行查询语句（支持多条），返回每条SQL的第一行结果。
+        如果只需要第一条SQL的结果，可取 [0]。
+        """
+        if not sql:
+            return []
+
+        results = []
+        sql = rep_expr(sql, self.extra_pool)
+        for sql_statement in sql.split(";"):
+            sql_statement = sql_statement.strip()
+            if not sql_statement:
+                continue
+
+            result = self.db.sql.query(sql_statement)
+            if result:
+                results.append(result[0] if isinstance(result, (list, tuple)) else result)
+
+        return results
+
+
+    def execute_sql_from_case(self, sql: str, extra_str: str):
+        """执行 SQL 并更新参数池"""
+        try:
+            index = 0
+            for statement in sql.split(";"):
+                stmt = statement.strip()
+                if not stmt:
+                    continue
+                index += 1
+                result = self.db.sql.query(stmt)
+                if result:
+                    self.extra_pool[f"sql_query_results_{index}"] = result
+            LOGGER.info(f"SQL 执行完成，更新参数池: {self.extra_pool}")
+        finally:
+            self.db.close()

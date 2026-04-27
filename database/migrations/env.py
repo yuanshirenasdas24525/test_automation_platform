@@ -40,7 +40,7 @@ def _resolve_db_url() -> str:
     # 优先级 2：从 object_conf.ini 读取某个 section
     section = os.getenv("ALEMBIC_DB_SECTION", "sqlite_local")
     from utils.read_conf import read_conf
-    from database.db_config import build_db_url
+    from database.engine import build_db_url
 
     db_conf = read_conf.get_dict(section)
     return build_db_url(db_conf)

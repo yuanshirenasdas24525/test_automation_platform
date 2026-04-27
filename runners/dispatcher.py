@@ -22,7 +22,7 @@ import logging
 import time
 from typing import Iterable
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import (
     StepRunner,
     StepResult,

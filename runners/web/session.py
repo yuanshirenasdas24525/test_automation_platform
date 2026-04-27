@@ -23,7 +23,7 @@ import os
 import threading
 from typing import Any, Callable, Optional
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.web.adapters import (
     WebDriverAdapter,
     build_adapter,

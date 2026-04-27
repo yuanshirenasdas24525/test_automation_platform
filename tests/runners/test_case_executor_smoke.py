@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 import requests
 
-from core.api.request_data_processor import RequestDataProcessor
+from runners.api.request_data_processor import RequestDataProcessor
 from runners.case_executor import CaseExecutor
 from runners.dispatcher import StepDispatcher
 from runners.protocol import StepStatus

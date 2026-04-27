@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.case_executor import CaseExecutor
 from runners.protocol import StepStatus
 

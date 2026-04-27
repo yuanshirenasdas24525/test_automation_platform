@@ -27,7 +27,7 @@ import logging
 import threading
 from typing import Any, Callable
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,7 @@ class AppSession:
     def app_action(self):
         """懒构造 AppAction（包 Finder/ActionExecutor/Assertion 的 facade）。"""
         if self._app_action is None:
-            from core.mobile.app_action import AppAction
+            from runners.app.action import AppAction
             self._app_action = AppAction(self.driver, db_connection=None)
         return self._app_action
 

@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.dispatcher import StepDispatcher
 from runners.protocol import CaseResult, StepResult, StepStatus
 

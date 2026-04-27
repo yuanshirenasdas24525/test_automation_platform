@@ -1,9 +1,9 @@
 # -*- coding:utf-8 -*-
 import inspect
 
-from database.redis_utils import clear_cache
+from database.redis import clear_cache
 from utils.platform_utils import execution_time_decorator
-from core.captcha_solver import solve_captcha
+from utils.captcha import solve_captcha
 
 @execution_time_decorator
 def exec_func(value, *args, **kwargs):

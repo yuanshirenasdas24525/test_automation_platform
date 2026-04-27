@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 
 
 # =============================================================================

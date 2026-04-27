@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 
 

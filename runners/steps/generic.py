@@ -5,7 +5,7 @@ import json
 import time
 from typing import Any
 
-from core.context.execution_context import ExecutionContext
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from utils.platform_utils import extractor, rep_expr
 
