@@ -1,0 +1,74 @@
+# =====================================================================
+# 不进镜像的文件 —— 镜像越小越好，构建越快越好
+# =====================================================================
+
+# 版本控制 / IDE
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+.tox/
+htmlcov/
+
+# 虚拟环境（绝对不能进镜像，否则 100MB+ 浪费空间）
+venv/
+.venv/
+env/
+
+# Node / 前端构建产物
+# 注意：frontend/ 整体也不要进 runtime stage —— Stage1 build 完了，
+# Stage2 只 COPY --from=frontend-build /frontend/dist 进来。
+# 但 build context 仍然要包含 frontend/src 给 Stage1 用，所以这里只忽略产物。
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/*.tsbuildinfo
+
+# 运行时数据 / 日志 / 报告 —— 这些是 volume 挂载的，不该打进镜像
+data/log/
+data/reports/
+data/results/
+data/screenshots/
+data/cache_file/
+data/app_packages/*.apk
+data/app_packages/*.ipa
+data/db/*.db
+data/db/*.db.bak.*
+data/upload_file/
+
+# Celery / SQLite 持久化
+celerybeat-schedule*
+
+# 测试报告 / 临时
+allure-results/
+allure-report/
+*.log
+
+# 文档（运行时不需要）
+docs/
+*.md
+!README.md
+
+# Docker 自身（不要把 Dockerfile 自己打进镜像 —— 浪费但无害）
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# 其它
+.DS_Store
+Thumbs.db
+*.bak
