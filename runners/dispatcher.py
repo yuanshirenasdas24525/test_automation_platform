@@ -28,6 +28,11 @@ from runners.protocol import (
     StepResult,
     StepStatus,
 )
+from utils.allure_step_reporter import (
+    allure_step,
+    attach_step_details,
+    capture_failure_screenshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +96,17 @@ class StepDispatcher:
         on_failure = (step.get("on_failure") or "stop").lower()
         max_attempts = (retry + 1) if on_failure == "retry" else 1
 
+        # Allure step 名字：[order] step_name (step_type)，方便报告里一眼定位。
+        allure_name = self._build_allure_step_name(step)
+
         last_result: StepResult | None = None
         for attempt in range(1, max_attempts + 1):
-            result = runner.execute(step, ctx)
-            last_result = result
+            with allure_step(allure_name if attempt == 1 else f"{allure_name} #retry{attempt}"):
+                result = runner.execute(step, ctx)
+                # 失败时先尝试截一张图，再 attach（顺序很重要：截图也要进 attachments）
+                capture_failure_screenshot(ctx, step, result)
+                attach_step_details(result)
+                last_result = result
             if result.status in (StepStatus.PASSED, StepStatus.SKIPPED):
                 if attempt > 1:
                     logger.info("step#%s 第 %s 次重试成功", step.get("id"), attempt)
@@ -118,6 +130,16 @@ class StepDispatcher:
             )
         return last_result
 
+    # ---------------- 内部工具 ----------------
+    @staticmethod
+    def _build_allure_step_name(step: dict) -> str:
+        """生成 Allure step 节点名：[order] step_name (step_type)"""
+        order = step.get("step_order")
+        name = step.get("step_name") or f"step#{step.get('id')}"
+        type_ = step.get("step_type") or "?"
+        prefix = f"[{order}] " if order is not None else ""
+        return f"{prefix}{name} ({type_})"
+
     # ---------------- 便捷工厂 ----------------
     @classmethod
     def default(cls) -> "StepDispatcher":
@@ -128,6 +150,7 @@ class StepDispatcher:
         from runners.steps.http_request import HttpRequestStepRunner
         from runners.steps.generic import SleepStepRunner, AssertStepRunner
         from runners.steps.app_actions import build_app_runners
+        from runners.steps.app_generic import build_app_generic_runners
         # 注意：web step runner 现在是真实实现（web_actions），老的 web_stubs 仅保留兼容。
         from runners.steps.web_actions import build_web_runners
 
@@ -136,5 +159,6 @@ class StepDispatcher:
         d.register(SleepStepRunner())
         d.register(AssertStepRunner())
         d.register_all(build_app_runners())
+        d.register_all(build_app_generic_runners())  # 通用 app_action / app_assert
         d.register_all(build_web_runners())
         return d

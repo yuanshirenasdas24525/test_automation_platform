@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -41,50 +41,54 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { ApiError, projectsApi, runsApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import type { Project, ProjectCategory, ProjectCreate } from "@/types/domain";
+import {
+  ALL_PROJECT_STACKS,
+  type Project,
+  type ProjectCreate,
+  type ProjectStack,
+} from "@/types/domain";
+import { DevicePickerDialog } from "@/components/device-picker-dialog";
 
 /**
- * 项目管理页。布局：顶部类型 Tab（api / web / app）→ 下面一张卡片网格 + 右上角「新建项目」。
- * 每张卡片右上角有一个三点菜单：编辑 / 删除。
+ * 项目管理页（v2 / 多栈项目模型）。
  *
- * 后端有两个坑位需要注意：
+ * 关键变化（vs v1）：
+ *  - 项目不再绑死单一栈：每个项目通过 `enabled_stacks` 启用多个栈（API/Web/App/Functional）。
+ *  - 顶层不再有"按类型切 Tab"——所有项目同列展示，卡片上用 chip 显示启用的栈。
+ *  - chip / Tab 都按固定顺序显示：功能 → API → Web → App（user 决策）。
+ *  - 新建 / 编辑表单的"类型"字段从单选 Select 换成多选 Checkbox，至少选 1 个。
+ *  - "运行"按钮逻辑：
+ *      0 个自动化栈（只勾了 functional） → 不显示"运行"按钮（功能用例靠人工勾，进入详情页操作）；
+ *      1 个自动化栈                         → 直接 trigger（app 仍走设备选择器）；
+ *      2+ 个自动化栈                        → 弹一个小 picker 让用户挑要跑哪个栈。
+ *
+ * 后端约束（与 v1 相同）：
  *  - `name` 长度 <= 10
- *  - `description` 长度 <= 50，且后端直接 `len(description)`，必须传字符串（不能 None）
- * 所以我们在 zod schema 里把 description 默认成空字符串。
+ *  - `description` 长度 <= 50（后端会 len() 直接比较，必须传字符串而非 None）
  */
 
-const PROJECT_TYPES: { value: ProjectCategory; label: string }[] = [
-  { value: "api", label: "API" },
-  { value: "web", label: "Web" },
-  { value: "app", label: "App" },
-];
+/** 中文名映射，仅用于展示。chip / 选项一律按 ALL_PROJECT_STACKS 顺序渲染。 */
+const STACK_LABELS: Record<ProjectStack, string> = {
+  functional: "功能",
+  api: "API",
+  web: "Web",
+  android: "Android",
+  ios: "iOS",
+};
 
 /**
- * 后端历史数据里 `projects.type` 混写着 "API" / "api" / "Web" / "Mobile" 几种值，
- * 前端的下拉框只认 "api" / "web" / "app"。所以在 form 回填之前统一 normalize 一次，
- * 既避免 zod enum 校验失败，也避免 Select 拿不到匹配项而显示占位符（编辑项目时看到的"类型没回填"就是这个原因）。
+ * 自动化执行链路支持的栈集合（functional 不参与）。
+ * 注意不要直接 import `AUTOMATED_CASE_TYPES` —— 那是 case_type 集合（含 mixed），
+ * 这里要的是 ProjectStack 集合。
  */
-function normalizeProjectCategory(raw: string | null | undefined): ProjectCategory {
-  if (!raw) return "api";
-  const v = String(raw).trim().toLowerCase();
-  if (v === "api") return "api";
-  if (v === "web") return "web";
-  // 旧数据里 app 项目被写作 "Mobile"，这里统一映射到 "app"
-  if (v === "app" || v === "mobile" || v === "android" || v === "ios") return "app";
-  return "api";
-}
+const AUTOMATED_STACKS: ProjectStack[] = ["api", "web", "android", "ios"];
+
+/** 哪些栈走 Appium 设备 → 触发设备选择器。 */
+const APP_LIKE_STACKS: ProjectStack[] = ["android", "ios"];
 
 const projectSchema = z.object({
   name: z
@@ -92,30 +96,36 @@ const projectSchema = z.object({
     .trim()
     .min(1, "请输入项目名")
     .max(10, "名称最多 10 个字符"),
-  type: z.enum(["api", "web", "app"]),
+  /** 至少启用一个栈；前端 zod + 后端 pydantic 双重保证。 */
+  enabled_stacks: z
+    .array(z.enum(["api", "web", "android", "ios", "functional"]))
+    .min(1, "至少启用一个栈"),
   description: z.string().max(50, "描述最多 50 个字符"),
 });
 
 type ProjectFormValues = z.infer<typeof projectSchema>;
 
 export function ProjectsPage() {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const rawType = searchParams.get("type") ?? "api";
-  const activeType: ProjectCategory =
-    rawType === "web" || rawType === "app" ? rawType : "api";
-
   const navigate = useNavigate();
 
   const [editing, setEditing] = useState<Project | null>(null);
   const [creating, setCreating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Project | null>(null);
   const [runningId, setRunningId] = useState<number | null>(null);
+  /** App 项目运行前的设备选择器：暂存待运行 (project, stack)，确认后再发请求。 */
+  const [pendingAppRun, setPendingAppRun] = useState<
+    { project: Project; stack: ProjectStack } | null
+  >(null);
+  /** 多栈项目"挑栈"小 picker：暂存待运行项目，user 选完栈后再走 handleRunStack。 */
+  const [pendingStackPick, setPendingStackPick] = useState<Project | null>(null);
 
   const queryClient = useQueryClient();
 
+  // v2 起列表不再按 stack 过滤 —— 顶层不分 Tab，全部项目一起展示。
+  // 如果未来要回到"分 Tab"，只需把 stack 传给 list() + queryKey 即可，后端已经支持 ?stack=。
   const projectsQuery = useQuery({
-    queryKey: queryKeys.projects(activeType),
-    queryFn: () => projectsApi.list(activeType),
+    queryKey: queryKeys.projects(),
+    queryFn: () => projectsApi.list(),
   });
 
   const invalidate = () =>
@@ -159,15 +169,23 @@ export function ProjectsPage() {
   });
 
   const runMutation = useMutation({
-    mutationFn: (project: Project) =>
+    mutationFn: ({
+      project,
+      stack,
+      deviceId,
+    }: {
+      project: Project;
+      stack: ProjectStack;
+      /** 仅 app 栈使用：null 表示走自动池分配，数字则锁定指定设备。 */
+      deviceId?: number | null;
+    }) =>
       runsApi.trigger({
         project: project.id,
-        category: (project.type as ProjectCategory) ?? activeType,
-        // 显式使用 v2 loader：它会带上 steps / environment 字段，
-        // web / app 用例必需；api 用例走 v2 也能兼容（CaseExecutor 会自动合成 http_request step）
-        v2: true,
+        // RunTestRequest.category 只接受自动化栈，functional 不会到这里
+        category: stack as Exclude<ProjectStack, "functional">,
+        device_id: deviceId,
       }),
-    onMutate: (project) => setRunningId(project.id),
+    onMutate: ({ project }) => setRunningId(project.id),
     onSettled: () => setRunningId(null),
     onSuccess: (res) => {
       toast.success(
@@ -176,14 +194,48 @@ export function ProjectsPage() {
         }`,
       );
       invalidate();
+      setPendingAppRun(null);
+      setPendingStackPick(null);
     },
     onError: handleError,
   });
 
-  const handleTabChange = (value: string) => {
-    const next = new URLSearchParams(searchParams);
-    next.set("type", value);
-    setSearchParams(next, { replace: true });
+  /**
+   * 计算项目可触发的"自动化栈"列表（按固定顺序，不含 functional）。
+   * 卡片右上角"运行"按钮根据这个数组决定行为。
+   */
+  const automatedStacksOf = (project: Project): ProjectStack[] => {
+    const set = new Set(project.enabled_stacks ?? []);
+    return AUTOMATED_STACKS.filter((s) => set.has(s));
+  };
+
+  /**
+   * 卡片"运行"入口：
+   *  - 0 个自动化栈：理论上按钮已被隐藏（automatedStacksOf 长度为 0），
+   *    防御性兜底直接 toast 警告；
+   *  - 1 个自动化栈：直接走 runStack（app 栈仍要走设备选择器）；
+   *  - 2+ 个自动化栈：弹小 picker 让用户挑栈。
+   */
+  const handleRunProject = (project: Project) => {
+    const stacks = automatedStacksOf(project);
+    if (stacks.length === 0) {
+      toast.info("当前项目没有可自动化的栈，进入项目详情手动操作功能用例");
+      return;
+    }
+    if (stacks.length === 1) {
+      runStack(project, stacks[0]);
+      return;
+    }
+    setPendingStackPick(project);
+  };
+
+  /** 触发某个项目的某个栈：app/android/ios 都走设备选择器；其它直接 trigger。 */
+  const runStack = (project: Project, stack: ProjectStack) => {
+    if (APP_LIKE_STACKS.includes(stack)) {
+      setPendingAppRun({ project, stack });
+      return;
+    }
+    runMutation.mutate({ project, stack });
   };
 
   const projects = projectsQuery.data ?? [];
@@ -194,7 +246,7 @@ export function ProjectsPage() {
         <div>
           <h1 className="text-2xl font-semibold">项目管理</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            创建、编辑和删除自动化测试项目。按类型切换列表。
+            创建、编辑和删除自动化测试项目。每个项目可同时启用多个栈（API / Web / App / 功能）。
           </p>
         </div>
         <Button onClick={() => setCreating(true)}>
@@ -202,16 +254,6 @@ export function ProjectsPage() {
           新建项目
         </Button>
       </div>
-
-      <Tabs value={activeType} onValueChange={handleTabChange}>
-        <TabsList>
-          {PROJECT_TYPES.map((t) => (
-            <TabsTrigger key={t.value} value={t.value}>
-              {t.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
 
       {projectsQuery.isLoading ? (
         <ProjectGridSkeleton />
@@ -225,20 +267,18 @@ export function ProjectsPage() {
           onRetry={() => projectsQuery.refetch()}
         />
       ) : projects.length === 0 ? (
-        <EmptyState
-          type={activeType}
-          onCreate={() => setCreating(true)}
-        />
+        <EmptyState onCreate={() => setCreating(true)} />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {projects.map((p) => (
             <ProjectCard
               key={p.id}
               project={p}
+              automatedStacks={automatedStacksOf(p)}
               onOpen={() => navigate(`/projects/${p.id}`)}
               onEdit={() => setEditing(p)}
               onDelete={() => setPendingDelete(p)}
-              onRun={() => runMutation.mutate(p)}
+              onRun={() => handleRunProject(p)}
               running={runningId === p.id}
             />
           ))}
@@ -249,7 +289,11 @@ export function ProjectsPage() {
         open={creating}
         onOpenChange={(v) => !v && setCreating(false)}
         title="新建项目"
-        defaultValues={{ name: "", type: activeType, description: "" }}
+        defaultValues={{
+          name: "",
+          enabled_stacks: ["api"],
+          description: "",
+        }}
         submitting={createMutation.isPending}
         onSubmit={(values) => createMutation.mutate(values)}
       />
@@ -262,11 +306,10 @@ export function ProjectsPage() {
           editing
             ? {
                 name: editing.name,
-                type: normalizeProjectCategory(editing.type),
-                description:
-                  editing.description ?? editing.desc ?? "",
+                enabled_stacks: normalizeStacks(editing.enabled_stacks),
+                description: editing.description ?? editing.desc ?? "",
               }
-            : { name: "", type: activeType, description: "" }
+            : { name: "", enabled_stacks: ["api"], description: "" }
         }
         submitting={updateMutation.isPending}
         onSubmit={(values) =>
@@ -280,8 +323,55 @@ export function ProjectsPage() {
         onConfirm={(id) => deleteMutation.mutate(id)}
         submitting={deleteMutation.isPending}
       />
+
+      {/* App 栈专属：运行前选设备。其他栈走 runStack 直接 trigger，这个弹窗 open 永远 false。 */}
+      <DevicePickerDialog
+        open={pendingAppRun !== null}
+        onCancel={() => setPendingAppRun(null)}
+        onConfirm={(deviceId) => {
+          if (!pendingAppRun) return;
+          runMutation.mutate({
+            project: pendingAppRun.project,
+            stack: pendingAppRun.stack,
+            deviceId,
+          });
+        }}
+        submitting={runMutation.isPending}
+        target={
+          pendingAppRun
+            ? `项目 ${pendingAppRun.project.name} · ${STACK_LABELS[pendingAppRun.stack]}`
+            : undefined
+        }
+      />
+
+      {/* 多栈项目专属：挑选要跑哪个栈。 */}
+      <RunStackPickerDialog
+        project={pendingStackPick}
+        stacks={
+          pendingStackPick ? automatedStacksOf(pendingStackPick) : []
+        }
+        onCancel={() => setPendingStackPick(null)}
+        onPick={(stack) => {
+          if (!pendingStackPick) return;
+          // 关掉 picker，下游 runStack 会按需打开 device picker。
+          const project = pendingStackPick;
+          setPendingStackPick(null);
+          runStack(project, stack);
+        }}
+      />
     </div>
   );
+}
+
+/**
+ * 后端兜底：保证 enabled_stacks 是 ProjectStack[] 子集 + 至少 1 个。
+ * 极端历史数据（迁移漏掉？空字符串？）走默认 ["api"]，避免编辑表单崩溃。
+ */
+function normalizeStacks(raw: unknown): ProjectStack[] {
+  if (!Array.isArray(raw)) return ["api"];
+  const set = new Set<string>(raw.filter((v) => typeof v === "string"));
+  const filtered = ALL_PROJECT_STACKS.filter((s) => set.has(s));
+  return filtered.length > 0 ? filtered : ["api"];
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +379,7 @@ export function ProjectsPage() {
 // ---------------------------------------------------------------------------
 function ProjectCard({
   project,
+  automatedStacks,
   onOpen,
   onEdit,
   onDelete,
@@ -296,6 +387,8 @@ function ProjectCard({
   running,
 }: {
   project: Project;
+  /** 已经按 ALL_PROJECT_STACKS 顺序过滤 + functional 排除好的"可自动化栈"列表。 */
+  automatedStacks: ProjectStack[];
   onOpen: () => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -304,6 +397,10 @@ function ProjectCard({
 }) {
   const desc = project.description ?? project.desc ?? "";
   const lastStatus = project.last_status ?? "unknown";
+  const stacks = useMemo(
+    () => normalizeStacks(project.enabled_stacks),
+    [project.enabled_stacks],
+  );
 
   // 整张卡片可点 → 进详情。
   // 内部 Run 按钮 / DropdownMenu 都要 stopPropagation，避免误触发 onOpen。
@@ -330,24 +427,31 @@ function ProjectCard({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1" onClick={stop}>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            title="运行全部用例"
-            disabled={running}
-            onClick={(e) => {
-              stop(e);
-              onRun();
-            }}
-          >
-            {running ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            <span className="sr-only">运行</span>
-          </Button>
+          {/* 只有当存在自动化栈时才显示运行按钮；纯 functional 项目隐藏。 */}
+          {automatedStacks.length > 0 ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title={
+                automatedStacks.length === 1
+                  ? `运行 ${STACK_LABELS[automatedStacks[0]]} 全部用例`
+                  : "选择栈并运行"
+              }
+              disabled={running}
+              onClick={(e) => {
+                stop(e);
+                onRun();
+              }}
+            >
+              {running ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              <span className="sr-only">运行</span>
+            </Button>
+          ) : null}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
@@ -385,7 +489,8 @@ function ProjectCard({
           </DropdownMenu>
         </div>
       </CardHeader>
-      <CardContent className="flex-1 space-y-1 text-xs">
+      <CardContent className="flex-1 space-y-2 text-xs">
+        <StackChips stacks={stacks} />
         <Stat label="用例数" value={String(project.case_count ?? 0)} />
         <Stat
           label="通过率"
@@ -401,6 +506,29 @@ function ProjectCard({
         <span>{project.last_run_time || "从未执行"}</span>
       </CardFooter>
     </Card>
+  );
+}
+
+/**
+ * 卡片上的栈 chip。
+ * 排序按 ALL_PROJECT_STACKS（功能 → API → Web → App，user 决策的固定顺序）。
+ * 不显示后端入库顺序，避免老数据里 type 字段历史污染影响展示。
+ */
+function StackChips({ stacks }: { stacks: ProjectStack[] }) {
+  if (stacks.length === 0) {
+    return <span className="text-muted-foreground">未启用栈</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {stacks.map((s) => (
+        <span
+          key={s}
+          className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+        >
+          {STACK_LABELS[s]}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -467,9 +595,23 @@ function ProjectFormDialog({
     watch,
   } = form;
 
-  const typeValue = watch("type");
+  const stacksValue = watch("enabled_stacks");
 
-  const typeOptions = useMemo(() => PROJECT_TYPES, []);
+  /** 切换某个栈的勾选；保证至少 1 个（zod 也会校验，这里防御）。 */
+  const toggleStack = (stack: ProjectStack, checked: boolean) => {
+    const set = new Set(stacksValue);
+    if (checked) {
+      set.add(stack);
+    } else {
+      set.delete(stack);
+    }
+    // 按 ALL_PROJECT_STACKS 顺序排序回写，便于后端 / 后续展示一致
+    const next = ALL_PROJECT_STACKS.filter((s) => set.has(s));
+    setValue("enabled_stacks", next, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -477,7 +619,7 @@ function ProjectFormDialog({
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            项目是用例的最大容器。名称最多 10 字，描述最多 50 字。
+            项目是用例的最大容器；可同时启用多个栈。名称最多 10 字，描述最多 50 字。
           </DialogDescription>
         </DialogHeader>
         <form
@@ -490,7 +632,7 @@ function ProjectFormDialog({
               id="project-name"
               maxLength={10}
               autoFocus
-              placeholder="比如：支付中心"
+              placeholder="比如：电商平台"
               {...register("name")}
             />
             {errors.name ? (
@@ -498,25 +640,37 @@ function ProjectFormDialog({
             ) : null}
           </div>
 
-          <div className="space-y-1.5">
-            <Label htmlFor="project-type">类型</Label>
-            <Select
-              value={typeValue}
-              onValueChange={(v) =>
-                setValue("type", v as ProjectCategory, { shouldDirty: true })
-              }
-            >
-              <SelectTrigger id="project-type">
-                <SelectValue placeholder="选择类型" />
-              </SelectTrigger>
-              <SelectContent>
-                {typeOptions.map((opt) => (
-                  <SelectItem key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="space-y-2">
+            <Label>启用栈（至少 1 个）</Label>
+            {/*
+              用 Button toggle 而不是 Checkbox：
+                - 项目里还没引入 @radix-ui/react-checkbox，不想为这个表单单独加依赖；
+                - toggle 的视觉重量更接近 chip，更容易让用户理解"这是个二选一开关"。
+              variant 切换：选中态 default（实心），未选 outline。
+            */}
+            <div className="flex flex-wrap gap-2">
+              {/* 顺序按 ALL_PROJECT_STACKS（保证视觉与卡片 chips 一致）。 */}
+              {ALL_PROJECT_STACKS.map((s) => {
+                const checked = stacksValue.includes(s);
+                return (
+                  <Button
+                    key={s}
+                    type="button"
+                    size="sm"
+                    variant={checked ? "default" : "outline"}
+                    onClick={() => toggleStack(s, !checked)}
+                    aria-pressed={checked}
+                  >
+                    {STACK_LABELS[s]}
+                  </Button>
+                );
+              })}
+            </div>
+            {errors.enabled_stacks ? (
+              <p className="text-xs text-destructive">
+                {errors.enabled_stacks.message as string}
+              </p>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">
@@ -597,21 +751,59 @@ function DeleteConfirmDialog({
 }
 
 // ---------------------------------------------------------------------------
+// 多栈项目"挑栈跑"小 picker
+// ---------------------------------------------------------------------------
+function RunStackPickerDialog({
+  project,
+  stacks,
+  onCancel,
+  onPick,
+}: {
+  project: Project | null;
+  stacks: ProjectStack[];
+  onCancel: () => void;
+  onPick: (stack: ProjectStack) => void;
+}) {
+  return (
+    <Dialog open={project !== null} onOpenChange={(v) => !v && onCancel()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>选择要运行的栈</DialogTitle>
+          <DialogDescription>
+            「{project?.name}」启用了多个自动化栈，请选择本次要执行的栈。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-1 gap-2">
+          {stacks.map((s) => (
+            <Button
+              key={s}
+              variant="outline"
+              className="justify-start"
+              onClick={() => onPick(s)}
+            >
+              <Play className="h-4 w-4" />
+              运行 {STACK_LABELS[s]} 全部用例
+            </Button>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onCancel}>
+            取消
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 空态 / 骨架 / 错误
 // ---------------------------------------------------------------------------
-function EmptyState({
-  type,
-  onCreate,
-}: {
-  type: ProjectCategory;
-  onCreate: () => void;
-}) {
+function EmptyState({ onCreate }: { onCreate: () => void }) {
   return (
     <Card className="border-dashed">
       <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-        <div className="text-sm text-muted-foreground">
-          当前没有 {type.toUpperCase()} 类型的项目。
-        </div>
+        <div className="text-sm text-muted-foreground">还没有任何项目。</div>
         <Button onClick={onCreate} variant="outline">
           <Plus className="h-4 w-4" />
           创建第一个项目

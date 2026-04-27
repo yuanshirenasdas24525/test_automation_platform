@@ -1,16 +1,11 @@
 """Celery 任务：run_test_task
 
-策略：
-  - 优先用 v2 的 `test_case_runner`（走 CaseExecutor → StepDispatcher → StepRunner）。
-  - 如果传进来的 cases 列表里**所有 case** 都没有 steps 且没有 case_type，说明是老
-    调用方（没换 v2 loader），为了不破坏现有流程，退回到旧的 `test_{category}_runner`。
+v2 唯一路径：所有 case（API/Web/Android/iOS/Mixed）都走
+`tests/service_run_executor.py::TestService::test_case_runner`，
+该入口走 CaseExecutor → StepDispatcher → 各 StepRunner。
+v1 的 `test_api_runner` + 兼容选 runner 的逻辑已删。
 
-这样就保证：
-  - 老 /api/run_test 路径（用 `get_cases_from_db` v1）—— 行为不变。
-  - 新 /api/run_test （或同一接口 + v2=true）路径（用 `get_cases_v2_from_db`）—— 自动走新 Runner。
-  - 逐条 case 可以混用：有 steps 的走 v2，剩下的走 v1 兼容（CaseExecutor 会自动合成 http_request）。
-
-可靠性（2026-04 修复）：
+可靠性：
   - 以前外层 except 只 print，报告就卡在 "running"。现在：
     * try：正常跑完 pytest + sync + finalize；
     * except：捕获任何异常，立刻用 `force_error_status` 把报告刷成 "fail"，带错误摘要；
@@ -24,44 +19,11 @@ import json
 import os
 import shutil
 import traceback
-from typing import Iterable
 from utils.logger import LOGGER
 from celery_app import celery_app
 
-
-def _needs_v2_runner(cases: Iterable[dict]) -> bool:
-    """只要有一条 case 带 steps 或 case_type 非 'api'，就认为需要 v2。"""
-    for c in cases or []:
-        if not isinstance(c, dict):
-            continue
-        if c.get("steps"):
-            return True
-        ct = c.get("case_type")
-        if ct and str(ct).lower() != "api":
-            return True
-    return False
-
-
-def _pick_pytest_target(category: str, cases: Iterable[dict]) -> str:
-    """根据 cases 决定走哪个 pytest 节点。
-
-    规则（按优先级）：
-      1. cases 里有 step / case_type 非 api → v2（`test_case_runner`）
-      2. category 不是 'api' → **强制** v2。
-         service_run_executor.py 里只定义了 `test_api_runner` 和 `test_case_runner`，
-         根本没有 `test_web_runner` / `test_app_runner`。web/app 必须走 v2。
-      3. 其它（category == 'api' 且 cases 里没有 steps）→ v1 `test_api_runner`
-    """
-    if _needs_v2_runner(cases):
-        return "tests/service_run_executor.py::TestService::test_case_runner"
-
-    cat = str(category or "").strip().lower()
-    if cat != "api":
-        # web / app / 其它任何非 api 的类型都没有 v1 入口，必须走 v2
-        return "tests/service_run_executor.py::TestService::test_case_runner"
-
-    # v1 回退路径：只对 api 保留老行为
-    return "tests/service_run_executor.py::TestService::test_api_runner"
+# v2 唯一 pytest 入口
+_PYTEST_TARGET = "tests/service_run_executor.py::TestService::test_case_runner"
 
 
 def _run_allure_generate(result_path: str, report_path: str) -> None:
@@ -103,15 +65,13 @@ def run_test_task(t_id, r_id, cases, category):
         report_path = f"data/reports/{t_id}"
         os.makedirs(result_path, exist_ok=True)
 
-        pytest_target = _pick_pytest_target(category, cases)
-
         pytest_args = [
             "-s", "-v",
             "-p", "config.pytest_config",
             "--report_id", str(r_id),
             "--category", category,
             "--alluredir", result_path,
-            pytest_target,
+            _PYTEST_TARGET,
             f"--cases_data={json.dumps(cases)}",
         ]
 

@@ -28,8 +28,10 @@ class ProjectPaths:
     ERROR_LOG = LOG_DIR / "error.log"
     APPIUM_LOG = LOG_DIR / "appium.log"
 
-    # 安装包
-    APP_PACKAGE= DATA_DIR / "app_package"
+    # 安装包：APP_PACKAGES_DIR 是 v2 的 /api/app_packages 落盘目录（复数），
+    # 锚定 BASE_DIR 不依赖 cwd 启动位置（避免 uvicorn 从 server/ 启动时
+    # 落到 server/data/app_packages/）。
+    APP_PACKAGES_DIR = DATA_DIR / "app_packages"
 
 # =========================================================
 # 项目相关路径配置配置

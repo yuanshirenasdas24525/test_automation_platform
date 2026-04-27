@@ -16,21 +16,29 @@ from typing import Any, Iterable, Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session, aliased
 
-from database.models import Module, Project, TestCase, TestReport
+from database.models import ALL_PROJECT_STACKS, Module, Project, TestCase, TestReport
 
 
 def list_projects_with_stats(
     session: Session,
-    type_filter: Optional[str] = None,
+    stack_filter: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     返回项目列表 + 聚合统计（用例数 / 通过率 / 上次执行状态 / 上次执行时间）。
 
     参数：
-      - type_filter: 可选，按 `Project.type` ilike 过滤（"api" / "web" / "app"）。
+      - stack_filter: 可选，按 `Project.enabled_stacks` 包含该栈过滤
+        （"api" / "web" / "app" / "functional"）。
 
-    返回格式严格对齐老版 /api/projects/list 的 `data` 结构，前端零迁移。
+    实现说明：
+      enabled_stacks 是 JSON 数组列，跨数据库（SQLite / PostgreSQL）做 JSON
+      contains 既要写两套 SQL，又有 SQLite 老版本不支持 json 函数的坑，所以
+      这里把 stack 过滤放到 Python 侧做。项目数量级一般 <100，先这样；
+      后期需要走索引可以加 PG-only 的 `enabled_stacks @> '["api"]'` 路径。
     """
+    # 防御：传了非法栈名直接返回空（避免静默命中"全部"）
+    if stack_filter is not None and stack_filter not in ALL_PROJECT_STACKS:
+        return []
     # 子查询 1：每个项目的 case_count
     case_counts_sq = (
         session.query(
@@ -66,13 +74,15 @@ def list_projects_with_stats(
         )
     )
 
-    if type_filter:
-        query = query.filter(Project.type.ilike(type_filter))
-
     query = query.order_by(Project.sort_order)
 
     results: list[dict[str, Any]] = []
     for proj, case_count, last_report in query.all():
+        # Python 侧做 stack 包含过滤（理由见函数 docstring）
+        enabled = list(proj.enabled_stacks or [])
+        if stack_filter is not None and stack_filter not in enabled:
+            continue
+
         pass_rate = 0.0
         if last_report and last_report.total_count and last_report.total_count > 0:
             pass_rate = round(
@@ -90,8 +100,9 @@ def list_projects_with_stats(
             {
                 "id": proj.id,
                 "name": proj.name,
-                "type": proj.type,
+                "enabled_stacks": enabled,
                 "desc": proj.description,
+                "icon": proj.icon,
                 "case_count": int(case_count or 0),
                 "pass_rate": pass_rate,
                 "last_status": last_status,
@@ -108,8 +119,9 @@ def serialize_project_basic(project: Project) -> dict[str, Any]:
     return {
         "id": project.id,
         "name": project.name,
-        "type": project.type,
+        "enabled_stacks": list(project.enabled_stacks or []),
         "description": project.description,
+        "icon": project.icon,
     }
 
 

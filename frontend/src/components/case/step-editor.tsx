@@ -24,6 +24,7 @@
 import * as React from "react";
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   GripVertical,
   Info,
@@ -45,6 +46,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { appPackagesApi } from "@/lib/api";
+import { queryKeys } from "@/lib/query";
 import type { CaseType, TestStepDraft } from "@/types/domain";
 
 // ---------------------------------------------------------------------------
@@ -55,7 +59,8 @@ type FieldKind =
   | "number" // 数字 Input
   | "select" // 下拉（options 必填）
   | "highlight" // HighlightedTextarea：支持 ${var} / $. / function: / sql:
-  | "bool"; // checkbox
+  | "bool" // checkbox
+  | "app_package"; // 已上传 App 包选择器：下拉 = 已上传包，留空走输入框（可手填路径/URL）
 
 interface FieldSpec {
   key: string;
@@ -91,12 +96,36 @@ const BY_OPTIONS: FieldSpec["options"] = [
   { value: "link", label: "链接文本" },
 ];
 
+// 后端 _AppiumBy.LOCATORS 注册了 14 种定位方式（见 core/mobile/finder/finder.py）。
+// 这里一一对应，并按"最常用 → Android 专属 → iOS 专属 → 通用"的顺序排，方便用户找。
+// ⚠️ value 必须与后端 key 一致 —— 历史上前端用过 'class' 而后端是 'class_name'，
+// 直接导致选了"className"后 find 时 KeyError，这次保持一致。
 const APP_BY_OPTIONS: FieldSpec["options"] = [
-  { value: "id", label: "resource-id" },
+  // 最常用
+  { value: "id", label: "resource-id / id" },
   { value: "xpath", label: "XPath" },
   { value: "accessibility_id", label: "accessibility id" },
+  { value: "class_name", label: "className" },
+  // Android 专属
   { value: "android_uiautomator", label: "Android UiAutomator" },
-  { value: "class", label: "className" },
+  { value: "android_viewtag", label: "Android ViewTag" },
+  { value: "android_data_matcher", label: "Android DataMatcher" },
+  { value: "android_view_matcher", label: "Android ViewMatcher" },
+  // iOS 专属
+  { value: "ios_predicate", label: "iOS Predicate" },
+  { value: "ios_class_chain", label: "iOS ClassChain" },
+  // 其它通用
+  { value: "image", label: "Image（图像匹配）" },
+  { value: "link_text", label: "Link Text" },
+  { value: "css_selector", label: "CSS Selector" },
+  { value: "name", label: "name 属性" },
+];
+
+// iOS / Android 都能用。留空表示"使用设备默认 automationName"（Android→UiAutomator2、iOS→XCUITest）。
+const APP_AUTOMATION_OPTIONS: FieldSpec["options"] = [
+  { value: "UiAutomator2", label: "UiAutomator2 (Android)" },
+  { value: "XCUITest", label: "XCUITest (iOS)" },
+  { value: "Espresso", label: "Espresso (Android)" },
 ];
 
 const WAIT_STATE_OPTIONS: FieldSpec["options"] = [
@@ -294,11 +323,48 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     value: "app_launch",
     group: "app",
     label: "启动 App (app_launch)",
+    desc: "Android 填 appPackage + appActivity；iOS 填 bundleId；automationName 留空则按设备平台默认",
     defaultConfig: { appPackage: "", appActivity: "" },
-    defaultName: (c) => `启动 ${c.appPackage || "App"}`,
+    defaultName: (c) =>
+      `启动 ${c.bundleId || c.appPackage || "App"}`,
     fields: [
-      { key: "appPackage", label: "appPackage", kind: "text", placeholder: "com.example.app" },
-      { key: "appActivity", label: "appActivity", kind: "text", placeholder: ".MainActivity" },
+      // Android
+      {
+        key: "appPackage",
+        label: "appPackage (Android)",
+        kind: "text",
+        placeholder: "com.example.app",
+        hint: <>Android 必填；iOS 请改填下面的 <code>bundleId</code></>,
+      },
+      {
+        key: "appActivity",
+        label: "appActivity (Android)",
+        kind: "text",
+        placeholder: ".MainActivity",
+      },
+      // iOS
+      {
+        key: "bundleId",
+        label: "bundleId (iOS)",
+        kind: "text",
+        placeholder: "com.apple.mobilesafari",
+        hint: <>iOS 场景使用；与 appPackage 互斥</>,
+      },
+      // 共用
+      {
+        key: "automationName",
+        label: "automationName",
+        kind: "select",
+        options: APP_AUTOMATION_OPTIONS,
+        placeholder: "（留空 = 按平台默认）",
+        hint: <>多数情况下留空即可。Android 默认 UiAutomator2、iOS 默认 XCUITest</>,
+      },
+      {
+        key: "noReset",
+        label: "noReset（保留登录态）",
+        kind: "bool",
+        hint: <>勾上后 Appium 不会清缓存，适合复用设备已有登录</>,
+      },
     ],
   },
   { value: "app_close", group: "app", label: "关闭 App (app_close)", defaultName: "关闭 App", fields: [] },
@@ -322,6 +388,195 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     fields: [
       { key: "name", label: "文件名", kind: "text" },
       { key: "path", label: "保存路径(可选)", kind: "text" },
+    ],
+  },
+
+  // 扩展能力：安装 / 卸载 / 激活 / 杀进程 / 切后台 / 屏幕方向 / 收键盘
+  {
+    value: "app_install",
+    group: "app",
+    label: "安装 App (app_install)",
+    desc: "传本地 apk/ipa 路径或 URL（由 Appium server 下载）",
+    defaultConfig: { app_path: "" },
+    defaultName: (c) => `安装 ${c.app_path || "App"}`,
+    fields: [
+      { key: "app_path", label: "app_path", kind: "app_package", required: true,
+        placeholder: "/path/to/app.apk 或 http://... ",
+        hint: <>从「App 包管理」选已上传包，或手填本地路径 / URL；支持 <code>$&#123;var&#125;</code> 和 <code>sql:</code>/<code>function:</code></> },
+    ],
+  },
+  {
+    value: "app_uninstall",
+    group: "app",
+    label: "卸载 App (app_uninstall)",
+    desc: "Android 填 appPackage；iOS 填 bundleId。二选一即可",
+    defaultConfig: { appPackage: "" },
+    defaultName: (c) => `卸载 ${c.bundleId || c.appPackage || "App"}`,
+    fields: [
+      { key: "appPackage", label: "appPackage (Android)", kind: "text",
+        placeholder: "com.example.app" },
+      { key: "bundleId", label: "bundleId (iOS)", kind: "text",
+        placeholder: "com.apple.mobilesafari" },
+    ],
+  },
+  {
+    value: "app_activate",
+    group: "app",
+    label: "激活 App (app_activate)",
+    desc: "把已安装的应用唤到前台（不重建 session，区别于 app_launch）",
+    defaultConfig: { appPackage: "" },
+    defaultName: (c) => `激活 ${c.bundleId || c.appPackage || "App"}`,
+    fields: [
+      { key: "appPackage", label: "appPackage (Android)", kind: "text",
+        placeholder: "com.example.app" },
+      { key: "bundleId", label: "bundleId (iOS)", kind: "text",
+        placeholder: "com.apple.mobilesafari" },
+    ],
+  },
+  {
+    value: "app_terminate",
+    group: "app",
+    label: "杀进程 (app_terminate)",
+    desc: "结束应用进程但不卸载",
+    defaultConfig: { appPackage: "" },
+    defaultName: (c) => `杀进程 ${c.bundleId || c.appPackage || "App"}`,
+    fields: [
+      { key: "appPackage", label: "appPackage (Android)", kind: "text",
+        placeholder: "com.example.app" },
+      { key: "bundleId", label: "bundleId (iOS)", kind: "text",
+        placeholder: "com.apple.mobilesafari" },
+    ],
+  },
+  {
+    value: "app_background",
+    group: "app",
+    label: "切后台 (app_background)",
+    desc: "把当前应用切到后台 N 秒后回前台；-1 表示不自动回",
+    defaultConfig: { seconds: 3 },
+    defaultName: (c) => `切后台 ${c.seconds ?? 3}s`,
+    fields: [
+      { key: "seconds", label: "秒数", kind: "number", required: true,
+        hint: <>建议 ≥ 1；<code>-1</code> 表示永久后台</> },
+    ],
+  },
+  {
+    value: "app_orientation",
+    group: "app",
+    label: "屏幕方向 (app_orientation)",
+    defaultConfig: { orientation: "PORTRAIT" },
+    defaultName: (c) => `旋转到 ${c.orientation || "PORTRAIT"}`,
+    fields: [
+      { key: "orientation", label: "方向", kind: "select", required: true,
+        options: [
+          { value: "PORTRAIT", label: "竖屏 PORTRAIT" },
+          { value: "LANDSCAPE", label: "横屏 LANDSCAPE" },
+        ] },
+    ],
+  },
+  {
+    value: "app_hide_keyboard",
+    group: "app",
+    label: "收键盘 (app_hide_keyboard)",
+    desc: "软键盘已经收起时会被忽略（不判 case 失败）",
+    defaultName: "收键盘",
+    fields: [
+      { key: "key_name", label: "key_name (仅 iOS)", kind: "text",
+        placeholder: "Done",
+        hint: <>iOS 上点击哪个键盘按钮收起；Android 留空即可</> },
+    ],
+  },
+
+  {
+    value: "app_assert_text",
+    group: "app",
+    label: "断言文本 (app_assert_text)",
+    desc: "equals / contains / not_contains 三选一；三个都填时优先级 equals > contains > not_contains",
+    defaultConfig: { by: "id", locator: "", timeout: 10 },
+    defaultName: (c) => `断言 ${c.locator || "元素"} 文本`,
+    fields: [
+      { key: "by", label: "定位方式", kind: "select", options: APP_BY_OPTIONS, required: true },
+      { key: "locator", label: "定位表达式", kind: "highlight", rows: 1, required: true,
+        placeholder: "com.example:id/title" },
+      { key: "equals", label: "equals", kind: "highlight", rows: 1,
+        hint: <>与元素文本完全相等，支持 <code>$&#123;var&#125;</code></> },
+      { key: "contains", label: "contains", kind: "highlight", rows: 1,
+        hint: <>元素文本包含该子串</> },
+      { key: "not_contains", label: "not_contains", kind: "highlight", rows: 1,
+        hint: <>元素文本不包含该子串</> },
+      { key: "timeout", label: "超时(秒)", kind: "number" },
+    ],
+  },
+
+  // 通用入口：让用户调老 ActionRegistry / AssertionEngine 里的 30+ 动作和 11 种断言
+  {
+    value: "app_action",
+    group: "app",
+    label: "通用动作 (app_action)",
+    desc: "按 action 名调用 ActionRegistry。30+ 内置动作：click / send_keys / get_attribute / handle_alert / set_orientation / start_screen_recording 等",
+    defaultConfig: { action: "click", by: "id", locator: "", timeout: 10 },
+    defaultName: (c) => `${c.action || "action"} ${c.locator || ""}`.trim(),
+    fields: [
+      { key: "action", label: "action 名", kind: "text", required: true,
+        placeholder: "click",
+        hint: <>注册名见 <code>core/mobile/actions/executor.py</code>；自定义动作可
+          通过 <code>ActionRegistry.register</code> 注入</> },
+      { key: "by", label: "定位方式", kind: "select", options: APP_BY_OPTIONS,
+        placeholder: "（不需要元素时留空）" },
+      { key: "locator", label: "定位表达式", kind: "highlight", rows: 1,
+        placeholder: "com.example:id/btn" },
+      { key: "value", label: "value（传给 action）", kind: "highlight", rows: 1,
+        placeholder: "可填字符串 / ${var} / sql:... / function:...",
+        hint: <>大多数 action 的第三个参数。无参 action 留空</> },
+      { key: "timeout", label: "超时(秒)", kind: "number" },
+      { key: "skip_element", label: "不查元素 (element=None)", kind: "bool",
+        hint: <>勾上后不会按 by/locator 找元素，适用于 launch_app / get_clipboard
+          这类不依赖元素的动作</> },
+      { key: "save_as", label: "保存返回值到变量", kind: "text",
+        hint: <>填了就把 action 的返回值存进变量池，后面 step 用
+          <code>$&#123;xxx&#125;</code> 取</> },
+    ],
+  },
+  {
+    value: "app_assert",
+    group: "app",
+    label: "通用断言 (app_assert)",
+    desc: "按 assert_type 走 AssertionEngine。11 种比较：equal / contains / gt / lt / length_*  等。需要数值或长度比较时用，纯文本断言用 app_assert_text 更简洁。",
+    defaultConfig: { assert_type: "equal", by: "id", locator: "", attr: "text" },
+    defaultName: (c) => `断言 ${c.assert_type || "equal"} ${c.expected ?? ""}`.trim(),
+    fields: [
+      { key: "assert_type", label: "断言类型", kind: "select", required: true,
+        options: [
+          { value: "equal", label: "equal（相等）" },
+          { value: "not_equal", label: "not_equal（不等）" },
+          { value: "gt", label: "gt（大于，按 float 比较）" },
+          { value: "lt", label: "lt（小于，按 float 比较）" },
+          { value: "contains", label: "contains（包含）" },
+          { value: "not_contains", label: "not_contains（不含）" },
+          { value: "empty", label: "empty（为空）" },
+          { value: "not_empty", label: "not_empty（非空）" },
+          { value: "length_equal", label: "length_equal（长度相等）" },
+          { value: "length_gt", label: "length_gt（长度大于）" },
+          { value: "length_lt", label: "length_lt（长度小于）" },
+        ] },
+      { key: "expected", label: "expected", kind: "highlight", rows: 1,
+        placeholder: "支持 ${var} / sql:... / function:...",
+        hint: <>期望值。empty / not_empty 不需要填</> },
+      // actual 来源 A：元素属性
+      { key: "by", label: "定位方式（A: 取元素属性）", kind: "select",
+        options: APP_BY_OPTIONS,
+        placeholder: "（如选项 B 直接给值则留空）" },
+      { key: "locator", label: "定位表达式", kind: "highlight", rows: 1,
+        placeholder: "com.example:id/title" },
+      { key: "attr", label: "attr", kind: "text",
+        placeholder: "text",
+        hint: <>取元素的哪个属性。默认 <code>text</code>；可填
+          <code>enabled</code> / <code>displayed</code> 或 Appium 支持的任意
+          <code>get_attribute</code> 名</> },
+      // actual 来源 B：直接给 value
+      { key: "value", label: "value（B: 直接给值）", kind: "highlight", rows: 1,
+        placeholder: "${var} / sql:... / function:... / 字面量",
+        hint: <>与上面 by/locator 二选一。直接拿一个值跟 expected 比较</> },
+      { key: "timeout", label: "超时(秒)", kind: "number" },
     ],
   },
 
@@ -354,18 +609,22 @@ export interface StepEditorProps {
 }
 
 export function StepEditor({ category, value, onChange, error }: StepEditorProps) {
+  // android / ios 共用同一套 app_* StepRunner；平台差异由 environment.browser_config /
+  // step config 里的 caps 决定。
+  const isAppFamily = category === "android" || category === "ios";
+
   // 新建 step 时，默认选的 step_type 依赖 category：
   const defaultNewType = React.useMemo(() => {
     if (category === "web") return "web_goto";
-    if (category === "app") return "app_launch";
-    return "web_goto"; // mixed 时先默认 web
-  }, [category]);
+    if (isAppFamily) return "app_launch";
+    return "web_goto"; // mixed / api / functional 等先默认 web
+  }, [category, isAppFamily]);
 
   const allowedGroups = React.useMemo(() => {
     if (category === "web") return new Set(["web", "generic"]);
-    if (category === "app") return new Set(["app", "generic"]);
+    if (isAppFamily) return new Set(["app", "generic"]);
     return new Set(["web", "app", "generic"]); // mixed
-  }, [category]);
+  }, [category, isAppFamily]);
 
   const availableSpecs = STEP_TYPE_SPECS.filter((s) => allowedGroups.has(s.group));
 
@@ -386,6 +645,22 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
     [arr[i], arr[j]] = [arr[j], arr[i]];
     onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
   };
+
+  // 鼠标拖拽：把 from 插到 to 之前（to 是目标行的当前 index）。
+  // 注意：当 from < to 时，把 from 取出后剩余数组里 to 的位置会左移 1，所以
+  // 实际插入索引要 -1，避免拖到下方一格"看起来没动"。
+  const reorderStep = (from: number, to: number) => {
+    if (from === to) return;
+    if (from < 0 || to < 0 || from >= value.length || to > value.length) return;
+    const arr = value.slice();
+    const [moved] = arr.splice(from, 1);
+    const insertAt = from < to ? to - 1 : to;
+    arr.splice(insertAt, 0, moved);
+    onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
+  };
+
+  // 当前正在拖动哪一行：父级管理，让所有 row 都能感知，便于做悬停高亮（可选）。
+  const [dragIdx, setDragIdx] = React.useState<number | null>(null);
   const addStep = () => {
     const spec = findSpec(defaultNewType) ?? availableSpecs[0];
     if (!spec) return;
@@ -441,6 +716,18 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
               onChange={(next) => setStep(i, next)}
               onRemove={() => removeStep(i)}
               onMove={(dir) => moveStep(i, dir)}
+              dragIdx={dragIdx}
+              onDragStart={() => setDragIdx(i)}
+              onDragEnd={() => setDragIdx(null)}
+              onDropBefore={(from) => {
+                reorderStep(from, i);
+                setDragIdx(null);
+              }}
+              onDropAtEnd={(from) => {
+                // 仅最后一行响应 onDropAtEnd（StepRow 内部判断）
+                reorderStep(from, value.length);
+                setDragIdx(null);
+              }}
             />
           ))}
         </div>
@@ -460,6 +747,11 @@ function StepRow({
   onChange,
   onRemove,
   onMove,
+  dragIdx,
+  onDragStart,
+  onDragEnd,
+  onDropBefore,
+  onDropAtEnd,
 }: {
   index: number;
   total: number;
@@ -468,6 +760,13 @@ function StepRow({
   onChange: (next: TestStepDraft) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
+  dragIdx: number | null;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  /** 用户把别的行拖到本行"之前"，from 是被拖行的当前 index。 */
+  onDropBefore: (from: number) => void;
+  /** 用户拖到本行"之后"（仅最后一行有意义，用来排到末尾）。 */
+  onDropAtEnd: (from: number) => void;
 }) {
   const [expanded, setExpanded] = React.useState(index === 0 || !step.step_type);
   const spec = findSpec(step.step_type);
@@ -497,13 +796,59 @@ function StepRow({
     onChange({ ...step, config: { ...(step.config || {}), [key]: val } });
   };
 
+  // HTML5 DnD：grip 是真正的拖动手柄；行容器接收 drop 事件 + 上下半区判断
+  // 决定是"放到本行之前"还是"放到本行之后"。dataTransfer 用一个 dummy 字符串
+  // 让 Firefox 也开始拖动；真正的 from index 走父组件的 dragIdx state。
+  const isDragging = dragIdx === index;
+  const isDropTarget = dragIdx !== null && dragIdx !== index;
+
+  const handleRowDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    if (dragIdx === null || dragIdx === index) return;
+    e.preventDefault();  // 必须 preventDefault 才会触发 onDrop
+    e.dataTransfer.dropEffect = "move";
+  };
+  const handleRowDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (dragIdx === null || dragIdx === index) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // 落点在本行下半区 + 又是最后一行 → 排到末尾，否则统一"插到本行之前"
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const isBottomHalf = e.clientY - rect.top > rect.height / 2;
+    if (isBottomHalf && index === total - 1) {
+      onDropAtEnd(dragIdx);
+    } else {
+      onDropBefore(dragIdx);
+    }
+  };
+
   return (
-    <div className={cn(
-      "rounded-md border bg-card p-2",
-      step.skip && "opacity-60",
-    )}>
+    <div
+      className={cn(
+        "rounded-md border bg-card p-2 transition-colors",
+        step.skip && "opacity-60",
+        isDragging && "opacity-50 ring-2 ring-primary/30",
+        isDropTarget && "border-primary/40 bg-primary/5",
+      )}
+      onDragOver={handleRowDragOver}
+      onDrop={handleRowDrop}
+    >
       <div className="flex items-center gap-2">
-        <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" />
+        {/* 拖动手柄：只有这块本身可拖（draggable=true），点行其它部位
+            （Select / Input）不会误触发拖动 */}
+        <span
+          draggable
+          onDragStart={(e) => {
+            // 给 Firefox 一个非空 payload，否则不会触发 dragstart 后的 drag
+            e.dataTransfer.setData("text/plain", String(index));
+            e.dataTransfer.effectAllowed = "move";
+            onDragStart();
+          }}
+          onDragEnd={onDragEnd}
+          className="shrink-0 cursor-grab text-muted-foreground hover:text-foreground active:cursor-grabbing"
+          title="拖动调整顺序"
+        >
+          <GripVertical className="h-4 w-4" />
+        </span>
         <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
           #{index + 1}
         </span>
@@ -568,10 +913,12 @@ function StepRow({
           title={expanded ? "折叠" : "展开"}
           onClick={() => setExpanded((v) => !v)}
         >
+          {/* 展开/折叠用树状惯用 ChevronDown/ChevronRight：跟上面 上移/下移 的
+              ChevronUp/ChevronDown 视觉区分明显，避免用户误点。 */}
           {expanded ? (
-            <ChevronUp className="h-4 w-4 rotate-180" />
+            <ChevronDown className="h-4 w-4" />
           ) : (
-            <ChevronDown className="h-4 w-4 rotate-180" />
+            <ChevronRight className="h-4 w-4" />
           )}
         </Button>
         <Button
@@ -767,6 +1114,14 @@ function FieldRenderer({
           onChange={(e) => onChange(e.target.value)}
         />
       ) : null}
+      {field.kind === "app_package" ? (
+        <AppPackagePicker
+          id={id}
+          placeholder={field.placeholder}
+          value={stringify(value)}
+          onChange={onChange}
+        />
+      ) : null}
       {field.hint ? (
         <p className="text-[11px] leading-tight text-muted-foreground">{field.hint}</p>
       ) : null}
@@ -778,6 +1133,65 @@ function stringify(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
   return String(v);
+}
+
+// ---------------------------------------------------------------------------
+// App 包选择器：把已上传的 .apk / .ipa 列在下拉里，选中后把 file_path 填进去；
+// 同时保留一个文本输入，让用户继续可以手填本地路径或 URL（兼容老配置）。
+// ---------------------------------------------------------------------------
+function AppPackagePicker({
+  id,
+  placeholder,
+  value,
+  onChange,
+}: {
+  id: string;
+  placeholder?: string;
+  value: string;
+  onChange: (v: unknown) => void;
+}) {
+  const pkgQuery = useQuery({
+    queryKey: queryKeys.appPackages(),
+    queryFn: () => appPackagesApi.list(),
+    staleTime: 30 * 1000,
+  });
+
+  const packages = pkgQuery.data ?? [];
+  // 当前 value 如果正好对得上某个包的 file_path，下拉显示那个包；否则显示"自定义"
+  const matched = packages.find((p) => p.file_path === value);
+
+  return (
+    <div className="space-y-1">
+      <Select
+        value={matched ? String(matched.id) : "__custom__"}
+        onValueChange={(v) => {
+          if (v === "__custom__") return; // 不动 value，让用户继续在 input 里填
+          const pkg = packages.find((p) => String(p.id) === v);
+          if (pkg) onChange(pkg.file_path);
+        }}
+      >
+        <SelectTrigger id={`${id}-picker`} className="h-8 text-xs">
+          <SelectValue placeholder={pkgQuery.isLoading ? "加载中…" : "选择已上传的包（可选）"} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="__custom__">自定义路径 / URL</SelectItem>
+          {packages.map((pkg) => (
+            <SelectItem key={pkg.id} value={String(pkg.id)}>
+              [{pkg.platform}] {pkg.name}
+              {pkg.version ? ` v${pkg.version}` : ""}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Input
+        id={id}
+        className="h-8 text-xs"
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------

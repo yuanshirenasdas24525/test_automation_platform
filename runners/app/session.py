@@ -239,6 +239,16 @@ class AppSession:
         return self._driver
 
     @property
+    def started(self) -> bool:
+        """driver 是否已经创建。给 step runner 区分『首次启动』vs『已在跑了』用。
+
+        典型场景：app_install 会 lazy 拉起 driver；后面 app_launch 再来时，已经
+        start 过了，更新 self.caps 是没用的（W3C session 不可改），需要显式调
+        activate_app/terminate_app 才能切换前台 / 启动应用。
+        """
+        return self._driver is not None
+
+    @property
     def app_action(self):
         """懒构造 AppAction（包 Finder/ActionExecutor/Assertion 的 facade）。"""
         if self._app_action is None:

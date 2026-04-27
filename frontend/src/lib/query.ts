@@ -17,13 +17,41 @@ export const queryClient = new QueryClient({
 
 /** 查询键工厂 —— 集中管理，防止字符串拼写错。 */
 export const queryKeys = {
-  projects: (type?: string) =>
-    type ? (["projects", { type }] as const) : (["projects"] as const),
+  /**
+   * 项目列表。`stack` 参数（可选）按后端 `?stack=` 过滤。
+   * v1 时这个参数叫 `type`（项目=单一栈），v2 起改为 `stack`，键名也跟着变。
+   */
+  projects: (stack?: string) =>
+    stack ? (["projects", { stack }] as const) : (["projects"] as const),
   project: (id: number) => ["project", id] as const,
-  content: (projectId: number, parentId?: number | null) =>
-    ["content", projectId, parentId ?? null] as const,
+  /** 项目详情页 Tab 角标用：每种 case_type 的用例数量。 */
+  projectStackCounts: (id: number) => ["projects", id, "stack_counts"] as const,
+  /**
+   * 内容树（模块 + 用例）。caseType 现在是查询键的一部分 —— 项目详情页
+   * 在不同栈 Tab 下显示不同用例集合，但共用同一棵模块树。
+   */
+  content: (
+    projectId: number,
+    parentId?: number | null,
+    caseType?: string | string[] | null,
+  ) => {
+    const ct = Array.isArray(caseType)
+      ? caseType.filter(Boolean).sort().join(",")
+      : caseType || "";
+    return ["content", projectId, parentId ?? null, ct] as const;
+  },
   module: (moduleId: number) => ["module", moduleId] as const,
   case: (caseId: number) => ["case", caseId] as const,
+  /** 功能用例：列表（按 module 或 project，可带状态过滤 + 分页）。 */
+  functionalCases: (filters: Record<string, unknown>) =>
+    ["functional_cases", filters] as const,
+  functionalCase: (id: number) => ["functional_cases", id] as const,
+  /** 某条功能用例的执行历史。 */
+  functionalRuns: (caseId: number) =>
+    ["functional_cases", caseId, "runs"] as const,
+  /** 一个项目下的"批次概览"（回归测试看板用）。 */
+  functionalBatches: (projectId: number) =>
+    ["functional_cases", "batches", projectId] as const,
   config: (category?: string) => ["config", category ?? "all"] as const,
   configSchema: (category: string) => ["config", "schema", category] as const,
   reports: (params: Record<string, unknown>) => ["reports", params] as const,
@@ -35,4 +63,8 @@ export const queryKeys = {
       : (["devices"] as const),
   device: (id: number) => ["device", id] as const,
   devicePools: () => ["devices", "pools"] as const,
+  appPackages: (filters?: Record<string, string | undefined>) =>
+    filters && Object.keys(filters).length > 0
+      ? (["app_packages", filters] as const)
+      : (["app_packages"] as const),
 };

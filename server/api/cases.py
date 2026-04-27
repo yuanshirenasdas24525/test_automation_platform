@@ -105,7 +105,10 @@ def _infer_case_type(payload: dict) -> str:
         if web_all:
             return "web"
         if app_all:
-            return "app"
+            # 老 inferer 返回 "app"，现在 app 已废 —— 默认按 android 推断；
+            # 真要 iOS 的应该走前端 iOS Tab（case_type 会被 caller 显式指定，
+            # 走不到这条 fallback）。
+            return "android"
         return "mixed"
     return "api"
 

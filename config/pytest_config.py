@@ -58,6 +58,46 @@ def pytest_addoption(parser):
     parser.addoption("--category", action="store", help="测试类型: api/web/app")
 
 
+# -----------------------------------------------------------------------------
+# App 会话跨 case 持久化 —— 一轮 pytest 跑完统一收尾
+# -----------------------------------------------------------------------------
+def pytest_sessionstart(session):  # noqa: ARG001
+    """新一轮 pytest run 开始前，把 AppSessionRegistry singleton 重置一次。
+
+    为什么要 reset：
+      - Celery worker 是长期存活的进程，同一个 Python 解释器可能连续跑几次
+        pytest.main；如果 singleton 不清掉，上一轮遗留的 closed session 或
+        stale 引用可能混进这一轮（虽然理论上 close_all + _closed=True 会防御，
+        但不如每轮一张干净桌子来得省心）。
+      - 单测里用 `config.pytest_config` 插件时，同样能确保 registry 是新的。
+    """
+    try:
+        from runners.app.session_registry import AppSessionRegistry
+        # 先把可能残留的上一轮全部关掉（理论上 sessionfinish 已经关了，但 worker
+        # 上一轮如果非正常结束会留尾巴，这里再补一刀）
+        try:
+            AppSessionRegistry.default().close_all()
+        except Exception:  # noqa: BLE001
+            pass
+        AppSessionRegistry.reset()
+    except ImportError:
+        # session_registry 模块不存在（极端环境）不要让 pytest 起不来
+        pass
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001
+    """一轮 pytest run 结束：把 AppSessionRegistry 里所有活着的 driver 全部 quit +
+    release 设备。无论 exitstatus 如何都要关，资源泄漏比假阳性严重得多。
+    """
+    try:
+        from runners.app.session_registry import AppSessionRegistry
+        AppSessionRegistry.default().close_all()
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001
+        print(f"[pytest_hook] AppSessionRegistry.close_all 异常: {exc}")
+
+
 def pytest_generate_tests(metafunc):
     if "case" in metafunc.fixturenames:
         # 1. 尝试获取数据

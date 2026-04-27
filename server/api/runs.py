@@ -15,7 +15,15 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 
 from server.api.deps import DBDep
-from database.models import Module, ReorderRequest, RunTestRequest, TestCase, TestReport
+from database.models import (
+    AUTOMATED_CASE_TYPES,
+    CASE_TYPE_FUNCTIONAL,
+    Module,
+    ReorderRequest,
+    RunTestRequest,
+    TestCase,
+    TestReport,
+)
 from utils.logger import LOGGER
 
 router = APIRouter(tags=["runs"])
@@ -25,10 +33,19 @@ router = APIRouter(tags=["runs"])
 async def run_test(req: RunTestRequest, db: DBDep):
     # 延迟 import：read_test_cases 里会拖一堆 loader 依赖；tasks 会拖 Celery。
     from tasks import run_test_task
-    from utils.read_test_cases import get_cases_from_db, get_cases_v2_from_db
+    from utils.read_test_cases import get_cases_v2_from_db
 
     if not req.category:
-        raise HTTPException(status_code=400, detail="缺少项目类型 api/web/app")
+        raise HTTPException(status_code=400, detail="缺少项目类型 api/web/android/ios")
+
+    # functional 用例不走自动化 dispatcher —— 它们由 /api/functional_cases/.../mark
+    # 这条人工勾结果路径处理。这里在最早期就拦掉，避免误透传到 Celery / pytest。
+    cat_lower = str(req.category or "").strip().lower()
+    if cat_lower == CASE_TYPE_FUNCTIONAL:
+        raise HTTPException(
+            status_code=400,
+            detail="功能用例（functional）不支持自动化执行，请走 /api/functional_cases/{id}/mark 勾结果",
+        )
 
     now = datetime.now()
     task_id = f"{now.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -39,35 +56,46 @@ async def run_test(req: RunTestRequest, db: DBDep):
         "category": req.category,
         "case": req.case,
     }
-    LOGGER.info(f"看看params是啥：{params},----{req}")
+    LOGGER.info(f"run_test params={params}")
 
-    # 选 loader：
-    #   - req.v2=True                     → v2 loader（带 steps / environment）
-    #   - category != 'api'（web/app 等）  → **强制** v2，因为 v1 loader 用 raw SQL
-    #                                        只读 api 字段（method/path/headers…），
-    #                                        web/app 用例的 steps 完全拿不到，最后
-    #                                        给 pytest 的 case 字典形状不对（缺 steps）。
-    #   - 其它（api + 没开 v2）            → v1 raw SQL，保留老行为
-    cat = str(req.category or "").strip().lower()
-    use_v2 = bool(req.v2) or cat != "api"
+    # v2 唯一 loader：带 steps / environment / case_type 过滤。
+    # v1 raw SQL 路径已删；没 steps 的老用例需先跑数据迁移
+    # （database/migrations/data_migrations/v2_cases_to_steps.py）。
+    cat = cat_lower
     try:
-        if use_v2:
-            cases_to_run = get_cases_v2_from_db(params, db.session)
-        else:
-            cases_to_run = get_cases_from_db(params, db.sql)
+        cases_to_run = get_cases_v2_from_db(params, db.session)
     except Exception as exc:
         # Loader 自己的异常按 400 吐：上游多半是参数错（project/module/case 不存在等）
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # 防御性过滤（loader 已经在 ORM 里过滤过一次，这里 belt-and-suspenders）：
+    #   - functional 用例不能走自动化（没 steps，dispatcher 跑不动）→ 永远剔
+    #   - 用户点"运行 X 全部" → 只放 case_type IN {X, mixed}
+    #   - 用户单跑指定 case_id → 不做 category 过滤（已经明确到具体用例）
+    # v1 兼容（NULL case_type 视作 api）已删 —— case_type 必须明确赋值。
+    _RUN_CATS_AUTO = ("api", "web", "android", "ios")
+    allowed: set[str] = {cat, "mixed"} if cat in _RUN_CATS_AUTO else set()
+    def _is_runnable(c) -> bool:
+        raw = c.get("case_type") if isinstance(c, dict) else getattr(c, "case_type", None)
+        ct = raw or ""
+        if ct == CASE_TYPE_FUNCTIONAL:
+            return False
+        if not allowed or req.case is not None:
+            return ct in AUTOMATED_CASE_TYPES
+        return ct in allowed
+    cases_to_run = [c for c in cases_to_run if _is_runnable(c)]
+
     if not cases_to_run:
         raise HTTPException(status_code=404, detail="未找到可执行的用例")
 
-    # ---- 指定设备：前端 RunCaseDialog 让用户在 app 用例上手选某台设备 ----
+    # ---- 指定设备：前端 RunCaseDialog 让用户在 app/android/ios 用例上手选某台设备 ----
     # 逻辑：
     #   - 必须是 idle。busy/offline 都拒绝（409）——否则要么抢别人的任务，要么根本连不上。
-    #   - 只对 category='app' 有效；非 app 场景（api/web）直接忽略，避免传错参数也不报错。
+    #   - 只对 category ∈ {app, android, ios} 有效；其它场景（api/web）直接忽略
+    #     传错参数也不报错。
     #   - 把 device_id 注入到每条 case_dict 上，透传到 CaseExecutor / acquire_session_for_case。
-    if req.device_id is not None and cat == "app":
+    _APP_LIKE_CATS = ("android", "ios")
+    if req.device_id is not None and cat in _APP_LIKE_CATS:
         from database.models import Device, DEVICE_STATUS_IDLE
 
         dev = db.session.query(Device).filter(Device.id == req.device_id).first()

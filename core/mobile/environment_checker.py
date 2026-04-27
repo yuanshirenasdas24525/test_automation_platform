@@ -187,7 +187,7 @@ class EnvironmentChecker:
             LOGGER.info(f"使用绝对路径安装应用: {full_package_path}")
         else:
             # 只有包名，需要拼接系统路径
-            full_package_path = os.path.join(str(ProjectPaths.APP_PACKAGE), package_path)
+            full_package_path = os.path.join(str(ProjectPaths.APP_PACKAGES_DIR), package_path)
             LOGGER.info(f"使用相对路径安装应用: {full_package_path}")
 
         # 检查应用包文件是否存在

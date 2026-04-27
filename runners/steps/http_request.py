@@ -45,7 +45,8 @@ from core.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from utils.allure_utils import add_allure_step, set_allure_link
 from utils.logger import LOGGER
-from utils.platform_utils import extractor, rep_expr
+from utils.platform_utils import extractor
+from utils.value_resolver import resolve_value
 
 
 # 允许的 data_type（与 v1 一致 + 增加两个别名）
@@ -174,13 +175,36 @@ class HttpRequestStepRunner(BaseStepRunner):
         return {k: self._resolve_value(v, ctx) for k, v in d.items()}
 
     def _resolve_value(self, value: Any, ctx: ExecutionContext) -> Any:
-        """递归做 ${var} 替换。
+        """递归解析三种语法：${var} / function:foo(...) / sql:select ...。
 
-        变量池优先级：ctx.vars > processor.extra_pool
+        历史坑：本方法以前只做 rep_expr（${var}），导致 HTTP 请求体里的
+        function:generate_phone 之类被原样落进 params/headers，下游 server 看到
+        字面字符串而不是真正的随机手机号。
+        现在统一走 utils.value_resolver.resolve_value：
+
+          - 字符串 → 走 resolve_value（含 ${var} / function: / sql:）
+          - dict / list → 递归
+          - 其它 → 原样
+
+        变量池：rep_expr 部分仍按 ctx.vars + processor.extra_pool 合并；
+        但 function: / sql: 是 ctx-only（resolve_value 内部从 ctx.vars 拿），
+        想让 sql: 工作记得在 ctx.vars['_db'] 注入连接（CaseExecutor 会从
+        config_center.target_db 自动注入；没配就走 actionable error 提示）。
         """
-        pool = self._merged_pool(ctx)
         if isinstance(value, str):
-            return rep_expr(value, pool)
+            # 把 processor.extra_pool 临时合进 ctx.vars，让 ${var} 也能取到 pool 里的值
+            pool = self._merged_pool(ctx)
+            extra_keys = []
+            for k, v in (pool or {}).items():
+                if k not in ctx.vars:
+                    ctx.vars[k] = v
+                    extra_keys.append(k)
+            try:
+                return resolve_value(value, ctx)
+            finally:
+                # 借用完清理，避免 extra_pool 污染 ctx 影响其它步骤
+                for k in extra_keys:
+                    ctx.vars.pop(k, None)
         if isinstance(value, dict):
             return {k: self._resolve_value(v, ctx) for k, v in value.items()}
         if isinstance(value, list):

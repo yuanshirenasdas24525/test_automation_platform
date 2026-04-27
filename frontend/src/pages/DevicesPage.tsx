@@ -530,15 +530,37 @@ function DeviceCard({
 }
 
 /**
- * 把 last_heartbeat 和 consecutive_failures 融合成一行"活着没"的可读说明。
+ * 把 last_heartbeat / status / consecutive_failures 融合成一行"活着没"的可读说明。
+ *
  * 规则：
- *   - 从来没探测成功过 → "未探测（刚注册？）"
+ *   - status === "offline" → 红点 + "已离线"（不管 last_heartbeat 多新；不然"刚刚
+ *     翻 offline 的设备" 会显示绿点"刚刚"，跟红色的『离线』徽章自相矛盾）
+ *   - 没 last_heartbeat → 灰点 + "未探测"
  *   - 10 分钟内探测成功 → 绿点 + "x秒/分钟前"
  *   - 超 10 分钟 → 灰点 + 绝对时间
  *   - consecutive_failures > 0 时附加"近 N 次失败"
  */
 function HeartbeatInline({ device }: { device: Device }) {
   const failures = device.consecutive_failures ?? 0;
+
+  // 优先看 status：offline 时心跳一律按"挂了"显示，避免和上方的状态徽章打架。
+  // 这是用户最常踩的视觉 bug ——「明明显示离线，下面却写心跳刚刚」。
+  if (device.status === "offline") {
+    const ts = device.last_heartbeat ? Date.parse(device.last_heartbeat) : NaN;
+    const lastDesc = Number.isFinite(ts)
+      ? `上次成功 ${new Date(ts).toLocaleString()}`
+      : "从未成功探测过";
+    return (
+      <span className="text-destructive">
+        <span className="mr-1 inline-block h-2 w-2 rounded-full bg-destructive align-middle" />
+        已离线
+        <span className="ml-2 text-xs text-muted-foreground">
+          （{lastDesc}
+          {failures > 0 ? ` · 连失败 ${failures}` : ""}）
+        </span>
+      </span>
+    );
+  }
 
   if (!device.last_heartbeat) {
     return (

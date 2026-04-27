@@ -1,24 +1,30 @@
-import { useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  Apple,
   ArrowLeft,
   Braces,
   Check,
   ChevronRight,
+  ClipboardList,
+  Download,
   FileText,
   Folder,
+  FolderInput,
   FolderPlus,
+  Globe,
   Info,
   Loader2,
   MoreHorizontal,
   Pencil,
   Play,
   Plus,
+  Smartphone,
   Trash2,
   Upload,
   X,
@@ -64,12 +70,13 @@ import {
   runsApi,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import type {
-  CaseType,
-  ContentNode,
-  ProjectCategory,
-  TestCaseCreate,
-  TestStepDraft,
+import {
+  ALL_PROJECT_STACKS,
+  type CaseType,
+  type ContentNode,
+  type ProjectStack,
+  type TestCaseCreate,
+  type TestStepDraft,
 } from "@/types/domain";
 
 /**
@@ -91,9 +98,21 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 // 用例字段校验工具
 // ---------------------------------------------------------------------------
 // 运行期会 `rep_expr` 把 ${var} 替换成参数池里的值，为了让 JSON.parse 不挂，
-// 这里先把 ${...} 暂时替换成一个合法的 string 字面量再校验。
+// 这里先把 ${...} 暂时替换成一个合法的 JSON 字面量再校验。
+//
+// 历史坑：原来用 '"__placeholder__"'（带引号）替换 —— 假定用户写的是
+//   { "x": ${var} }     ← 裸用作 value
+// 但实际上常见且推荐的写法是字符串内嵌：
+//   { "x": "Bearer ${token}" }
+// 替换之后变成 `{ "x": "Bearer "__placeholder__"" }`，JSON.parse 直接挂。
+// 用户因此被迫把 ${var} 改成 $.{var} / $.var 才能保存，丢失了真正的变量替换语义。
+//
+// 改用 `0`（合法 JSON number 字面量），它在两种位置都成立：
+//   - `"Bearer ${token}"` → `"Bearer 0"`     字符串里嵌字符 0，仍合法
+//   - `${var}` 裸用作值   → `0`              成为数字 0，仍合法
+// JSON.parse 都能过，前端校验（仅判断对象/键合法性）就不会再误判 ${var}。
 function substitutePlaceholdersForParse(text: string): string {
-  return text.replace(/\$\{[^}]*\}/g, '"__placeholder__"');
+  return text.replace(/\$\{[^}\n]*\}/g, "0");
 }
 
 type JsonCheck =
@@ -107,12 +126,16 @@ function checkJson(text: string | undefined | null): JsonCheck {
   const candidate = substitutePlaceholdersForParse(s);
   try {
     const parsed = JSON.parse(candidate);
-    // pretty 用原文再 parse，避免把 ${var} 的占位符落到格式化结果里
+    // pretty：默认用 JSON.stringify 重排，但如果原文里有 ${var}，重排后会被
+    // 替换成 0（substitutePlaceholdersForParse 的副作用），用户的变量名就丢了。
+    // 保险起见，原文带 ${var} 时直接返回原文，不再格式化。
     let pretty = s;
-    try {
-      pretty = JSON.stringify(JSON.parse(candidate), null, 2);
-    } catch {
-      pretty = s;
+    if (!/\$\{[^}\n]*\}/.test(s)) {
+      try {
+        pretty = JSON.stringify(JSON.parse(candidate), null, 2);
+      } catch {
+        pretty = s;
+      }
     }
     return { state: "ok", pretty, parsed };
   } catch (e) {
@@ -169,13 +192,41 @@ function checkHeaders(text: string | undefined | null): JsonCheck {
   return base;
 }
 
-/** 参考 ProjectsPage：历史数据里 projects.type 有 "API"/"Mobile" 等写法，统一小写并把 "Mobile" 当成 "app"。 */
-function normalizeProjectCategory(raw: string | null | undefined): ProjectCategory {
+// =============================================================================
+// 栈相关工具：v2 起项目可同时启用多个栈，详情页通过顶部 Tab 切栈视图。
+// =============================================================================
+
+/** Tab 上的中文展示名。Tab 顺序按 ALL_PROJECT_STACKS（功能 → API → Web → Android → iOS）。 */
+const STACK_LABELS: Record<ProjectStack, string> = {
+  functional: "功能",
+  api: "API",
+  web: "Web",
+  android: "Android",
+  ios: "iOS",
+};
+
+/**
+ * 当前栈 → /api/content?case_type=... 的过滤值。
+ *
+ *  - 自动化栈：当前栈 + "mixed"。mixed 用例（跨栈）会同时出现在它涉及的每个栈的 Tab，
+ *    用户能在任一相关 Tab 看到它。表里会带 mixed 徽章避免误解。后续若要改成
+ *    "按第一步骤栈唯一归属"，把 mixed 从这里去掉、由后端在 list 时改写归属即可。
+ *  - functional：只展示 functional 用例，不串扰自动化栈。
+ *
+ *  这里返回的字符串会按逗号 join 后塞进 ?case_type=，对应后端 _parse_case_types。
+ */
+function caseTypesFor(stack: ProjectStack): CaseType[] {
+  if (stack === "functional") return ["functional"];
+  return [stack as CaseType, "mixed"];
+}
+
+/** URL 上的 ?stack=xxx 解析；非法值兜回 "api"。 */
+function parseStackParam(raw: string | null): ProjectStack {
   if (!raw) return "api";
-  const v = String(raw).trim().toLowerCase();
-  if (v === "api") return "api";
-  if (v === "web") return "web";
-  if (v === "app" || v === "mobile" || v === "android" || v === "ios") return "app";
+  const v = raw.trim().toLowerCase();
+  if ((ALL_PROJECT_STACKS as readonly string[]).includes(v)) {
+    return v as ProjectStack;
+  }
   return "api";
 }
 
@@ -215,6 +266,11 @@ export function ProjectDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  // 栈 Tab 状态走 URL（?stack=api/web/app/functional），便于刷新 + 分享 + 浏览器后退。
+  // 默认 "api"；下方 effect 会在 stackCounts 拿到后自动校正到"项目实际启用的第一个栈"。
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeStack = parseStackParam(searchParams.get("stack"));
+
   // 面包屑：从根到当前。每段保存 { id, name }。id 为 null 表示项目根。
   const [breadcrumb, setBreadcrumb] = useState<
     { id: number | null; name: string }[]
@@ -229,16 +285,70 @@ export function ProjectDetailPage() {
     enabled: Number.isFinite(projectId),
   });
 
-  const contentQuery = useQuery({
-    queryKey: queryKeys.content(projectId, currentParentId),
-    queryFn: () => contentApi.list(projectId, currentParentId),
+  /**
+   * 项目详情页 Tab 角标用：每种 case_type 的用例数 + 启用栈集合。
+   * 拿到后用来：
+   *   1) 控制哪些 Tab 显示（只显示 enabled_stacks 内的栈）
+   *   2) 校正 URL：如果 URL 带的栈不在 enabled_stacks 内，跳到第一个启用的栈
+   *   3) 在每个 Tab 上显示数量 badge
+   */
+  const stackCountsQuery = useQuery({
+    queryKey: queryKeys.projectStackCounts(projectId),
+    queryFn: () => projectsApi.stackCounts(projectId),
     enabled: Number.isFinite(projectId),
   });
 
-  const invalidateContent = () =>
+  // URL 校正：activeStack 不在项目启用栈内时，跳到第一个启用的栈
+  // （按 ALL_PROJECT_STACKS 固定顺序：功能 → API → Web → App）
+  const enabledStacks = useMemo<ProjectStack[]>(() => {
+    const counts = stackCountsQuery.data;
+    if (!counts) return [];
+    const set = new Set(counts.enabled_stacks);
+    return ALL_PROJECT_STACKS.filter((s) => set.has(s));
+  }, [stackCountsQuery.data]);
+
+  useEffect(() => {
+    if (enabledStacks.length === 0) return;
+    if (!enabledStacks.includes(activeStack)) {
+      const next = new URLSearchParams(searchParams);
+      next.set("stack", enabledStacks[0]);
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledStacks, activeStack]);
+
+  // 当前 Tab 的 case_type 过滤值（自动化 Tab 含 mixed；functional Tab 仅 functional）
+  const caseTypeFilter = useMemo(() => caseTypesFor(activeStack), [activeStack]);
+
+  const contentQuery = useQuery({
+    queryKey: queryKeys.content(projectId, currentParentId, caseTypeFilter),
+    queryFn: () => contentApi.list(projectId, currentParentId, caseTypeFilter),
+    enabled: Number.isFinite(projectId),
+  });
+
+  const invalidateContent = () => {
+    // 切栈 / 不同 case_type 都是不同的 cache key，统一失效到 prefix
     queryClient.invalidateQueries({
-      queryKey: queryKeys.content(projectId, currentParentId),
+      queryKey: ["content", projectId, currentParentId],
     });
+    // 数量也可能变（建/删用例后 badge 要更新）
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.projectStackCounts(projectId),
+    });
+  };
+
+  /** 切 Tab：写回 URL，触发 contentQuery / 各种 useMemo 重算。
+   * 同时把 breadcrumb 清空回到项目根 —— 不同栈视图下用例 / 模块概念差异较大
+   * （比如 functional 栈不允许新建用例只允许在模块下勾结果），保留旧 breadcrumb
+   * 容易让用户误以为切栈后看到的列表跟之前是一致的。直接回根更不容易迷路。 */
+  const handleStackChange = (next: string) => {
+    const params = new URLSearchParams(searchParams);
+    params.set("stack", next);
+    setSearchParams(params, { replace: true });
+    setBreadcrumb([]);
+  };
+
+  const isFunctionalTab = activeStack === "functional";
 
   const handleError = (err: unknown) => {
     const msg =
@@ -267,6 +377,13 @@ export function ProjectDetailPage() {
   const [runningId, setRunningId] = useState<{ type: string; id: number } | null>(
     null,
   );
+
+  // 「移动模块到其他父节点」对话框：选中要移动的模块后弹出，里面拉一棵树让用户挑目标。
+  const [movingModule, setMovingModule] = useState<{
+    id: number;
+    name: string;
+    currentParentId: number | null;
+  } | null>(null);
 
   // ------ Mutations ------
   const createModule = useMutation({
@@ -297,6 +414,17 @@ export function ProjectDetailPage() {
       toast.success("模块已删除");
       invalidateContent();
       setPendingDelete(null);
+    },
+    onError: handleError,
+  });
+
+  const moveModule = useMutation({
+    mutationFn: ({ id: mid, targetParentId }: { id: number; targetParentId: number | null }) =>
+      modulesApi.move(mid, targetParentId),
+    onSuccess: () => {
+      toast.success("模块已移动");
+      invalidateContent();
+      setMovingModule(null);
     },
     onError: handleError,
   });
@@ -344,11 +472,7 @@ export function ProjectDetailPage() {
       device_id?: number | null;
       _key?: { type: string; id: number };
     }) =>
-      runsApi.trigger({
-        ...body,
-        // 显式走 v2 loader：web/app 必需；api 用例 v2 也兼容（CaseExecutor 自动合成 http_request step）
-        v2: true,
-      }),
+      runsApi.trigger(body),
     onMutate: (vars) => setRunningId(vars._key ?? null),
     onSettled: () => setRunningId(null),
     onSuccess: (res) => {
@@ -383,9 +507,17 @@ export function ProjectDetailPage() {
 
   // ------ 业务动作 ------
   const project = projectQuery.data;
-  // 后端 projects.type 历史数据是混合大小写（"API"/"api"/"Web"/"Mobile"），
-  // 这里统一 normalize，否则下面 isApi = category === "api" 会漏判
-  const category: ProjectCategory = normalizeProjectCategory(project?.type);
+  /**
+   * 用例编辑 / 运行链路里仍叫 `category`（历史名 + StepEditor 等下游 API 兼容），
+   * v2 起它直接 = 当前 Tab 的栈，不再从 project.type 推导（projects.type 列已经删掉）。
+   *
+   * 注意：`category` 可能是 "functional" —— 对于自动化路径（运行 / CaseDialog HTTP 表单）
+   * 我们会用 `automationCategory` 做兜底，把 functional 映射到 "api"，避免下游崩溃。
+   * 真正的功能用例编辑 / 执行链路走独立的 FunctionalCases* 组件（B5）。
+   */
+  const category: ProjectStack = activeStack;
+  const automationCategory: Exclude<ProjectStack, "functional"> =
+    activeStack === "functional" ? "api" : (activeStack as Exclude<ProjectStack, "functional">);
 
   const handleEnterModule = (node: ContentNode) => {
     setBreadcrumb((prev) => [...prev, { id: node.id, name: node.name }]);
@@ -400,9 +532,17 @@ export function ProjectDetailPage() {
   /**
    * App 场景下："运行"按钮先挂起运行参数、弹出设备选择框；
    * api / web 场景下则直接触发，避免给用户加干扰步骤。
+   *
+   * functional Tab 不应该走到这里 —— 调用方都在按钮 disabled 时挡掉；
+   * 防御性兜底：直接 toast 提示"功能用例不支持自动化执行"。
    */
   const triggerRun = (pending: PendingRun) => {
-    if (pending.category === "app") {
+    if (pending.category === "functional") {
+      toast.info("功能用例由人工勾结果，不走自动化执行链路");
+      return;
+    }
+    // android / ios 都走 Appium 设备链路，运行前都需要选设备
+    if (pending.category === "android" || pending.category === "ios") {
       setDevicePicker(pending);
       return;
     }
@@ -413,9 +553,9 @@ export function ProjectDetailPage() {
     if (!project) return;
     triggerRun({
       project: project.id,
-      category,
+      category: automationCategory,
       _key: { type: "project", id: project.id },
-      target: `项目 ${project.name}`,
+      target: `项目 ${project.name} · ${STACK_LABELS[automationCategory]}`,
     });
   };
 
@@ -424,7 +564,7 @@ export function ProjectDetailPage() {
     triggerRun({
       project: project.id,
       module: node.id,
-      category,
+      category: automationCategory,
       _key: { type: "module", id: node.id },
       target: `模块 ${node.name}`,
     });
@@ -436,7 +576,7 @@ export function ProjectDetailPage() {
       project: project.id,
       module: node.module_id ?? currentParentId ?? undefined,
       case: node.id,
-      category,
+      category: automationCategory,
       _key: { type: "case", id: node.id },
       target: `用例 ${node.name}`,
     });
@@ -471,7 +611,7 @@ export function ProjectDetailPage() {
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() => navigate(`/projects?type=${category}`)}
+            onClick={() => navigate("/projects")}
             title="返回项目列表"
           >
             <ArrowLeft className="h-4 w-4" />
@@ -483,58 +623,84 @@ export function ProjectDetailPage() {
           />
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Button
-            variant="outline"
-            onClick={handleRunProject}
-            disabled={
-              runningId?.type === "project" && runningId.id === projectId
-            }
-          >
-            {runningId?.type === "project" ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Play className="h-4 w-4" />
-            )}
-            运行整个项目
-          </Button>
+          {/* functional Tab 隐藏整个按钮 —— 功能用例靠人工勾，不存在"运行整个项目"这种概念 */}
+          {!isFunctionalTab ? (
+            <Button
+              variant="outline"
+              onClick={handleRunProject}
+              disabled={
+                runningId?.type === "project" && runningId.id === projectId
+              }
+            >
+              {runningId?.type === "project" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="h-4 w-4" />
+              )}
+              运行 {STACK_LABELS[automationCategory]} 全部用例
+            </Button>
+          ) : null}
         </div>
       </div>
 
-      {/* 工具栏：当前层级可创建什么 */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() =>
-            setModuleDialog({ mode: "create", parentId: currentParentId })
-          }
-        >
-          <FolderPlus className="h-4 w-4" />
-          新建{currentParentId === null ? "顶层模块" : "子模块"}
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={currentParentId === null}
-          onClick={() =>
-            currentParentId !== null &&
-            setCaseDialog({ mode: "create", moduleId: currentParentId })
-          }
-          title={
-            currentParentId === null
-              ? "用例必须挂在模块下 —— 先进入一个模块"
-              : undefined
-          }
-        >
-          <Plus className="h-4 w-4" />
-          新建用例
-        </Button>
-        <ImportButton
-          projectId={projectId}
-          moduleId={currentParentId}
-          onDone={invalidateContent}
-        />
-      </div>
+      {/* 栈 Tab：v2 起项目可以同时启用多个栈，这里按"项目实际启用的栈"显示 Tab。
+          模块树是栈无关的（同一棵树共用），切栈只换右侧用例列表。 */}
+      <StackTabs
+        enabledStacks={enabledStacks}
+        counts={stackCountsQuery.data?.counts}
+        active={activeStack}
+        onChange={handleStackChange}
+        loading={stackCountsQuery.isLoading}
+      />
+
+      {/* 工具栏：当前层级可创建什么。functional Tab 下走 B5 的独立编辑器，这里 disable 大部分按钮 + 显示提示。 */}
+      {isFunctionalTab ? (
+        <FunctionalTabBanner projectId={projectId} />
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              setModuleDialog({ mode: "create", parentId: currentParentId })
+            }
+          >
+            <FolderPlus className="h-4 w-4" />
+            新建{currentParentId === null ? "顶层模块" : "子模块"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={currentParentId === null}
+            onClick={() =>
+              currentParentId !== null &&
+              setCaseDialog({ mode: "create", moduleId: currentParentId })
+            }
+            title={
+              currentParentId === null
+                ? "用例必须挂在模块下 —— 先进入一个模块"
+                : undefined
+            }
+          >
+            <Plus className="h-4 w-4" />
+            新建用例
+          </Button>
+          <ImportButton
+            projectId={projectId}
+            moduleId={currentParentId}
+            onDone={invalidateContent}
+          />
+          {/* 导出按钮：根目录不显示。在模块下导出"当前栈 + 当前模块（含子树）"；
+              caseTypeFilter 跟当前 Tab 一致（API/Web/App 含 mixed；functional 单独）。 */}
+          {currentParentId !== null ? (
+            <ExportButton
+              projectId={projectId}
+              moduleId={currentParentId}
+              caseTypes={caseTypeFilter}
+            />
+          ) : null}
+        </div>
+      )}
 
       {/* 主列表 */}
       {contentQuery.isLoading ? (
@@ -572,27 +738,37 @@ export function ProjectDetailPage() {
           onDeleteCase={(n) => setPendingDelete(n)}
           onRunCase={handleRunCase}
           onInsertBefore={handleInsertBefore}
+          onMoveModule={(n) =>
+            setMovingModule({
+              id: n.id,
+              name: n.name,
+              currentParentId: n.parent_id ?? null,
+            })
+          }
           onMove={(node, direction) => {
-            // 计算交换目标
+            // 历史 bug：之前在混合 nodes 里跨类型 swap，但 modules 和 test_cases
+            // 各自有独立的 sort_order 命名空间（两边都从 1 开始），跨类型换号
+            // 没意义；老数据里很多 case.sort_order 是 NULL/0/重复值，swap 也表现不出
+            // 视觉差异 → 用户看到"用例上下移动无效"。
+            //
+            // 修复策略：
+            //   1) 只在"同类型"相邻项之间 swap（模块跟模块换、用例跟用例换）；
+            //   2) 不再单点改两个 sort_order，改成对该类型的整组重新 enumerate
+            //      赋值 0..N-1，这样不管旧数据状态如何，重号一次就对齐了。
             const nodes = contentQuery.data ?? [];
-            const idx = nodes.findIndex(
-              (x) => x.id === node.id && x.type === node.type,
+            const sameType = nodes.filter((x) => x.type === node.type);
+            const idx = sameType.findIndex((x) => x.id === node.id);
+            const swapWith = direction === "up" ? idx - 1 : idx + 1;
+            if (swapWith < 0 || swapWith >= sameType.length) return;
+            const next = sameType.slice();
+            [next[idx], next[swapWith]] = [next[swapWith], next[idx]];
+            reorder.mutate(
+              next.map((n, i) => ({
+                id: n.id,
+                type: n.type,
+                new_order: i,
+              })),
             );
-            const target =
-              direction === "up" ? nodes[idx - 1] : nodes[idx + 1];
-            if (!target) return;
-            reorder.mutate([
-              {
-                id: node.id,
-                type: node.type,
-                new_order: target.sort_order ?? 0,
-              },
-              {
-                id: target.id,
-                type: target.type,
-                new_order: node.sort_order ?? 0,
-              },
-            ]);
           }}
           runningKey={runningId}
         />
@@ -695,7 +871,166 @@ export function ProjectDetailPage() {
           });
         }}
       />
+
+      {/* 「移动模块到…」对话框 */}
+      <MoveModuleDialog
+        projectId={projectId}
+        projectName={project?.name ?? "项目"}
+        moving={movingModule}
+        submitting={moveModule.isPending}
+        onCancel={() => setMovingModule(null)}
+        onConfirm={(targetParentId) => {
+          if (!movingModule) return;
+          moveModule.mutate({
+            id: movingModule.id,
+            targetParentId,
+          });
+        }}
+      />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 栈 Tab：v2 起项目可同时启用多个栈，详情页用顶部 Tab 切栈视图。
+//
+// 角标计数规则（保持和 caseTypesFor() 同步）：
+//   - functional Tab：counts.functional
+//   - 自动化 Tab（api/web/app）：counts[stack] + counts.mixed
+//     mixed 用例会同时出现在它涉及的每个 Tab，所以这里也要把 mixed 计上。
+//
+// loading 期间渲染 skeleton 占位，不让 Tab 闪现一下又收起。
+// 项目只启用 1 个栈时也照样渲染 Tab —— 视觉一致 + 防御后续启用更多栈不需要改 UI。
+// ---------------------------------------------------------------------------
+/** 每种栈的 lucide 图标 + 主色调（active 态用，主要是边框 / 文字色提亮）。
+ * 颜色直接走 Tailwind 调色板而不是 token，因为这里就是要"每种栈一眼能区分"。
+ * Android / iOS 当前 ProjectStack 还没拆出来；图标先备好，等 Issue 1 落地直接接。 */
+const STACK_VISUAL: Record<
+  string,
+  { icon: React.ComponentType<{ className?: string }>; accent: string }
+> = {
+  functional: { icon: ClipboardList, accent: "border-amber-500 text-amber-700" },
+  api: { icon: Braces, accent: "border-sky-500 text-sky-700" },
+  web: { icon: Globe, accent: "border-emerald-500 text-emerald-700" },
+  android: { icon: Smartphone, accent: "border-emerald-600 text-emerald-700" },
+  ios: { icon: Apple, accent: "border-slate-700 text-slate-800" },
+};
+
+function StackTabs({
+  enabledStacks,
+  counts,
+  active,
+  onChange,
+  loading,
+}: {
+  enabledStacks: ProjectStack[];
+  counts?: Record<CaseType, number>;
+  active: ProjectStack;
+  onChange: (next: string) => void;
+  loading: boolean;
+}) {
+  if (loading && enabledStacks.length === 0) {
+    return (
+      <div className="flex items-center gap-2">
+        <Skeleton className="h-12 w-32" />
+        <Skeleton className="h-12 w-32" />
+        <Skeleton className="h-12 w-32" />
+      </div>
+    );
+  }
+  if (enabledStacks.length === 0) return null;
+
+  const badgeOf = (stack: ProjectStack): number | null => {
+    if (!counts) return null;
+    if (stack === "functional") return counts.functional ?? 0;
+    // 自动化栈：本栈 + mixed（mixed 在每个相关 Tab 都展示一次）
+    return (counts[stack as CaseType] ?? 0) + (counts.mixed ?? 0);
+  };
+
+  // 自定义渲染（不复用 shadcn Tabs 默认样式）：
+  //   - active：白底 + 4px 顶部边线（栈对应色） + 强阴影 + 字号加粗
+  //   - inactive：透明底 + 灰文字 + hover 变暗
+  // 这套权重比默认 Tabs"小药丸"明显得多，用户切栈时能立刻看到自己处在哪。
+  return (
+    <div
+      role="tablist"
+      className="flex flex-wrap items-stretch gap-1 rounded-lg border bg-muted/40 p-1"
+    >
+      {enabledStacks.map((s) => {
+        const isActive = active === s;
+        const badge = badgeOf(s);
+        const visual = STACK_VISUAL[s] ?? STACK_VISUAL.api;
+        const Icon = visual.icon;
+        return (
+          <button
+            key={s}
+            type="button"
+            role="tab"
+            aria-selected={isActive}
+            onClick={() => onChange(s)}
+            className={cn(
+              "group relative flex items-center gap-2 rounded-md px-4 py-2 text-sm transition-all",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              isActive
+                ? cn(
+                    "border-t-[3px] bg-background font-semibold shadow-sm",
+                    visual.accent,
+                  )
+                : "border-t-[3px] border-transparent text-muted-foreground hover:bg-background/60 hover:text-foreground",
+            )}
+          >
+            <Icon className="h-4 w-4" />
+            <span>{STACK_LABELS[s]}</span>
+            {badge !== null ? (
+              <span
+                className={cn(
+                  "ml-1 rounded-full px-1.5 py-0.5 text-xs font-normal tabular-nums",
+                  isActive
+                    ? "bg-muted text-foreground"
+                    : "bg-background text-muted-foreground",
+                )}
+              >
+                {badge}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// functional Tab 占位横幅
+//
+// 功能用例（人工执行）的"步骤 / 期望 / 勾结果 / 测试模式 / 批量导入导出"链路
+// 走独立的 FunctionalCasesPage（路由 /projects/:id/functional），UX 跟自动化栈
+// 完全不同，硬塞回这页只会互相干扰。这里只在 functional Tab 下显示一个引导卡片。
+// ---------------------------------------------------------------------------
+function FunctionalTabBanner({ projectId }: { projectId: number }) {
+  const navigate = useNavigate();
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 py-4 text-sm">
+        <div className="flex items-center gap-2 font-medium">
+          <Info className="h-4 w-4 text-muted-foreground" />
+          功能用例由独立编辑器管理
+        </div>
+        <p className="text-muted-foreground">
+          功能用例（人工执行）的"步骤 / 期望 / 勾结果 / 测试模式 / 批量导入导出"
+          走独立的功能用例管理页，不在这里维护。当前页只展示模块树和当前栈的自动化用例。
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => navigate(`/projects/${projectId}/functional`)}
+          >
+            进入功能用例管理
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -748,6 +1083,7 @@ function NodeTable({
   onRunCase,
   onInsertBefore,
   onMove,
+  onMoveModule,
   runningKey,
 }: {
   nodes: ContentNode[];
@@ -760,6 +1096,8 @@ function NodeTable({
   onRunCase: (n: ContentNode) => void;
   onInsertBefore: (n: ContentNode) => void;
   onMove: (n: ContentNode, direction: "up" | "down") => void;
+  /** 模块专用：移动到不同父节点（弹树形选择器）。 */
+  onMoveModule: (n: ContentNode) => void;
   runningKey: { type: string; id: number } | null;
 }) {
   return (
@@ -770,7 +1108,7 @@ function NodeTable({
           <span>信息</span>
           <span className="w-[120px] text-right">操作</span>
         </div>
-        {nodes.map((node, i) => {
+        {nodes.map((node) => {
           const running =
             runningKey?.type === node.type && runningKey.id === node.id;
           return (
@@ -856,6 +1194,15 @@ function NodeTable({
                           <Pencil className="h-4 w-4" />
                           重命名
                         </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={(e) => {
+                            e.preventDefault();
+                            onMoveModule(node);
+                          }}
+                        >
+                          <FolderInput className="h-4 w-4" />
+                          移动到…
+                        </DropdownMenuItem>
                       </>
                     ) : (
                       <>
@@ -879,24 +1226,43 @@ function NodeTable({
                         </DropdownMenuItem>
                       </>
                     )}
-                    <DropdownMenuItem
-                      disabled={i === 0}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        onMove(node, "up");
-                      }}
-                    >
-                      上移
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={i === nodes.length - 1}
-                      onSelect={(e) => {
-                        e.preventDefault();
-                        onMove(node, "down");
-                      }}
-                    >
-                      下移
-                    </DropdownMenuItem>
+                    {/* 同类型相邻判断：模块/用例各算各的，不被对方挤掉
+                        disable 阈值。例如同层有 2 模块 + 5 用例，第 1 条用例
+                        在 sameTypeIdx=0 才该 disable 上移，而不是它在混合 list
+                        里的 i=2。 */}
+                    {(() => {
+                      const sameTypeNodes = nodes.filter(
+                        (x) => x.type === node.type,
+                      );
+                      const sameIdx = sameTypeNodes.findIndex(
+                        (x) => x.id === node.id,
+                      );
+                      const upDisabled = sameIdx <= 0;
+                      const downDisabled =
+                        sameIdx < 0 || sameIdx >= sameTypeNodes.length - 1;
+                      return (
+                        <>
+                          <DropdownMenuItem
+                            disabled={upDisabled}
+                            onSelect={(e) => {
+                              e.preventDefault();
+                              onMove(node, "up");
+                            }}
+                          >
+                            上移
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={downDisabled}
+                            onSelect={(e) => {
+                              e.preventDefault();
+                              onMove(node, "down");
+                            }}
+                          >
+                            下移
+                          </DropdownMenuItem>
+                        </>
+                      );
+                    })()}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
@@ -1009,7 +1375,7 @@ function CaseDialog({
     | { mode: "create"; moduleId: number; insertAt?: number }
     | { mode: "edit"; node: ContentNode }
     | null;
-  category: ProjectCategory;
+  category: ProjectStack;
   onClose: () => void;
   onSubmit: (values: CaseFormValues) => void;
   submitting: boolean;
@@ -1076,7 +1442,12 @@ function CaseDialog({
   });
 
   const isApi = category === "api";
-  const isWebOrApp = category === "web" || category === "app";
+  // 任何"非 API"用例都走 StepEditor（含 web / android / ios / mixed / functional）。
+  // 名字保留 isWebOrApp 是历史遗留；语义其实是"step-editor 类用例"。
+  const isWebOrApp =
+    category === "web" ||
+    category === "android" ||
+    category === "ios";
   // 用 form.watch 订阅 steps，StepEditor 作为受控组件消费
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
   // 编辑态 + 正在加载详情：禁用表单，避免用户在空白 steps 上乱改
@@ -1361,6 +1732,158 @@ function DeleteDialog({
 }
 
 // ---------------------------------------------------------------------------
+// 移动模块对话框
+//
+// 把模块挪到另一个父节点下：树形选择器，根 = 项目本身，子节点 = 项目下其他模块。
+// 后端 /api/modules?project_id=X&exclude_subtree=Y 已经把"自己 + 后代"过滤掉了，
+// 这里只负责渲染 + 让用户挑一个 target_parent_id（null = 项目根）。
+//
+// 设计取舍：
+//   - 拉的是"扁平 list + parent_id"，这里现做 group-by-parent 拼成树。模块数量
+//     一般不大（几十到几百），递归渲染 O(N) 完全可接受，没必要后端就给嵌套结构。
+//   - 默认选中"当前 parent"，让用户明确看到"现在在哪"，需要主动改才会触发移动。
+//   - 当前 parent 项不禁用，但提交时若与原值相同后端会直接当成功（避免双向耦合）。
+// ---------------------------------------------------------------------------
+function MoveModuleDialog({
+  projectId,
+  projectName,
+  moving,
+  submitting,
+  onCancel,
+  onConfirm,
+}: {
+  projectId: number;
+  projectName: string;
+  moving: { id: number; name: string; currentParentId: number | null } | null;
+  submitting: boolean;
+  onCancel: () => void;
+  onConfirm: (targetParentId: number | null) => void;
+}) {
+  const open = moving !== null;
+  const [selected, setSelected] = useState<number | null>(null);
+
+  const pickerQuery = useQuery({
+    enabled: open && moving !== null,
+    queryKey: ["modules-picker", projectId, moving?.id ?? null],
+    queryFn: () =>
+      modulesApi.listForPicker(projectId, moving?.id ?? null),
+  });
+
+  // 每次打开把 selected 重置成"当前 parent"，让用户看见现状
+  // （key 变了重新挂载也行，但 useEffect 更显式）。
+  useEffect(() => {
+    if (open && moving) setSelected(moving.currentParentId ?? null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, moving?.id]);
+
+  const nodes = pickerQuery.data ?? [];
+  // group by parent_id（null = 顶层）
+  const childrenOf = useMemo(() => {
+    const map = new Map<number | "root", typeof nodes>();
+    for (const n of nodes) {
+      const key: number | "root" = n.parent_id == null ? "root" : n.parent_id;
+      const arr = map.get(key) ?? [];
+      arr.push(n);
+      map.set(key, arr);
+    }
+    // 每层按 sort_order / id 稳定排序
+    for (const arr of map.values()) {
+      arr.sort(
+        (a, b) =>
+          (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.id - b.id,
+      );
+    }
+    return map;
+  }, [nodes]);
+
+  const renderNode = (n: (typeof nodes)[number], depth: number) => {
+    const subs = childrenOf.get(n.id) ?? [];
+    const isSelected = selected === n.id;
+    return (
+      <div key={n.id}>
+        <button
+          type="button"
+          onClick={() => setSelected(n.id)}
+          className={cn(
+            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+            isSelected && "bg-accent font-medium",
+          )}
+          style={{ paddingLeft: 8 + depth * 16 }}
+        >
+          <Folder className="h-4 w-4 shrink-0 text-amber-500" />
+          <span className="truncate">{n.name}</span>
+        </button>
+        {subs.length > 0 ? (
+          <div>{subs.map((c) => renderNode(c, depth + 1))}</div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const tops = childrenOf.get("root") ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onCancel()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>移动模块</DialogTitle>
+          <DialogDescription>
+            选择「{moving?.name ?? "—"}」要移动到的位置。模块自身和它的子孙不会出现在列表里。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[55vh] overflow-y-auto rounded-md border">
+          {/* 项目根节点（target_parent_id = null） */}
+          <button
+            type="button"
+            onClick={() => setSelected(null)}
+            className={cn(
+              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+              selected === null && "bg-accent font-medium",
+            )}
+          >
+            <FolderPlus className="h-4 w-4 shrink-0 text-amber-500" />
+            <span className="truncate">{projectName}（项目根）</span>
+          </button>
+
+          {pickerQuery.isLoading ? (
+            <div className="px-3 py-4 text-xs text-muted-foreground">
+              加载中…
+            </div>
+          ) : pickerQuery.isError ? (
+            <div className="px-3 py-4 text-xs text-destructive">
+              加载失败：
+              {pickerQuery.error instanceof Error
+                ? pickerQuery.error.message
+                : "未知错误"}
+            </div>
+          ) : tops.length === 0 ? (
+            <div className="px-3 py-4 text-xs text-muted-foreground">
+              项目下暂无其他可选模块，只能移动到项目根。
+            </div>
+          ) : (
+            <div className="py-1">{tops.map((n) => renderNode(n, 0))}</div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel} disabled={submitting}>
+            取消
+          </Button>
+          <Button
+            disabled={submitting}
+            onClick={() => onConfirm(selected)}
+          >
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            确认移动
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 导入按钮（隐藏的 file input + 上传）
 // ---------------------------------------------------------------------------
 function ImportButton({
@@ -1428,6 +1951,91 @@ function ImportButton({
         导入用例
       </Button>
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 导出按钮（下拉选 xlsx / csv）
+//
+// 范围语义跟后端 export_cases 对齐（v2）：
+//   - moduleId 必传 + caseTypes 必传（前端在根目录直接不渲染本组件）
+//   - 导出"该模块为根的子树"，按"同层 modules + cases 按 sort_order 交错"
+//     做前序遍历——视觉上跟用户在文件管理器看到的顺序一致
+//   - caseTypes 跟当前栈 Tab 一致（API/Web/App 通常 [stack, "mixed"]，
+//     functional 是 ["functional"]），mixed 用例会跟着对应自动化栈一起被导出
+//
+// 走原生 fetch 拉 Blob，不复用 request()，因为后端返回的是文件流而不是 JSON。
+// 失败统一用 toast 报错；触发瞬间禁用按钮，避免双击重复下载。
+// ---------------------------------------------------------------------------
+function ExportButton({
+  projectId,
+  moduleId,
+  caseTypes,
+}: {
+  projectId: number;
+  moduleId: number;
+  caseTypes: CaseType[];
+}) {
+  const [pending, setPending] = useState<null | "xlsx" | "csv">(null);
+
+  const handleExport = async (format: "xlsx" | "csv") => {
+    if (pending) return;
+    setPending(format);
+    try {
+      await casesApi.exportCases({
+        projectId,
+        moduleId,
+        caseTypes,
+        format,
+      });
+      toast.success(format === "xlsx" ? "Excel 导出完成" : "CSV 导出完成");
+    } catch (err) {
+      const msg =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : "导出失败";
+      toast.error(msg);
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const scopeHint = `导出当前模块（含子模块）下 ${caseTypes.join("/")} 用例`;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={pending !== null}
+          title={scopeHint}
+        >
+          {pending !== null ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+          导出用例
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem
+          disabled={pending !== null}
+          onClick={() => handleExport("xlsx")}
+        >
+          导出 Excel (.xlsx)
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={pending !== null}
+          onClick={() => handleExport("csv")}
+        >
+          导出 CSV (.csv)
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

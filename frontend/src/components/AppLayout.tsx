@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FolderKanban,
   LayoutDashboard,
+  Package,
   PlayCircle,
   Settings,
   Smartphone,
@@ -16,11 +17,13 @@ type NavItem = {
   badge?: string;
 };
 
+// v2 起项目卡片不再按栈分桶，去掉 ?type=api 旧 query；新版项目页本身就展示所有项目。
 const NAV: NavItem[] = [
   { to: "/", label: "工作台", icon: LayoutDashboard },
-  { to: "/projects?type=api", label: "项目", icon: FolderKanban },
+  { to: "/projects", label: "项目", icon: FolderKanban },
   { to: "/runs", label: "执行记录", icon: PlayCircle },
   { to: "/devices", label: "设备池", icon: Smartphone },
+  { to: "/app-packages", label: "App 包管理", icon: Package },
   { to: "/config", label: "配置中心", icon: Settings },
 ];
 
@@ -43,7 +46,7 @@ export function AppLayout() {
         <nav className="flex-1 space-y-1 p-3 text-sm">
           {NAV.map((item) => {
             const Icon = item.icon;
-            // 精确匹配 pathname + search，避免 "/projects?type=api" 和 "/projects?type=web" 互相高亮
+            // 同一 to 命中 pathname 即激活；带 query/hash 的访问也算同一节点。
             const active = current === item.to || pathname === item.to;
             return (
               <NavLink

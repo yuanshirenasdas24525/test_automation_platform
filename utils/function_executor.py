@@ -8,20 +8,47 @@ from core.captcha_solver import solve_captcha
 @execution_time_decorator
 def exec_func(value, *args, **kwargs):
     """
-    通用函数执行器，根据 "function:" 前缀调用注册中心函数
-    :param value: 可能包含 "function:" 前缀的字符串
-    :param args: 位置参数（传给目标函数）
-    :param kwargs: 关键字参数（传给目标函数）
+    通用函数执行器，根据 "function:" 前缀调用注册中心函数。
+
+    ── 三种写法 ──
+        function:foo                    → foo(*args, **kwargs)（"无括号"老行为）
+        function:foo()                  → foo()（pool 仅当 foo 接受 extra_pool=pool 时才注入）
+        function:foo(a, "b", 3)         → foo(a, "b", 3)（用户 args 为主）
+        function:foo(${code}, ${name})  → ${var} 由 value_resolver 先解析，
+                                          再切片成 foo("my_code", "my_name")
+
+    ── 字面量类型 ──
+        - 数字串：自动转 int / float，如 `function:foo(3, 1.5)` → (3, 1.5)
+        - 双 / 单引号包起来：去引号后按字符串
+        - 其它：保留字符串字面量（典型是 ${var} 替换出来的内容）
+
+    ── pool 怎么传给函数 ──
+      `value_resolver.resolve_value` 调用本函数时会把 ctx.vars 字典作为第一个
+      位置参数（args[0]）传进来。两条不同的注入策略：
+        A. 用户**没写括号** → 沿用老行为：所有 *args（含 pool）按签名 bind_partial
+           顺序透传。这条路径主要照顾 `function:converter` / `function:assert_amount_*`
+           这类历史函数，它们靠 args[0/1/2] 拿 extra_pool。
+        B. 用户**写了括号** → 用户参数为主：foo(*parsed_args)；pool 只有当 foo
+           的签名声明 `extra_pool` / `pool` / `**kwargs` 时，才作为关键字参数
+           注入（避免 v2 用户写 `function:foo("xxx")` 时把 pool 误当 args[0]
+           顶到目标函数的第一个形参）。
+
+    ── 历史坑修复 ──
+      旧版本只 strip()，写 `function:foo()` 会查 `foo()` 这个键找不到；
+      旧版本没有 args 解析，写 `function:foo("x")` 也只是查 `foo("x")` 找不到。
     """
     if not (isinstance(value, str) and value.startswith("function:")):
         return value
 
-    f_name = value.split("function:", 1)[1].strip()
+    raw = value.split("function:", 1)[1].strip()
+    has_parens, f_name, parsed_args = _parse_func_call(raw)
     functions = function_name()
 
     if f_name not in functions:
         available = ", ".join(functions.keys())
-        raise ValueError(f"未找到指定的函数 '{f_name}'，可用函数: {available}")
+        raise ValueError(
+            f"未找到指定的函数 '{f_name}'（原始：{raw!r}），可用函数: {available}"
+        )
 
     func = functions[f_name]
     if not callable(func):
@@ -29,14 +56,90 @@ def exec_func(value, *args, **kwargs):
 
     try:
         sig = inspect.signature(func)
-        # 根据签名匹配参数数量
-        bound_args = sig.bind_partial(*args, **kwargs)
-        bound_args.apply_defaults()
-        return func(*bound_args.args, **bound_args.kwargs)
+        params = sig.parameters
+        accepts_var_kw = any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+
+        if has_parens:
+            # 策略 B：用户参数为主，pool 仅在函数显式声明时作为 kwarg 注入
+            pool = args[0] if args else None
+            call_kwargs = dict(kwargs)
+            if pool is not None:
+                if "extra_pool" in params or accepts_var_kw:
+                    call_kwargs.setdefault("extra_pool", pool)
+                if "pool" in params:
+                    call_kwargs.setdefault("pool", pool)
+            return func(*parsed_args, **call_kwargs)
+
+        # 策略 A：保留老行为，*args 透传（pool 在 args[0]）
+        bound = sig.bind_partial(*args, **kwargs)
+        bound.apply_defaults()
+        return func(*bound.args, **bound.kwargs)
     except TypeError as e:
         raise TypeError(f"调用 '{f_name}' 参数错误: {e}")
     except Exception as e:
         raise Exception(f"执行 '{f_name}' 时发生错误: {e}")
+
+
+def _parse_func_call(raw: str):
+    """把 'foo' / 'foo()' / 'foo(a, "b", 3)' 解析成 (has_parens, name, [args])。
+
+    引号内的逗号不会被切（比如 `foo("a, b", c)` → 两个参数 ['a, b', 'c']），
+    用一个简单的 quote-aware tokenizer 实现，不引入正则反向断言堆。
+    嵌套括号、反斜杠转义不支持 —— 用户场景是简单字面量 / 变量替换后的产物。
+    """
+    if "(" not in raw or not raw.endswith(")"):
+        return False, raw.strip(), []
+
+    name, _, rest = raw.partition("(")
+    inner = rest[:-1]  # 剥掉末尾 ')'
+
+    # quote-aware split on commas
+    tokens: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None  # 当前进入了哪种引号；None=不在引号内
+    for ch in inner:
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+        elif ch == ",":
+            tokens.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    # 总是把最后一段塞进去；空段在下面 parse loop 里 strip 后会被跳过
+    tokens.append("".join(buf))
+
+    parsed_args: list = []
+    for token in tokens:
+        token = token.strip()
+        if not token:
+            continue
+        # 去掉首尾匹配的引号
+        if (token.startswith('"') and token.endswith('"')) or (
+            token.startswith("'") and token.endswith("'")
+        ):
+            parsed_args.append(token[1:-1])
+            continue
+        # 字面量：尝试 int → float → 原样字符串
+        try:
+            parsed_args.append(int(token))
+            continue
+        except ValueError:
+            pass
+        try:
+            parsed_args.append(float(token))
+            continue
+        except ValueError:
+            pass
+        parsed_args.append(token)
+    return True, name.strip(), parsed_args
+
 
 def function_name():
     """

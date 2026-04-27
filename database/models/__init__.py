@@ -8,11 +8,39 @@ Database models 统一导出入口。
 """
 
 # ============ 业务主体 ============
-from .project import Project
+from .project import (
+    Project,
+    PROJECT_STACK_API,
+    PROJECT_STACK_WEB,
+    PROJECT_STACK_ANDROID,
+    PROJECT_STACK_IOS,
+    PROJECT_STACK_FUNCTIONAL,
+    ALL_PROJECT_STACKS,
+)
 from .module import Module
 
 # ============ 用例 & 步骤（v2 核心） ============
-from .test_case import TestCase
+from .test_case import (
+    TestCase,
+    CASE_TYPE_API,
+    CASE_TYPE_ANDROID,
+    CASE_TYPE_IOS,
+    CASE_TYPE_WEB,
+    CASE_TYPE_MIXED,
+    CASE_TYPE_FUNCTIONAL,
+    ALL_CASE_TYPES,
+    APP_CASE_TYPES,
+    AUTOMATED_CASE_TYPES,
+)
+from .functional_case_run import (
+    FunctionalCaseRun,
+    RUN_STATUS_PASSED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_BLOCKED,
+    RUN_STATUS_NA,
+    RUN_STATUS_PENDING,
+    ALL_RUN_STATUSES,
+)
 from .test_step import (
     TestStep,
     # 步骤类型常量，方便业务代码直接引用
@@ -50,6 +78,9 @@ from .device import (
     DEVICE_STATUS_OFFLINE,
 )
 
+# ============ App 安装包仓库（v2 新增，App 包管理 / 选择器用） ============
+from .app_package import AppPackage
+
 # ============ 报告 ============
 from .test_report import TestReport
 from .test_step_report import TestStepReport
@@ -73,10 +104,25 @@ __all__ = [
     # ORM models
     "Project", "Module",
     "TestCase", "TestStep",
+    "FunctionalCaseRun",
     "TestEnvironment", "TestVariable",
     "Device",
+    "AppPackage",
     "TestReport", "TestStepReport",
     "ConfigStore",
+    # Project stack constants
+    "PROJECT_STACK_API", "PROJECT_STACK_WEB",
+    "PROJECT_STACK_ANDROID", "PROJECT_STACK_IOS",
+    "PROJECT_STACK_FUNCTIONAL",
+    "ALL_PROJECT_STACKS",
+    # Case type constants
+    "CASE_TYPE_API", "CASE_TYPE_ANDROID", "CASE_TYPE_IOS",
+    "CASE_TYPE_WEB",
+    "CASE_TYPE_MIXED", "CASE_TYPE_FUNCTIONAL",
+    "ALL_CASE_TYPES", "APP_CASE_TYPES", "AUTOMATED_CASE_TYPES",
+    # Functional run status constants
+    "RUN_STATUS_PASSED", "RUN_STATUS_FAILED", "RUN_STATUS_BLOCKED",
+    "RUN_STATUS_NA", "RUN_STATUS_PENDING", "ALL_RUN_STATUSES",
     # Step type constants
     "STEP_TYPE_HTTP_REQUEST", "STEP_TYPE_SQL_QUERY", "STEP_TYPE_SCRIPT",
     "STEP_TYPE_APP_LAUNCH", "STEP_TYPE_APP_CLOSE",

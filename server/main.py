@@ -36,10 +36,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.api import (
+    app_packages_router,
     cases_router,
     config_router,
     content_router,
     devices_router,
+    functional_cases_router,
     modules_router,
     projects_router,
     reports_router,
@@ -65,6 +67,10 @@ FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    # 配置中心走『推荐配置项面板』模式：启动时 *不* 写库，前端按
+    # /api/config/schema/{category} 拉推荐项展示，用户决定要不要『一键填入』并保存。
+    # （早期版本曾在这里 seed 五节『系统配置』并打 is_system=True 禁删，已彻底移除：
+    #  utils/seed_system_configs.py 文件已删，is_system 列也通过 alembic drop 掉。）
     yield
 
 
@@ -116,12 +122,14 @@ for router in (
     projects_router,
     modules_router,
     cases_router,
+    functional_cases_router,
     content_router,
     runs_router,
     reports_router,
     config_router,
     system_router,
     devices_router,
+    app_packages_router,
 ):
     app.include_router(router, prefix="/api")
 

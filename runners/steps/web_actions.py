@@ -56,7 +56,7 @@ from typing import Any
 from core.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from runners.web.session import WebSession
-from utils.platform_utils import rep_expr
+from utils.value_resolver import resolve_value
 
 logger = logging.getLogger(__name__)
 
@@ -65,10 +65,14 @@ logger = logging.getLogger(__name__)
 # 公共工具
 # ============================================================
 def _resolve_str(value: Any, ctx: ExecutionContext) -> Any:
-    """${var} 替换：跟 app_actions.py 保持一致。"""
-    if isinstance(value, str):
-        return rep_expr(value, ctx.vars or {})
-    return value
+    """统一走 utils.value_resolver.resolve_value，支持三种语义：
+       - ${var} 变量替换（含配置中心 default_parameters）
+       - function:foo / function:foo(arg1, arg2) 调用注册函数
+       - sql:select ... 查 ctx.vars['_db'] 注入的目标 DB
+       老版本只做 rep_expr，把 function: / sql: 当字面量原样落进 selenium，
+       表现是用户写 function:generate_phone 输入框里就真的输入了那串字符。
+    """
+    return resolve_value(value, ctx)
 
 
 def _cfg(step: dict) -> dict:

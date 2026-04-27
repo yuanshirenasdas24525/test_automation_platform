@@ -11,7 +11,6 @@ save 和 delete 完成后都会触发 `config_center.reload()` 做内存级热�
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -26,21 +25,16 @@ router = APIRouter(prefix="/config", tags=["config"])
 @router.get("/schema/{category}")
 async def get_config_schema(category: str):
     """返回某个分类的"推荐配置项"清单，给前端做提示面板用。
-    目前只支持 category=web；其它分类返回空数组（前端会隐藏面板）。
+
+    支持的 category：
+      - api  → host / mysql_db / redis / default_parameters / encryption_decryption / headers
+      - app  → 黑名单（udids / app_packages / bundle_ids）+ session 默认开关 + probe 节奏
+      - web  → 浏览器引擎 / headless / viewport / 超时等（来自 WEB_CONFIG_SCHEMA）
+      - 其它 → 空数组（前端会自动隐藏面板）
     """
-    cat = (category or "").strip().lower()
-    if cat == "web":
-        # 惰性 import 避免在还没装 playwright 的纯 API 模式下报错
-        try:
-            from runners.web.session import WEB_CONFIG_SCHEMA
-        except Exception:  # noqa: BLE001
-            return {"status": "success", "data": []}
-        # 补一个 config_group 字段方便前端点"填入"直接预填
-        items = [
-            {"config_group": "browser", **s} for s in WEB_CONFIG_SCHEMA
-        ]
-        return {"status": "success", "data": items}
-    return {"status": "success", "data": []}
+    from server.api.config_schemas import get_schema
+
+    return {"status": "success", "data": get_schema(category)}
 
 
 @router.get("/all")
@@ -80,7 +74,8 @@ async def save_configs(configs: ConfigUpdateItem, db: DBDep):
 
     if db_item:
         db_item.config_value = configs.config_value
-        db_item.update_time = datetime.now()
+        # 注意：ConfigStore 没有 update_time 列；以前这一行是无效赋值（SQLAlchemy 静默忽略）。
+        # 如果要审计修改时间，请先在迁移里加列再开启。
     else:
         db.session.add(
             ConfigStore(
@@ -117,6 +112,18 @@ def add_config(item: ConfigUpdateItem, db: DBDep):
 
 @router.delete("/delete/{config_id}")
 async def delete_config(config_id: int, db: DBDep):
-    db.sql.execute("DELETE FROM config_store WHERE id = :id", {"id": config_id})
+    """删配置项。
+
+    历史上这里有 is_system 保护（host / mysql / redis / default_parameters /
+    encryption_decryption 五节禁删），但既然推荐配置改成了"用户自助一键填入"，
+    所有配置项都允许用户自由删除。is_system 列已通过 alembic 删除。
+    """
+    row = (
+        db.session.query(ConfigStore).filter(ConfigStore.id == config_id).first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="配置项不存在")
+    db.session.delete(row)
+    db.session.flush()
     config_center.reload(db.sql)
     return {"status": "success"}

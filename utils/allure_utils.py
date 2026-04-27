@@ -27,6 +27,26 @@ def set_allure_case(case: str) -> None:
     allure.dynamic.story(case)
 
 
+def set_allure_suites(parent: Optional[str] = None, suite: Optional[str] = None,
+                     sub: Optional[str] = None) -> None:
+    """设置 Allure "Suites" Tab 的三层层级。
+
+    `Behaviors` 和 `Suites` 是 Allure 两个互相独立的分组面板：
+      - Behaviors 走 epic / feature / story（业务视角）
+      - Suites    走 parent_suite / suite / sub_suite（执行视角）
+
+    Web/App 用例希望两个面板里都能看到「项目 > 模块 > 用例」三层层级，所以
+    平台的 v2 入口同时调用 `set_allure_project/module/case` + 这个函数。
+    任一参数为 None / 空串就跳过对应级别的 dynamic 调用，避免覆盖成空字符串。
+    """
+    if parent:
+        allure.dynamic.parent_suite(parent)
+    if suite:
+        allure.dynamic.suite(suite)
+    if sub:
+        allure.dynamic.sub_suite(sub)
+
+
 def set_allure_title(title: str) -> None:
     """设置 Allure 报告中测试的标题"""
     allure.dynamic.title(title)

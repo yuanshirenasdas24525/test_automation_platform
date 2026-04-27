@@ -86,7 +86,7 @@ export function ConfigPage() {
     queryFn: () => configApi.list(activeCategory),
   });
 
-  // 推荐配置项：目前只在 category=web 下有内容，其它分类返回空数组
+  // 推荐配置项：api / app / web 都各自维护一份；不识别的 category 后端会返回空数组
   const schemaQuery = useQuery({
     queryKey: queryKeys.configSchema(activeCategory),
     queryFn: () => configApi.schema(activeCategory),
@@ -246,7 +246,9 @@ export function ConfigPage() {
                       key={it.id}
                       className="grid grid-cols-[200px_1fr_auto] items-center gap-4 px-4 py-2 text-sm"
                     >
-                      <div className="font-mono text-xs">{it.config_key}</div>
+                      <div className="flex items-center gap-2 font-mono text-xs">
+                        <span>{it.config_key}</span>
+                      </div>
                       <div className="truncate font-mono text-xs text-muted-foreground">
                         {it.config_value || (
                           <span className="italic">（空）</span>
@@ -529,8 +531,8 @@ function RecommendedConfigPanel({
           <div>
             <div className="text-sm font-semibold">推荐配置项</div>
             <div className="text-xs text-muted-foreground">
-              这些都是执行 web 用例时会读取的键。点「填入」会把示例值预填进"新增"表单。
-              优先级：环境变量 &gt; case.variables &gt; env.browser_config &gt; 此处 &gt; 内置默认。
+              当前分类下常用的配置键模板。点「填入」会把示例值预填进"新增"表单，
+              你可以再改值后保存。已有同名键会标记"已配置"并禁用按钮，避免重复创建。
             </div>
           </div>
           <Button

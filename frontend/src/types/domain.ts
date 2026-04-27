@@ -11,11 +11,60 @@ export interface ApiEnvelope<T = unknown> {
   message?: string;
 }
 
-/** 项目类型 —— 对应后端 projects.type 字段。后期可能加 "load" / "ai" 等。 */
-export type ProjectCategory = "api" | "web" | "app";
+/**
+ * 项目支持的"栈"。
+ *
+ * 一个项目可以同时启用多个栈（Functional + API + Web + Android + iOS），
+ * `Project.enabled_stacks` 是这个集合的子集。前端在项目详情页用 Tab 切栈视图。
+ *
+ * 历史上有一个 "app" 兼容栈，已通过 app_to_android 迁移转成 android/ios。
+ */
+export type ProjectStack =
+  | "api"
+  | "web"
+  | "android"
+  | "ios"
+  | "functional";
 
-/** 用例类型 —— 对应 test_cases.case_type。mixed 是 web+app / api+web 这种混合。 */
-export type CaseType = "api" | "web" | "app" | "mixed";
+/** 全部栈 + 固定展示顺序（功能 → API → Web → Android → iOS）。
+ * 卡片 chips / Tab 顺序都按这个数组渲染，不依赖入库顺序。 */
+export const ALL_PROJECT_STACKS: ProjectStack[] = [
+  "functional",
+  "api",
+  "web",
+  "android",
+  "ios",
+];
+
+/** 新建项目表单展示的栈选项 —— 与 ALL_PROJECT_STACKS 等价；保留单独导出名是
+ *  为了后续如果想"显示但不让新建"再细分。 */
+export const NEW_PROJECT_STACKS: ProjectStack[] = ALL_PROJECT_STACKS;
+
+/**
+ * 用例类型 —— 对应 test_cases.case_type。
+ * - api / web / android / ios：单栈用例
+ * - mixed：跨栈用例（如 API 拿 token → Web 登录），后端按"第一步骤所属栈"归到对应 Tab
+ * - functional：人工功能用例，没 steps，结果靠测试人员"勾"
+ */
+export type CaseType =
+  | "api"
+  | "web"
+  | "android"
+  | "ios"
+  | "mixed"
+  | "functional";
+
+/** 走自动化执行链路的 case_type 集合（functional 不在内）。 */
+export const AUTOMATED_CASE_TYPES: CaseType[] = [
+  "api",
+  "web",
+  "android",
+  "ios",
+  "mixed",
+];
+
+/** 需要 Appium 设备的 case_type 集合（前端判断"要不要弹设备选择器"）。 */
+export const APP_CASE_TYPES: CaseType[] = ["android", "ios"];
 
 /**
  * 一条 step 的"前端草稿"形态：在 CaseDialog 里增删改时用的结构，和后端
@@ -41,9 +90,14 @@ export interface TestStepDraft {
 export interface Project {
   id: number;
   name: string;
-  type: ProjectCategory | string;
+  /**
+   * 启用的栈集合。后端保证非空、值 ⊆ ALL_PROJECT_STACKS。
+   * 前端展示 chip 时按 ALL_PROJECT_STACKS 顺序过滤渲染，不要直接用入库顺序。
+   */
+  enabled_stacks: ProjectStack[];
   desc?: string | null;
   description?: string | null;
+  icon?: string | null;
   /** 列表接口带上的聚合字段，详情里可能没有 */
   case_count?: number;
   pass_rate?: number;
@@ -53,8 +107,19 @@ export interface Project {
 
 export interface ProjectCreate {
   name: string;
-  type: ProjectCategory | string;
+  /** 至少一个；前端 form 校验 + 后端 pydantic 双重保证 */
+  enabled_stacks: ProjectStack[];
   description?: string;
+  icon?: string;
+}
+
+/** GET /api/projects/{id}/stack_counts —— 项目详情页 Tab 角标用。 */
+export interface ProjectStackCounts {
+  project_id: number;
+  enabled_stacks: ProjectStack[];
+  /** 每种 case_type 下的用例数；含未启用栈（可能 = 0）和 mixed */
+  counts: Record<CaseType, number>;
+  total: number;
 }
 
 /** 目录树上的一个节点：可能是"模块"也可能是"用例"。 */
@@ -145,9 +210,9 @@ export interface RunTestRequest {
   project: number;
   module?: number | null;
   case?: number | null;
-  category: ProjectCategory | string;
-  v2?: boolean;
-  /** 只在 app 场景下生效：指定某台已 idle 的设备运行，忽略 env 的 device_pool 过滤。 */
+  /** "category" 命名是历史遗留，语义对应 ProjectStack（functional 后端会拒绝）。 */
+  category: Exclude<ProjectStack, "functional"> | string;
+  /** 只在 app/android/ios 场景下生效：指定某台已 idle 的设备运行，忽略 env 的 device_pool 过滤。 */
   device_id?: number | null;
 }
 
@@ -157,4 +222,101 @@ export interface RunTestResult {
   task_id?: string;
   case_number?: number;
   message?: string;
+}
+
+// =============================================================================
+// 功能用例（人工执行）—— 对应后端 /api/functional_cases/* 路由
+// =============================================================================
+
+/** functional 用例的"步骤 / 期望"自由文本结构，对应 TestCase.functional_spec JSON 列。 */
+export interface FunctionalSpec {
+  preconditions: string[];
+  steps: string[];
+  expected?: string | null;
+}
+
+/** 一次"勾结果"的状态枚举。pending 是前端合成（未执行过），不入库。 */
+export type FunctionalRunStatus = "passed" | "failed" | "blocked" | "na" | "pending";
+
+export interface FunctionalCaseRun {
+  id: number;
+  case_id: number;
+  status: Exclude<FunctionalRunStatus, "pending">;
+  actual_result?: string | null;
+  note?: string | null;
+  operator?: string | null;
+  /** ISO 字符串 */
+  executed_at: string;
+  batch_id?: string | null;
+}
+
+export interface FunctionalCase {
+  id: number;
+  module_id: number;
+  name: string;
+  description?: string | null;
+  skip: boolean;
+  priority?: number | null;
+  tags: string[];
+  case_type: "functional";
+  sort_order?: number | null;
+  functional_spec: FunctionalSpec;
+  /** 最近一次"勾"，没有就是 null（前端展示 pending） */
+  latest_run: FunctionalCaseRun | null;
+}
+
+export interface FunctionalCaseCreate {
+  module_id: number;
+  name: string;
+  description?: string | null;
+  skip?: boolean;
+  priority?: number | null;
+  tags?: string[] | null;
+  functional_spec?: FunctionalSpec | null;
+  sort_order?: number | null;
+}
+
+export interface FunctionalCaseUpdate {
+  module_id?: number;
+  name?: string;
+  description?: string | null;
+  skip?: boolean;
+  priority?: number | null;
+  tags?: string[] | null;
+  functional_spec?: FunctionalSpec | null;
+}
+
+export interface FunctionalMarkPayload {
+  status: Exclude<FunctionalRunStatus, "pending">;
+  actual_result?: string | null;
+  note?: string | null;
+  operator?: string | null;
+  /** "测试模式"批量勾的批次 id；单点勾可不传 */
+  batch_id?: string | null;
+}
+
+export interface FunctionalBatchItem {
+  case_id: number;
+  status: Exclude<FunctionalRunStatus, "pending">;
+  actual_result?: string | null;
+  note?: string | null;
+}
+
+export interface FunctionalBatchMarkPayload {
+  batch_id: string;
+  operator?: string | null;
+  items: FunctionalBatchItem[];
+}
+
+/** /api/functional_cases/batches 返回的批次概览。 */
+export interface FunctionalBatchSummary {
+  batch_id: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  na: number;
+  pass_rate: number;
 }

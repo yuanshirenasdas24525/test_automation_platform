@@ -5,12 +5,22 @@
  */
 import type {
   ApiEnvelope,
+  CaseType,
   ContentNode,
+  FunctionalBatchMarkPayload,
+  FunctionalBatchSummary,
+  FunctionalCase,
+  FunctionalCaseCreate,
+  FunctionalCaseRun,
+  FunctionalCaseUpdate,
+  FunctionalMarkPayload,
+  FunctionalRunStatus,
   Module,
   ModuleCreate,
   Project,
-  ProjectCategory,
   ProjectCreate,
+  ProjectStack,
+  ProjectStackCounts,
   ReorderItem,
   RunTestRequest,
   RunTestResult,
@@ -85,8 +95,13 @@ async function request<T>(path: string, init: RequestInitJSON = {}): Promise<T> 
 // Projects
 // -------------------------------------------------------------------------
 export const projectsApi = {
-  list(type?: ProjectCategory | string) {
-    const qs = type ? `?type=${encodeURIComponent(type)}` : "";
+  /**
+   * 列项目。
+   * `stack` 是可选的"启用栈"过滤：传 "api" 只返回 enabled_stacks 包含 "api" 的项目。
+   * 历史 v1 这里叫 `type`（项目=单一栈），v2 起换成 `stack`，后端入口同步改名。
+   */
+  list(stack?: ProjectStack | string) {
+    const qs = stack ? `?stack=${encodeURIComponent(stack)}` : "";
     return request<Project[]>(`/api/projects/list${qs}`);
   },
   get(id: number) {
@@ -100,6 +115,13 @@ export const projectsApi = {
   },
   remove(id: number) {
     return request<void>(`/api/projects/${id}`, { method: "DELETE" });
+  },
+  /**
+   * 项目详情页 Tab 角标用：每种 case_type 的用例数量 + 启用的栈集合。
+   * 服务端会返回所有 case_type（含未启用的栈，可能 = 0），前端按 enabled_stacks 决定是否显示 Tab。
+   */
+  stackCounts(id: number) {
+    return request<ProjectStackCounts>(`/api/projects/${id}/stack_counts`);
   },
 };
 
@@ -122,16 +144,65 @@ export const modulesApi = {
   remove(id: number) {
     return request<void>(`/api/modules/${id}`, { method: "DELETE" });
   },
+  /**
+   * 列出某项目下的"全部"模块（扁平），给"移动到…"的目录树挑选用。
+   * 可选 excludeSubtree：把某个模块自身 + 后代排掉（防止自环）。
+   */
+  listForPicker(projectId: number, excludeSubtree?: number | null) {
+    const params = new URLSearchParams({ project_id: String(projectId) });
+    if (excludeSubtree != null) {
+      params.set("exclude_subtree", String(excludeSubtree));
+    }
+    return request<ModulePickerNode[]>(`/api/modules?${params.toString()}`);
+  },
+  /**
+   * 把模块挪到 targetParentId 下；targetParentId=null 即项目根。
+   * 后端会做防环 + 同项目校验，并把目标父节点末尾的 sort_order+1 给到该模块。
+   */
+  move(id: number, targetParentId: number | null) {
+    return request<{ id: number; parent_id: number | null; sort_order: number }>(
+      `/api/modules/${id}/move`,
+      {
+        method: "PATCH",
+        body: { target_parent_id: targetParentId },
+      },
+    );
+  },
 };
+
+/** 移动对话框里挑目标父节点用的扁平节点。 */
+export interface ModulePickerNode {
+  id: number;
+  name: string;
+  parent_id: number | null;
+  sort_order: number | null;
+}
 
 // -------------------------------------------------------------------------
 // Content tree（模块 + 用例混合结构）
 // -------------------------------------------------------------------------
 export const contentApi = {
-  /** 列出一个 project 下 parent_id=X 的子节点（模块 + 用例）。 */
-  list(projectId: number, parentId?: number | null) {
-    const qs = parentId != null ? `?parent_id=${parentId}` : "";
-    return request<ContentNode[]>(`/api/content/${projectId}${qs}`);
+  /**
+   * 列出一个 project 下 parent_id=X 的子节点（模块 + 用例）。
+   *
+   * `caseType`：可选，按 case_type 过滤用例（多值会拼成 "?case_type=api,mixed"）。
+   * 注意：模块本身始终返回（栈无关），过滤只作用在用例上。
+   * 例如项目详情页"API"Tab 通常传 ["api", "mixed"]，"功能"Tab 传 ["functional"]。
+   */
+  list(
+    projectId: number,
+    parentId?: number | null,
+    caseType?: CaseType | CaseType[] | null,
+  ) {
+    const params = new URLSearchParams();
+    if (parentId != null) params.set("parent_id", String(parentId));
+    if (caseType) {
+      const arr = Array.isArray(caseType) ? caseType : [caseType];
+      const joined = arr.filter(Boolean).join(",");
+      if (joined) params.set("case_type", joined);
+    }
+    const qs = params.toString();
+    return request<ContentNode[]>(`/api/content/${projectId}${qs ? `?${qs}` : ""}`);
   },
 };
 
@@ -169,6 +240,248 @@ export const casesApi = {
     return request<void>(
       `/api/projects/${projectId}/import_cases?module_id=${moduleId}`,
       { method: "POST", body: form },
+    );
+  },
+  /**
+   * 用例导出：xlsx / csv。后端返回 attachment 流，这里走原生 fetch 直接拿 Blob，
+   * 然后造一个临时 a 标签触发下载——绕开 react-query 的 JSON 反序列化路径。
+   *
+   * v2 起 module_id + case_type 都是后端必填字段：
+   *   - moduleId：当前模块（含所有子模块按树前序遍历导出）
+   *   - caseTypes：当前栈过滤，多值用逗号 join，如 ["api","mixed"] / ["functional"]
+   * 文件名优先取 Content-Disposition 里的 filename*（RFC 5987），兜底用一个时间戳。
+   */
+  async exportCases(opts: {
+    projectId: number;
+    moduleId: number;
+    caseTypes: CaseType[];
+    format: "xlsx" | "csv";
+  }) {
+    const params = new URLSearchParams({ format: opts.format });
+    params.set("module_id", String(opts.moduleId));
+    params.set(
+      "case_type",
+      opts.caseTypes.filter(Boolean).join(",") || "api",
+    );
+    const url = `/api/projects/${opts.projectId}/export_cases?${params.toString()}`;
+    const resp = await fetch(url, { method: "GET" });
+    if (!resp.ok) {
+      // 错误响应是 JSON envelope，复用与 request() 类似的解析
+      let detail = `导出失败 ${resp.status}`;
+      try {
+        const data = await resp.json();
+        detail =
+          (data && (data.detail || data.message)) ||
+          (data && typeof data === "string" ? data : detail);
+      } catch {
+        /* 非 JSON 错误体直接用 status 文案 */
+      }
+      throw new ApiError(String(detail), resp.status);
+    }
+    const blob = await resp.blob();
+    // 文件名解析：优先 filename*（UTF-8）；fallback 用拼接
+    let fileName = `cases.${opts.format}`;
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m =
+      /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
+    if (m && m[1]) {
+      try {
+        fileName = decodeURIComponent(m[1]);
+      } catch {
+        fileName = m[1];
+      }
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objectUrl);
+  },
+};
+
+// -------------------------------------------------------------------------
+// Functional Cases （人工功能用例 + "勾结果"链路）
+// -------------------------------------------------------------------------
+
+export interface FunctionalCaseListResponse {
+  items: FunctionalCase[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface FunctionalCaseListFilters {
+  /** module_id 与 project_id 互斥；只能传一个。 */
+  moduleId?: number;
+  projectId?: number;
+  /**
+   * 按"最近一次执行状态"过滤；多值会拼成逗号分隔。
+   * 包含 "pending" 表示"还没勾过的用例"也要纳入。
+   */
+  status?: FunctionalRunStatus | FunctionalRunStatus[];
+  page?: number;
+  pageSize?: number;
+}
+
+export interface FunctionalBatchMarkResult {
+  batch_id: string;
+  /** 成功创建的 run 数 */
+  created: number;
+  /** 单条 case 失败原因（partial-success：不会整批回滚） */
+  errors: { case_id: number; error: string }[];
+  items: { case_id: number; status: FunctionalRunStatus; batch_id: string }[];
+}
+
+export interface FunctionalImportResult {
+  imported: number;
+  errors: { row: number; error: string }[];
+}
+
+export const functionalCasesApi = {
+  /** 创建一条功能用例（写入 test_cases，case_type='functional'）。 */
+  create(body: FunctionalCaseCreate) {
+    return request<FunctionalCase>("/api/functional_cases", {
+      method: "POST",
+      body,
+    });
+  },
+  /** 部分更新；后端用 exclude_unset 区分"没传 vs 传了 null"。 */
+  update(id: number, body: FunctionalCaseUpdate) {
+    return request<FunctionalCase>(`/api/functional_cases/${id}`, {
+      method: "PUT",
+      body,
+    });
+  },
+  /** 删除（关联 FunctionalCaseRun 会随 cascade 一起删）。 */
+  remove(id: number) {
+    return request<void>(`/api/functional_cases/${id}`, { method: "DELETE" });
+  },
+  /** 单条详情，含 latest_run。 */
+  get(id: number) {
+    return request<FunctionalCase>(`/api/functional_cases/${id}`);
+  },
+  /**
+   * 列功能用例：可按 module 或 project 维度，附带最近一次"勾"。
+   * 后端按"过滤后"的列表分页（带 status filter 时，total 是过滤后的总数）。
+   */
+  list(filters: FunctionalCaseListFilters = {}) {
+    const qs = new URLSearchParams();
+    if (filters.moduleId != null) qs.set("module_id", String(filters.moduleId));
+    if (filters.projectId != null) qs.set("project_id", String(filters.projectId));
+    if (filters.status) {
+      const arr = Array.isArray(filters.status) ? filters.status : [filters.status];
+      const joined = arr.filter(Boolean).join(",");
+      if (joined) qs.set("status", joined);
+    }
+    if (filters.page != null) qs.set("page", String(filters.page));
+    if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
+    const q = qs.toString();
+    return request<FunctionalCaseListResponse>(
+      `/api/functional_cases${q ? `?${q}` : ""}`,
+    );
+  },
+  /** 单条勾结果。`batch_id` 可选，单点勾允许不传。 */
+  mark(caseId: number, payload: FunctionalMarkPayload) {
+    return request<FunctionalCaseRun>(`/api/functional_cases/${caseId}/mark`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  /**
+   * 批量勾结果。partial-success 语义：单条失败不回滚整批，
+   * 失败原因汇总在 errors 数组里。
+   */
+  batchMark(payload: FunctionalBatchMarkPayload) {
+    return request<FunctionalBatchMarkResult>(
+      "/api/functional_cases/batch_mark",
+      { method: "POST", body: payload },
+    );
+  },
+  /** 某条用例的执行历史（倒序，默认 20 条）。 */
+  runs(caseId: number, limit?: number) {
+    const qs = limit != null ? `?limit=${limit}` : "";
+    return request<FunctionalCaseRun[]>(
+      `/api/functional_cases/${caseId}/runs${qs}`,
+    );
+  },
+  /**
+   * 一个项目下"按批次聚合"的回归概览（pass/fail/blocked/na 计数 + 起止时间）。
+   * 只统计带 batch_id 的 run；单点勾不在内。
+   */
+  batches(projectId: number, limit?: number) {
+    const qs = new URLSearchParams({ project_id: String(projectId) });
+    if (limit != null) qs.set("limit", String(limit));
+    return request<FunctionalBatchSummary[]>(
+      `/api/functional_cases/batches?${qs.toString()}`,
+    );
+  },
+  /**
+   * Excel 导入：模板列 name / description / preconditions / steps / expected /
+   * priority / tags（preconditions / steps 用 \n 分隔，tags 用逗号分隔）。
+   * 返回 imported 数量 + 单行级 errors。
+   */
+  importExcel(moduleId: number, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<FunctionalImportResult>(
+      `/api/functional_cases/import?module_id=${moduleId}`,
+      { method: "POST", body: fd },
+    );
+  },
+  /**
+   * 导出 xlsx。模仿 casesApi.exportCases：直接拿 Blob 触发下载，
+   * 不走 request<T> 的 JSON 反序列化路径。
+   * - moduleId 不传 = 整个项目；传了 = 该模块及其子模块。
+   */
+  async exportExcel(opts: { projectId: number; moduleId?: number | null }) {
+    const params = new URLSearchParams({ project_id: String(opts.projectId) });
+    if (opts.moduleId != null) params.set("module_id", String(opts.moduleId));
+    const url = `/api/functional_cases/export?${params.toString()}`;
+    const resp = await fetch(url, { method: "GET" });
+    if (!resp.ok) {
+      let detail = `导出失败 ${resp.status}`;
+      try {
+        const data = await resp.json();
+        detail =
+          (data && (data.detail || data.message)) ||
+          (data && typeof data === "string" ? data : detail);
+      } catch {
+        /* 非 JSON 错误体，沿用 status 文案 */
+      }
+      throw new ApiError(String(detail), resp.status);
+    }
+    const blob = await resp.blob();
+    let fileName = "functional_cases.xlsx";
+    const cd = resp.headers.get("Content-Disposition") || "";
+    const m =
+      /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
+    if (m && m[1]) {
+      try {
+        fileName = decodeURIComponent(m[1]);
+      } catch {
+        fileName = m[1];
+      }
+    }
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(objectUrl);
+  },
+  /**
+   * 后端为"测试模式"开始时生成一个新 batch_id（uuid hex）。
+   * 前端也可以自己 crypto.randomUUID()，但走后端方便未来加项目+用户前缀的易读化。
+   */
+  newBatchId() {
+    return request<{ batch_id: string }>(
+      "/api/functional_cases/new_batch_id",
+      { method: "POST" },
     );
   },
 };
@@ -419,5 +732,70 @@ export const devicesApi = {
   },
   release(id: number) {
     return request<void>(`/api/devices/release/${id}`, { method: "POST" });
+  },
+};
+
+// ============================================================
+// App 安装包仓库（apk / ipa 上传，让 step 编辑器从下拉里挑包）
+// ============================================================
+export interface AppPackage {
+  id: number;
+  name: string;
+  file_name: string;
+  file_path: string;
+  platform: "android" | "ios";
+  app_package?: string | null;
+  bundle_id?: string | null;
+  version?: string | null;
+  file_size: number;
+  project_id?: number | null;
+  description?: string | null;
+  upload_time?: string | null;
+}
+
+export interface AppPackageUploadFields {
+  name: string;
+  platform?: "android" | "ios";
+  app_package?: string;
+  bundle_id?: string;
+  version?: string;
+  project_id?: number;
+  description?: string;
+}
+
+export interface AppPackageListFilters {
+  platform?: "android" | "ios";
+  project_id?: number;
+}
+
+export const appPackagesApi = {
+  list(filters: AppPackageListFilters = {}) {
+    const qs = new URLSearchParams();
+    if (filters.platform) qs.set("platform", filters.platform);
+    if (filters.project_id != null) qs.set("project_id", String(filters.project_id));
+    const q = qs.toString();
+    return request<AppPackage[]>(`/api/app_packages${q ? `?${q}` : ""}`);
+  },
+  get(id: number) {
+    return request<AppPackage>(`/api/app_packages/${id}`);
+  },
+  upload(file: File, fields: AppPackageUploadFields) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("name", fields.name);
+    if (fields.platform) fd.append("platform", fields.platform);
+    if (fields.app_package) fd.append("app_package", fields.app_package);
+    if (fields.bundle_id) fd.append("bundle_id", fields.bundle_id);
+    if (fields.version) fd.append("version", fields.version);
+    if (fields.project_id != null) fd.append("project_id", String(fields.project_id));
+    if (fields.description) fd.append("description", fields.description);
+    return request<AppPackage>("/api/app_packages", { method: "POST", body: fd });
+  },
+  remove(id: number) {
+    return request<void>(`/api/app_packages/${id}`, { method: "DELETE" });
+  },
+  /** 直接给 <a href> 用的下载地址。 */
+  downloadUrl(id: number) {
+    return `/api/app_packages/${id}/download`;
   },
 };

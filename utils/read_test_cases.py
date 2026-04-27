@@ -167,60 +167,34 @@ def process_ui_row(row_list: List[Any], idx: int) -> Dict[str, Any]:
         return {}
 
 
-def get_cases_from_db(params: Dict[str, Any], db):
+def _case_types_for_category(category: Optional[str]) -> Optional[List[str]]:
     """
-    查询用例并将 ID 转换为对应的项目名称和模块名称返回
+    把"运行 X 全部用例"的 category 解析成实际要跑的 case_type 集合。
+
+    规则（必须和前端 ProjectDetailPage 的 caseTypesFor() 对齐 —— 用户在 X Tab 里看到
+    什么，"运行 X 全部" 就跑什么）：
+        - "api"        → ["api", "mixed"]
+        - "web"        → ["web", "mixed"]
+        - "android"    → ["android", "mixed"]
+        - "ios"        → ["ios", "mixed"]
+        - "functional" → 上层 runs.py 已经拦掉，不应该走到这里
+        - 空 / 不识别  → None（不过滤，老行为兜底）
+
+    mixed 用例会在它涉及的每个栈 Tab 里都出现一次，所以也会被相应栈的"运行全部"
+    选中。这意味着同一条 mixed 用例，如果用户先点"运行 API 全部"再点"运行 Web 全部"
+    会被执行两次 —— 这是有意的（与 Tab 显示一致），用户需要的话可以先把 mixed
+    用例 skip 掉再跑。
     """
+    if not category:
+        return None
+    cat = str(category).strip().lower()
+    if cat in ("api", "web", "android", "ios"):
+        return [cat, "mixed"]
+    return None
 
-    project_id = params.get("project")
-    module_id = params.get("module")
-    case_id = params.get("case")
 
-    if not project_id:
-        raise ValueError("错误：必须提供项目 ID ('project')。")
-
-    # 1. 核心 SQL 改造：使用 JOIN 获取名称
-    # p.name 为项目名，m.name 为模块名
-    sql_base = """
-               SELECT p.name as project_name, \
-                      t.id, \
-                      m.name as module_name, \
-                      t.name, \
-                      t.description, \
-                      t.skip, \
-                      t.method, \
-                      t.path, \
-                      t.headers, \
-                      t.data_type, \
-                      t.params, \
-                      t.file_path, \
-                      t.extract_data, \
-                      t.sql_query, \
-                      t.assertion, \
-                      t.wait_time
-               FROM test_cases t
-                        JOIN modules m ON t.module_id = m.id
-                        JOIN projects p ON m.project_id = p.id
-               WHERE p.id = :project_id \
-               """
-
-    query_params = {"project_id": project_id}
-
-    # 2. 动态添加过滤条件 (ID 优先级：Case > Module > Project)
-    if case_id:
-        sql_base += " AND t.id = :case_id"
-        query_params["case_id"] = case_id
-    elif module_id:
-        sql_base += " AND m.id = :module_id"
-        query_params["module_id"] = module_id
-
-    # 排序
-    sql_base += " ORDER BY t.sort_order ASC"
-
-    # 执行查询
-    rows = db.query(sql_base, query_params)
-
-    return [row for row in rows if not row.get("skip")]
+# v1 raw-SQL loader `get_cases_from_db` 已删 —— v2 唯一路径走
+# get_cases_v2_from_db（带 steps / environment / case_type 过滤）。
 
 
 # =========================================================
@@ -260,6 +234,7 @@ def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
     project_id = params.get("project")
     module_id = params.get("module")
     case_id = params.get("case")
+    category = params.get("category")
     if not project_id:
         raise ValueError("错误：必须提供项目 ID ('project')。")
 
@@ -280,6 +255,15 @@ def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
         q = q.filter(TestCase.id == case_id)
     elif module_id:
         q = q.filter(Module.id == module_id)
+
+    # case_type 过滤：用户在 X 栈点"运行全部"，只跑该栈 + mixed 的用例。
+    # 没传 category 或非自动化栈 → 不过滤。
+    # 用 case_id 单跑某条用例时也跳过 category 过滤（用户已明确指定）。
+    # v1 兼容（NULL case_type 视作 api）已删，所有 case 必须带 case_type。
+    types = _case_types_for_category(category)
+    if types and not case_id:
+        q = q.filter(TestCase.case_type.in_(types))
+
     q = q.order_by(TestCase.sort_order.asc())
 
     # 项目名 / 模块名用一次性子查询拿到，避免 N+1
