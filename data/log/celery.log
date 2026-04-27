@@ -2625,3 +2625,12 @@ INFO     runners.case_executor:case_executor.py:149 â–  CaseExecutor.run case=ä¸
 [2026-04-27 21:28:59,081: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
 [2026-04-27 21:28:59,088: INFO/MainProcess] Task tasks.probe_devices[08643664-7dce-4f1e-8876-c0254ad577de] received
 [2026-04-27 21:28:59,112: INFO/ForkPoolWorker-2] Task tasks.probe_devices[08643664-7dce-4f1e-8876-c0254ad577de] succeeded in 0.02372433299999699s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:29:29,081: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:29:29,088: INFO/MainProcess] Task tasks.probe_devices[003ee884-b6b1-4ebe-9ba7-e635aa10b402] received
+[2026-04-27 21:29:29,112: INFO/ForkPoolWorker-2] Task tasks.probe_devices[003ee884-b6b1-4ebe-9ba7-e635aa10b402] succeeded in 0.02315720800000065s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:29:59,081: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:29:59,088: INFO/MainProcess] Task tasks.probe_devices[a96bcc16-5348-4692-b980-956b4b8dd81a] received
+[2026-04-27 21:29:59,111: INFO/ForkPoolWorker-2] Task tasks.probe_devices[a96bcc16-5348-4692-b980-956b4b8dd81a] succeeded in 0.022596917000001326s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
+[2026-04-27 21:30:29,081: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
+[2026-04-27 21:30:29,090: INFO/MainProcess] Task tasks.probe_devices[3aace3b1-adc3-4f67-899e-0aac578b2fd3] received
+[2026-04-27 21:30:29,115: INFO/ForkPoolWorker-2] Task tasks.probe_devices[3aace3b1-adc3-4f67-899e-0aac578b2fd3] succeeded in 0.023971250000016653s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
