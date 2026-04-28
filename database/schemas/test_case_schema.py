@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .test_step_schema import TestStepCreate, TestStepRead
 
 
-CaseType = Literal["api", "app", "web", "mixed"]
+CaseType = Literal["api", "android", "ios", "web", "mixed", "functional"]
 
 
 class _TestCaseBase(BaseModel):

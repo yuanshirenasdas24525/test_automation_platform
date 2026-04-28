@@ -158,21 +158,37 @@ def create_case(case: TestCaseCreate, db: DBDep):
 
 @router.put("/{case_id}")
 def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
-    """按主键更新用例。允许改 module_id。payload 带 steps 就整体重写。"""
+    """按主键更新用例。允许改 module_id。payload 带 steps 就整体重写。
+
+    历史坑（2026-04 修）：以前 `case.model_dump()` 把所有 Optional 字段都倒
+    出来（前端没传的也是 None），然后 setattr 一把梭，导致 DB 里原本的
+    sort_order / description / tags 等被清成 NULL。最致命的是 sort_order：
+    `walk()` 排序时 `int(None or 0) = 0`，被清空的用例直接跳到执行链路第一位。
+
+    修复：用 `model_dump(exclude_unset=True)`，只更新前端 PUT body 里实际
+    传过来的字段，没传的字段保留 DB 原值。前端要显式清空某个字段时，要明确
+    传 null（pydantic 会把 None 也算 set）。
+    """
     db_case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
     if not db_case:
         raise HTTPException(status_code=404, detail="用例不存在")
 
-    payload = case.model_dump()
+    # 关键：exclude_unset → 没传的字段不进 payload，避免 setattr None 把 DB 清空
+    payload = case.model_dump(exclude_unset=True)
+    # steps 是子表，单独走 _replace_case_steps；不能 setattr 到 ORM 上
     steps = payload.pop("steps", None)
-    # 没传 case_type 也别强行覆盖成推断值 —— 保留原来的
-    if payload.get("case_type") is None:
-        payload.pop("case_type", None)
+    # case_type 显式传 None 也别覆盖（前端有时会带 case_type=null）
+    if payload.get("case_type") is None and "case_type" in payload:
+        payload.pop("case_type")
+    # sort_order 不通过这条接口改 —— 想换顺序走 /api/reorder
+    payload.pop("sort_order", None)
 
     for key, value in payload.items():
         setattr(db_case, key, value)
 
-    _replace_case_steps(db, case_id, steps)
+    # steps 只在前端确实传了 steps 字段时才整体替换；没传就别动
+    if "steps" in case.model_fields_set:
+        _replace_case_steps(db, case_id, steps)
     db.session.flush()
     return {"status": "success", "message": "修改成功"}
 

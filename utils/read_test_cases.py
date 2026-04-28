@@ -241,85 +241,163 @@ def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
     # 我们 piggy-back 老的 db.sql 只能跑 raw SQL；这里用 ORM session
     session = getattr(db, "session", None) or db  # 兼容 SQLHandler / Session 两种入参
 
-    q = (
+    # ─────────── 单 case 单跑：直接查那一条，不走树 ──────────────
+    if case_id:
+        cases_q = (
+            session.query(TestCase)
+            .options(
+                selectinload(TestCase.steps),
+                joinedload(TestCase.environment),
+            )
+            .filter(TestCase.id == case_id)
+        )
+        cases = cases_q.all()
+        # 项目名补一下（dict 序列化要用）
+        proj = session.query(Project).get(project_id)
+        proj_name = proj.name if proj else None
+        result: List[Dict[str, Any]] = []
+        for c in cases:
+            if c.skip:
+                continue
+            result.append(_serialize_case_v2(c, proj_name))
+        return result
+
+    # ─────────── 多 case 跑：模块树前序遍历 ──────────────────────
+    # 算法：从 root（module_id 或项目根）开始 DFS，每层 modules+cases 按
+    # sort_order 升序交错；命中 module 整棵子树展开后再继续，命中 case yield。
+    # 与 server/api/projects.py::export_test_cases 走的是同一套逻辑（同步维护）。
+    types = _case_types_for_category(category)
+
+    # 1. 把项目所有 modules / cases 一次性拉回来（带 selectinload 防 N+1）
+    all_modules = (
+        session.query(Module)
+        .filter(Module.project_id == project_id)
+        .order_by(Module.parent_id, Module.sort_order.asc(), Module.id.asc())
+        .all()
+    )
+
+    cases_q = (
         session.query(TestCase)
         .join(Module, Module.id == TestCase.module_id)
-        .join(Project, Project.id == Module.project_id)
         .options(
             selectinload(TestCase.steps),
             joinedload(TestCase.environment),
         )
-        .filter(Project.id == project_id)
+        .filter(Module.project_id == project_id)
     )
-    if case_id:
-        q = q.filter(TestCase.id == case_id)
-    elif module_id:
-        q = q.filter(Module.id == module_id)
+    if types:
+        cases_q = cases_q.filter(TestCase.case_type.in_(types))
+    all_cases = cases_q.order_by(
+        TestCase.module_id, TestCase.sort_order.asc(), TestCase.id.asc()
+    ).all()
 
-    # case_type 过滤：用户在 X 栈点"运行全部"，只跑该栈 + mixed 的用例。
-    # 没传 category 或非自动化栈 → 不过滤。
-    # 用 case_id 单跑某条用例时也跳过 category 过滤（用户已明确指定）。
-    # v1 兼容（NULL case_type 视作 api）已删，所有 case 必须带 case_type。
-    types = _case_types_for_category(category)
-    if types and not case_id:
-        q = q.filter(TestCase.case_type.in_(types))
+    # 2. 索引：parent_id → 子模块列表，module_id → 用例列表
+    children_by_parent: Dict[Any, List[Any]] = {}
+    for m in all_modules:
+        children_by_parent.setdefault(m.parent_id, []).append(m)
+    cases_by_module: Dict[int, List[TestCase]] = {}
+    for c in all_cases:
+        cases_by_module.setdefault(c.module_id, []).append(c)
 
-    q = q.order_by(TestCase.sort_order.asc())
+    # 3. 选根
+    if module_id is not None:
+        # 起点是某个具体模块（含其子树）
+        # 校验该模块属于本项目（防越权）
+        if not any(m.id == module_id for m in all_modules):
+            return []
+        root_parent_ids = [module_id]
+    else:
+        # 起点是项目根：所有 parent_id IS NULL 的顶层模块
+        # 注意：项目根本身不挂 case（用例必须在某个模块下），所以这里只走子模块
+        root_parent_ids = []  # 占位，真正的逻辑在下面
 
-    # 项目名 / 模块名用一次性子查询拿到，避免 N+1
+    # 4. 前序遍历
     proj = session.query(Project).get(project_id)
     proj_name = proj.name if proj else None
-
-    cases = q.all()
     result: List[Dict[str, Any]] = []
-    for c in cases:
-        if c.skip:
-            continue
-        steps = [s.to_dict() for s in sorted(
-            (c.steps or []), key=lambda s: s.step_order or 0
-        )]
-        env = None
-        if c.environment is not None:
-            env = {
-                "id": c.environment.id,
-                "name": c.environment.name,
-                "category": c.environment.category,
-                "host": c.environment.host,
-                # App 自动化：acquire_session_for_case 要用这个选设备池
-                "device_pool": c.environment.device_pool,
-                # Web / App 运行时 caps：headless / slow_mo / capabilities 等
-                "browser_config": c.environment.browser_config,
-                "variables": c.environment.variables,
-                "secrets": None,   # secrets 不下发给 worker，以避免日志/序列化泄漏
-            }
-        result.append({
-            "id": c.id,
-            "name": c.name,
-            "description": c.description,
-            "case_type": c.case_type or "api",
-            "project_name": proj_name,
-            "module_name": c.module.name if c.module else None,
-            "skip": bool(c.skip),
-            "tags": c.tags,
-            "priority": c.priority,
-            "timeout": c.timeout,
-            "retry": c.retry,
-            "variables": c.variables,
-            "pre_hook": c.pre_hook,
-            "post_hook": c.post_hook,
-            "environment": env,
-            "steps": steps,
-            # v1 兼容字段 —— 没有 steps 的老用例靠这些字段被 CaseExecutor 合成 http_request
-            "method": c.method,
-            "path": c.path,
-            "headers": c.headers,
-            "data_type": c.data_type,
-            "params": c.params,
-            "file_path": c.file_path,
-            "extract_data": c.extract_data,
-            "sql_query": c.sql_query,
-            "assertion": c.assertion,
-            "wait_time": c.wait_time,
-        })
+
+    def walk(mid: Optional[int]) -> None:
+        """处理 module mid 自己的 cases，再深度遍历它的子模块。
+        mid=None 表示从项目根（顶层模块组）开始 —— 此时不输出 cases，只递归子模块。
+        """
+        if mid is not None:
+            # 当前模块的 cases + submodules 按 sort_order 交错
+            items: List[tuple] = []
+            for c in cases_by_module.get(mid, []):
+                items.append((int(c.sort_order or 0), "case", c))
+            for m in children_by_parent.get(mid, []):
+                items.append((int(m.sort_order or 0), "module", m))
+            # 同 sort_order 时优先 case 再 module（视觉稳定）
+            items.sort(key=lambda t: (t[0], 0 if t[1] == "case" else 1))
+            for _, kind, payload in items:
+                if kind == "case":
+                    if payload.skip:
+                        continue
+                    result.append(_serialize_case_v2(payload, proj_name))
+                else:
+                    walk(payload.id)
+        else:
+            # 项目根：只递归顶层模块（按 sort_order）
+            for m in children_by_parent.get(None, []):
+                walk(m.id)
+
+    walk(module_id if module_id is not None else None)
     return result
+
+
+def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
+    """把 TestCase ORM 实例 dump 成 Celery / pytest 用的自包含 dict。
+
+    抽出来是因为 get_cases_v2_from_db 现在有"单 case"和"树遍历"两条调用路径，
+    序列化逻辑一份就够。
+    """
+    steps = [
+        s.to_dict()
+        for s in sorted((c.steps or []), key=lambda s: s.step_order or 0)
+    ]
+    env = None
+    if c.environment is not None:
+        env = {
+            "id": c.environment.id,
+            "name": c.environment.name,
+            "category": c.environment.category,
+            "host": c.environment.host,
+            # App 自动化：acquire_session_for_case 要用这个选设备池
+            "device_pool": c.environment.device_pool,
+            # Web / App 运行时 caps：headless / slow_mo / capabilities 等
+            "browser_config": c.environment.browser_config,
+            "variables": c.environment.variables,
+            # secrets 不下发给 worker，以避免日志/序列化泄漏
+            "secrets": None,
+        }
+    return {
+        "id": c.id,
+        "name": c.name,
+        "description": c.description,
+        "case_type": c.case_type or "api",
+        "project_name": proj_name,
+        "module_name": c.module.name if c.module else None,
+        "skip": bool(c.skip),
+        "tags": c.tags,
+        "priority": c.priority,
+        "timeout": c.timeout,
+        "retry": c.retry,
+        "variables": c.variables,
+        "pre_hook": c.pre_hook,
+        "post_hook": c.post_hook,
+        "environment": env,
+        "steps": steps,
+        # v1 兼容字段（已迁数据可忽略）
+        "method": c.method,
+        "path": c.path,
+        "headers": c.headers,
+        "data_type": c.data_type,
+        "params": c.params,
+        "file_path": c.file_path,
+        "extract_data": c.extract_data,
+        "sql_query": c.sql_query,
+        "assertion": c.assertion,
+        "wait_time": c.wait_time,
+    }
+
 

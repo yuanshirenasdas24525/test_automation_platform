@@ -183,49 +183,265 @@ async def import_test_cases(
     module_id: int = Query(..., description="导入到哪个子模块下"),
     file: UploadFile = File(...),
 ):
-    """从 Excel 批量导入用例。解析失败会回滚并抛 400。"""
+    """从 Excel 批量导入用例（per-step 一行格式，对应新 export 格式）。
+
+    Sheet 识别策略：
+      - Excel 含"功能用例"sheet → functional 用例导入路径
+      - 含"用例"sheet → 自动化用例导入路径（按"用例#"分组重建 case + steps）
+      - 都没有 → 取第一个 sheet 兜底（CSV / 老格式继续可用）
+
+    导入失败会回滚整批并抛 400。
+    """
     # 延迟 import：pandas 启动开销大，不放顶层
     import io
+    import json as _json
 
     import pandas as pd
+    from database.models import TestStep
 
     contents = await file.read()
     try:
-        df = pd.read_excel(io.BytesIO(contents))
-    except Exception as exc:  # pandas / xlrd 抛的各种异常都按 400 返回
+        # 一次性把所有 sheet 都读出来，按名字分发
+        sheets = pd.read_excel(io.BytesIO(contents), sheet_name=None)
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=f"文件解析失败: {exc}") from exc
 
+    # 取主 sheet：优先 "用例"，没有再"功能用例"，都没有取第一个
+    if "用例" in sheets:
+        df = sheets["用例"]
+        is_functional = False
+    elif "功能用例" in sheets:
+        df = sheets["功能用例"]
+        is_functional = True
+    else:
+        # 兼容只有一个 sheet 的 CSV / 老 export
+        first_name = next(iter(sheets), None)
+        if not first_name:
+            raise HTTPException(status_code=400, detail="文件里没有 sheet")
+        df = sheets[first_name]
+        # 通过列名启发式：含"前置条件"/"预期结果"就当 functional
+        is_functional = "前置条件" in df.columns or "预期结果" in df.columns
+
+    def _truthy_skip(v) -> bool:
+        if pd.isna(v):
+            return False
+        s = str(v).strip().lower()
+        return s in ("y", "yes", "true", "1", "是")
+
+    def _safe_str(v) -> str:
+        return "" if pd.isna(v) else str(v)
+
+    def _safe_json(v):
+        """单元格里的 JSON 列：空 → None；解析失败 → 报错让用户排查。"""
+        if pd.isna(v) or str(v).strip() == "":
+            return None
+        try:
+            return _json.loads(str(v))
+        except Exception as exc:
+            raise ValueError(f"JSON 解析失败：{v!r} ({exc})")
+
     import_count = 0
+
     try:
-        for index, row in df.iterrows():
-            new_case = TestCase(
-                module_id=module_id,
-                name=str(row["case_title"]) if pd.notna(row["case_title"]) else "未命名",
-                description=row["case_name"],
-                method=str(row["method"]).upper(),
-                path=str(row["path"]).strip(),
-                data_type=row["parametric_type"]
-                if pd.notna(row["parametric_type"])
-                else "application/json",
-                headers=str(row["header"]) if pd.notna(row["header"]) else None,
-                params=str(row["data"]) if pd.notna(row["data"]) else None,
-                extract_data=str(row["extra"]) if pd.notna(row["extra"]) else None,
-                assertion=str(row["expect"]) if pd.notna(row["expect"]) else None,
-                sql_query=str(row["sql"]) if pd.notna(row["sql"]) else None,
-                skip=str(row["skip"]).lower() == "y" if pd.notna(row["skip"]) else False,
-                wait_time=int(row["wait"]) if pd.notna(row["wait"]) else 0,
-                sort_order=int(index),
-            )
-            db.session.add(new_case)
-            import_count += 1
-    except KeyError as exc:  # 模板列名不对
-        raise HTTPException(
-            status_code=400, detail=f"Excel 模板缺少列: {exc}"
-        ) from exc
+        if is_functional:
+            # ───────── functional 用例：一行一条 ─────────
+            for index, row in df.iterrows():
+                title = _safe_str(row.get("用例标题")).strip()
+                if not title:
+                    continue  # 跳过空行
+
+                preconditions_raw = _safe_str(row.get("前置条件"))
+                steps_raw = _safe_str(row.get("步骤"))
+                expected = _safe_str(row.get("预期结果")) or None
+
+                # 单元格内 \n 分隔多行
+                preconditions = [
+                    line.strip()
+                    for line in preconditions_raw.split("\n")
+                    if line.strip()
+                ]
+                steps_list = [
+                    line.strip() for line in steps_raw.split("\n") if line.strip()
+                ]
+
+                tags_raw = _safe_str(row.get("标签"))
+                tags = (
+                    [t.strip() for t in tags_raw.split(",") if t.strip()]
+                    if tags_raw
+                    else None
+                )
+                priority = (
+                    int(row["优先级"]) if pd.notna(row.get("优先级")) else None
+                )
+
+                new_case = TestCase(
+                    module_id=module_id,
+                    name=title,
+                    description=_safe_str(row.get("描述")) or None,
+                    case_type="functional",
+                    skip=_truthy_skip(row.get("跳过")),
+                    priority=priority,
+                    tags=tags,
+                    sort_order=int(index),
+                    functional_spec={
+                        "preconditions": preconditions,
+                        "steps": steps_list,
+                        "expected": expected,
+                    },
+                )
+                db.session.add(new_case)
+                import_count += 1
+        else:
+            # ───────── 自动化用例：per-step 一行，按"用例#"分组 ─────────
+            # 列存在性兜底（用户可能改过列名）
+            REQUIRED = ["用例#"]
+            missing = [c for c in REQUIRED if c not in df.columns]
+            if missing:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Excel 缺少必要列：{missing}（建议用最新版导出模板编辑）",
+                )
+
+            # 按"用例#"分组（NaN 忽略）
+            groups: dict = {}
+            order: list = []
+            for index, row in df.iterrows():
+                no = row.get("用例#")
+                if pd.isna(no):
+                    continue
+                key = int(no)
+                if key not in groups:
+                    groups[key] = []
+                    order.append(key)
+                groups[key].append((int(index), row))
+
+            for case_no in order:
+                rows = groups[case_no]
+                first_idx, first_row = rows[0]
+
+                title = _safe_str(first_row.get("用例标题")).strip()
+                if not title:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"用例#{case_no} 第一行缺"
+                               f"\"用例标题\"（每个用例第一行必须有标题）",
+                    )
+
+                tags_raw = _safe_str(first_row.get("标签"))
+                tags = (
+                    [t.strip() for t in tags_raw.split(",") if t.strip()]
+                    if tags_raw
+                    else None
+                )
+                priority = (
+                    int(first_row["优先级"])
+                    if pd.notna(first_row.get("优先级"))
+                    else None
+                )
+                case_type = (
+                    _safe_str(first_row.get("用例类型")).strip().lower() or "api"
+                )
+
+                new_case = TestCase(
+                    module_id=module_id,
+                    name=title,
+                    description=_safe_str(first_row.get("描述")) or None,
+                    case_type=case_type,
+                    skip=_truthy_skip(first_row.get("跳过")),
+                    priority=priority,
+                    tags=tags,
+                    sort_order=int(first_idx),
+                )
+                db.session.add(new_case)
+                db.session.flush()  # 拿 id
+
+                # 把 rows 按"步骤序号"升序排（容错：用户可能没填）
+                def _step_sort_key(r):
+                    _, rr = r
+                    v = rr.get("步骤序号")
+                    return int(v) if pd.notna(v) else 0
+
+                step_rows = sorted(rows, key=_step_sort_key)
+
+                for step_pos, (_, sr) in enumerate(step_rows):
+                    step_type = _safe_str(sr.get("步骤类型")).strip()
+                    if not step_type:
+                        # 该用例没有 step 行（功能用例 / 单 case 没填步骤）
+                        continue
+
+                    # 重组 config 字典
+                    config: dict = {}
+                    for col_key, cfg_key in [
+                        ("定位方式", "by"),
+                        ("定位表达式", "locator"),
+                        ("输入值", "value"),
+                        ("方法", "method"),
+                        ("数据类型", "data_type"),
+                        ("SQL", "sql_query"),
+                    ]:
+                        v = sr.get(col_key)
+                        if pd.notna(v) and str(v).strip():
+                            config[cfg_key] = str(v)
+
+                    # URL/路径 → http_request 类用 path（兼容 v1）；其余用 url
+                    url_or_path = _safe_str(sr.get("URL/路径")).strip()
+                    if url_or_path:
+                        if step_type == "http_request":
+                            config["path"] = url_or_path
+                        else:
+                            config["url"] = url_or_path
+
+                    # 请求头 / 请求体 是 JSON
+                    headers = _safe_json(sr.get("请求头"))
+                    if headers is not None:
+                        config["headers"] = headers
+                    params = _safe_json(sr.get("请求体"))
+                    if params is not None:
+                        config["params"] = params
+
+                    # 应用包：单纯字符串，按 step_type 决定塞哪个 key
+                    app_pkg = _safe_str(sr.get("应用包")).strip()
+                    if app_pkg:
+                        if step_type == "app_install":
+                            config["app_path"] = app_pkg
+                        elif "ios" in (case_type, ""):
+                            # 简化：iOS 类用例 → bundleId；否则 appPackage
+                            config["bundleId"] = app_pkg
+                        else:
+                            config["appPackage"] = app_pkg
+
+                    # 其它配置（JSON）—— 跟显式列合并，显式列优先
+                    others = _safe_json(sr.get("其它配置")) or {}
+                    if isinstance(others, dict):
+                        for k, v in others.items():
+                            config.setdefault(k, v)
+
+                    extract = _safe_json(sr.get("提取规则"))
+                    assertion = _safe_json(sr.get("断言规则"))
+
+                    db.session.add(TestStep(
+                        case_id=new_case.id,
+                        step_order=step_pos,
+                        step_name=_safe_str(sr.get("步骤名")).strip() or step_type,
+                        step_type=step_type,
+                        skip=_truthy_skip(sr.get("跳过此步")),
+                        config=config,
+                        extract=extract,
+                        assertion=assertion,
+                        wait_before=int(sr["等待ms"]) if pd.notna(sr.get("等待ms")) else 0,
+                        timeout=int(sr["超时s"]) if pd.notna(sr.get("超时s")) else 30,
+                        retry=int(sr["重试"]) if pd.notna(sr.get("重试")) else 0,
+                        on_failure=_safe_str(sr.get("失败策略")).strip() or "stop",
+                    ))
+
+                import_count += 1
+    except HTTPException:
+        db.session.rollback()
+        raise
     except Exception as exc:
+        db.session.rollback()
         raise HTTPException(status_code=400, detail=f"导入失败: {exc}") from exc
 
-    # commit 交给 get_db 兜底。
     return {"status": "success", "message": f"成功导入 {import_count} 条用例"}
 
 
@@ -398,63 +614,138 @@ def export_test_cases(
 
     rows = list(walk(module_id))
 
-    # 构造 DataFrame：列名严格对应 import_test_cases 解析时的 row[...] key
-    def _serialize_steps_for_export(case) -> str:
-        """v2 case：把 steps 列表 dump 成紧凑 JSON 字符串。functional：dump
-        functional_spec。api / NULL：留空（v1 字段已经在前面那批列里了）。
-        """
-        ct = (case.case_type or "api").lower()
-        if ct == "functional":
-            spec = getattr(case, "functional_spec", None)
-            return json.dumps(spec, ensure_ascii=False) if spec else ""
-        if ct in ("web", "android", "ios", "mixed"):
-            steps = sorted(case.steps or [], key=lambda s: s.step_order or 0)
-            payload = [
-                {
-                    "step_order": s.step_order,
-                    "step_name": s.step_name,
-                    "step_type": s.step_type,
-                    "skip": bool(s.skip),
-                    "config": s.config,
-                    "extract": s.extract,
-                    "assertion": s.assertion,
-                    "wait_before": s.wait_before,
-                    "timeout": s.timeout,
-                    "retry": s.retry,
-                    "on_failure": s.on_failure,
-                }
-                for s in steps
-            ]
-            return json.dumps(payload, ensure_ascii=False)
-        return ""
+    # ─────────────────────────────────────────────────────────────────────
+    # 新格式（2026-04 重构）：每个 step 一行，case meta 只在该 case 第一行。
+    #
+    # 规则：
+    #   - 一个 N-step 用例 → N 行，第一行带"用例标题/描述/类型/标签/优先级/跳过/模块"等
+    #     case 元信息；后续 step 行的这些列**留空**；
+    #   - "用例#" 列贯穿所有行，导入时按这一列分组；
+    #   - 列名走业务语义（定位方式 / 输入值 / 请求头等），不再是 v1 的
+    #     method/path 单层 dump；
+    #   - "其它配置" 列吃掉剩下的 step.config 字段（少见的字段不暴露成列，避免列爆炸）；
+    #   - extract / assertion 仍是 JSON list（结构化太复杂，不展平）；
+    #   - functional 用例不走 step：单独放 sheet "功能用例"，preconditions / steps /
+    #     expected 用单元格内 \n 分隔。
+    # ─────────────────────────────────────────────────────────────────────
 
-    records = []
-    for case, module_name in rows:
-        records.append(
-            {
-                "module_name": module_name or "",            # 仅参考列，导入忽略
-                "case_title": case.name or "",
-                "case_name": case.description or "",
-                # v2 公共列
-                "case_type": case.case_type or "api",
-                "tags": ",".join(case.tags or []) if isinstance(case.tags, list) else "",
-                "priority": case.priority if case.priority is not None else "",
-                # v1 API 列（web/app/functional 这些通常为空）
-                "method": case.method or "",
-                "path": case.path or "",
-                "parametric_type": case.data_type or "",
-                "header": case.headers or "",
-                "data": case.params or "",
-                "extra": case.extract_data or "",
-                "expect": case.assertion or "",
-                "sql": case.sql_query or "",
-                "skip": "y" if case.skip else "n",
-                "wait": int(case.wait_time or 0),
-                # v2/functional 步骤集中放这一列（紧凑 JSON），导入侧 TODO 回灌
-                "steps_json": _serialize_steps_for_export(case),
-            }
+    # 各 step.config 的"显式列"键集合（这些键单独展出来，剩下的进 "其它配置"）
+    _EXPLICIT_CONFIG_KEYS = {
+        "by", "locator", "value",                        # 通用定位
+        "method", "url", "path",                         # http_request
+        "headers", "params", "data_type", "sql_query",   # http_request
+        "appPackage", "bundleId", "appActivity", "app_path",  # app
+    }
+
+    def _split_config(cfg: dict) -> tuple[dict, dict]:
+        """把 step.config 拆成 (显式字段 dict, 其它字段 dict)。"""
+        if not isinstance(cfg, dict):
+            return {}, {}
+        explicit = {k: v for k, v in cfg.items() if k in _EXPLICIT_CONFIG_KEYS}
+        others = {k: v for k, v in cfg.items() if k not in _EXPLICIT_CONFIG_KEYS}
+        return explicit, others
+
+    def _meta_row(case, module_name: str) -> dict:
+        """case 元信息列（仅每个 case 的第一行填）。"""
+        return {
+            "用例标题": case.name or "",
+            "模块路径": module_name or "",
+            "描述": case.description or "",
+            "用例类型": case.case_type or "",
+            "标签": ",".join(case.tags or []) if isinstance(case.tags, list) else "",
+            "优先级": case.priority if case.priority is not None else "",
+            "跳过": "y" if case.skip else "n",
+        }
+
+    _BLANK_META = {k: "" for k in _meta_row(TestCase(name="", case_type="api"), "")}
+
+    def _step_row(step) -> dict:
+        """每个 step 一行的"步骤"列。"""
+        cfg = step.config or {}
+        explicit, others = _split_config(cfg)
+        # url 字段：http_request 用 path/url 都可能；统一展示成 URL/路径
+        url_or_path = explicit.get("url") or explicit.get("path") or ""
+        # appPackage / bundleId / app_path 三选一展示成"应用包"
+        app_pkg = (
+            explicit.get("appPackage")
+            or explicit.get("bundleId")
+            or explicit.get("app_path")
+            or ""
         )
-    df = pd.DataFrame(records)
+        return {
+            "步骤序号": step.step_order if step.step_order is not None else "",
+            "步骤名": step.step_name or "",
+            "步骤类型": step.step_type or "",
+            "跳过此步": "y" if step.skip else "n",
+            "定位方式": explicit.get("by") or "",
+            "定位表达式": explicit.get("locator") or "",
+            "输入值": explicit.get("value") or "",
+            "方法": explicit.get("method") or "",
+            "URL/路径": url_or_path,
+            "请求头": json.dumps(explicit.get("headers"), ensure_ascii=False)
+                       if explicit.get("headers") else "",
+            "请求体": json.dumps(explicit.get("params"), ensure_ascii=False)
+                       if explicit.get("params") else "",
+            "数据类型": explicit.get("data_type") or "",
+            "SQL": explicit.get("sql_query") or "",
+            "应用包": app_pkg,
+            "其它配置": json.dumps(others, ensure_ascii=False) if others else "",
+            "提取规则": json.dumps(step.extract, ensure_ascii=False) if step.extract else "",
+            "断言规则": json.dumps(step.assertion, ensure_ascii=False) if step.assertion else "",
+            "等待ms": step.wait_before if step.wait_before is not None else 0,
+            "超时s": step.timeout if step.timeout is not None else 30,
+            "重试": step.retry if step.retry is not None else 0,
+            "失败策略": step.on_failure or "stop",
+        }
+
+    _BLANK_STEP = {k: "" for k in _step_row(__import__("types").SimpleNamespace(
+        step_order=None, step_name="", step_type="", skip=False, config={},
+        extract=None, assertion=None, wait_before=None, timeout=None, retry=None, on_failure="",
+    ))}
+
+    # 决定 sheet 类型：functional 单独走简化布局
+    is_functional_export = types_filter == {"functional"}
+
+    case_records: list[dict] = []
+    functional_records: list[dict] = []
+    case_no = 0
+    for case, module_name in rows:
+        case_no += 1
+        ct = (case.case_type or "").lower()
+
+        if ct == "functional":
+            spec = case.functional_spec or {}
+            functional_records.append({
+                "用例#": case_no,
+                "用例标题": case.name or "",
+                "模块路径": module_name or "",
+                "描述": case.description or "",
+                "标签": ",".join(case.tags or []) if isinstance(case.tags, list) else "",
+                "优先级": case.priority if case.priority is not None else "",
+                "跳过": "y" if case.skip else "n",
+                "前置条件": "\n".join(spec.get("preconditions") or []),
+                "步骤": "\n".join(spec.get("steps") or []),
+                "预期结果": spec.get("expected") or "",
+            })
+            continue
+
+        steps = sorted(case.steps or [], key=lambda s: s.step_order or 0)
+        meta = _meta_row(case, module_name)
+
+        if not steps:
+            # 无 step 的 case：单行只放 meta，步骤区留空
+            row = {"用例#": case_no, **meta, **_BLANK_STEP}
+            case_records.append(row)
+            continue
+
+        for i, s in enumerate(steps):
+            row = {
+                "用例#": case_no,
+                # case meta 只在第一行填
+                **(meta if i == 0 else _BLANK_META),
+                **_step_row(s),
+            }
+            case_records.append(row)
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_project_name = (project.name or f"project_{project_id}").replace("/", "_").replace("\\", "_")
@@ -462,13 +753,20 @@ def export_test_cases(
 
     buf = io.BytesIO()
     if format == "xlsx":
-        # openpyxl 是默认 engine，pandas 装上即可；不强制 sheet name 简化
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="cases")
+            if is_functional_export:
+                df = pd.DataFrame(functional_records)
+                df.to_excel(writer, index=False, sheet_name="功能用例")
+            else:
+                df = pd.DataFrame(case_records)
+                df.to_excel(writer, index=False, sheet_name="用例")
         media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         filename = f"{base_name}.xlsx"
-    else:  # csv
-        # utf-8-sig 带 BOM：Excel 双击 csv 不会乱码
+    else:  # csv —— 多 sheet 不适合 csv；统一只导主 sheet
+        if is_functional_export:
+            df = pd.DataFrame(functional_records)
+        else:
+            df = pd.DataFrame(case_records)
         text = df.to_csv(index=False)
         buf.write(text.encode("utf-8-sig"))
         media = "text/csv; charset=utf-8"

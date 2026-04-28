@@ -36,6 +36,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from server.api import (
+    ai_router,
     app_packages_router,
     cases_router,
     config_router,
@@ -44,6 +45,7 @@ from server.api import (
     functional_cases_router,
     modules_router,
     projects_router,
+    requirements_router,
     reports_router,
     runs_router,
     system_router,
@@ -130,6 +132,8 @@ for router in (
     system_router,
     devices_router,
     app_packages_router,
+    requirements_router,
+    ai_router,
 ):
     app.include_router(router, prefix="/api")
 

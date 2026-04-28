@@ -623,6 +623,14 @@ export function ProjectDetailPage() {
           />
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {/* "需求"页：所有项目都有，AI 解析 PRD / 维护需求点的入口 */}
+          <Button
+            variant="outline"
+            onClick={() => navigate(`/projects/${projectId}/requirements`)}
+            title="需求管理（AI 可解析 PRD）"
+          >
+            需求
+          </Button>
           {/* functional Tab 隐藏整个按钮 —— 功能用例靠人工勾，不存在"运行整个项目"这种概念 */}
           {!isFunctionalTab ? (
             <Button

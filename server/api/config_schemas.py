@@ -346,6 +346,58 @@ APP_CONFIG_SCHEMA: list[dict[str, Any]] = [
 ]
 
 
+# =============================================================================
+# AI provider 配置（category="ai"）
+# =============================================================================
+AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
+    {
+        "config_group": "provider",
+        "config_key": "provider",
+        "type": "string",
+        "default": "openai",
+        "description": "LLM 提供商。当前支持 openai / anthropic（其它走自建反代时也用 openai）。",
+        "example": "openai",
+        "applies_to": ["ai"],
+    },
+    {
+        "config_group": "provider",
+        "config_key": "api_key",
+        "type": "string",
+        "default": "",
+        "description": "对应 provider 的 API Key。生产环境强烈建议从环境变量注入，不要明文存这里。",
+        "example": "sk-xxx...",
+        "applies_to": ["ai"],
+    },
+    {
+        "config_group": "provider",
+        "config_key": "model",
+        "type": "string",
+        "default": "gpt-4o-mini",
+        "description": "默认 model 名。OpenAI: gpt-4o / gpt-4o-mini；Anthropic: claude-3-5-sonnet-20241022 / claude-3-5-haiku-20241022。",
+        "example": "gpt-4o-mini",
+        "applies_to": ["ai"],
+    },
+    {
+        "config_group": "provider",
+        "config_key": "base_url",
+        "type": "string",
+        "default": "",
+        "description": "自定义 endpoint（自建反代 / Azure OpenAI 用）。留空走官方默认。",
+        "example": "https://api.openai.com",
+        "applies_to": ["ai"],
+    },
+    {
+        "config_group": "provider",
+        "config_key": "max_tokens",
+        "type": "int",
+        "default": "4096",
+        "description": "单次响应最大 token 上限。",
+        "example": "4096",
+        "applies_to": ["ai"],
+    },
+]
+
+
 def get_schema(category: str) -> list[dict[str, Any]]:
     """按 category 取推荐 schema。未识别 category 返回空列表。
 
@@ -357,6 +409,8 @@ def get_schema(category: str) -> list[dict[str, Any]]:
         return [dict(item) for item in API_CONFIG_SCHEMA]
     if cat == "app":
         return [dict(item) for item in APP_CONFIG_SCHEMA]
+    if cat == "ai":
+        return [dict(item) for item in AI_CONFIG_SCHEMA]
     if cat == "web":
         try:
             from runners.web.session import WEB_CONFIG_SCHEMA  # noqa: WPS433

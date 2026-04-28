@@ -90,6 +90,34 @@ from .test_step_report import TestStepReport
 # ============ 配置 ============
 from .config_store import ConfigStore
 
+# ============ AI 任务 / 需求（AI 模块）============
+from .ai_run import (
+    AiRun,
+    AI_RUN_STATUS_PENDING,
+    AI_RUN_STATUS_RUNNING,
+    AI_RUN_STATUS_SUCCESS,
+    AI_RUN_STATUS_FAILED,
+    AI_RUN_STATUS_CANCELLED,
+    ALL_AI_RUN_STATUSES,
+    AI_FEATURE_REQUIREMENT_PARSE,
+    AI_FEATURE_TEST_PLAN,
+    AI_FEATURE_FUNCTIONAL_CASE_GEN,
+    AI_FEATURE_FUNCTIONAL_CASE_REVIEW,
+    AI_FEATURE_API_CASE_GEN,
+    AI_FEATURE_REPORT_SUMMARY,
+    AI_FEATURE_FUNCTIONAL_TO_AUTO,
+    AI_FEATURE_LOAD_PLAN_GEN,
+)
+from .requirement import (
+    Requirement,
+    REQUIREMENT_STATUS_DRAFT,
+    REQUIREMENT_STATUS_APPROVED,
+    REQUIREMENT_STATUS_ARCHIVED,
+    ALL_REQUIREMENT_STATUSES,
+    REQUIREMENT_SOURCE_MANUAL,
+    REQUIREMENT_SOURCE_AI,
+)
+
 # ============ Pydantic 请求模型 —— 实际放在 database/schemas/ 下 =========
 # 这里只做 re-export，让历史 `from database.models import XxxCreate` 路径
 # 不破。新代码请直接 `from database.schemas.xxx import ...`。
@@ -112,6 +140,19 @@ __all__ = [
     "AppPackage",
     "TestReport", "TestStepReport",
     "ConfigStore",
+    "AiRun", "Requirement",
+    # AI run status constants
+    "AI_RUN_STATUS_PENDING", "AI_RUN_STATUS_RUNNING", "AI_RUN_STATUS_SUCCESS",
+    "AI_RUN_STATUS_FAILED", "AI_RUN_STATUS_CANCELLED", "ALL_AI_RUN_STATUSES",
+    # AI feature names
+    "AI_FEATURE_REQUIREMENT_PARSE", "AI_FEATURE_TEST_PLAN",
+    "AI_FEATURE_FUNCTIONAL_CASE_GEN", "AI_FEATURE_FUNCTIONAL_CASE_REVIEW",
+    "AI_FEATURE_API_CASE_GEN", "AI_FEATURE_REPORT_SUMMARY",
+    "AI_FEATURE_FUNCTIONAL_TO_AUTO", "AI_FEATURE_LOAD_PLAN_GEN",
+    # Requirement constants
+    "REQUIREMENT_STATUS_DRAFT", "REQUIREMENT_STATUS_APPROVED",
+    "REQUIREMENT_STATUS_ARCHIVED", "ALL_REQUIREMENT_STATUSES",
+    "REQUIREMENT_SOURCE_MANUAL", "REQUIREMENT_SOURCE_AI",
     # Project stack constants
     "PROJECT_STACK_API", "PROJECT_STACK_WEB",
     "PROJECT_STACK_ANDROID", "PROJECT_STACK_IOS",

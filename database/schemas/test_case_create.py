@@ -56,7 +56,9 @@ class TestCaseCreate(pydantic.BaseModel):
     sort_order: Optional[int] = None
 
     # ------- v2 新增：用例类型 + 步骤 -------
-    case_type: Optional[Literal["api", "app", "web", "mixed"]] = None
+    case_type: Optional[
+        Literal["api", "android", "ios", "web", "mixed", "functional"]
+    ] = None
     tags: Optional[List[str]] = None
     priority: Optional[int] = None
     steps: Optional[List[StepPayload]] = None

@@ -63,6 +63,7 @@ const CATEGORIES = [
   { value: "api", label: "API" },
   { value: "web", label: "Web" },
   { value: "app", label: "App" },
+  { value: "ai", label: "AI" },
   { value: "global", label: "全局" },
 ] as const;
 

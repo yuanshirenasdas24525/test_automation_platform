@@ -4,7 +4,7 @@ from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, ConfigDict
 
 
-EnvCategory = Literal["api", "app", "web", "mixed"]
+EnvCategory = Literal["api", "android", "ios", "web", "mixed"]
 
 
 class _TestEnvironmentBase(BaseModel):

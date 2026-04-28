@@ -4,6 +4,9 @@
  * 这样上游用 try/catch 或 TanStack Query 都省事。
  */
 import type {
+  AiFeature,
+  AiRun,
+  AiRunStatus,
   ApiEnvelope,
   CaseType,
   ContentNode,
@@ -22,6 +25,9 @@ import type {
   ProjectStack,
   ProjectStackCounts,
   ReorderItem,
+  Requirement,
+  RequirementCreate,
+  RequirementUpdate,
   RunTestRequest,
   RunTestResult,
   TestCaseCreate,
@@ -797,5 +803,84 @@ export const appPackagesApi = {
   /** 直接给 <a href> 用的下载地址。 */
   downloadUrl(id: number) {
     return `/api/app_packages/${id}/download`;
+  },
+};
+
+
+// =============================================================================
+// AI 任务（Phase A：requirement_parse + 通用查询/取消）
+// =============================================================================
+
+/** 提交 AI 任务返回的形状。 */
+export interface AiSubmitResponse {
+  ai_run_id: number;
+  celery_task_id: string;
+  feature: string;
+}
+
+export const aiApi = {
+  /** AI 需求分析：提交一段 PRD/需求文本，异步生成 requirements。 */
+  submitRequirementParse(payload: { project_id: number; text: string; operator?: string }) {
+    return request<AiSubmitResponse>("/api/ai/requirement_parse", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  /** 查单个 ai_run（轮询用）。 */
+  getRun(id: number) {
+    return request<AiRun>(`/api/ai/runs/${id}`);
+  },
+  /** 列 ai_run 历史。 */
+  listRuns(filters: {
+    project_id?: number;
+    feature?: AiFeature | string;
+    status?: AiRunStatus;
+    limit?: number;
+  } = {}) {
+    const qs = new URLSearchParams();
+    if (filters.project_id != null) qs.set("project_id", String(filters.project_id));
+    if (filters.feature) qs.set("feature", filters.feature);
+    if (filters.status) qs.set("status", filters.status);
+    if (filters.limit != null) qs.set("limit", String(filters.limit));
+    const q = qs.toString();
+    return request<AiRun[]>(`/api/ai/runs${q ? `?${q}` : ""}`);
+  },
+  /** 取消任务（revoke Celery + 改 status=cancelled）。 */
+  cancelRun(id: number) {
+    return request<{ message?: string }>(`/api/ai/runs/${id}/cancel`, {
+      method: "POST",
+    });
+  },
+};
+
+
+// =============================================================================
+// 需求点（requirements）—— 项目下的需求点 CRUD
+// =============================================================================
+
+export const requirementsApi = {
+  list(projectId: number, filters: { status?: string; source?: string } = {}) {
+    const qs = new URLSearchParams({ project_id: String(projectId) });
+    if (filters.status) qs.set("status", filters.status);
+    if (filters.source) qs.set("source", filters.source);
+    return request<Requirement[]>(`/api/requirements?${qs.toString()}`);
+  },
+  get(id: number) {
+    return request<Requirement>(`/api/requirements/${id}`);
+  },
+  create(payload: RequirementCreate) {
+    return request<Requirement>("/api/requirements", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  update(id: number, payload: RequirementUpdate) {
+    return request<Requirement>(`/api/requirements/${id}`, {
+      method: "PUT",
+      body: payload,
+    });
+  },
+  remove(id: number) {
+    return request<void>(`/api/requirements/${id}`, { method: "DELETE" });
   },
 };

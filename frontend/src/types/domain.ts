@@ -320,3 +320,91 @@ export interface FunctionalBatchSummary {
   na: number;
   pass_rate: number;
 }
+
+// =============================================================================
+// AI Phase A —— ai_runs / requirements
+// =============================================================================
+
+/** AI 任务状态（跟后端 AI_RUN_STATUS_* 对齐）。 */
+export type AiRunStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "failed"
+  | "cancelled";
+
+/** AI 功能名（跟后端 AI_FEATURE_* 对齐）。 */
+export type AiFeature =
+  | "requirement_parse"
+  | "test_plan"
+  | "functional_case_gen"
+  | "functional_case_review"
+  | "api_case_gen"
+  | "report_summary"
+  | "functional_to_auto"
+  | "load_plan_gen";
+
+/** AI 任务记录。前端轮询这个 endpoint 拿状态 / 拿结果。 */
+export interface AiRun {
+  id: number;
+  feature: AiFeature | string;
+  status: AiRunStatus;
+  project_id?: number | null;
+  celery_task_id?: string | null;
+  input_payload?: Record<string, unknown> | null;
+  output_payload?: Record<string, unknown> | null;
+  error?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  tokens_in?: number | null;
+  tokens_out?: number | null;
+  cost_usd?: number | null;
+  prompt_hash?: string | null;
+  prompt_version?: string | null;
+  operator?: string | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  ended_at?: string | null;
+}
+
+/** 需求点（来自 requirements 表）。 */
+export type RequirementStatus = "draft" | "approved" | "archived";
+export type RequirementSource = "manual" | "ai_generated";
+
+export interface Requirement {
+  id: number;
+  project_id: number;
+  title: string;
+  description?: string | null;
+  acceptance_criteria: string[];
+  priority: number;
+  tags: string[];
+  depends_on: number[];
+  status: RequirementStatus;
+  source: RequirementSource;
+  ai_run_id?: number | null;
+  sort_order: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface RequirementCreate {
+  project_id: number;
+  title: string;
+  description?: string | null;
+  acceptance_criteria?: string[] | null;
+  priority?: number;
+  tags?: string[] | null;
+  depends_on?: number[] | null;
+  status?: RequirementStatus;
+}
+
+export interface RequirementUpdate {
+  title?: string;
+  description?: string | null;
+  acceptance_criteria?: string[] | null;
+  priority?: number;
+  tags?: string[] | null;
+  depends_on?: number[] | null;
+  status?: RequirementStatus;
+}

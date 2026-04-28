@@ -67,4 +67,18 @@ export const queryKeys = {
     filters && Object.keys(filters).length > 0
       ? (["app_packages", filters] as const)
       : (["app_packages"] as const),
+  /** AI 任务历史 / 单条 / 项目下的需求列表。 */
+  aiRuns: (filters?: Record<string, unknown>) =>
+    filters && Object.keys(filters).length > 0
+      ? (["ai_runs", filters] as const)
+      : (["ai_runs"] as const),
+  aiRun: (id: number) => ["ai_runs", id] as const,
+  requirements: (
+    projectId: number,
+    filters?: Record<string, string | undefined>,
+  ) =>
+    filters && Object.keys(filters).length > 0
+      ? (["requirements", projectId, filters] as const)
+      : (["requirements", projectId] as const),
+  requirement: (id: number) => ["requirement", id] as const,
 };
