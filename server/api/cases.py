@@ -83,6 +83,46 @@ def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
         ))
 
 
+def _synthesize_http_step_from_v1_fields(payload: dict) -> dict | None:
+    """从 v1 风格字段（method/path/headers/...）合成一条 http_request step。
+
+    用途：前端 API 表单存的是 v1 字段（不送 steps 数组），但 v2 执行链路
+    只认 test_steps 表。在保存用例时自动合成一条 step 写进去，让用户
+    新建的 API 用例**不需要再跑数据迁移**就能直接执行。
+
+    返回：dict 形式的 step（让 _replace_case_steps 能直接吃）；
+         如果 v1 字段都为空 → 返回 None（让调用方决定不写 step）
+    """
+    method = (payload.get("method") or "").strip()
+    path = (payload.get("path") or "").strip()
+    if not method and not path:
+        return None  # 用户连 method/path 都没填，没法合成有意义的 step
+
+    return {
+        "step_order": 0,
+        "step_name": (payload.get("name") or "API 请求"),
+        "step_type": "http_request",
+        "skip": False,
+        "config": {
+            "method": method.upper() or "GET",
+            "path": path,
+            "headers": payload.get("headers") or {},
+            "data_type": payload.get("data_type") or "application/json",
+            "params": payload.get("params") or {},
+            "file_path": payload.get("file_path"),
+            "sql_query": payload.get("sql_query"),
+        },
+        # extract_data / assertion 是 v1 自由文本格式，先不转 —— 用户后续
+        # 在 step editor 里能手工补结构化的 extract / assertion
+        "extract": [],
+        "assertion": [],
+        "wait_before": int(payload.get("wait_time") or 0),
+        "timeout": 60,
+        "retry": 0,
+        "on_failure": "stop",
+    }
+
+
 def _infer_case_type(payload: dict) -> str:
     """payload 没显式 case_type 时兜个底：
       - 有 steps 且全是 web_* → web
@@ -126,6 +166,18 @@ def create_case(case: TestCaseCreate, db: DBDep):
     steps = payload.pop("steps", None)
     if payload.get("case_type") is None:
         payload["case_type"] = _infer_case_type({"steps": steps, **payload})
+
+    # v1 → v2 自动桥接：API 类用例如果走老表单只填了 v1 字段（method/path/...），
+    # 不送 steps，这里自动合成一条 http_request step，避免 case 没 steps 跑不动。
+    # 用户也可以前端直接送 steps（StepEditor 路径），那就不走合成。
+    if (
+        not steps
+        and payload.get("case_type") in ("api", None)
+        and (payload.get("method") or payload.get("path"))
+    ):
+        synthesized = _synthesize_http_step_from_v1_fields(payload)
+        if synthesized:
+            steps = [synthesized]
 
     explicit_order = payload.get("sort_order")
     if explicit_order is not None:
@@ -186,9 +238,37 @@ def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
     for key, value in payload.items():
         setattr(db_case, key, value)
 
-    # steps 只在前端确实传了 steps 字段时才整体替换；没传就别动
+    # steps 处理：
+    #   1) 前端送了 steps 字段（不管是空还是有值）→ 整体替换
+    #   2) 前端没送 steps 但通过 v1 字段改了 method/path/headers 等 → 自动重建
+    #      唯一一条 http_request step（用最新 v1 字段）
+    #   3) 都没动 → 保持 DB 原值
     if "steps" in case.model_fields_set:
         _replace_case_steps(db, case_id, steps)
+    elif (
+        (db_case.case_type or "api").lower() == "api"
+        and any(
+            field in case.model_fields_set
+            for field in ("method", "path", "headers", "data_type",
+                          "params", "file_path", "sql_query", "wait_time")
+        )
+    ):
+        # 用 db_case 当前的最新字段重建唯一的 http_request step
+        merged = {
+            "name": db_case.name,
+            "method": db_case.method,
+            "path": db_case.path,
+            "headers": db_case.headers,
+            "data_type": db_case.data_type,
+            "params": db_case.params,
+            "file_path": db_case.file_path,
+            "sql_query": db_case.sql_query,
+            "wait_time": db_case.wait_time,
+        }
+        synthesized = _synthesize_http_step_from_v1_fields(merged)
+        if synthesized:
+            _replace_case_steps(db, case_id, [synthesized])
+
     db.session.flush()
     return {"status": "success", "message": "修改成功"}
 

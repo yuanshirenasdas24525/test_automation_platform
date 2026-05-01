@@ -44,11 +44,13 @@ from server.api import (
     devices_router,
     functional_cases_router,
     modules_router,
+    project_versions_router,
     projects_router,
     requirements_router,
     reports_router,
     runs_router,
     system_router,
+    test_plans_router,
 )
 
 # ---------------------------------------------------------------------------
@@ -123,6 +125,7 @@ def health():
 for router in (
     projects_router,
     modules_router,
+    project_versions_router,
     cases_router,
     functional_cases_router,
     content_router,
@@ -133,6 +136,7 @@ for router in (
     devices_router,
     app_packages_router,
     requirements_router,
+    test_plans_router,
     ai_router,
 ):
     app.include_router(router, prefix="/api")

@@ -7,6 +7,8 @@ import { DevicesPage } from "@/pages/DevicesPage";
 import { FunctionalCasesPage } from "@/pages/FunctionalCasesPage";
 import { HomePage } from "@/pages/HomePage";
 import { ProjectDetailPage } from "@/pages/ProjectDetailPage";
+import { ProjectManagementPage } from "@/pages/ProjectManagementPage";
+import { ProjectVersionDetailPage } from "@/pages/ProjectVersionDetailPage";
 import { ProjectsPage } from "@/pages/ProjectsPage";
 import { RequirementsPage } from "@/pages/RequirementsPage";
 import { RunsPage } from "@/pages/RunsPage";
@@ -28,6 +30,8 @@ export const router = createBrowserRouter([
       { path: "projects", element: <ProjectsPage /> },
       { path: "projects/:id", element: <ProjectDetailPage /> },
       { path: "projects/:id/functional", element: <FunctionalCasesPage /> },
+      { path: "projects/:id/management", element: <ProjectManagementPage /> },
+      { path: "projects/:id/versions/:vid", element: <ProjectVersionDetailPage /> },
       { path: "projects/:id/requirements", element: <RequirementsPage /> },
       { path: "runs", element: <RunsPage /> },
       { path: "devices", element: <DevicesPage /> },

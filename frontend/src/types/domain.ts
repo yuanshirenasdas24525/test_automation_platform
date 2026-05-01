@@ -408,3 +408,81 @@ export interface RequirementUpdate {
   depends_on?: number[] | null;
   status?: RequirementStatus;
 }
+
+// =============================================================================
+// 版本迭代（ProjectVersion）
+// =============================================================================
+
+export type VersionStatus =
+  | "planning"
+  | "developing"
+  | "testing"
+  | "released"
+  | "archived";
+
+export interface VersionEntry {
+  version: string;
+  date: string;
+  notes?: string;
+}
+
+export interface DocItem {
+  id: string;
+  name: string;
+  type: "link" | "text" | "file";
+  url?: string | null;
+  content?: string | null;
+}
+
+export interface ProjectVersion {
+  id: number;
+  project_id: number;
+  version_name: string;
+  display_name?: string | null;
+  status: VersionStatus;
+  sort_order: number;
+  frontend_versions: VersionEntry[];
+  backend_versions: VersionEntry[];
+  release_notes: string;
+  test_plan_items: DocItem[];
+  requirement_doc_items: DocItem[];
+  design_doc_items: DocItem[];
+  ui_prototype_items: DocItem[];
+  associated_module_ids: number[];
+  planned_start_at?: string | null;
+  planned_end_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface VersionCreate {
+  version_name: string;
+  display_name?: string;
+  status?: VersionStatus;
+  module_ids?: number[];
+  frontend_versions?: VersionEntry[];
+  backend_versions?: VersionEntry[];
+  release_notes?: string;
+  test_plan_items?: DocItem[];
+  requirement_doc_items?: DocItem[];
+  design_doc_items?: DocItem[];
+  ui_prototype_items?: DocItem[];
+  planned_start_at?: string;
+  planned_end_at?: string;
+}
+
+export interface VersionUpdate {
+  version_name?: string;
+  display_name?: string;
+  status?: VersionStatus;
+  sort_order?: number;
+  frontend_versions?: VersionEntry[];
+  backend_versions?: VersionEntry[];
+  release_notes?: string;
+  test_plan_items?: DocItem[];
+  requirement_doc_items?: DocItem[];
+  design_doc_items?: DocItem[];
+  ui_prototype_items?: DocItem[];
+  planned_start_at?: string;
+  planned_end_at?: string;
+}

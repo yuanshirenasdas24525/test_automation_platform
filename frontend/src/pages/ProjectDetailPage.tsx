@@ -15,8 +15,7 @@ import {
   Download,
   FileText,
   Folder,
-  FolderInput,
-  FolderPlus,
+  FolderKanban,
   Globe,
   Info,
   Loader2,
@@ -60,6 +59,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { HighlightedTextarea } from "@/components/ui/highlighted-textarea";
 import { StepEditor } from "@/components/case/step-editor";
 import { DevicePickerDialog } from "@/components/device-picker-dialog";
+import { ProjectManagementPage } from "@/pages/ProjectManagementPage";
 import { cn } from "@/lib/utils";
 import {
   ApiError,
@@ -309,7 +309,8 @@ export function ProjectDetailPage() {
 
   useEffect(() => {
     if (enabledStacks.length === 0) return;
-    if (!enabledStacks.includes(activeStack)) {
+    if ((activeStack as string) === "management") return; // management is always valid
+    if (!enabledStacks.includes(activeStack as ProjectStack)) {
       const next = new URLSearchParams(searchParams);
       next.set("stack", enabledStacks[0]);
       setSearchParams(next, { replace: true });
@@ -595,7 +596,29 @@ export function ProjectDetailPage() {
     });
   };
 
-  // ------ 渲染 ------
+  const isManagementTab = searchParams.get("stack") === "management";
+
+  // ------ 渲染：项目管理 Tab ------
+  if (isManagementTab) {
+    return (
+      <div className="space-y-4 p-6">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <Button variant="ghost" size="icon" className="shrink-0" onClick={() => navigate("/projects")}>
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+            <span className="font-medium truncate">{projectQuery.data?.name ?? "…"}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+          </div>
+        </div>
+        <StackTabs projectId={projectId} enabledStacks={enabledStacks} counts={stackCountsQuery.data?.counts} active={activeStack} onChange={handleStackChange} loading={stackCountsQuery.isLoading} />
+        <ProjectManagementPage />
+      </div>
+    );
+  }
+
+  // ------ 渲染：测试 Tab ------
   if (!Number.isFinite(projectId)) {
     return (
       <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>
@@ -604,8 +627,8 @@ export function ProjectDetailPage() {
 
   return (
     <div className="space-y-4 p-6">
-      {/* 顶栏：返回 + 面包屑 + 项目级动作 */}
-      <div className="flex items-center justify-between gap-4">
+      {/* 顶栏：返回 + 项目名 */}
+      <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
           <Button
             variant="ghost"
@@ -616,24 +639,29 @@ export function ProjectDetailPage() {
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <Breadcrumb
-            project={project?.name ?? "…"}
-            trail={breadcrumb}
-            onJump={handleJumpTo}
-          />
+          <span className="font-medium truncate">
+            {projectQuery.data?.name ?? "…"}
+          </span>
         </div>
+        <div className="flex shrink-0 items-center gap-2"></div>
+      </div>
+
+      {/* Tab 栏 */}
+      <StackTabs
+        projectId={projectId}
+        enabledStacks={enabledStacks}
+        counts={stackCountsQuery.data?.counts}
+        active={activeStack}
+        onChange={handleStackChange}
+        loading={stackCountsQuery.isLoading}
+      />
+
+      {/* 面包屑 + 操作按钮 */}
+      <div className="flex items-center justify-between gap-2">
+        <Breadcrumb project={project?.name ?? "…"} trail={breadcrumb} onJump={handleJumpTo} />
         <div className="flex shrink-0 items-center gap-2">
-          {/* "需求"页：所有项目都有，AI 解析 PRD / 维护需求点的入口 */}
-          <Button
-            variant="outline"
-            onClick={() => navigate(`/projects/${projectId}/requirements`)}
-            title="需求管理（AI 可解析 PRD）"
-          >
-            需求
-          </Button>
-          {/* functional Tab 隐藏整个按钮 —— 功能用例靠人工勾，不存在"运行整个项目"这种概念 */}
-          {!isFunctionalTab ? (
-            <Button
+        {!isFunctionalTab && (
+        <Button
               variant="outline"
               onClick={handleRunProject}
               disabled={
@@ -647,35 +675,17 @@ export function ProjectDetailPage() {
               )}
               运行 {STACK_LABELS[automationCategory]} 全部用例
             </Button>
-          ) : null}
+        )}
         </div>
       </div>
 
-      {/* 栈 Tab：v2 起项目可以同时启用多个栈，这里按"项目实际启用的栈"显示 Tab。
-          模块树是栈无关的（同一棵树共用），切栈只换右侧用例列表。 */}
-      <StackTabs
-        enabledStacks={enabledStacks}
-        counts={stackCountsQuery.data?.counts}
-        active={activeStack}
-        onChange={handleStackChange}
-        loading={stackCountsQuery.isLoading}
-      />
-
-      {/* 工具栏：当前层级可创建什么。functional Tab 下走 B5 的独立编辑器，这里 disable 大部分按钮 + 显示提示。 */}
+      {/* functional Tab 引导 */}
       {isFunctionalTab ? (
         <FunctionalTabBanner projectId={projectId} />
       ) : (
+        <>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              setModuleDialog({ mode: "create", parentId: currentParentId })
-            }
-          >
-            <FolderPlus className="h-4 w-4" />
-            新建{currentParentId === null ? "顶层模块" : "子模块"}
-          </Button>
+          {/* 模块 CRUD 已移至项目管理页 */}
           <Button
             variant="outline"
             size="sm"
@@ -708,7 +718,7 @@ export function ProjectDetailPage() {
             />
           ) : null}
         </div>
-      )}
+      </>)}
 
       {/* 主列表 */}
       {contentQuery.isLoading ? (
@@ -925,18 +935,22 @@ const STACK_VISUAL: Record<
 };
 
 function StackTabs({
+  projectId: _projectId,
   enabledStacks,
   counts,
   active,
   onChange,
   loading,
 }: {
+  projectId: number;
   enabledStacks: ProjectStack[];
   counts?: Record<CaseType, number>;
   active: ProjectStack;
   onChange: (next: string) => void;
   loading: boolean;
 }) {
+  const [searchParams] = useSearchParams();
+  const isManagementActive = searchParams.get("stack") === "management";
   if (loading && enabledStacks.length === 0) {
     return (
       <div className="flex items-center gap-2">
@@ -951,21 +965,33 @@ function StackTabs({
   const badgeOf = (stack: ProjectStack): number | null => {
     if (!counts) return null;
     if (stack === "functional") return counts.functional ?? 0;
-    // 自动化栈：本栈 + mixed（mixed 在每个相关 Tab 都展示一次）
     return (counts[stack as CaseType] ?? 0) + (counts.mixed ?? 0);
   };
 
-  // 自定义渲染（不复用 shadcn Tabs 默认样式）：
-  //   - active：白底 + 4px 顶部边线（栈对应色） + 强阴影 + 字号加粗
-  //   - inactive：透明底 + 灰文字 + hover 变暗
-  // 这套权重比默认 Tabs"小药丸"明显得多，用户切栈时能立刻看到自己处在哪。
   return (
     <div
       role="tablist"
       className="flex flex-wrap items-stretch gap-1 rounded-lg border bg-muted/40 p-1"
     >
+      {/* 项目管理 — 通过 URL ?stack=management 内嵌在 ProjectDetailPage 中 */}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isManagementActive}
+        onClick={() => onChange("management")}
+        className={cn(
+          "group relative flex items-center gap-2 rounded-md px-4 py-2 text-sm transition-all",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isManagementActive
+            ? "border-t-[3px] bg-background font-semibold shadow-sm border-red-500 text-red-800"
+            : "border-t-[3px] border-transparent text-muted-foreground hover:bg-background/60 hover:text-foreground",
+        )}
+      >
+        <FolderKanban className="h-4 w-4" />
+        <span>项目管理</span>
+      </button>
       {enabledStacks.map((s) => {
-        const isActive = active === s;
+        const isActive = !isManagementActive && active === s;
         const badge = badgeOf(s);
         const visual = STACK_VISUAL[s] ?? STACK_VISUAL.api;
         const Icon = visual.icon;
@@ -1083,15 +1109,12 @@ function Breadcrumb({
 function NodeTable({
   nodes,
   onEnterModule,
-  onEditModule,
-  onDeleteModule,
   onRunModule,
   onEditCase,
   onDeleteCase,
   onRunCase,
   onInsertBefore,
   onMove,
-  onMoveModule,
   runningKey,
 }: {
   nodes: ContentNode[];
@@ -1193,24 +1216,7 @@ function NodeTable({
                           <Folder className="h-4 w-4" />
                           进入
                         </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            onEditModule(node);
-                          }}
-                        >
-                          <Pencil className="h-4 w-4" />
-                          重命名
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={(e) => {
-                            e.preventDefault();
-                            onMoveModule(node);
-                          }}
-                        >
-                          <FolderInput className="h-4 w-4" />
-                          移动到…
-                        </DropdownMenuItem>
+                        {/* 模块 CRUD 已统一收归"项目管理"页 */}
                       </>
                     ) : (
                       <>
@@ -1271,19 +1277,20 @@ function NodeTable({
                         </>
                       );
                     })()}
-                    <DropdownMenuSeparator />
+                    {/* 模块删除已统一收归"项目管理"页；仅用例可在此删除 */}
+                    {node.type === "case" ? (
+                      <><DropdownMenuSeparator />
                     <DropdownMenuItem
                       className="text-destructive focus:text-destructive"
                       onSelect={(e) => {
                         e.preventDefault();
-                        node.type === "module"
-                          ? onDeleteModule(node)
-                          : onDeleteCase(node);
+                        onDeleteCase(node);
                       }}
                     >
                       <Trash2 className="h-4 w-4" />
                       删除
                     </DropdownMenuItem>
+                    </>) : null}
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
@@ -1850,7 +1857,7 @@ function MoveModuleDialog({
               selected === null && "bg-accent font-medium",
             )}
           >
-            <FolderPlus className="h-4 w-4 shrink-0 text-amber-500" />
+            <Folder className="h-4 w-4 shrink-0 text-amber-500" />
             <span className="truncate">{projectName}（项目根）</span>
           </button>
 
@@ -2069,7 +2076,7 @@ function EmptyHint({
         </p>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onCreateModule}>
-            <FolderPlus className="h-4 w-4" />
+            <Folder className="h-4 w-4" />
             新建模块
           </Button>
           {!isRoot ? (

@@ -24,6 +24,7 @@ import type {
   ProjectCreate,
   ProjectStack,
   ProjectStackCounts,
+  ProjectVersion,
   ReorderItem,
   Requirement,
   RequirementCreate,
@@ -32,6 +33,8 @@ import type {
   RunTestResult,
   TestCaseCreate,
   TestCaseDetail,
+  VersionCreate,
+  VersionUpdate,
 } from "@/types/domain";
 
 export class ApiError extends Error {
@@ -173,6 +176,13 @@ export const modulesApi = {
         body: { target_parent_id: targetParentId },
       },
     );
+  },
+  /** 更新同级模块顺序（拖拽排序），使用已有 PATCH /api/reorder */
+  reorder(items: { type: string; id: number; new_order: number }[]) {
+    return request<{ status?: string }>("/api/reorder", {
+      method: "PATCH",
+      body: { items },
+    });
   },
 };
 
@@ -819,8 +829,14 @@ export interface AiSubmitResponse {
 }
 
 export const aiApi = {
-  /** AI 需求分析：提交一段 PRD/需求文本，异步生成 requirements。 */
-  submitRequirementParse(payload: { project_id: number; text: string; operator?: string }) {
+  /** AI 需求分析：提交文本或文件路径 + 分析模式，异步生成 requirements。 */
+  submitRequirementParse(payload: {
+    project_id: number;
+    text?: string;
+    file_path?: string;
+    analysis_mode?: string;
+    operator?: string;
+  }) {
     return request<AiSubmitResponse>("/api/ai/requirement_parse", {
       method: "POST",
       body: payload,
@@ -882,5 +898,40 @@ export const requirementsApi = {
   },
   remove(id: number) {
     return request<void>(`/api/requirements/${id}`, { method: "DELETE" });
+  },
+};
+
+
+// =============================================================================
+// 版本迭代（project_versions）
+// =============================================================================
+
+export const versionsApi = {
+  list(projectId: number) {
+    return request<ProjectVersion[]>(`/api/projects/${projectId}/versions`);
+  },
+  get(projectId: number, versionId: number) {
+    return request<ProjectVersion>(`/api/projects/${projectId}/versions/${versionId}`);
+  },
+  create(projectId: number, payload: VersionCreate) {
+    return request<ProjectVersion>(`/api/projects/${projectId}/versions`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  update(projectId: number, versionId: number, payload: VersionUpdate) {
+    return request<ProjectVersion>(`/api/projects/${projectId}/versions/${versionId}`, {
+      method: "PUT",
+      body: payload,
+    });
+  },
+  remove(projectId: number, versionId: number) {
+    return request<void>(`/api/projects/${projectId}/versions/${versionId}`, { method: "DELETE" });
+  },
+  updateModules(projectId: number, versionId: number, moduleIds: number[]) {
+    return request<ProjectVersion>(`/api/projects/${projectId}/versions/${versionId}/modules`, {
+      method: "PUT",
+      body: { module_ids: moduleIds },
+    });
   },
 };

@@ -162,7 +162,8 @@ def main() -> int:
                             "登录失败 5 次后账号锁定 30 分钟。"
                 },
                 project_id=None,
-                timeout=30,
+                timeout=120,
+                analysis_mode="quick",
             )
             _ok(
                 f"LLM 调通：provider={res['provider']} model={res['model']} "

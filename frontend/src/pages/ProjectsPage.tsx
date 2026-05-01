@@ -275,7 +275,7 @@ export function ProjectsPage() {
               key={p.id}
               project={p}
               automatedStacks={automatedStacksOf(p)}
-              onOpen={() => navigate(`/projects/${p.id}`)}
+              onOpen={() => navigate(`/projects/${p.id}?stack=management`)}
               onEdit={() => setEditing(p)}
               onDelete={() => setPendingDelete(p)}
               onRun={() => handleRunProject(p)}
