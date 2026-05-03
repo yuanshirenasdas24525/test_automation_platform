@@ -16,13 +16,8 @@
 # 因为模拟器/物理机情况各异，参见 docker-compose.legacy.yaml.bak 里
 # 注释掉的 android_emulator + appium_server 块作为参考。
 # =============================================================================
-version: "3.9"
-
 x-app-common: &app-common
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: tap:latest
+  image: ghcr.io/yuanshirenasdas24525/test_automation_platform:latest
   environment: &app-env
     TZ: Asia/Shanghai
     PYTHONUNBUFFERED: "1"

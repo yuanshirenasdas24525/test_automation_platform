@@ -1,3 +1,0 @@
-[2026-05-02 20:34:17,023: INFO/Beat] Scheduler: Sending due task probe_devices_every_30s (tasks.probe_devices)
-[2026-05-02 20:34:17,030: INFO/MainProcess] Task tasks.probe_devices[2cbe1613-0f9d-43a9-80aa-b4727950d9c2] received
-[2026-05-02 20:34:17,093: INFO/ForkPoolWorker-2] Task tasks.probe_devices[2cbe1613-0f9d-43a9-80aa-b4727950d9c2] succeeded in 0.06247262499528006s: {'total': 1, 'ok': 1, 'fail': 0, 'turned_offline': [], 'recovered': []}
