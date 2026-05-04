@@ -55,6 +55,9 @@ class TestCase(Base):
     skip = Column(Boolean, default=False, nullable=False)
     priority = Column(Integer, default=2)                       # 0/1/2/3
 
+    # 版本归属（M1 加）—— 资产沉淀回流：迭代结束后该版本新增/修改的用例打这个标
+    version_id = Column(Integer, ForeignKey("project_versions.id"), nullable=True, index=True)
+
     # ============ 执行控制（v2 新增）============
     env_id = Column(Integer, ForeignKey("test_environments.id"), nullable=True)
     pre_hook = Column(JSONType)       # [{type:'sql'|'http'|'script', ...}]
