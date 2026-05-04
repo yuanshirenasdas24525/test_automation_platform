@@ -19,6 +19,17 @@ from .project import (
 )
 from .module import Module
 from .user import User
+from .role import (
+    Role,
+    user_roles,
+    ROLE_ADMIN,
+    ROLE_DEV,
+    ROLE_TEST,
+    ROLE_PM,
+    ROLE_UI,
+    ROLE_OPS,
+    ALL_ROLE_CODES,
+)
 
 # ============ 用例 & 步骤（v2 核心） ============
 from .test_case import (
@@ -182,6 +193,9 @@ __all__ = [
     "AiRun", "Requirement", "TestPlan",
     "ProjectContext", "RequirementAnalysis",
     "ProjectVersion", "User",
+    "Role", "user_roles",
+    "ROLE_ADMIN", "ROLE_DEV", "ROLE_TEST", "ROLE_PM", "ROLE_UI", "ROLE_OPS",
+    "ALL_ROLE_CODES",
     # Project context constants
     "CONTEXT_TYPE_BUSINESS_RULE", "CONTEXT_TYPE_DATA_MODEL",
     "CONTEXT_TYPE_API_CONTRACT", "CONTEXT_TYPE_ARCHITECTURE",
