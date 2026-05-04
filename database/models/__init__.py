@@ -53,6 +53,8 @@ from .task import (
     ALL_BUG_SEVERITIES,
 )
 
+from .version_test_summary import VersionTestSummary
+
 # ============ 用例 & 步骤（v2 核心） ============
 from .test_case import (
     TestCase,
@@ -226,6 +228,7 @@ __all__ = [
     "TASK_STATUS_CLOSED", "ALL_TASK_STATUSES",
     "BUG_SEVERITY_P0", "BUG_SEVERITY_P1", "BUG_SEVERITY_P2", "BUG_SEVERITY_P3",
     "ALL_BUG_SEVERITIES",
+    "VersionTestSummary",
     # Project context constants
     "CONTEXT_TYPE_BUSINESS_RULE", "CONTEXT_TYPE_DATA_MODEL",
     "CONTEXT_TYPE_API_CONTRACT", "CONTEXT_TYPE_ARCHITECTURE",
