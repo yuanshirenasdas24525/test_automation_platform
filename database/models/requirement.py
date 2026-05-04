@@ -24,6 +24,28 @@ ALL_REQUIREMENT_STATUSES = {
     REQUIREMENT_STATUS_ARCHIVED,
 }
 
+# system_status —— Task 状态聚合自动算
+REQUIREMENT_SYSTEM_STATUS_APPROVED = "approved"
+REQUIREMENT_SYSTEM_STATUS_DEVELOPING = "developing"
+REQUIREMENT_SYSTEM_STATUS_TESTING = "testing"
+REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE = "ready_to_release"
+ALL_REQUIREMENT_SYSTEM_STATUSES = {
+    REQUIREMENT_SYSTEM_STATUS_APPROVED,
+    REQUIREMENT_SYSTEM_STATUS_DEVELOPING,
+    REQUIREMENT_SYSTEM_STATUS_TESTING,
+    REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE,
+}
+
+# business_status —— PM 维护，决定是否进入发布
+REQUIREMENT_BUSINESS_STATUS_APPROVED = "approved"
+REQUIREMENT_BUSINESS_STATUS_ACCEPTED = "accepted"
+REQUIREMENT_BUSINESS_STATUS_RELEASED = "released"
+ALL_REQUIREMENT_BUSINESS_STATUSES = {
+    REQUIREMENT_BUSINESS_STATUS_APPROVED,
+    REQUIREMENT_BUSINESS_STATUS_ACCEPTED,
+    REQUIREMENT_BUSINESS_STATUS_RELEASED,
+}
+
 # 来源
 REQUIREMENT_SOURCE_MANUAL = "manual"
 REQUIREMENT_SOURCE_AI = "ai_generated"
@@ -69,6 +91,25 @@ class Requirement(Base):
     # 排序（同项目内）
     sort_order = Column(Integer, default=0)
 
+    # 版本归属（M1 加）
+    version_id = Column(
+        Integer, ForeignKey("project_versions.id"), nullable=True, index=True
+    )
+
+    # 自动算（Task 聚合）
+    system_status = Column(String(20), nullable=True, index=True)
+
+    # PM 维护（验收 gate）
+    business_status = Column(String(20), nullable=True, index=True)
+
+    # PM 指派人
+    assignee_pm_id = Column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
+
+    # PM 一键 Accept 时间
+    accepted_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime,
@@ -94,6 +135,11 @@ class Requirement(Base):
             "source": self.source,
             "ai_run_id": self.ai_run_id,
             "sort_order": self.sort_order,
+            "version_id": self.version_id,
+            "system_status": self.system_status,
+            "business_status": self.business_status,
+            "assignee_pm_id": self.assignee_pm_id,
+            "accepted_at": self.accepted_at.isoformat() if self.accepted_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
