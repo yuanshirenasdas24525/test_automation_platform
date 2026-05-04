@@ -18,6 +18,7 @@ from .project import (
     ALL_PROJECT_STACKS,
 )
 from .module import Module
+from .user import User
 
 # ============ 用例 & 步骤（v2 核心） ============
 from .test_case import (
@@ -180,7 +181,7 @@ __all__ = [
     "ConfigStore",
     "AiRun", "Requirement", "TestPlan",
     "ProjectContext", "RequirementAnalysis",
-    "ProjectVersion",
+    "ProjectVersion", "User",
     # Project context constants
     "CONTEXT_TYPE_BUSINESS_RULE", "CONTEXT_TYPE_DATA_MODEL",
     "CONTEXT_TYPE_API_CONTRACT", "CONTEXT_TYPE_ARCHITECTURE",
