@@ -54,6 +54,7 @@ from server.api import (
     tasks_router,
     test_plans_router,
     users_router,
+    version_summaries_router,
 )
 
 # ---------------------------------------------------------------------------
@@ -144,6 +145,7 @@ for router in (
     test_plans_router,
     ai_router,
     users_router,
+    version_summaries_router,
 ):
     app.include_router(router, prefix="/api")
 

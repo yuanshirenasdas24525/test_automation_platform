@@ -22,6 +22,7 @@ from .tasks import router as tasks_router
 from .users import router as users_router
 from .system import router as system_router
 from .test_plans import router as test_plans_router
+from .version_summaries import router as version_summaries_router
 
 __all__ = [
     "ai_router",
@@ -42,4 +43,5 @@ __all__ = [
     "test_plans_router",
     "roles_router",
     "users_router",
+    "version_summaries_router",
 ]
