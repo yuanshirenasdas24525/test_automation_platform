@@ -10,7 +10,14 @@ from server.api.deps import DBDep
 from database.models import (
     ProjectVersion,
     Module,
+    Requirement,
+    Task,
     ALL_VERSION_STATUSES,
+    ALL_REQUIREMENT_SYSTEM_STATUSES,
+    ALL_TASK_TYPES,
+    ALL_TASK_STATUSES,
+    ALL_BUG_SEVERITIES,
+    TASK_TYPE_BUG,
 )
 
 router = APIRouter()
@@ -215,6 +222,72 @@ def update_version_modules(project_id: int, version_id: int, payload: VersionMod
     db.commit()
 
     return {"status": "success", "data": v.to_dict()}
+
+
+# ---------------------------------------------------------------------------
+# 看板聚合：Req（按 system_status 分桶）+ Task 计数（按 type / status / severity）
+# ---------------------------------------------------------------------------
+@router.get("/project-versions/{version_id}/board")
+def version_board(version_id: int, db: DBDep):
+    v = db.session.query(ProjectVersion).filter(ProjectVersion.id == version_id).first()
+    if v is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    reqs = (
+        db.session.query(Requirement)
+        .filter(Requirement.version_id == version_id)
+        .order_by(Requirement.sort_order.asc(), Requirement.id.asc())
+        .all()
+    )
+
+    requirements_by_status: dict[str, list[dict]] = {
+        s: [] for s in ALL_REQUIREMENT_SYSTEM_STATUSES
+    }
+    requirements_by_status["unassigned"] = []  # system_status IS NULL 的桶
+    for r in reqs:
+        bucket = r.system_status if r.system_status in requirements_by_status else "unassigned"
+        requirements_by_status[bucket].append(r.to_dict())
+
+    # Task 计数：先按 requirement.version_id 拉一次，避免 N+1
+    task_rows = (
+        db.session.query(Task.type, Task.status, Task.severity)
+        .join(Requirement, Requirement.id == Task.requirement_id)
+        .filter(Requirement.version_id == version_id)
+        .all()
+    )
+
+    task_counts_by_type: dict[str, dict] = {}
+    for t in ALL_TASK_TYPES:
+        if t == TASK_TYPE_BUG:
+            task_counts_by_type[t] = {
+                "total": 0,
+                "by_status": {s: 0 for s in ALL_TASK_STATUSES},
+                "by_severity": {s: 0 for s in ALL_BUG_SEVERITIES},
+            }
+        else:
+            task_counts_by_type[t] = {
+                "total": 0,
+                "by_status": {s: 0 for s in ALL_TASK_STATUSES},
+            }
+
+    for row in task_rows:
+        bucket = task_counts_by_type.get(row.type)
+        if bucket is None:
+            continue
+        bucket["total"] += 1
+        if row.status in bucket["by_status"]:
+            bucket["by_status"][row.status] += 1
+        if row.type == TASK_TYPE_BUG and row.severity in bucket.get("by_severity", {}):
+            bucket["by_severity"][row.severity] += 1
+
+    return {
+        "status": "success",
+        "data": {
+            "version": v.to_dict(),
+            "requirements_by_status": requirements_by_status,
+            "task_counts_by_type": task_counts_by_type,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
