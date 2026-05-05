@@ -24,6 +24,7 @@ from database.models import (
     ALL_BUG_SEVERITIES,
     TASK_TYPE_BUG,
     TASK_STATUS_PENDING,
+    TASK_STATUS_DEV_DOING,
 )
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -42,6 +43,16 @@ class TaskCreate(pydantic.BaseModel):
     description: Optional[str] = None
     metadata: Optional[dict] = None
     estimated_hours: Optional[float] = None
+
+
+class TaskFromTestFailure(pydantic.BaseModel):
+    parent_task_id: int
+    severity: str
+    title: str = pydantic.Field(..., min_length=1, max_length=255)
+    created_by_id: int
+    related_case_id: Optional[int] = None
+    description: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class TaskUpdate(pydantic.BaseModel):
@@ -104,6 +115,39 @@ def create_task(payload: TaskCreate, db: DBDep):
     db.session.refresh(task)
     recompute_requirement_status(task.requirement_id, db.session)
     return {"status": "success", "data": task.to_dict()}
+
+
+@router.post("/from-test-failure")
+def create_task_from_test_failure(payload: TaskFromTestFailure, db: DBDep):
+    """测试失败 → 一键建 bug：自动 type=bug / status=dev_doing，
+    继承 parent_task 的 assignee_dev_id / requirement_id。"""
+    if payload.severity not in ALL_BUG_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"非法 severity，可选: {sorted(ALL_BUG_SEVERITIES)}",
+        )
+    parent = db.session.query(Task).filter(Task.id == payload.parent_task_id).first()
+    if parent is None:
+        raise HTTPException(status_code=404, detail="parent_task 不存在")
+
+    bug = Task(
+        requirement_id=parent.requirement_id,
+        parent_task_id=parent.id,
+        title=payload.title,
+        description=payload.description,
+        type=TASK_TYPE_BUG,
+        status=TASK_STATUS_DEV_DOING,
+        severity=payload.severity,
+        assignee_dev_id=parent.assignee_dev_id,
+        created_by_id=payload.created_by_id,
+        related_case_id=payload.related_case_id,
+        task_metadata=payload.metadata,
+    )
+    db.session.add(bug)
+    db.session.flush()
+    db.session.refresh(bug)
+    recompute_requirement_status(parent.requirement_id, db.session)
+    return {"status": "success", "data": bug.to_dict()}
 
 
 @router.get("")
