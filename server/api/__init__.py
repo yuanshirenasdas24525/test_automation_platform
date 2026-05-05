@@ -17,6 +17,7 @@ from .projects import router as projects_router
 from .reports import router as reports_router
 from .requirements import router as requirements_router
 from .runs import router as runs_router
+from .users import router as users_router
 from .system import router as system_router
 from .test_plans import router as test_plans_router
 
@@ -36,4 +37,5 @@ __all__ = [
     "runs_router",
     "system_router",
     "test_plans_router",
+    "users_router",
 ]
