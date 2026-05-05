@@ -12,6 +12,10 @@ import { ProjectVersionDetailPage } from "@/pages/ProjectVersionDetailPage";
 import { ProjectsPage } from "@/pages/ProjectsPage";
 import { RequirementsPage } from "@/pages/RequirementsPage";
 import { RunsPage } from "@/pages/RunsPage";
+import {
+  WorkspaceRedirect,
+  WorkspaceRoute,
+} from "@/pages/workspace/WorkspaceRoute";
 
 /**
  * 路由表。
@@ -33,6 +37,8 @@ export const router = createBrowserRouter([
       { path: "projects/:id/management", element: <ProjectManagementPage /> },
       { path: "projects/:id/versions/:vid", element: <ProjectVersionDetailPage /> },
       { path: "projects/:id/requirements", element: <RequirementsPage /> },
+      { path: "workspace", element: <WorkspaceRedirect /> },
+      { path: "workspace/:role", element: <WorkspaceRoute /> },
       { path: "runs", element: <RunsPage /> },
       { path: "devices", element: <DevicesPage /> },
       { path: "app-packages", element: <AppPackagesPage /> },
