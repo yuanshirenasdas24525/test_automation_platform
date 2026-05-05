@@ -51,6 +51,7 @@ from server.api import (
     roles_router,
     runs_router,
     system_router,
+    tasks_router,
     test_plans_router,
     users_router,
 )
@@ -139,6 +140,7 @@ for router in (
     devices_router,
     app_packages_router,
     requirements_router,
+    tasks_router,
     test_plans_router,
     ai_router,
     users_router,
