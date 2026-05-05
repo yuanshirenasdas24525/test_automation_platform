@@ -371,6 +371,25 @@ export interface AiRun {
 export type RequirementStatus = "draft" | "approved" | "archived";
 export type RequirementSource = "manual" | "ai_generated";
 
+/** PM 重设计：自动算的开发态。后端 task_service.recompute_requirement_status() 维护。 */
+export const ALL_REQUIREMENT_SYSTEM_STATUSES = [
+  "approved",
+  "developing",
+  "testing",
+  "ready_to_release",
+] as const;
+export type RequirementSystemStatus =
+  (typeof ALL_REQUIREMENT_SYSTEM_STATUSES)[number];
+
+/** PM 维护的业务态。 */
+export const ALL_REQUIREMENT_BUSINESS_STATUSES = [
+  "approved",
+  "accepted",
+  "released",
+] as const;
+export type RequirementBusinessStatus =
+  (typeof ALL_REQUIREMENT_BUSINESS_STATUSES)[number];
+
 export interface Requirement {
   id: number;
   project_id: number;
@@ -384,6 +403,12 @@ export interface Requirement {
   source: RequirementSource;
   ai_run_id?: number | null;
   sort_order: number;
+  /** PM 重设计：版本归属 + 双状态轨 + PM 指派 + 验收时间 */
+  version_id?: number | null;
+  system_status?: RequirementSystemStatus | null;
+  business_status?: RequirementBusinessStatus | null;
+  assignee_pm_id?: number | null;
+  accepted_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 }
@@ -397,6 +422,9 @@ export interface RequirementCreate {
   tags?: string[] | null;
   depends_on?: number[] | null;
   status?: RequirementStatus;
+  version_id?: number | null;
+  business_status?: RequirementBusinessStatus | null;
+  assignee_pm_id?: number | null;
 }
 
 export interface RequirementUpdate {
@@ -407,6 +435,14 @@ export interface RequirementUpdate {
   tags?: string[] | null;
   depends_on?: number[] | null;
   status?: RequirementStatus;
+  version_id?: number | null;
+  business_status?: RequirementBusinessStatus | null;
+  assignee_pm_id?: number | null;
+}
+
+/** PM 验收 payload（pm_id 可选；不传时后端不强制校验角色）。 */
+export interface RequirementAcceptPayload {
+  pm_id?: number | null;
 }
 
 // =============================================================================
@@ -485,4 +521,201 @@ export interface VersionUpdate {
   ui_prototype_items?: DocItem[];
   planned_start_at?: string;
   planned_end_at?: string;
+}
+
+// =============================================================================
+// PM 重设计 · 用户 / 角色 / 任务 / 版本汇总（M3）
+// =============================================================================
+
+/** 后端 6 个固定 role code（database/models/role.py:ALL_ROLE_CODES）。 */
+export const ALL_ROLE_CODES = [
+  "admin",
+  "dev",
+  "test",
+  "pm",
+  "ui",
+  "ops",
+] as const;
+export type RoleCode = (typeof ALL_ROLE_CODES)[number];
+
+/** Role 中文展示名（侧边栏 / 切换器 tab 用）。 */
+export const ROLE_LABELS: Record<RoleCode, string> = {
+  admin: "管理员",
+  dev: "开发",
+  test: "测试",
+  pm: "产品",
+  ui: "设计",
+  ops: "运维",
+};
+
+export interface Role {
+  id: number;
+  code: RoleCode | string;
+  name?: string | null;
+  description?: string | null;
+}
+
+export interface User {
+  id: number;
+  username: string;
+  full_name?: string | null;
+  email?: string | null;
+  is_active: boolean;
+  role_codes: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface UserCreate {
+  username: string;
+  full_name?: string | null;
+  email?: string | null;
+  is_active?: boolean;
+  role_codes?: string[] | null;
+}
+
+export interface UserUpdate {
+  full_name?: string | null;
+  email?: string | null;
+  is_active?: boolean;
+}
+
+/** Task 类型（database/models/task.py:ALL_TASK_TYPES）。 */
+export const ALL_TASK_TYPES = ["dev", "test", "ui_review", "bug"] as const;
+export type TaskType = (typeof ALL_TASK_TYPES)[number];
+
+/** Task 状态机线性枚举。bug 解耦：自己走 dev_doing → closed/passed。 */
+export const ALL_TASK_STATUSES = [
+  "pending",
+  "dev_doing",
+  "dev_done",
+  "test_doing",
+  "passed",
+  "failed",
+  "closed",
+] as const;
+export type TaskStatus = (typeof ALL_TASK_STATUSES)[number];
+
+/** Bug 严重等级（仅 type=bug 时填）。 */
+export const ALL_BUG_SEVERITIES = ["P0", "P1", "P2", "P3"] as const;
+export type BugSeverity = (typeof ALL_BUG_SEVERITIES)[number];
+
+export interface Task {
+  id: number;
+  requirement_id: number;
+  parent_task_id?: number | null;
+  title: string;
+  description?: string | null;
+  type: TaskType;
+  status: TaskStatus;
+  severity?: BugSeverity | null;
+  assignee_dev_id?: number | null;
+  assignee_test_id?: number | null;
+  created_by_id?: number | null;
+  related_case_id?: number | null;
+  metadata: Record<string, unknown>;
+  estimated_hours?: number | null;
+  actual_hours?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  closed_at?: string | null;
+}
+
+export interface TaskCreate {
+  requirement_id: number;
+  title: string;
+  type: TaskType;
+  created_by_id: number;
+  description?: string | null;
+  status?: TaskStatus;
+  severity?: BugSeverity | null;
+  assignee_dev_id?: number | null;
+  assignee_test_id?: number | null;
+  related_case_id?: number | null;
+  metadata?: Record<string, unknown> | null;
+  estimated_hours?: number | null;
+  parent_task_id?: number | null;
+}
+
+export interface TaskUpdate {
+  title?: string;
+  description?: string | null;
+  status?: TaskStatus;
+  severity?: BugSeverity | null;
+  assignee_dev_id?: number | null;
+  assignee_test_id?: number | null;
+  related_case_id?: number | null;
+  metadata?: Record<string, unknown> | null;
+  estimated_hours?: number | null;
+  actual_hours?: number | null;
+}
+
+/** Tasks 列表过滤参数（GET /api/tasks）。closed_at_after 是 ISO 字符串。 */
+export interface TaskListFilters {
+  requirement_id?: number;
+  assignee_dev_id?: number;
+  assignee_test_id?: number;
+  type?: TaskType;
+  status?: TaskStatus;
+  created_by_id?: number;
+  closed_at_after?: string;
+  parent_task_id?: number;
+}
+
+/** POST /api/tasks/from-test-failure payload。 */
+export interface TaskFromTestFailurePayload {
+  parent_task_id: number;
+  severity: BugSeverity;
+  title: string;
+  created_by_id: number;
+  related_case_id?: number | null;
+  description?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+/** GET /api/version-summaries/{version_id} 返回的 VersionTestSummary。 */
+export interface VersionTestSummary {
+  id: number;
+  version_id: number;
+  total_requirements: number;
+  total_tasks: number;
+  total_test_cases: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  total_bugs: number;
+  p0_bugs: number;
+  p1_bugs: number;
+  p2_bugs: number;
+  p3_bugs: number;
+  first_pass_rate?: number | null;
+  avg_fix_time_hours?: number | null;
+  test_coverage?: number | null;
+  payload: Record<string, unknown>;
+  generated_at?: string | null;
+}
+
+/** Bug type 桶携带 by_severity；其它 type 只有 by_status。 */
+export interface VersionTaskBucket {
+  total: number;
+  by_status: Record<TaskStatus, number>;
+  by_severity?: Record<BugSeverity, number>;
+}
+
+/** GET /api/project-versions/{version_id}/board 返回值。
+ *  requirements_by_status 含 4 个系统态 key + "unassigned"（system_status 为 null 时落桶）。 */
+export interface VersionBoard {
+  version: ProjectVersion;
+  requirements_by_status: Record<string, Requirement[]>;
+  task_counts_by_type: Record<TaskType, VersionTaskBucket>;
+}
+
+/** Requirements 列表过滤参数（GET /api/requirements）。 */
+export interface RequirementListFilters {
+  status?: RequirementStatus;
+  source?: RequirementSource;
+  version_id?: number;
+  system_status?: RequirementSystemStatus;
+  business_status?: RequirementBusinessStatus;
+  assignee_pm_id?: number;
 }

@@ -105,7 +105,10 @@ export function RequirementsPage() {
     ),
     queryFn: () =>
       requirementsApi.list(projectId, {
-        status: statusFilter === "all" ? undefined : statusFilter,
+        status:
+          statusFilter === "all"
+            ? undefined
+            : (statusFilter as RequirementStatus),
       }),
     enabled: Number.isFinite(projectId),
   });

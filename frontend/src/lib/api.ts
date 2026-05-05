@@ -27,13 +27,26 @@ import type {
   ProjectVersion,
   ReorderItem,
   Requirement,
+  RequirementAcceptPayload,
   RequirementCreate,
+  RequirementListFilters,
   RequirementUpdate,
+  Role,
   RunTestRequest,
   RunTestResult,
+  Task,
+  TaskCreate,
+  TaskFromTestFailurePayload,
+  TaskListFilters,
+  TaskUpdate,
   TestCaseCreate,
   TestCaseDetail,
+  User,
+  UserCreate,
+  UserUpdate,
+  VersionBoard,
   VersionCreate,
+  VersionTestSummary,
   VersionUpdate,
 } from "@/types/domain";
 
@@ -875,10 +888,16 @@ export const aiApi = {
 // =============================================================================
 
 export const requirementsApi = {
-  list(projectId: number, filters: { status?: string; source?: string } = {}) {
+  list(projectId: number, filters: RequirementListFilters = {}) {
     const qs = new URLSearchParams({ project_id: String(projectId) });
     if (filters.status) qs.set("status", filters.status);
     if (filters.source) qs.set("source", filters.source);
+    if (filters.version_id !== undefined)
+      qs.set("version_id", String(filters.version_id));
+    if (filters.system_status) qs.set("system_status", filters.system_status);
+    if (filters.business_status) qs.set("business_status", filters.business_status);
+    if (filters.assignee_pm_id !== undefined)
+      qs.set("assignee_pm_id", String(filters.assignee_pm_id));
     return request<Requirement[]>(`/api/requirements?${qs.toString()}`);
   },
   get(id: number) {
@@ -898,6 +917,13 @@ export const requirementsApi = {
   },
   remove(id: number) {
     return request<void>(`/api/requirements/${id}`, { method: "DELETE" });
+  },
+  /** PM 一键验收：要求 system_status='ready_to_release'，否则后端返 409。 */
+  accept(id: number, payload: RequirementAcceptPayload = {}) {
+    return request<Requirement>(`/api/requirements/${id}/accept`, {
+      method: "POST",
+      body: payload,
+    });
   },
 };
 
@@ -933,5 +959,122 @@ export const versionsApi = {
       method: "PUT",
       body: { module_ids: moduleIds },
     });
+  },
+  /** 版本看板：requirements_by_status 4 桶 + task_counts_by_type 计数。
+   *  注意路径用的是 /api/project-versions（带连字符），跟 versions CRUD 走的
+   *  /api/projects/:pid/versions/:vid 不是同一前缀。 */
+  board(versionId: number) {
+    return request<VersionBoard>(`/api/project-versions/${versionId}/board`);
+  },
+};
+
+// =============================================================================
+// 用户 / 角色（PM 重设计 M3）
+// =============================================================================
+
+export const usersApi = {
+  list(filters: { is_active?: boolean; role_code?: string; q?: string } = {}) {
+    const qs = new URLSearchParams();
+    if (filters.is_active !== undefined)
+      qs.set("is_active", String(filters.is_active));
+    if (filters.role_code) qs.set("role_code", filters.role_code);
+    if (filters.q) qs.set("q", filters.q);
+    const search = qs.toString();
+    return request<User[]>(`/api/users${search ? `?${search}` : ""}`);
+  },
+  get(id: number) {
+    return request<User>(`/api/users/${id}`);
+  },
+  create(payload: UserCreate) {
+    return request<User>("/api/users", { method: "POST", body: payload });
+  },
+  update(id: number, payload: UserUpdate) {
+    return request<User>(`/api/users/${id}`, { method: "PUT", body: payload });
+  },
+  /** 软删除：后端把 is_active 置 false，不真删。 */
+  remove(id: number) {
+    return request<void>(`/api/users/${id}`, { method: "DELETE" });
+  },
+  /** 全量替换角色（POST /:id/roles，body: { role_codes: [...] }）。 */
+  setRoles(id: number, roleCodes: string[]) {
+    return request<User>(`/api/users/${id}/roles`, {
+      method: "POST",
+      body: { role_codes: roleCodes },
+    });
+  },
+  /** 单角色摘除（DELETE /:id/roles/:role_code）。 */
+  removeRole(id: number, roleCode: string) {
+    return request<User>(`/api/users/${id}/roles/${roleCode}`, {
+      method: "DELETE",
+    });
+  },
+};
+
+export const rolesApi = {
+  list() {
+    return request<Role[]>("/api/roles");
+  },
+};
+
+// =============================================================================
+// 任务（Task）—— PM 重设计 M3 核心数据源
+// =============================================================================
+
+export const tasksApi = {
+  list(filters: TaskListFilters = {}) {
+    const qs = new URLSearchParams();
+    if (filters.requirement_id !== undefined)
+      qs.set("requirement_id", String(filters.requirement_id));
+    if (filters.assignee_dev_id !== undefined)
+      qs.set("assignee_dev_id", String(filters.assignee_dev_id));
+    if (filters.assignee_test_id !== undefined)
+      qs.set("assignee_test_id", String(filters.assignee_test_id));
+    if (filters.type) qs.set("type", filters.type);
+    if (filters.status) qs.set("status", filters.status);
+    if (filters.created_by_id !== undefined)
+      qs.set("created_by_id", String(filters.created_by_id));
+    if (filters.closed_at_after)
+      qs.set("closed_at_after", filters.closed_at_after);
+    if (filters.parent_task_id !== undefined)
+      qs.set("parent_task_id", String(filters.parent_task_id));
+    const search = qs.toString();
+    return request<Task[]>(`/api/tasks${search ? `?${search}` : ""}`);
+  },
+  get(id: number) {
+    return request<Task>(`/api/tasks/${id}`);
+  },
+  create(payload: TaskCreate) {
+    return request<Task>("/api/tasks", { method: "POST", body: payload });
+  },
+  update(id: number, payload: TaskUpdate) {
+    return request<Task>(`/api/tasks/${id}`, { method: "PUT", body: payload });
+  },
+  remove(id: number) {
+    return request<void>(`/api/tasks/${id}`, { method: "DELETE" });
+  },
+  /** 测试报告快捷建 bug：自动设 type=bug、status=dev_doing、
+   *  从 parent_task 继承 assignee_dev_id / requirement_id。 */
+  fromTestFailure(payload: TaskFromTestFailurePayload) {
+    return request<Task>("/api/tasks/from-test-failure", {
+      method: "POST",
+      body: payload,
+    });
+  },
+};
+
+// =============================================================================
+// 版本测试汇总（按需生成 + 强制重算）
+// =============================================================================
+
+export const versionSummariesApi = {
+  /** 首次 GET 实时算 + 落库；后续 GET 直读缓存。 */
+  get(versionId: number) {
+    return request<VersionTestSummary>(`/api/version-summaries/${versionId}`);
+  },
+  regenerate(versionId: number) {
+    return request<VersionTestSummary>(
+      `/api/version-summaries/${versionId}/regenerate`,
+      { method: "POST" },
+    );
   },
 };
