@@ -7,6 +7,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "react-router-dom";
 
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -38,6 +39,7 @@ export function CasesTab({
   projectId: number;
   versionId: number;
 }) {
+  const navigate = useNavigate();
   const [moduleFilter, setModuleFilter] = useState<string>(ANY);
   const [caseTypeFilter, setCaseTypeFilter] = useState<string>(ANY);
   const [statusFilter, setStatusFilter] = useState<string>(ANY);
@@ -144,7 +146,7 @@ export function CasesTab({
                     key={c.id}
                     className="cursor-pointer border-b last:border-0 hover:bg-accent/40"
                     onClick={() => {
-                      window.location.assign(`/runs?case_id=${c.id}`);
+                      navigate(`/runs?case_id=${c.id}`);
                     }}
                   >
                     <td className="px-4 py-2">{c.name}</td>
@@ -155,13 +157,13 @@ export function CasesTab({
                     <td className="px-4 py-2">{c.latest_run?.status ?? "—"}</td>
                     <td className="px-4 py-2">
                       {c.latest_run?.report_id ? (
-                        <a
+                        <Link
                           className="hover:underline"
-                          href={`/runs/${c.latest_run.report_id}`}
+                          to={`/runs/${c.latest_run.report_id}`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           #{c.latest_run.report_id}
-                        </a>
+                        </Link>
                       ) : (
                         "—"
                       )}
