@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router-dom";
+import { Navigate, createBrowserRouter } from "react-router-dom";
 
 import { AppLayout } from "@/components/AppLayout";
 import { AppPackagesPage } from "@/pages/AppPackagesPage";
@@ -33,7 +33,8 @@ export const router = createBrowserRouter([
     path: "/",
     element: <AppLayout />,
     children: [
-      { index: true, element: <HomePage /> },
+      { index: true, element: <Navigate to="/workspace" replace /> },
+      { path: "dashboard", element: <HomePage /> },
       { path: "projects", element: <ProjectsPage /> },
       { path: "projects/:id", element: <ProjectDetailPage /> },
       { path: "projects/:id/functional", element: <FunctionalCasesPage /> },

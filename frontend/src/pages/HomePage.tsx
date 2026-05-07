@@ -30,11 +30,31 @@ export function HomePage() {
   return (
     <div className="space-y-6 p-8">
       <div>
-        <h1 className="text-2xl font-semibold">工作台</h1>
+        <h1 className="text-2xl font-semibold">概览</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          欢迎回来。这里是平台总览，可以快速进入各个模块，并实时查看依赖服务状态。
+          这里是旧版"首页"，留给老书签作为兜底；按角色分流的工作台已迁到{" "}
+          <Link to="/workspace" className="text-primary hover:underline">
+            /workspace
+          </Link>
+          。
         </p>
       </div>
+
+      <Card className="border-primary/30 bg-primary/5">
+        <CardContent className="flex items-center justify-between gap-3 p-4">
+          <div>
+            <div className="text-sm font-semibold">前往按角色分组的工作台</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              dev / test / pm / ui / ops / admin 各看各的看板。
+            </div>
+          </div>
+          <Button asChild size="sm">
+            <Link to="/workspace">
+              进入工作台 <ArrowRight className="ml-1 h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
 
       <ServiceStatusCard />
 

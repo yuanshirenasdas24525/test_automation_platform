@@ -20,8 +20,9 @@ type NavItem = {
 };
 
 // v2 起项目卡片不再按栈分桶，去掉 ?type=api 旧 query；新版项目页本身就展示所有项目。
+// PM M3：根路径重定向到 /workspace；旧 HomePage 仍可通过 /dashboard 访问，但 NAV 不展示。
 const NAV: NavItem[] = [
-  { to: "/", label: "工作台", icon: LayoutDashboard },
+  { to: "/workspace", label: "工作台", icon: LayoutDashboard },
   { to: "/projects", label: "项目", icon: FolderKanban },
   { to: "/runs", label: "执行记录", icon: PlayCircle },
   { to: "/devices", label: "设备池", icon: Smartphone },
@@ -50,7 +51,11 @@ export function AppLayout() {
             {NAV.map((item) => {
               const Icon = item.icon;
               // 同一 to 命中 pathname 即激活；带 query/hash 的访问也算同一节点。
-              const active = current === item.to || pathname === item.to;
+              // 子路由也算激活：/workspace/dev、/projects/12 都让对应顶级 NAV 高亮。
+              const active =
+                current === item.to ||
+                pathname === item.to ||
+                (item.to !== "/" && pathname.startsWith(item.to + "/"));
               return (
                 <NavLink
                   key={item.to}
