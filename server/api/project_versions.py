@@ -344,12 +344,14 @@ def _latest_step_run_map(db, case_ids: list[int]) -> dict[int, dict]:
 
     out: dict[int, dict] = {}
     for cid, steps in by_case.items():
-        # report_id / 最近时间从任一 step 取（同一 report 的 step 时间相近）
-        first = steps[0]
+        # report_id 同一组内一致；executed_at 取 max(create_time) 让前端展示稳定，
+        # 不依赖 SQLAlchemy 返回顺序。
+        report_id = steps[0].report_id
+        latest_dt = max((s.create_time for s in steps if s.create_time), default=None)
         out[cid] = {
             "status": _aggregate(steps),
-            "report_id": first.report_id,
-            "executed_at": first.create_time.isoformat() if first.create_time else None,
+            "report_id": report_id,
+            "executed_at": latest_dt.isoformat() if latest_dt else None,
         }
     return out
 
