@@ -702,6 +702,17 @@ export interface VersionTestSummary {
   generated_at?: string | null;
 }
 
+/** 用例最近一次执行的聚合状态。后端 _latest_step_run_map 的优先级：
+ *  error > failed > broken > skipped > passed。`pending` 在 latest_run=null
+ *  时由前端兜底（CasesTab 过滤器需要这个值）。 */
+export type CaseRunStatus =
+  | "passed"
+  | "failed"
+  | "broken"
+  | "error"
+  | "skipped"
+  | "pending";
+
 /** GET /api/project-versions/{vid}/cases 返回的 item。 */
 export interface VersionCase {
   id: number;
@@ -711,7 +722,7 @@ export interface VersionCase {
   module_name: string;
   sort_order: number;
   latest_run: {
-    status: string; // passed | failed | broken | error | skipped | pending
+    status: CaseRunStatus;
     report_id: number;
     executed_at: string | null;
   } | null;
