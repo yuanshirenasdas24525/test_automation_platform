@@ -161,6 +161,7 @@ def list_tasks(
     created_by_id: Optional[int] = Query(None),
     closed_at_after: Optional[str] = Query(None),
     parent_task_id: Optional[int] = Query(None),
+    ids: Optional[str] = Query(None, description="按主键过滤，多值逗号分隔；与其它过滤 AND"),
 ):
     query = db.session.query(Task)
     if requirement_id is not None:
@@ -199,6 +200,13 @@ def list_tasks(
         query = query.filter(Task.closed_at >= dt)
     if parent_task_id is not None:
         query = query.filter(Task.parent_task_id == parent_task_id)
+    if ids:
+        try:
+            id_list = [int(s.strip()) for s in ids.split(",") if s.strip()]
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ids 必须是整数列表")
+        if id_list:
+            query = query.filter(Task.id.in_(id_list))
 
     rows = query.order_by(Task.created_at.desc()).all()
     return {"status": "success", "data": [t.to_dict() for t in rows]}
