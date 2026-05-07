@@ -3,8 +3,9 @@
  * 由 VersionBoardPage 在 ?tab=board（默认）时渲染。
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -112,10 +113,10 @@ export function BoardTab({ projectId, versionId }: { projectId: number; versionI
 
         <div className="space-y-3">
           {ALL_TASK_TYPES.map((type) => {
-            const bucket = board.task_counts_by_type[type] ?? {
+            const bucket: VersionTaskBucket = board.task_counts_by_type[type] ?? {
               total: 0,
               by_status: {},
-            } as VersionTaskBucket;
+            };
             return <TaskTypeCard key={type} type={type} bucket={bucket} />;
           })}
           {board.requirements_by_status.unassigned &&
@@ -174,8 +175,8 @@ function RequirementCard({
   projectId: number;
 }) {
   return (
-    <a
-      href={`/projects/${projectId}/requirements`}
+    <Link
+      to={`/projects/${projectId}/requirements`}
       className="block rounded border bg-background p-2 text-xs shadow-sm hover:border-primary/40"
     >
       <div className="line-clamp-2 font-medium">{req.title}</div>
@@ -189,7 +190,7 @@ function RequirementCard({
           biz: {req.business_status}
         </div>
       ) : null}
-    </a>
+    </Link>
   );
 }
 
