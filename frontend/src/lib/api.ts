@@ -45,6 +45,7 @@ import type {
   UserCreate,
   UserUpdate,
   VersionBoard,
+  VersionCase,
   VersionCreate,
   VersionTestSummary,
   VersionUpdate,
@@ -966,6 +967,20 @@ export const versionsApi = {
   board(versionId: number) {
     return request<VersionBoard>(`/api/project-versions/${versionId}/board`);
   },
+  /** 按版本列绑定的自动化用例 + 每条最近一次执行状态。M4 CasesTab 用。 */
+  listCases(
+    versionId: number,
+    params?: { module_id?: number; case_type?: CaseType; status?: string },
+  ) {
+    const qs = new URLSearchParams();
+    if (params?.module_id !== undefined) qs.set("module_id", String(params.module_id));
+    if (params?.case_type) qs.set("case_type", params.case_type);
+    if (params?.status) qs.set("status", params.status);
+    const search = qs.toString();
+    return request<{ items: VersionCase[]; total: number }>(
+      `/api/project-versions/${versionId}/cases${search ? `?${search}` : ""}`,
+    );
+  },
 };
 
 // =============================================================================
@@ -1037,6 +1052,7 @@ export const tasksApi = {
       qs.set("closed_at_after", filters.closed_at_after);
     if (filters.parent_task_id !== undefined)
       qs.set("parent_task_id", String(filters.parent_task_id));
+    if (filters.ids?.length) qs.set("ids", filters.ids.join(","));
     const search = qs.toString();
     return request<Task[]>(`/api/tasks${search ? `?${search}` : ""}`);
   },

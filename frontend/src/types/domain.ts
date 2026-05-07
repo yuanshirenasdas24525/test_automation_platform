@@ -661,6 +661,7 @@ export interface TaskListFilters {
   created_by_id?: number;
   closed_at_after?: string;
   parent_task_id?: number;
+  ids?: number[];
 }
 
 /** POST /api/tasks/from-test-failure payload。 */
@@ -692,8 +693,37 @@ export interface VersionTestSummary {
   first_pass_rate?: number | null;
   avg_fix_time_hours?: number | null;
   test_coverage?: number | null;
-  payload: Record<string, unknown>;
+  payload: {
+    requirement_ids?: number[];
+    task_ids?: number[];
+    bug_ids?: number[];
+    test_case_ids?: number[];
+  };
   generated_at?: string | null;
+}
+
+/** GET /api/project-versions/{vid}/cases 返回的 item。 */
+export interface VersionCase {
+  id: number;
+  name: string;
+  case_type: CaseType;
+  module_id: number;
+  module_name: string;
+  sort_order: number;
+  latest_run: {
+    status: string; // passed | failed | broken | error | skipped | pending
+    report_id: number;
+    executed_at: string | null;
+  } | null;
+}
+
+/** ProjectVersion.release_notes 是 JSON 字符串，结构如下；ArchiveTab 解析用。
+ *  解析失败时降级把整段当 notes 显示。 */
+export interface VersionReleaseNotes {
+  sql: string;
+  config: string;
+  commands: string;
+  notes: string;
 }
 
 /** Bug type 桶携带 by_severity；其它 type 只有 by_status。 */
