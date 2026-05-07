@@ -14,6 +14,7 @@ import { RequirementsPage } from "@/pages/RequirementsPage";
 import { RunsPage } from "@/pages/RunsPage";
 import { TaskDetailPage } from "@/pages/tasks/TaskDetailPage";
 import { TaskListPage } from "@/pages/tasks/TaskListPage";
+import { VersionBoardPage } from "@/pages/versions/VersionBoardPage";
 import {
   WorkspaceRedirect,
   WorkspaceRoute,
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
       { path: "projects/:id/functional", element: <FunctionalCasesPage /> },
       { path: "projects/:id/management", element: <ProjectManagementPage /> },
       { path: "projects/:id/versions/:vid", element: <ProjectVersionDetailPage /> },
+      { path: "projects/:id/versions/:vid/board", element: <VersionBoardPage /> },
       { path: "projects/:id/requirements", element: <RequirementsPage /> },
       { path: "workspace", element: <WorkspaceRedirect /> },
       { path: "workspace/:role", element: <WorkspaceRoute /> },
