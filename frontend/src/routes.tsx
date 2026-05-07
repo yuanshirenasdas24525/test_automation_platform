@@ -12,6 +12,8 @@ import { ProjectVersionDetailPage } from "@/pages/ProjectVersionDetailPage";
 import { ProjectsPage } from "@/pages/ProjectsPage";
 import { RequirementsPage } from "@/pages/RequirementsPage";
 import { RunsPage } from "@/pages/RunsPage";
+import { TaskDetailPage } from "@/pages/tasks/TaskDetailPage";
+import { TaskListPage } from "@/pages/tasks/TaskListPage";
 import {
   WorkspaceRedirect,
   WorkspaceRoute,
@@ -39,6 +41,8 @@ export const router = createBrowserRouter([
       { path: "projects/:id/requirements", element: <RequirementsPage /> },
       { path: "workspace", element: <WorkspaceRedirect /> },
       { path: "workspace/:role", element: <WorkspaceRoute /> },
+      { path: "tasks", element: <TaskListPage /> },
+      { path: "tasks/:id", element: <TaskDetailPage /> },
       { path: "runs", element: <RunsPage /> },
       { path: "devices", element: <DevicesPage /> },
       { path: "app-packages", element: <AppPackagesPage /> },
