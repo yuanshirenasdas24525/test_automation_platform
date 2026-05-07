@@ -12,8 +12,12 @@ import { Link, Navigate, useParams } from "react-router-dom";
 
 import { WorkspaceSwitcher } from "@/components/WorkspaceSwitcher";
 import { WorkspaceShell } from "@/pages/workspace/_shared";
+import { AdminWorkspace } from "@/pages/workspace/AdminWorkspace";
 import { DevWorkspace } from "@/pages/workspace/DevWorkspace";
+import { OpsWorkspace } from "@/pages/workspace/OpsWorkspace";
+import { PmWorkspace } from "@/pages/workspace/PmWorkspace";
 import { TestWorkspace } from "@/pages/workspace/TestWorkspace";
+import { UiWorkspace } from "@/pages/workspace/UiWorkspace";
 import { useCurrentUser } from "@/lib/current-user";
 import { ALL_ROLE_CODES, ROLE_LABELS } from "@/types/domain";
 import type { RoleCode } from "@/types/domain";
@@ -112,12 +116,27 @@ export function WorkspaceRoute() {
         </WorkspaceShell>
       );
     case "pm":
+      return (
+        <WorkspaceShell title={title} description={description} switcher={switcher}>
+          <PmWorkspace userId={user.id} />
+        </WorkspaceShell>
+      );
     case "ui":
+      return (
+        <WorkspaceShell title={title} description={description} switcher={switcher}>
+          <UiWorkspace userId={user.id} />
+        </WorkspaceShell>
+      );
     case "ops":
+      return (
+        <WorkspaceShell title={title} description={description} switcher={switcher}>
+          <OpsWorkspace />
+        </WorkspaceShell>
+      );
     case "admin":
       return (
         <WorkspaceShell title={title} description={description} switcher={switcher}>
-          <PlaceholderCard role={role} />
+          <AdminWorkspace />
         </WorkspaceShell>
       );
     default:
@@ -158,10 +177,3 @@ export function WorkspaceRedirect() {
   return <Navigate to={`/workspace/${target}`} replace />;
 }
 
-function PlaceholderCard({ role }: { role: RoleCode }) {
-  return (
-    <div className="col-span-full rounded-md border border-dashed bg-background p-6 text-sm text-muted-foreground">
-      「{ROLE_LABELS[role]}」工作台将在后续 task 接入（M3 Task 4）。
-    </div>
-  );
-}

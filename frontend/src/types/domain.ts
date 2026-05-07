@@ -453,6 +453,7 @@ export type VersionStatus =
   | "planning"
   | "developing"
   | "testing"
+  | "ready_to_release"
   | "released"
   | "archived";
 

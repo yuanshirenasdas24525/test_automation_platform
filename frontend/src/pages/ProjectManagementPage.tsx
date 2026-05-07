@@ -37,6 +37,7 @@ const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
   developing: { label: "开发中", tone: "text-amber-700 bg-amber-50 ring-amber-200" },
   testing: { label: "测试中", tone: "text-violet-700 bg-violet-50 ring-violet-200" },
+  ready_to_release: { label: "待发版", tone: "text-cyan-700 bg-cyan-50 ring-cyan-200" },
   released: { label: "已发布", tone: "text-emerald-700 bg-emerald-50 ring-emerald-200" },
   archived: { label: "已归档", tone: "text-slate-600 bg-slate-100 ring-slate-200" },
 };
