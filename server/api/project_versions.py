@@ -291,6 +291,126 @@ def version_board(version_id: int, db: DBDep):
 
 
 # ---------------------------------------------------------------------------
+# 按版本列用例（M4）
+# ---------------------------------------------------------------------------
+def _latest_step_run_map(db, case_ids: list[int]) -> dict[int, dict]:
+    """一次拿一组自动化用例的"最近一次执行结果"。
+
+    实现：先 GROUP BY case_id 取 max(report_id)，再 join TestStepReport
+    取该 report 下该 case 的代表性 status —— 任一 step 是 failed/error/broken
+    则该 case 算 failed；否则按现有 step 的 status 取 max（passed > skipped）。
+    简化：直接取该 (case_id, report_id) 下所有 step status 的"最差"那个。
+    """
+    if not case_ids:
+        return {}
+    from sqlalchemy import func as sa_func
+    from database.models import TestStepReport
+
+    latest_sq = (
+        db.session.query(
+            TestStepReport.case_id.label("cid"),
+            sa_func.max(TestStepReport.report_id).label("rid"),
+        )
+        .filter(TestStepReport.case_id.in_(case_ids))
+        .group_by(TestStepReport.case_id)
+        .subquery()
+    )
+    rows = (
+        db.session.query(TestStepReport)
+        .join(
+            latest_sq,
+            (TestStepReport.case_id == latest_sq.c.cid)
+            & (TestStepReport.report_id == latest_sq.c.rid),
+        )
+        .all()
+    )
+
+    # 把每个 case 在该 report 下的若干 step status 折成单个 status
+    by_case: dict[int, list[TestStepReport]] = {}
+    for r in rows:
+        by_case.setdefault(r.case_id, []).append(r)
+
+    def _aggregate(steps: list) -> str:
+        statuses = [s.status or "" for s in steps]
+        # 优先级：error > failed > broken > skipped > passed
+        for bad in ("error", "failed", "broken"):
+            if bad in statuses:
+                return bad
+        if "skipped" in statuses and not any(s == "passed" for s in statuses):
+            return "skipped"
+        if "passed" in statuses:
+            return "passed"
+        return statuses[0] if statuses else "pending"
+
+    out: dict[int, dict] = {}
+    for cid, steps in by_case.items():
+        # report_id / 最近时间从任一 step 取（同一 report 的 step 时间相近）
+        first = steps[0]
+        out[cid] = {
+            "status": _aggregate(steps),
+            "report_id": first.report_id,
+            "executed_at": first.create_time.isoformat() if first.create_time else None,
+        }
+    return out
+
+
+@router.get("/project-versions/{version_id}/cases")
+def list_version_cases(
+    version_id: int,
+    db: DBDep,
+    module_id: Optional[int] = Query(None),
+    case_type: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="多值逗号分隔；可包含 'pending' 表示从未执行"),
+):
+    """列本版本绑定的所有自动化用例（含 functional），跨模块、扁平。"""
+    from database.models import TestCase
+
+    v = db.session.query(ProjectVersion).filter(ProjectVersion.id == version_id).first()
+    if v is None:
+        raise HTTPException(status_code=404, detail="版本不存在")
+
+    q = db.session.query(TestCase).filter(TestCase.version_id == version_id)
+    if module_id is not None:
+        q = q.filter(TestCase.module_id == module_id)
+    if case_type:
+        q = q.filter(TestCase.case_type == case_type)
+
+    cases = q.order_by(TestCase.sort_order.asc(), TestCase.id.asc()).all()
+    if not cases:
+        return {"status": "success", "data": {"items": [], "total": 0}}
+
+    # 拿模块名（避免 N+1）
+    mod_ids = list({c.module_id for c in cases if c.module_id is not None})
+    mod_name_map = {
+        m.id: m.name for m in db.session.query(Module).filter(Module.id.in_(mod_ids)).all()
+    }
+
+    latest_map = _latest_step_run_map(db, [c.id for c in cases])
+
+    wanted: Optional[set[str]] = None
+    if status:
+        wanted = {s.strip().lower() for s in status.split(",") if s.strip()}
+
+    items: list[dict] = []
+    for c in cases:
+        latest = latest_map.get(c.id)
+        current_status = (latest or {}).get("status") or "pending"
+        if wanted is not None and current_status not in wanted:
+            continue
+        items.append({
+            "id": c.id,
+            "name": c.name,
+            "case_type": c.case_type,
+            "module_id": c.module_id,
+            "module_name": mod_name_map.get(c.module_id, ""),
+            "sort_order": c.sort_order,
+            "latest_run": latest,  # None or {status, report_id, executed_at}
+        })
+
+    return {"status": "success", "data": {"items": items, "total": len(items)}}
+
+
+# ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
 def _parse_dt(s):
