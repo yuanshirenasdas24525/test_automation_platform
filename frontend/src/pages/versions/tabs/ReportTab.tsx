@@ -8,13 +8,19 @@
  *  - version cases      失败用例表（status=failed,broken,error）
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { Download, RefreshCw } from "lucide-react";
+import { Link } from "react-router-dom";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { tasksApi, versionSummariesApi, versionsApi } from "@/lib/api";
-import type { Requirement, Task, VersionCase } from "@/types/domain";
+import type {
+  Requirement,
+  Task,
+  VersionCase,
+  VersionTestSummary,
+} from "@/types/domain";
 
 export function ReportTab({
   projectId,
@@ -45,8 +51,9 @@ export function ReportTab({
   });
 
   const bugIds = summaryQuery.data?.payload.bug_ids ?? [];
+  const bugIdsKey = [...bugIds].sort((a, b) => a - b).join(",");
   const bugsQuery = useQuery({
-    queryKey: ["tasks", "by-ids", bugIds.join(",")],
+    queryKey: ["tasks", "by-ids", bugIdsKey],
     queryFn: () => tasksApi.list({ ids: bugIds }),
     enabled: bugIds.length > 0,
   });
@@ -57,7 +64,6 @@ export function ReportTab({
       toast.success("已重算汇总");
       queryClient.invalidateQueries({ queryKey: ["version-summary", versionId] });
       queryClient.invalidateQueries({ queryKey: ["version-board", versionId] });
-      queryClient.invalidateQueries({ queryKey: ["tasks", "by-ids"] });
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -65,10 +71,12 @@ export function ReportTab({
   function handleExportPdf() {
     const oldTitle = document.title;
     document.title = `${projectName}_${versionName}_报告`;
-    window.print();
-    setTimeout(() => {
+    const restore = () => {
       document.title = oldTitle;
-    }, 0);
+      window.removeEventListener("afterprint", restore);
+    };
+    window.addEventListener("afterprint", restore);
+    window.print();
   }
 
   if (summaryQuery.isLoading || boardQuery.isLoading) {
@@ -126,7 +134,7 @@ export function ReportTab({
 function MetricsCard({
   summary,
 }: {
-  summary: import("@/types/domain").VersionTestSummary;
+  summary: VersionTestSummary;
 }) {
   return (
     <Card>
@@ -236,9 +244,9 @@ function BugTableCard({ bugs, loading }: { bugs: Task[]; loading: boolean }) {
               {sorted.map((b) => (
                 <tr key={b.id} className="border-b last:border-0">
                   <td className="py-2 pr-2">
-                    <a className="hover:underline" href={`/tasks/${b.id}`}>
+                    <Link className="hover:underline" to={`/tasks/${b.id}`}>
                       {b.title}
-                    </a>
+                    </Link>
                   </td>
                   <td className="py-2 pr-2">{b.severity ?? "—"}</td>
                   <td className="py-2 pr-2">{b.assignee_dev_id ?? "—"}</td>
@@ -304,12 +312,12 @@ function FailedCasesCard({
                   </td>
                   <td className="py-2 pr-2">
                     {c.latest_run?.report_id ? (
-                      <a
+                      <Link
                         className="hover:underline"
-                        href={`/runs/${c.latest_run.report_id}`}
+                        to={`/runs/${c.latest_run.report_id}`}
                       >
                         #{c.latest_run.report_id}
-                      </a>
+                      </Link>
                     ) : (
                       "—"
                     )}
