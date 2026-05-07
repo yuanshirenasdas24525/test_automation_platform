@@ -11,10 +11,10 @@
  * 提交直接调 POST /api/tasks/from-test-failure，让后端自动从 parent_task 继承
  * requirement_id / assignee_dev_id，前端只需要传严重度、标题和 reproduce_steps。
  */
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 import { toast } from "sonner";
 
@@ -53,7 +53,8 @@ type FormValues = z.infer<typeof formSchema>;
 interface CreateBugModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  parentTaskId: number;
+  /** 父 dev 任务。传 null 时弹窗顶部会渲染 parent picker 让用户挑。 */
+  parentTaskId: number | null;
   relatedCaseId?: number | null;
   defaultTitle?: string;
   /** 不传时从 useUserId() 取；无登录用户会校验失败。 */
@@ -71,6 +72,27 @@ export function CreateBugModal({
   const fallbackUserId = useUserId();
   const userId = createdById ?? fallbackUserId;
   const queryClient = useQueryClient();
+
+  // parent picker（仅在 parentTaskId 为 null 时启用）：拉所有 type=dev 的活动任务给用户选
+  const [pickedParentId, setPickedParentId] = useState<number | null>(null);
+  useEffect(() => {
+    if (open) setPickedParentId(parentTaskId);
+  }, [open, parentTaskId]);
+
+  const candidatesQuery = useQuery({
+    queryKey: ["tasks", "dev-candidates"],
+    queryFn: () => tasksApi.list({ type: "dev" }),
+    enabled: open && parentTaskId === null,
+  });
+  const candidates = useMemo(
+    () =>
+      (candidatesQuery.data ?? []).filter(
+        (t) => t.status !== "closed" && t.status !== "passed",
+      ),
+    [candidatesQuery.data],
+  );
+
+  const effectiveParentId = parentTaskId ?? pickedParentId;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
@@ -99,12 +121,15 @@ export function CreateBugModal({
       if (userId == null) {
         return Promise.reject(new Error("当前没有用户，先在右上角选一个"));
       }
+      if (effectiveParentId == null) {
+        return Promise.reject(new Error("请先选择 parent 任务"));
+      }
       const metadata: Record<string, unknown> = {};
       if (values.reproduce_steps && values.reproduce_steps.trim()) {
         metadata.reproduce_steps = values.reproduce_steps.trim();
       }
       return tasksApi.fromTestFailure({
-        parent_task_id: parentTaskId,
+        parent_task_id: effectiveParentId,
         severity: values.severity,
         title: values.title.trim(),
         created_by_id: userId,
@@ -131,6 +156,38 @@ export function CreateBugModal({
           onSubmit={form.handleSubmit((v) => submit.mutate(v))}
           className="space-y-3"
         >
+          {parentTaskId === null ? (
+            <div>
+              <Label>父任务（dev）</Label>
+              <Select
+                value={pickedParentId ? String(pickedParentId) : ""}
+                onValueChange={(v) => setPickedParentId(Number(v))}
+                disabled={candidatesQuery.isLoading}
+              >
+                <SelectTrigger className="h-9">
+                  <SelectValue
+                    placeholder={
+                      candidatesQuery.isLoading
+                        ? "加载候选任务…"
+                        : candidates.length === 0
+                          ? "暂无活动 dev 任务"
+                          : "选一个 dev 任务作为 parent"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {candidates.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>
+                      #{t.id} · {t.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                bug 会从这个 parent 继承 requirement_id 和 dev 负责人。
+              </div>
+            </div>
+          ) : null}
           <div>
             <Label htmlFor="bug-title">标题</Label>
             <Input id="bug-title" autoFocus {...form.register("title")} />
@@ -184,7 +241,8 @@ export function CreateBugModal({
             </div>
           </div>
           <div className="rounded border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
-            来源：parent_task #{parentTaskId}
+            来源：parent_task{" "}
+            {effectiveParentId ? `#${effectiveParentId}` : "(未选)"}
             {relatedCaseId ? ` · case #${relatedCaseId}` : ""}
             {userId == null ? " · 当前未选用户，提交会失败" : ""}
           </div>

@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  Bug,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -39,8 +40,10 @@ import {
   reportsApi,
   type TestReportDetail,
   type TestReportSummary,
+  type TestStepReportItem,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
+import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
 
 /**
  * 执行记录页。
@@ -517,6 +520,7 @@ function DetailBody({ detail }: { detail: TestReportDetail }) {
 
 function StepsList({ steps }: { steps: TestReportDetail["steps"] }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [bugStep, setBugStep] = useState<TestStepReportItem | null>(null);
   const toggle = (id: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -557,25 +561,43 @@ function StepsList({ steps }: { steps: TestReportDetail["steps"] }) {
         <CardContent className="divide-y p-0">
           {steps.map((s) => {
             const open = expanded.has(s.id);
+            const isFailed =
+              s.status &&
+              ["failed", "broken", "error"].includes(s.status.toLowerCase());
             return (
               <div key={s.id} className="px-3 py-2 text-sm">
-                <button
-                  className="flex w-full items-center gap-2 text-left"
-                  onClick={() => toggle(s.id)}
-                >
-                  {open ? (
-                    <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  )}
-                  <StatusBadge status={s.status} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {s.step_name || `#${s.id}`}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {s.action ?? s.step_type ?? "—"}
-                  </span>
-                </button>
+                <div className="flex w-full items-center gap-2">
+                  <button
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    onClick={() => toggle(s.id)}
+                  >
+                    {open ? (
+                      <ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                    )}
+                    <StatusBadge status={s.status} />
+                    <span className="min-w-0 flex-1 truncate">
+                      {s.step_name || `#${s.id}`}
+                    </span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {s.action ?? s.step_type ?? "—"}
+                    </span>
+                  </button>
+                  {isFailed ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBugStep(s);
+                      }}
+                    >
+                      <Bug className="mr-1 h-3.5 w-3.5" /> 建 Bug
+                    </Button>
+                  ) : null}
+                </div>
                 {open ? (
                   <div className="mt-2 space-y-1 rounded bg-muted/40 p-2 text-xs">
                     <Line k="target" v={s.target} />
@@ -596,6 +618,13 @@ function StepsList({ steps }: { steps: TestReportDetail["steps"] }) {
           })}
         </CardContent>
       </Card>
+      <CreateBugModal
+        open={bugStep !== null}
+        onOpenChange={(o) => !o && setBugStep(null)}
+        parentTaskId={null}
+        relatedCaseId={bugStep?.case_id ?? null}
+        defaultTitle={bugStep ? `失败步骤：${bugStep.step_name ?? `#${bugStep.id}`}` : ""}
+      />
     </div>
   );
 }
