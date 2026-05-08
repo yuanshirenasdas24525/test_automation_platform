@@ -83,7 +83,10 @@ export function AppLayout() {
           </div>
         </aside>
         <main className="flex flex-1 flex-col overflow-hidden">
-          <header className="flex h-12 shrink-0 items-center justify-end gap-2 border-b bg-background px-4">
+          <header
+            data-app-header
+            className="flex h-12 shrink-0 items-center justify-end gap-2 border-b bg-background px-4"
+          >
             <CurrentUserSwitcher />
           </header>
           <div className="flex-1 overflow-y-auto">

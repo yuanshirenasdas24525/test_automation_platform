@@ -277,6 +277,16 @@ function VersionMilestoneWidget({
       isLoading={versionId !== undefined && query.isLoading}
       isError={query.isError}
       errorMessage={(query.error as Error | undefined)?.message}
+      subtitle={
+        versionId !== undefined ? (
+          <Link
+            to={`/projects/${projectId}/versions/${versionId}/board?tab=report`}
+            className="text-primary hover:underline"
+          >
+            📊 测试报告
+          </Link>
+        ) : null
+      }
       renderItem={(row) => (
         <div className="flex items-center justify-between gap-2 px-4 py-2 text-sm">
           <span>{SYSTEM_STATUS_LABELS[row.status]}</span>

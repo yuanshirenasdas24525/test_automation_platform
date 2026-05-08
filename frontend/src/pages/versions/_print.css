@@ -1,1 +1,56 @@
-/* M4 print styles. Filled in Task 8. */
+/**
+ * VersionBoardPage 打印样式（M4）。
+ * 把 NAV 侧栏 / 顶部 header / Tabs header / 按钮组在打印时藏掉，
+ * 只剩当前 tab 内容。配合 AppLayout / VersionBoardPage 上的 data-attr。
+ */
+@media print {
+  html,
+  body {
+    background: white !important;
+  }
+
+  /* 1) 隐藏 chrome：左边 NAV + 顶部 user header */
+  aside,
+  header[data-app-header] {
+    display: none !important;
+  }
+  main {
+    overflow: visible !important;
+  }
+
+  /* 2) 隐藏 tab header 和带 data-print-hide 的按钮组 */
+  [data-version-tabs-header],
+  [data-print-hide] {
+    display: none !important;
+  }
+
+  /* 3) tab content 撑满 */
+  [data-version-tab-content] {
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  /* 4) 表格 / 卡片避免被切断 */
+  table,
+  .card,
+  [class*="rounded-lg border"] {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* 5) 链接打印时显示 URL */
+  a[href]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+  }
+
+  /* 6) 去阴影，免得灰边干扰打印版式 */
+  .shadow,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg {
+    box-shadow: none !important;
+  }
+}
