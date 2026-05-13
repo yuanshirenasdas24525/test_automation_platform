@@ -9,7 +9,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { versionSummariesApi, versionsApi } from "@/lib/api";
+import { usersApi, versionSummariesApi, versionsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   ALL_BUG_SEVERITIES,
@@ -20,27 +20,33 @@ import type {
   Requirement,
   RequirementSystemStatus,
   TaskType,
+  User,
   VersionTaskBucket,
 } from "@/types/domain";
 
 const STATUS_LABELS: Record<RequirementSystemStatus, string> = {
   approved: "已立项",
   developing: "开发中",
+  pm_review: "产品体验",
   testing: "测试中",
   ready_to_release: "待发版",
+  done: "已完成",
 };
 
 const STATUS_TONES: Record<RequirementSystemStatus, string> = {
   approved: "border-blue-200 bg-blue-50/40",
   developing: "border-amber-200 bg-amber-50/40",
+  pm_review: "border-purple-200 bg-purple-50/40",
   testing: "border-violet-200 bg-violet-50/40",
   ready_to_release: "border-emerald-200 bg-emerald-50/40",
+  done: "border-teal-200 bg-teal-50/40",
 };
 
 const TASK_TYPE_LABELS: Record<TaskType, string> = {
   dev: "开发任务",
   test: "测试任务",
   ui_review: "走查任务",
+  pm_review: "产品体验",
   bug: "Bug",
 };
 
@@ -52,6 +58,20 @@ export function BoardTab({ projectId, versionId }: { projectId: number; versionI
     queryFn: () => versionsApi.board(versionId),
     enabled: !Number.isNaN(versionId),
   });
+
+  // 用户字典：BoardTab 卡片显示 dev/test/pm/ui 4 角色头像时按 id 取名字
+  const usersQuery = useQuery({
+    queryKey: ["users", "active"],
+    queryFn: () => usersApi.list({ is_active: true }),
+    staleTime: 60_000,
+  });
+  const userMap = (usersQuery.data ?? []).reduce<Record<number, User>>(
+    (acc, u) => {
+      acc[u.id] = u;
+      return acc;
+    },
+    {},
+  );
 
   const regenerateMutation = useMutation({
     mutationFn: () => versionSummariesApi.regenerate(versionId),
@@ -106,6 +126,7 @@ export function BoardTab({ projectId, versionId }: { projectId: number; versionI
                 status={status}
                 items={items}
                 projectId={projectId}
+                userMap={userMap}
               />
             );
           })}
@@ -138,10 +159,12 @@ function RequirementColumn({
   status,
   items,
   projectId,
+  userMap,
 }: {
   status: RequirementSystemStatus;
   items: Requirement[];
   projectId: number;
+  userMap: Record<number, User>;
 }) {
   return (
     <div
@@ -160,9 +183,72 @@ function RequirementColumn({
         {items.length === 0 ? (
           <div className="text-xs text-muted-foreground">空</div>
         ) : (
-          items.map((req) => <RequirementCard key={req.id} req={req} projectId={projectId} />)
+          items.map((req) => (
+            <RequirementCard
+              key={req.id}
+              req={req}
+              projectId={projectId}
+              userMap={userMap}
+            />
+          ))
         )}
       </div>
+    </div>
+  );
+}
+
+const ROLE_LABEL: Record<"dev" | "test" | "pm" | "ui", string> = {
+  dev: "开发",
+  test: "测试",
+  pm: "产品",
+  ui: "UI",
+};
+const ROLE_COLOR: Record<"dev" | "test" | "pm" | "ui", string> = {
+  dev: "bg-amber-100 text-amber-800 ring-amber-200",
+  test: "bg-violet-100 text-violet-800 ring-violet-200",
+  pm: "bg-blue-100 text-blue-800 ring-blue-200",
+  ui: "bg-pink-100 text-pink-800 ring-pink-200",
+};
+
+function AssigneeAvatar({
+  role,
+  userIds,
+  userMap,
+}: {
+  role: "dev" | "test" | "pm" | "ui";
+  userIds: number[];
+  userMap: Record<number, User>;
+}) {
+  if (userIds.length === 0) {
+    return (
+      <div
+        className="inline-flex h-5 items-center gap-0.5 rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-400 ring-1 ring-inset ring-slate-200"
+        title={`${ROLE_LABEL[role]}：未指派`}
+      >
+        <span className="font-semibold">{ROLE_LABEL[role]}</span>
+        <span>·</span>
+        <span>未指派</span>
+      </div>
+    );
+  }
+  const names = userIds.map((uid) => {
+    const u = userMap[uid];
+    return u?.full_name || u?.username || `#${uid}`;
+  });
+  const primary = names[0];
+  const extra = names.length - 1;
+  return (
+    <div
+      className={cn(
+        "inline-flex h-5 items-center gap-0.5 rounded-full px-1.5 text-[10px] ring-1 ring-inset",
+        ROLE_COLOR[role],
+      )}
+      title={`${ROLE_LABEL[role]}：${names.join(", ")}`}
+    >
+      <span className="font-semibold">{ROLE_LABEL[role]}</span>
+      <span>·</span>
+      <span className="max-w-[60px] truncate">{primary}</span>
+      {extra > 0 ? <span>+{extra}</span> : null}
     </div>
   );
 }
@@ -170,10 +256,13 @@ function RequirementColumn({
 function RequirementCard({
   req,
   projectId,
+  userMap,
 }: {
   req: Requirement;
   projectId: number;
+  userMap: Record<number, User>;
 }) {
+  const assignees = req.assignees ?? { dev: [], test: [], pm: [], ui: [] };
   return (
     <Link
       to={`/projects/${projectId}/requirements`}
@@ -190,6 +279,16 @@ function RequirementCard({
           biz: {req.business_status}
         </div>
       ) : null}
+      <div className="mt-2 flex flex-wrap gap-1 border-t pt-1.5">
+        {(["dev", "test", "pm", "ui"] as const).map((role) => (
+          <AssigneeAvatar
+            key={role}
+            role={role}
+            userIds={assignees[role] ?? []}
+            userMap={userMap}
+          />
+        ))}
+      </div>
     </Link>
   );
 }

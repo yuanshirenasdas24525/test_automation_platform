@@ -371,15 +371,26 @@ export interface AiRun {
 export type RequirementStatus = "draft" | "approved" | "archived";
 export type RequirementSource = "manual" | "ai_generated";
 
-/** PM 重设计：自动算的开发态。后端 task_service.recompute_requirement_status() 维护。 */
+/** PM 重设计：自动算的开发态。后端 task_service.recompute_requirement_status() 维护。
+ *  M5：pm_review 改为 task-driven；done 仍由 PM 推进。 */
 export const ALL_REQUIREMENT_SYSTEM_STATUSES = [
   "approved",
   "developing",
   "testing",
   "ready_to_release",
+  "pm_review",
+  "done",
 ] as const;
 export type RequirementSystemStatus =
   (typeof ALL_REQUIREMENT_SYSTEM_STATUSES)[number];
+
+/** M5：四角色 assignee（dev/test/pm/ui），值是 user_id 数组。 */
+export interface RequirementAssignees {
+  dev: number[];
+  test: number[];
+  pm: number[];
+  ui: number[];
+}
 
 /** PM 维护的业务态。 */
 export const ALL_REQUIREMENT_BUSINESS_STATUSES = [
@@ -411,6 +422,14 @@ export interface Requirement {
   accepted_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  /** M5：TAPD 化字段 */
+  parent_requirement_id?: number | null;
+  module_id?: number | null;
+  planned_start_at?: string | null;
+  planned_end_at?: string | null;
+  assignees?: RequirementAssignees;
+  /** tree 模式下顶层节点会返回 children；扁平模式不返回 */
+  children?: Requirement[];
 }
 
 export interface RequirementCreate {
@@ -425,6 +444,11 @@ export interface RequirementCreate {
   version_id?: number | null;
   business_status?: RequirementBusinessStatus | null;
   assignee_pm_id?: number | null;
+  parent_requirement_id?: number | null;
+  module_id?: number | null;
+  planned_start_at?: string | null;
+  planned_end_at?: string | null;
+  assignees?: Partial<RequirementAssignees>;
 }
 
 export interface RequirementUpdate {
@@ -438,6 +462,50 @@ export interface RequirementUpdate {
   version_id?: number | null;
   business_status?: RequirementBusinessStatus | null;
   assignee_pm_id?: number | null;
+  parent_requirement_id?: number | null;
+  module_id?: number | null;
+  planned_start_at?: string | null;
+  planned_end_at?: string | null;
+  assignees?: Partial<RequirementAssignees>;
+}
+
+export interface RequirementSplitItem {
+  title: string;
+  description?: string | null;
+  priority?: number;
+  module_id?: number | null;
+  version_id?: number | null;
+  planned_start_at?: string | null;
+  planned_end_at?: string | null;
+}
+
+/** 附件（M5）。 */
+export type AttachmentKind = "link" | "file";
+export interface Attachment {
+  id: number;
+  requirement_id: number;
+  name: string;
+  kind: AttachmentKind;
+  url: string;
+  size_bytes?: number | null;
+  uploaded_by_id?: number | null;
+  created_at?: string | null;
+}
+
+/** 需求编辑历史（M6）。 */
+export interface RequirementEditHistoryChange {
+  field: string;
+  label: string;
+  old: unknown;
+  new: unknown;
+}
+export interface RequirementEditHistory {
+  id: number;
+  requirement_id: number;
+  edited_by_id?: number | null;
+  changes: RequirementEditHistoryChange[];
+  change_summary?: string | null;
+  created_at?: string | null;
 }
 
 /** PM 验收 payload（pm_id 可选；不传时后端不强制校验角色）。 */
@@ -490,6 +558,8 @@ export interface ProjectVersion {
   planned_end_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  /** M5：派生字段，后端按 planned_end_at < now() 且 status 非 released/archived 计算 */
+  is_delayed?: boolean;
 }
 
 export interface VersionCreate {
@@ -571,18 +641,43 @@ export interface UserCreate {
   username: string;
   full_name?: string | null;
   email?: string | null;
+  password?: string | null;
   is_active?: boolean;
   role_codes?: string[] | null;
 }
 
 export interface UserUpdate {
+  username?: string | null;
   full_name?: string | null;
   email?: string | null;
+  password?: string | null;
   is_active?: boolean;
 }
 
-/** Task 类型（database/models/task.py:ALL_TASK_TYPES）。 */
-export const ALL_TASK_TYPES = ["dev", "test", "ui_review", "bug"] as const;
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: User;
+}
+
+export interface ChangePasswordRequest {
+  old_password: string;
+  new_password: string;
+}
+
+/** Task 类型（database/models/task.py:ALL_TASK_TYPES）。
+ *  M5：新增 pm_review = 产品体验 / PM 走查 */
+export const ALL_TASK_TYPES = [
+  "dev",
+  "test",
+  "ui_review",
+  "pm_review",
+  "bug",
+] as const;
 export type TaskType = (typeof ALL_TASK_TYPES)[number];
 
 /** Task 状态机线性枚举。bug 解耦：自己走 dev_doing → closed/passed。 */
@@ -752,6 +847,85 @@ export interface VersionBoard {
   task_counts_by_type: Record<TaskType, VersionTaskBucket>;
 }
 
+// =============================================================================
+// M6：AI 模型配置 + 需求分析文档
+// =============================================================================
+
+export type AiProvider =
+  | "openai"
+  | "anthropic"
+  | "ollama"
+  | "deepseek"
+  | "azure"
+  | "custom";
+
+export interface AiModelConfig {
+  name: string;
+  provider: AiProvider | string;
+  model: string;
+  base_url?: string | null;
+  api_key?: string | null;
+  supports_vision: boolean;
+  is_default: boolean;
+  enabled: boolean;
+  extra: Record<string, unknown>;
+}
+
+export type AiModelConfigUpsert = Omit<AiModelConfig, "name">;
+
+export interface AiModelTestResult {
+  ok: boolean;
+  latency_ms: number;
+  sample: string;
+  error?: string | null;
+}
+
+export interface AnalysisDocument {
+  id: number;
+  requirement_id: number;
+  ai_run_id?: number | null;
+  title: string;
+  current_markdown?: string;
+  current_version: number;
+  model_label?: string | null;
+  created_by_id?: number | null;
+  created_by_label?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  ai_run?: {
+    id: number;
+    status: AiRunStatus;
+    error?: string | null;
+    tokens_in?: number | null;
+    tokens_out?: number | null;
+  };
+}
+
+export interface AnalysisVersion {
+  id: number;
+  document_id: number;
+  version_no: number;
+  markdown?: string;
+  change_summary?: string | null;
+  author_id?: number | null;
+  author_label?: string;
+  is_ai_generated: boolean;
+  created_at?: string | null;
+}
+
+export interface AnalysisTriggerResponse {
+  runs: Array<{
+    run_id: number;
+    model_name: string;
+    model_label: string;
+  }>;
+}
+
+export interface AnalysisDiffResponse {
+  before: AnalysisVersion;
+  after: AnalysisVersion;
+}
+
 /** Requirements 列表过滤参数（GET /api/requirements）。 */
 export interface RequirementListFilters {
   status?: RequirementStatus;
@@ -760,4 +934,7 @@ export interface RequirementListFilters {
   system_status?: RequirementSystemStatus;
   business_status?: RequirementBusinessStatus;
   assignee_pm_id?: number;
+  module_id?: number;
+  /** M5：返回树形（只列顶层 + children），默认扁平 */
+  tree?: boolean;
 }

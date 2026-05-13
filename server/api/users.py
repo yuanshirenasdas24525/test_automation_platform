@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 from typing import List, Optional
+import random
+import string
 
+import bcrypt
 import pydantic
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_
@@ -22,13 +25,16 @@ class UserCreate(pydantic.BaseModel):
     username: str = pydantic.Field(..., min_length=1, max_length=64)
     full_name: Optional[str] = pydantic.Field(None, max_length=128)
     email: Optional[str] = pydantic.Field(None, max_length=255)
+    password: Optional[str] = pydantic.Field(None, min_length=1, max_length=128)
     is_active: bool = True
     role_codes: Optional[List[str]] = None
 
 
 class UserUpdate(pydantic.BaseModel):
+    username: Optional[str] = pydantic.Field(None, max_length=64)
     full_name: Optional[str] = pydantic.Field(None, max_length=128)
     email: Optional[str] = pydantic.Field(None, max_length=255)
+    password: Optional[str] = pydantic.Field(None, min_length=1, max_length=128)
     is_active: Optional[bool] = None
 
 
@@ -53,6 +59,10 @@ def create_user(payload: UserCreate, db: DBDep):
         email=payload.email,
         is_active=payload.is_active,
     )
+    if payload.password:
+        user.password_hash = bcrypt.hashpw(
+            payload.password.encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
     if payload.role_codes:
         roles = db.session.query(Role).filter(Role.code.in_(payload.role_codes)).all()
         user.roles = list(roles)
@@ -98,8 +108,23 @@ def update_user(user_id: int, payload: UserUpdate, db: DBDep):
         raise HTTPException(status_code=404, detail="用户不存在")
 
     data = payload.model_dump(exclude_unset=True)
+
+    if data.get("is_active") is False and user.is_active:
+        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+        user.username = f"{user.username}_{suffix}"
+
+    if "username" in data and data["username"] is not None:
+        user.username = data["username"]
+
+    if "password" in data and data["password"] is not None:
+        user.password_hash = bcrypt.hashpw(
+            data["password"].encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
+
     for k, v in data.items():
-        setattr(user, k, v)
+        if k not in ("username", "password") and v is not None:
+            setattr(user, k, v)
+
     db.session.flush()
     return {"status": "success", "data": user.to_dict()}
 

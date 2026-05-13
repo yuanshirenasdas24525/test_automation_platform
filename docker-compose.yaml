@@ -17,6 +17,7 @@
 # 注释掉的 android_emulator + appium_server 块作为参考。
 # =============================================================================
 x-app-common: &app-common
+  build: .
   image: ghcr.io/yuanshirenasdas24525/test_automation_platform:latest
   environment: &app-env
     TZ: Asia/Shanghai

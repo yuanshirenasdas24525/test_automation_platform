@@ -60,7 +60,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - fonts-noto-cjk：截图 / Allure 报告里的中文字符不变方块
 #   - tzdata：时区数据
 #   - curl/wget/unzip/ca-certificates：拉 Allure CLI
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 切国内镜像源（解决 deb.debian.org 连接不稳定问题）
+RUN sed -i "s@http://deb.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i "s@http://deb.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list 2>/dev/null; \
+    sed -i "s@http://security.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i "s@http://security.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list 2>/dev/null; \
+    apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jre-headless \
         libpq5 \
         default-libmysqlclient-dev pkg-config \
@@ -68,6 +73,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         fonts-noto-cjk \
         tzdata \
         curl wget unzip ca-certificates \
+        libgl1-mesa-glx \
+        tesseract-ocr tesseract-ocr-chi-sim \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

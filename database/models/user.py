@@ -1,7 +1,7 @@
 """User —— 平台用户。
 
 设计：
-  - 内网平台无 auth，本期先建最小字段，M2+ 接入登录时扩展 password_hash / last_login_at
+  - password_hash 存 bcrypt 哈希，nullable 兼容存量无密码用户
   - 角色通过 user_roles 关联 roles 表（多对多），不在 users 表内冗余 role 字段
   - is_active 用于离职 / 停用场景：保留历史记录但不出现在分配下拉
 """
@@ -19,6 +19,7 @@ class User(Base):
     full_name = Column(String(128))
     email = Column(String(255), unique=True, index=True)
     is_active = Column(Boolean, default=True, nullable=False)
+    password_hash = Column(String(128), nullable=True)
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(

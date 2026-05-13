@@ -24,16 +24,40 @@ ALL_REQUIREMENT_STATUSES = {
     REQUIREMENT_STATUS_ARCHIVED,
 }
 
-# system_status —— Task 状态聚合自动算
+# system_status —— approved..ready_to_release + pm_review 由 Task 状态聚合自动算
+# （M5：pm_review 改为 task-driven —— 见 TASK_TYPE_PM_REVIEW）；只有 done 属 PM 推进域，
+# task_service 不会覆盖 done 态。
 REQUIREMENT_SYSTEM_STATUS_APPROVED = "approved"
 REQUIREMENT_SYSTEM_STATUS_DEVELOPING = "developing"
 REQUIREMENT_SYSTEM_STATUS_TESTING = "testing"
 REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE = "ready_to_release"
+REQUIREMENT_SYSTEM_STATUS_PM_REVIEW = "pm_review"
+REQUIREMENT_SYSTEM_STATUS_DONE = "done"
 ALL_REQUIREMENT_SYSTEM_STATUSES = {
     REQUIREMENT_SYSTEM_STATUS_APPROVED,
     REQUIREMENT_SYSTEM_STATUS_DEVELOPING,
     REQUIREMENT_SYSTEM_STATUS_TESTING,
     REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE,
+    REQUIREMENT_SYSTEM_STATUS_PM_REVIEW,
+    REQUIREMENT_SYSTEM_STATUS_DONE,
+}
+# 推进/回退判定用：相邻才能跳，越界 409
+REQUIREMENT_SYSTEM_STATUS_ORDER = (
+    REQUIREMENT_SYSTEM_STATUS_APPROVED,
+    REQUIREMENT_SYSTEM_STATUS_DEVELOPING,
+    REQUIREMENT_SYSTEM_STATUS_TESTING,
+    REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE,
+    REQUIREMENT_SYSTEM_STATUS_PM_REVIEW,
+    REQUIREMENT_SYSTEM_STATUS_DONE,
+)
+# task_service 自动聚合域（done 之外；PM 一旦把需求推到 done，task 变化不会再回退）
+# M5：pm_review 改为 task-driven —— 开发完成 + 存在 open pm_review 任务即派生
+REQUIREMENT_SYSTEM_STATUS_TASK_DRIVEN = {
+    REQUIREMENT_SYSTEM_STATUS_APPROVED,
+    REQUIREMENT_SYSTEM_STATUS_DEVELOPING,
+    REQUIREMENT_SYSTEM_STATUS_TESTING,
+    REQUIREMENT_SYSTEM_STATUS_READY_TO_RELEASE,
+    REQUIREMENT_SYSTEM_STATUS_PM_REVIEW,
 }
 
 # business_status —— PM 维护，决定是否进入发布
@@ -93,8 +117,28 @@ class Requirement(Base):
 
     # 版本归属（M1 加）
     version_id = Column(
-        Integer, ForeignKey("project_versions.id"), nullable=True, index=True
+        Integer, ForeignKey("project_versions.id", ondelete="SET NULL"), nullable=True, index=True
     )
+
+    # M5：父子需求（自引用），删父级联删子；NULL = 顶层
+    parent_requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+
+    # M5：关联模块（复用现有 Module 树）；模块删则置空
+    module_id = Column(
+        Integer,
+        ForeignKey("modules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # M5：预计起止时间
+    planned_start_at = Column(DateTime, nullable=True)
+    planned_end_at = Column(DateTime, nullable=True)
 
     # 自动算（Task 聚合）
     system_status = Column(String(20), nullable=True, index=True)
@@ -120,6 +164,36 @@ class Requirement(Base):
 
     project = relationship("Project")
     ai_run = relationship("AiRun")
+    assignees = relationship(
+        "RequirementAssignee",
+        cascade="all, delete-orphan",
+        back_populates="requirement",
+    )
+    # M5：自引用父子需求；单层模型，但允许 N 个 child
+    parent = relationship(
+        "Requirement",
+        remote_side="Requirement.id",
+        back_populates="children",
+    )
+    children = relationship(
+        "Requirement",
+        back_populates="parent",
+        cascade="all, delete-orphan",
+        single_parent=True,
+    )
+    # M5：附件（外链 / 本地文件）
+    attachments = relationship(
+        "Attachment",
+        cascade="all, delete-orphan",
+        order_by="Attachment.created_at",
+    )
+    # M6：编辑历史
+    edit_histories = relationship(
+        "RequirementEditHistory",
+        cascade="all, delete-orphan",
+        order_by="RequirementEditHistory.created_at",
+        back_populates="requirement",
+    )
 
     def to_dict(self) -> dict:
         return {
@@ -136,6 +210,14 @@ class Requirement(Base):
             "ai_run_id": self.ai_run_id,
             "sort_order": self.sort_order,
             "version_id": self.version_id,
+            "parent_requirement_id": self.parent_requirement_id,
+            "module_id": self.module_id,
+            "planned_start_at": (
+                self.planned_start_at.isoformat() if self.planned_start_at else None
+            ),
+            "planned_end_at": (
+                self.planned_end_at.isoformat() if self.planned_end_at else None
+            ),
             "system_status": self.system_status,
             "business_status": self.business_status,
             "assignee_pm_id": self.assignee_pm_id,

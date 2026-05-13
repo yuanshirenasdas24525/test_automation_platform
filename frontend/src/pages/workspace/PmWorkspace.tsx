@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { DelayedBadge } from "@/components/badges/DelayedBadge";
 import {
   projectsApi,
   requirementsApi,
@@ -37,8 +38,10 @@ import { ALL_REQUIREMENT_SYSTEM_STATUSES } from "@/types/domain";
 const SYSTEM_STATUS_LABELS: Record<RequirementSystemStatus, string> = {
   approved: "已立项",
   developing: "开发中",
+  pm_review: "产品体验",
   testing: "测试中",
   ready_to_release: "待发版",
+  done: "已完成",
 };
 
 export function PmWorkspace({ userId }: { userId: number }) {
@@ -279,12 +282,15 @@ function VersionMilestoneWidget({
       errorMessage={(query.error as Error | undefined)?.message}
       subtitle={
         versionId !== undefined ? (
-          <Link
-            to={`/projects/${projectId}/versions/${versionId}/board?tab=report`}
-            className="text-primary hover:underline"
-          >
-            📊 测试报告
-          </Link>
+          <span className="inline-flex items-center gap-2">
+            <Link
+              to={`/projects/${projectId}/versions/${versionId}/board?tab=report`}
+              className="text-primary hover:underline"
+            >
+              📊 测试报告
+            </Link>
+            {query.data?.version?.is_delayed ? <DelayedBadge /> : null}
+          </span>
         ) : null
       }
       renderItem={(row) => (

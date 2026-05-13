@@ -35,7 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
+import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { tasksApi } from "@/lib/api";
 import { useUserId } from "@/lib/current-user";
 import { ALL_BUG_SEVERITIES } from "@/types/domain";
@@ -221,20 +221,22 @@ export function CreateBugModal({
           </div>
           <div>
             <Label htmlFor="bug-desc">描述</Label>
-            <Textarea
-              id="bug-desc"
-              rows={3}
+            <RichTextEditor
+              value={form.watch("description") ?? ""}
+              onChange={(html) => form.setValue("description", html, { shouldValidate: true })}
+              height={160}
+              toolbar="minimal"
               placeholder="可选：bug 现象 / 影响范围"
-              {...form.register("description")}
             />
           </div>
           <div>
             <Label htmlFor="bug-repro">复现步骤</Label>
-            <Textarea
-              id="bug-repro"
-              rows={3}
+            <RichTextEditor
+              value={form.watch("reproduce_steps") ?? ""}
+              onChange={(html) => form.setValue("reproduce_steps", html, { shouldValidate: true })}
+              height={160}
+              toolbar="minimal"
               placeholder="可选：1. 打开 X；2. 点击 Y；3. ..."
-              {...form.register("reproduce_steps")}
             />
             <div className="mt-1 text-[11px] text-muted-foreground">
               会落到 metadata.reproduce_steps，方便后续按字段查询。

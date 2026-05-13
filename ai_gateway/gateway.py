@@ -519,3 +519,339 @@ def _default_model(provider: str, analysis_mode: str) -> str:
     if provider == "anthropic":
         return "claude-3-5-sonnet-20241022"
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Markdown / Vision / OCR —— 需求分析（M6）用
+#
+# chat_json 强制 JSON 输出，需求分析想要的是 markdown 全文（带 ## 标题、列表、表格），
+# 所以这里另起一组函数：chat_markdown / chat_markdown_with_images。
+# 它们直接以 AiModelConfig 为入参（不再从 config_store 现读），避免和 chat_json 的
+# 旧 provider 路由耦合。
+# ---------------------------------------------------------------------------
+import base64       # noqa: E402  —— 放在文件中段，保留上面的 stdlib imports
+import os           # noqa: E402
+import mimetypes    # noqa: E402
+
+import requests     # noqa: E402
+
+
+class ProviderDoesNotSupportVisionError(ProviderError):
+    """所选 provider/model 不支持图像输入。"""
+
+
+def _system_for_markdown() -> str:
+    return (
+        "你是资深产品经理与软件架构师。请用结构化 Markdown 输出你的分析，"
+        "使用 ## 标题、列表、表格组织内容；不要包裹在代码块里。"
+        "不要返回 JSON，输出的就是最终给人读的 Markdown 文档。"
+    )
+
+
+def _read_image_as_data_url(path: str) -> tuple[str, str]:
+    """返回 (data_url, mime)。"""
+    mime, _ = mimetypes.guess_type(path)
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    with open(path, "rb") as f:
+        b = f.read()
+    return f"data:{mime};base64,{base64.b64encode(b).decode('ascii')}", mime
+
+
+def _read_image_as_base64(path: str) -> tuple[str, str]:
+    mime, _ = mimetypes.guess_type(path)
+    if not mime or not mime.startswith("image/"):
+        mime = "image/png"
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii"), mime
+
+
+def chat_markdown(
+    prompt: str,
+    cfg: "AiModelConfig",   # noqa: F821 — 推迟到运行时 import
+    timeout: int = 120,
+) -> tuple[str, int, int]:
+    """文本 → Markdown。不强制 JSON。返回 (markdown_text, tokens_in, tokens_out)。"""
+    provider = (cfg.provider or "").strip().lower()
+    api_key = (cfg.api_key or "").strip()
+    base_url = (cfg.base_url or "").strip() or None
+    model = (cfg.model or "").strip()
+    max_tokens = int((cfg.extra or {}).get("max_tokens") or 8192)
+
+    if provider in ("openai", "deepseek", "azure"):
+        return _openai_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+    if provider == "anthropic":
+        return _anthropic_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+    if provider == "ollama":
+        return _ollama_markdown(base_url or "http://localhost:11434", model, prompt, max_tokens, timeout)
+    if provider == "custom":
+        # 兼容 OpenAI 协议的自建网关
+        return _openai_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+    raise ProviderError(f"不支持的 provider: {provider!r}")
+
+
+def chat_markdown_with_images(
+    prompt: str,
+    image_paths: list[str],
+    cfg: "AiModelConfig",   # noqa: F821
+    timeout: int = 180,
+) -> tuple[str, int, int]:
+    """带图调用。provider/model 不支持 vision 时抛 ProviderDoesNotSupportVisionError。"""
+    if not cfg.supports_vision:
+        raise ProviderDoesNotSupportVisionError(
+            f"模型 {cfg.name} (provider={cfg.provider}, model={cfg.model}) "
+            f"未声明 supports_vision=True"
+        )
+
+    provider = (cfg.provider or "").strip().lower()
+    api_key = (cfg.api_key or "").strip()
+    base_url = (cfg.base_url or "").strip() or None
+    model = (cfg.model or "").strip()
+    max_tokens = int((cfg.extra or {}).get("max_tokens") or 8192)
+
+    if provider in ("openai", "deepseek", "azure", "custom"):
+        return _openai_vision(api_key, model, prompt, image_paths, base_url, max_tokens, timeout)
+    if provider == "anthropic":
+        return _anthropic_vision(api_key, model, prompt, image_paths, base_url, max_tokens, timeout)
+    if provider == "ollama":
+        return _ollama_vision(base_url or "http://localhost:11434", model, prompt, image_paths, max_tokens, timeout)
+    raise ProviderDoesNotSupportVisionError(
+        f"provider {provider!r} 暂未实现 vision 调用分支"
+    )
+
+
+# ------- OpenAI 兼容 -------
+def _openai_markdown(
+    api_key: str, model: str, prompt: str,
+    base_url: Optional[str], max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    if not api_key:
+        raise ProviderError("openai-compatible: api_key 未配置")
+    url = (base_url or "https://api.openai.com").rstrip("/") + "/v1/chat/completions"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _system_for_markdown()},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.4,
+    }
+    return _openai_call(url, api_key, body, timeout)
+
+
+def _openai_vision(
+    api_key: str, model: str, prompt: str, image_paths: list[str],
+    base_url: Optional[str], max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    if not api_key:
+        raise ProviderError("openai-compatible: api_key 未配置")
+    url = (base_url or "https://api.openai.com").rstrip("/") + "/v1/chat/completions"
+
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for p in image_paths:
+        data_url, _ = _read_image_as_data_url(p)
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _system_for_markdown()},
+            {"role": "user", "content": content},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.4,
+    }
+    return _openai_call(url, api_key, body, timeout)
+
+
+def _openai_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[str, int, int]:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.RequestException as exc:
+        raise ProviderError(f"openai 网络错误：{exc}") from exc
+    if resp.status_code != 200:
+        raise ProviderError(f"openai HTTP {resp.status_code}: {resp.text[:500]}")
+    try:
+        data = resp.json()
+        content = data["choices"][0]["message"]["content"] or ""
+        usage = data.get("usage") or {}
+        return (
+            content,
+            int(usage.get("prompt_tokens") or 0),
+            int(usage.get("completion_tokens") or 0),
+        )
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ProviderError(f"openai 响应格式异常：{resp.text[:500]}") from exc
+
+
+# ------- Anthropic -------
+def _anthropic_markdown(
+    api_key: str, model: str, prompt: str,
+    base_url: Optional[str], max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    if not api_key:
+        raise ProviderError("anthropic api_key 未配置")
+    url = (base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": _system_for_markdown(),
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.4,
+    }
+    return _anthropic_call(url, api_key, body, timeout)
+
+
+def _anthropic_vision(
+    api_key: str, model: str, prompt: str, image_paths: list[str],
+    base_url: Optional[str], max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    if not api_key:
+        raise ProviderError("anthropic api_key 未配置")
+    url = (base_url or "https://api.anthropic.com").rstrip("/") + "/v1/messages"
+
+    blocks: list[dict] = []
+    for p in image_paths:
+        b64, mime = _read_image_as_base64(p)
+        blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": mime, "data": b64},
+        })
+    blocks.append({"type": "text", "text": prompt})
+
+    body = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "system": _system_for_markdown(),
+        "messages": [{"role": "user", "content": blocks}],
+        "temperature": 0.4,
+    }
+    return _anthropic_call(url, api_key, body, timeout)
+
+
+def _anthropic_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[str, int, int]:
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.RequestException as exc:
+        raise ProviderError(f"anthropic 网络错误：{exc}") from exc
+    if resp.status_code != 200:
+        raise ProviderError(f"anthropic HTTP {resp.status_code}: {resp.text[:500]}")
+    try:
+        data = resp.json()
+        text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+        content = "".join(text_blocks)
+        usage = data.get("usage") or {}
+        return (
+            content,
+            int(usage.get("input_tokens") or 0),
+            int(usage.get("output_tokens") or 0),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProviderError(f"anthropic 响应格式异常：{resp.text[:500]}") from exc
+
+
+# ------- Ollama -------
+def _ollama_markdown(
+    base_url: str, model: str, prompt: str, max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    return _ollama_call(base_url, {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _system_for_markdown()},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": 0.4},
+    }, timeout)
+
+
+def _ollama_vision(
+    base_url: str, model: str, prompt: str, image_paths: list[str],
+    max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    images_b64 = []
+    for p in image_paths:
+        b64, _ = _read_image_as_base64(p)
+        images_b64.append(b64)
+    return _ollama_call(base_url, {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _system_for_markdown()},
+            {"role": "user", "content": prompt, "images": images_b64},
+        ],
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": 0.4},
+    }, timeout)
+
+
+def _ollama_call(base_url: str, payload: dict, timeout: int) -> tuple[str, int, int]:
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/api/chat",
+            json=payload,
+            timeout=timeout,
+        )
+    except requests.exceptions.ConnectionError as exc:
+        raise ProviderError(f"无法连接 Ollama ({base_url})：{exc}") from exc
+    except requests.exceptions.Timeout as exc:
+        raise ProviderError(f"Ollama 调用超时 ({timeout}s)") from exc
+    if resp.status_code != 200:
+        raise ProviderError(f"Ollama HTTP {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    content = (data.get("message") or {}).get("content", "") or ""
+    return (
+        content,
+        int(data.get("prompt_eval_count") or 0),
+        int(data.get("eval_count") or 0),
+    )
+
+
+# ---------------------------------------------------------------------------
+# OCR —— vision-不可用时的回退路径
+# ---------------------------------------------------------------------------
+def ocr_extract(image_path: str, lang: str = "chi_sim+eng") -> str:
+    """pytesseract 薄封装。失败返回空串（不抛异常 —— 调用方按"图片未识别"处理）。"""
+    try:
+        import pytesseract       # type: ignore
+        from PIL import Image    # type: ignore
+    except ImportError:
+        logger.warning("ocr_extract: pytesseract / Pillow 未安装，跳过 OCR")
+        return ""
+
+    if not os.path.exists(image_path):
+        logger.warning("ocr_extract: 图像不存在 %s", image_path)
+        return ""
+
+    try:
+        with Image.open(image_path) as img:
+            text = pytesseract.image_to_string(img, lang=lang)
+        return (text or "").strip()
+    except Exception as exc:       # noqa: BLE001
+        logger.warning("ocr_extract failed for %s: %s", image_path, exc)
+        return ""
+
+
+# ---------------------------------------------------------------------------
+# Provider ping —— /api/ai-models/{name}/test 的后端调用
+# ---------------------------------------------------------------------------
+def provider_ping(cfg: "AiModelConfig") -> str:    # noqa: F821
+    """短测试调用，返回模型回复的前几十字。失败抛 ProviderError。"""
+    text, _, _ = chat_markdown(
+        prompt="请回复『ok』两个字，不需要别的内容。",
+        cfg=cfg,
+        timeout=30,
+    )
+    return (text or "").strip()

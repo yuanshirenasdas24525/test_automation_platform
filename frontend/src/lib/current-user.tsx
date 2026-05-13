@@ -1,10 +1,8 @@
 /**
- * 当前用户 Context —— 平台无 auth 的临时方案。
+ * 当前用户 Context —— 平台 JWT 认证的数据层。
  *
- * 顶部 `CurrentUserSwitcher` 让用户从 /api/users 列表里挑一个"扮演"对象，选中后
- * 完整 User 对象 + 当前激活角色写入 localStorage，供工作台/任务列表等地方拼参数
- * （`assignee_dev_id=me` → 实际 user.id）。后续接真 auth 时只换 Provider 数据源、
- * 不动消费侧。
+ * 登录后完整 User 对象 + token 写入 localStorage。
+ * 当前激活角色写入 localStorage，供工作台/任务列表等地方拼参数。
  *
  * activeRole 处理多角色用户：只有一个角色直接用；多个角色时用户在 WorkspaceSwitcher
  * 里选；保存到 localStorage 让刷新后保持。
@@ -21,6 +19,7 @@ import type { ReactNode } from "react";
 
 import type { RoleCode, User } from "@/types/domain";
 import { ALL_ROLE_CODES } from "@/types/domain";
+import { setToken } from "@/lib/api";
 
 const STORAGE_KEY = "pm.currentUser";
 
@@ -76,7 +75,10 @@ export function CurrentUserProvider({ children }: { children: ReactNode }) {
 
   const setUser = useCallback((user: User | null) => {
     setState((prev) => {
-      if (!user) return { user: null, activeRole: null };
+      if (!user) {
+        setToken(null);
+        return { user: null, activeRole: null };
+      }
       // 选用户时如果之前的 activeRole 不在新用户的角色里，回退到首个有效角色
       const validRoles = (user.role_codes ?? []).filter((c) =>
         (ALL_ROLE_CODES as readonly string[]).includes(c),

@@ -1,10 +1,13 @@
 """/api/projects/{project_id}/versions/* —— 版本迭代 CRUD。"""
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 import pydantic
 from fastapi import APIRouter, HTTPException, Query
+
+from sqlalchemy.orm import selectinload
 
 from server.api.deps import DBDep
 from database.models import (
@@ -18,9 +21,41 @@ from database.models import (
     ALL_TASK_STATUSES,
     ALL_BUG_SEVERITIES,
     TASK_TYPE_BUG,
+    VERSION_STATUS_RELEASED,
+    VERSION_STATUS_ARCHIVED,
 )
 
 router = APIRouter()
+
+
+# 迭代延期：planned_end_at 已过 + 当前不在 released/archived 终态
+_NON_DELAYABLE_STATUSES = {VERSION_STATUS_RELEASED, VERSION_STATUS_ARCHIVED}
+
+
+def _is_delayed(v: ProjectVersion) -> bool:
+    return (
+        v.planned_end_at is not None
+        and v.planned_end_at < datetime.utcnow()
+        and v.status not in _NON_DELAYABLE_STATUSES
+    )
+
+
+def _version_dict(v: ProjectVersion) -> dict:
+    """统一序列化：to_dict() + is_delayed 派生字段。"""
+    out = v.to_dict()
+    out["is_delayed"] = _is_delayed(v)
+    return out
+
+
+def _requirement_with_assignees(r: Requirement) -> dict:
+    """to_dict() + assignees 按 role 分桶。"""
+    out = r.to_dict()
+    by_role: dict[str, list[int]] = {"dev": [], "test": [], "pm": [], "ui": []}
+    for a in r.assignees:
+        if a.role in by_role:
+            by_role[a.role].append(a.user_id)
+    out["assignees"] = by_role
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +116,7 @@ def list_versions(
         q = q.filter(ProjectVersion.status == status)
 
     rows = q.order_by(ProjectVersion.sort_order.desc(), ProjectVersion.created_at.desc()).all()
-    return {"status": "success", "data": [r.to_dict() for r in rows]}
+    return {"status": "success", "data": [_version_dict(r) for r in rows]}
 
 
 @router.post("/projects/{project_id}/versions")
@@ -132,7 +167,7 @@ def create_version(project_id: int, payload: VersionCreate, db: DBDep):
     db.session.refresh(v)
     db.commit()
 
-    return {"status": "success", "data": v.to_dict()}
+    return {"status": "success", "data": _version_dict(v)}
 
 
 @router.get("/projects/{project_id}/versions/{version_id}")
@@ -144,7 +179,7 @@ def get_version(project_id: int, version_id: int, db: DBDep):
     )
     if v is None:
         raise HTTPException(status_code=404, detail="版本不存在")
-    return {"status": "success", "data": v.to_dict()}
+    return {"status": "success", "data": _version_dict(v)}
 
 
 @router.put("/projects/{project_id}/versions/{version_id}")
@@ -183,7 +218,7 @@ def update_version(project_id: int, version_id: int, payload: VersionUpdate, db:
         v.planned_end_at = _parse_dt(payload.planned_end_at)
 
     db.commit()
-    return {"status": "success", "data": v.to_dict()}
+    return {"status": "success", "data": _version_dict(v)}
 
 
 @router.delete("/projects/{project_id}/versions/{version_id}")
@@ -195,9 +230,20 @@ def delete_version(project_id: int, version_id: int, db: DBDep):
     )
     if v is None:
         raise HTTPException(status_code=404, detail="版本不存在")
+
+    linked_count = (
+        db.session.query(Requirement)
+        .filter(Requirement.version_id == version_id)
+        .count()
+    )
+    if linked_count > 0:
+        db.session.query(Requirement).filter(
+            Requirement.version_id == version_id
+        ).update({Requirement.version_id: None}, synchronize_session=False)
+
     db.session.delete(v)
     db.commit()
-    return {"status": "success", "message": "已删除"}
+    return {"status": "success", "message": "已删除", "data": {"unlinked_requirements": linked_count}}
 
 
 @router.put("/projects/{project_id}/versions/{version_id}/modules")
@@ -221,7 +267,7 @@ def update_version_modules(project_id: int, version_id: int, payload: VersionMod
     v.associated_modules = modules
     db.commit()
 
-    return {"status": "success", "data": v.to_dict()}
+    return {"status": "success", "data": _version_dict(v)}
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +281,7 @@ def version_board(version_id: int, db: DBDep):
 
     reqs = (
         db.session.query(Requirement)
+        .options(selectinload(Requirement.assignees))
         .filter(Requirement.version_id == version_id)
         .order_by(Requirement.sort_order.asc(), Requirement.id.asc())
         .all()
@@ -246,7 +293,7 @@ def version_board(version_id: int, db: DBDep):
     requirements_by_status["unassigned"] = []  # system_status IS NULL 的桶
     for r in reqs:
         bucket = r.system_status if r.system_status in requirements_by_status else "unassigned"
-        requirements_by_status[bucket].append(r.to_dict())
+        requirements_by_status[bucket].append(_requirement_with_assignees(r))
 
     # Task 计数：先按 requirement.version_id 拉一次，避免 N+1
     task_rows = (
@@ -283,7 +330,7 @@ def version_board(version_id: int, db: DBDep):
     return {
         "status": "success",
         "data": {
-            "version": v.to_dict(),
+            "version": _version_dict(v),
             "requirements_by_status": requirements_by_status,
             "task_counts_by_type": task_counts_by_type,
         },

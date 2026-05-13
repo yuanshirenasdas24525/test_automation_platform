@@ -37,7 +37,10 @@ from fastapi.staticfiles import StaticFiles
 
 from server.api import (
     ai_router,
+    ai_models_router,
     app_packages_router,
+    attachments_router,
+    auth_router,
     cases_router,
     config_router,
     content_router,
@@ -46,6 +49,7 @@ from server.api import (
     modules_router,
     project_versions_router,
     projects_router,
+    requirement_analysis_router,
     requirements_router,
     reports_router,
     roles_router,
@@ -66,6 +70,7 @@ from server.api import (
 # ---------------------------------------------------------------------------
 BASE_DIR = _PROJECT_ROOT
 REPORTS_DIR = BASE_DIR / "data" / "reports"
+ATTACHMENTS_DIR = BASE_DIR / "data" / "attachments"
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 
 
@@ -75,6 +80,7 @@ FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
     # 配置中心走『推荐配置项面板』模式：启动时 *不* 写库，前端按
     # /api/config/schema/{category} 拉推荐项展示，用户决定要不要『一键填入』并保存。
     # （早期版本曾在这里 seed 五节『系统配置』并打 is_system=True 禁删，已彻底移除：
@@ -127,6 +133,7 @@ def health():
 # 业务路由：统一挂 /api
 # ---------------------------------------------------------------------------
 for router in (
+    auth_router,
     projects_router,
     modules_router,
     project_versions_router,
@@ -140,10 +147,13 @@ for router in (
     system_router,
     devices_router,
     app_packages_router,
+    attachments_router,
     requirements_router,
+    requirement_analysis_router,
     tasks_router,
     test_plans_router,
     ai_router,
+    ai_models_router,
     users_router,
     version_summaries_router,
 ):
@@ -155,6 +165,11 @@ for router in (
 # ---------------------------------------------------------------------------
 # Allure 报告：Celery worker 跑完会把产物写到这里，前端拿 /reports/<task_id>/ 打开
 app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
+
+# 需求附件：用户上传到 data/attachments/req_{id}/，前端用 /attachments/req_{id}/{name} 访问。
+# StaticFiles 要求 import 时目录就存在，所以这里先 mkdir 一次（lifespan 里还会再 ensure）。
+ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/attachments", StaticFiles(directory=str(ATTACHMENTS_DIR)), name="attachments")
 
 # React 前端 dist：开发期可能还没 build，mount 前先判一下
 if (FRONTEND_DIST / "assets").is_dir():

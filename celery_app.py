@@ -26,8 +26,8 @@ def _env_truthy(name: str) -> bool:
 
 celery_app = Celery(
     "test_runner",
-    broker="redis://127.0.0.1:6379/0",
-    backend="redis://127.0.0.1:6379/1",
+    broker=os.getenv("CELERY_BROKER_URL", "redis://127.0.0.1:6379/0"),
+    backend=os.getenv("CELERY_RESULT_BACKEND", "redis://127.0.0.1:6379/1"),
 )
 
 # EAGER 模式：.delay/.apply_async 改成同步执行；方便本地自测 & 调试

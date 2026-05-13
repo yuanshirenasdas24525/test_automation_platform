@@ -104,19 +104,20 @@ class HttpRequestStepRunner(BaseStepRunner):
         body = self._resolve_value(params_in, ctx)
         files = self.processor.handler_files(file_path) if file_path else None
 
-        # 2) 记录进 result & allure
+        # 2) 记录 Allure: Set up（变量池）+ Test body（请求详情）
         result.action = f"{method} {url}"
         result.target = url
-        result.input_data = {
-            "method": method,
-            "url": url,
-            "headers": headers,
-            "data_type": data_type,
-            "body": body,
-        }
+        result.input_data = {"method": method, "url": url, "headers": headers, "body": body}
         set_allure_link(url)
-        add_allure_step(f"Request @ {time.strftime('%Y-%m-%d %H:%M:%S')}",
-                        result.input_data)
+        ctx_vars_display = {k: v for k, v in ctx.vars.items()
+                            if not k.startswith("_")}
+        add_allure_step("Set up", {"变量池": ctx_vars_display or "(空)"})
+        add_allure_step("Test body", {
+            "请求方法": method,
+            "请求地址": url,
+            "请求头": headers,
+            "请求参数": body,
+        })
 
         # 3) 发请求
         timeout = float(step.get("timeout") or 30)
@@ -156,11 +157,32 @@ class HttpRequestStepRunner(BaseStepRunner):
             replaced = str(replaced)
         if replaced.startswith(("http://", "https://")):
             return replaced
+        base = self._get_base_url()
+        result = f"{base.rstrip('/')}/{replaced.lstrip('/')}" if base else replaced
+        LOGGER.info(f"[_resolve_url] path={path} base={base} result={result}")
+        return result
+
+    def _get_base_url(self) -> str:
+        # 1) 从 config_center 配置中心拿
         try:
-            base = (self.processor.base_url or {}).get("url", "")
+            url = (self.processor.base_url or {}).get("url", "")
+            if url:
+                LOGGER.info(f"[_get_base_url] 配置中心命中: {url}")
+                return url
+        except Exception as e:
+            LOGGER.warning(f"[_get_base_url] 配置中心失败: {e}")
+        # 2) 兜底：从 object_conf.ini [host] 拿
+        try:
+            from utils.read_conf import read_conf
+            url = read_conf.get_dict("host").get("url", "")
+            if url:
+                LOGGER.info(f"[_get_base_url] object_conf.ini 兜底: {url}")
+                return url
         except Exception:
-            base = ""
-        return f"{base.rstrip('/')}/{replaced.lstrip('/')}" if base else replaced
+            pass
+        # 3) 最后兜底：环境变量
+        import os
+        return os.getenv("CONFIG_HOST_URL", "")
 
     def _resolve_dict(self, d: Any, ctx: ExecutionContext) -> dict:
         if not d:
@@ -231,6 +253,13 @@ class HttpRequestStepRunner(BaseStepRunner):
         data_type: str,
         timeout: float,
     ) -> tuple[Any, int]:
+        # JSON 字符串自动转 dict，避免 requests 的 json= 参数双重序列化导致 422
+        if data_type == "application/json" and isinstance(body, str):
+            try:
+                body = json.loads(body)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         kwargs: dict = {"method": method, "url": url, "headers": headers, "timeout": timeout}
 
         if data_type == "application/x-www-form-urlencoded":
@@ -307,8 +336,9 @@ class HttpRequestStepRunner(BaseStepRunner):
         response_body: Any,
         status_code: int,
     ) -> None:
-        """执行断言列表，任一失败即 raise AssertionError。"""
+        """执行所有断言，收集全部失败后统一报告。"""
         passed: list[str] = []
+        failures: list[str] = []
         for item in asserts or []:
             if not isinstance(item, dict):
                 continue
@@ -318,43 +348,63 @@ class HttpRequestStepRunner(BaseStepRunner):
 
             actual = self._resolve_assertion_actual(target, response_body, status_code)
 
-            if t == "equal":
-                assert actual == expected, f"[equal] {target}: {actual!r} != {expected!r}"
-            elif t in ("not_equal", "ne"):
-                assert actual != expected, f"[not_equal] {target}: {actual!r} == {expected!r}"
-            elif t == "contains":
-                assert expected in (actual or ""), f"[contains] {target}: {expected!r} not in {actual!r}"
-            elif t == "not_contains":
-                assert expected not in (actual or ""), f"[not_contains] {target}: {expected!r} in {actual!r}"
-            elif t == "jsonpath":
-                # target 就是 jsonpath，actual 已是取出的值
-                assert actual == expected, f"[jsonpath] {target}: {actual!r} != {expected!r}"
-            elif t in ("gt", "greater_than"):
-                assert actual is not None and actual > expected, f"[gt] {target}: {actual!r} <= {expected!r}"
-            elif t in ("lt", "less_than"):
-                assert actual is not None and actual < expected, f"[lt] {target}: {actual!r} >= {expected!r}"
-            elif t in ("in",):
-                assert actual in expected, f"[in] {target}: {actual!r} not in {expected!r}"
-            elif t == "regex":
-                import re
-                assert expected and re.search(expected, str(actual or "")), \
-                    f"[regex] {target}: pattern {expected!r} not matched in {actual!r}"
-            elif t == "is_null":
-                assert actual is None, f"[is_null] {target}: {actual!r} is not None"
-            elif t == "is_not_null":
-                assert actual is not None, f"[is_not_null] {target}: None"
-            elif t == "raw":
-                # 老数据迁移兜底：把 expected 当 JSONPath/value 试一下 equal
-                assert actual == expected, f"[raw] {target}: {actual!r} != {expected!r}"
-            else:
-                raise ValueError(f"不支持的断言类型: {t!r}")
+            try:
+                if t == "equal":
+                    assert actual == expected, f"[equal] {target}: {actual!r} != {expected!r}"
+                elif t in ("not_equal", "ne"):
+                    assert actual != expected, f"[not_equal] {target}: {actual!r} == {expected!r}"
+                elif t == "contains":
+                    assert expected in (actual or ""), f"[contains] {target}: {expected!r} not in {actual!r}"
+                elif t == "not_contains":
+                    assert expected not in (actual or ""), f"[not_contains] {target}: {expected!r} in {actual!r}"
+                elif t == "jsonpath":
+                    assert actual == expected, f"[jsonpath] {target}: {actual!r} != {expected!r}"
+                elif t in ("gt", "greater_than"):
+                    assert actual is not None and actual > expected, f"[gt] {target}: {actual!r} <= {expected!r}"
+                elif t in ("lt", "less_than"):
+                    assert actual is not None and actual < expected, f"[lt] {target}: {actual!r} >= {expected!r}"
+                elif t in ("in",):
+                    assert actual in expected, f"[in] {target}: {actual!r} not in {expected!r}"
+                elif t == "regex":
+                    import re
+                    assert expected and re.search(expected, str(actual or "")), \
+                        f"[regex] {target}: pattern {expected!r} not matched in {actual!r}"
+                elif t == "is_null":
+                    assert actual is None, f"[is_null] {target}: {actual!r} is not None"
+                elif t == "is_not_null":
+                    assert actual is not None, f"[is_not_null] {target}: None"
+                elif t == "raw":
+                    assert actual == expected, f"[raw] {target}: {actual!r} != {expected!r}"
+                else:
+                    failures.append(f"不支持的断言类型: {t!r}")
+                    continue
 
-            passed.append(f"[{t}] {target} OK")
-            add_allure_step("Assertion", {"type": t, "target": target,
-                                          "expected": expected, "actual": actual})
+                passed.append(f"[{t}] {target} OK")
+                add_allure_step("Assertion", {"type": t, "target": target,
+                                              "expected": expected, "actual": actual,
+                                              "status": "passed"})
+
+            except AssertionError as e:
+                msg = str(e)
+                failures.append(msg)
+                add_allure_step("Assertion", {"type": t, "target": target,
+                                              "expected": expected, "actual": actual,
+                                              "status": "failed", "error": msg})
+
+        if failures:
+            add_allure_step("断言结果", {
+                "通过": f"{len(passed)} 条",
+                "失败": f"{len(failures)} 条",
+                "详情": failures,
+            })
+            raise AssertionError(
+                f"断言失败 {len(failures)}/{len(passed) + len(failures)} 条:\n"
+                + "\n".join(failures)
+            )
 
         if passed:
-            LOGGER.info("断言通过 %s 条", len(passed))
+            LOGGER.info("断言全部通过 %s 条", len(passed))
+            add_allure_step("断言结果", {"通过": f"{len(passed)} 条", "状态": "全部通过"})
 
     @staticmethod
     def _resolve_assertion_actual(target: str, body: Any, status_code: int) -> Any:

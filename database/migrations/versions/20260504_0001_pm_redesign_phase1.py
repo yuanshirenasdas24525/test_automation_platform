@@ -133,7 +133,12 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 6. requirements 加 5 字段（SQLite 用 batch_alter_table）
     # ------------------------------------------------------------------
-    _req_cols = {c["name"] for c in op.get_bind().execute(sa.text("PRAGMA table_info(requirements)")).mappings().all()} if dialect == "sqlite" else set()
+    if dialect == "sqlite":
+        _req_cols = {c["name"] for c in op.get_bind().execute(sa.text("PRAGMA table_info(requirements)")).mappings().all()}
+    elif dialect == "postgresql":
+        _req_cols = {c["column_name"] for c in op.get_bind().execute(sa.text("SELECT column_name FROM information_schema.columns WHERE table_name = 'requirements'")).mappings().all()}
+    else:
+        _req_cols = set()
     with op.batch_alter_table("requirements") as batch:
         if "version_id" not in _req_cols:
             batch.add_column(sa.Column("version_id", sa.Integer(), nullable=True))
@@ -157,7 +162,12 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 7. test_cases 加 version_id（SQLite 用 batch_alter_table）
     # ------------------------------------------------------------------
-    _tc_cols = {c["name"] for c in op.get_bind().execute(sa.text("PRAGMA table_info(test_cases)")).mappings().all()} if dialect == "sqlite" else set()
+    if dialect == "sqlite":
+        _tc_cols = {c["name"] for c in op.get_bind().execute(sa.text("PRAGMA table_info(test_cases)")).mappings().all()}
+    elif dialect == "postgresql":
+        _tc_cols = {c["column_name"] for c in op.get_bind().execute(sa.text("SELECT column_name FROM information_schema.columns WHERE table_name = 'test_cases'")).mappings().all()}
+    else:
+        _tc_cols = set()
     if "version_id" not in _tc_cols:
         with op.batch_alter_table("test_cases") as batch:
             batch.add_column(sa.Column("version_id", sa.Integer(), nullable=True))

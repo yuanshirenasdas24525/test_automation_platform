@@ -14,9 +14,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sys
 import traceback
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
+
+# celery worker fork 子进程时 sys.path 可能不含项目根，导致 handler 里
+# `from server.x import y` 失败（ModuleNotFoundError: No module named 'server'）。
+# 显式把项目根（这个文件的祖父目录）插到 sys.path 最前面，免依赖 cwd。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from celery_app import celery_app
 from utils.logger import LOGGER
@@ -429,9 +438,178 @@ def _parse_dt(s):
     return None
 
 
+def _handle_requirement_analyze(run: "AiRun", session) -> dict:
+    """M6 需求分析（基于已有 requirement_id 拉上下文 → 输出 Markdown 文档）。
+
+    input_payload 形如：
+      {
+        "requirement_id": 42,
+        "model_name": "gpt-4o",          # AiModelConfig.name
+        "user_prompt": "重点关注性能",   # 可选
+        "document_title": "...",         # 可选；不给就自动拼
+      }
+
+    输出：
+      - 新增一行 requirement_analysis_documents（current_markdown=md, current_version=1）
+      - 同时插一条 requirement_analysis_versions（version_no=1, is_ai_generated=True）
+      - ai_run.output_payload = {document_id, version_no, summary, image_strategy}
+    """
+    # celery prefork 子进程偶发 sys.path 不含项目根（即使父进程已注入），
+    # 在 handler 入口处再保险一次。
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+
+    from datetime import datetime as _dt
+
+    from database.models import (
+        RequirementAnalysisDocument,
+        RequirementAnalysisVersion,
+    )
+    from server.services.ai_model_service import get_ai_model
+    from server.services.requirement_context_builder import (
+        build_requirement_context,
+        render_context_as_text,
+    )
+    from ai_gateway.gateway import (
+        ProviderDoesNotSupportVisionError,
+        _load_prompt,
+        _render_prompt,
+        chat_markdown,
+        chat_markdown_with_images,
+        ocr_extract,
+    )
+
+    payload = run.input_payload or {}
+    requirement_id = payload.get("requirement_id")
+    model_name = (payload.get("model_name") or "").strip()
+    user_prompt = (payload.get("user_prompt") or "").strip()
+    title_override = (payload.get("document_title") or "").strip()
+
+    if not requirement_id:
+        raise ValueError("input_payload.requirement_id 必填")
+    if not model_name:
+        raise ValueError("input_payload.model_name 必填")
+
+    cfg = get_ai_model(session, model_name)
+    if cfg is None:
+        raise ValueError(f"AI 模型 {model_name!r} 未配置（请到配置中心 → AI 添加）")
+    if not cfg.enabled:
+        raise ValueError(f"AI 模型 {model_name!r} 未启用")
+
+    # ── 1. 构建需求上下文 ────────────────────────────────────────────
+    ctx = build_requirement_context(session, int(requirement_id))
+    placeholders = render_context_as_text(ctx)
+
+    # ── 2. 图片处理：vision 优先，OCR 回退 ──────────────────────────────
+    image_paths = [img.abs_path for img in ctx.images]
+    use_vision = bool(cfg.supports_vision and image_paths)
+
+    ocr_excerpts_text = "（无）"
+    if image_paths and not use_vision:
+        chunks: list[str] = []
+        for img in ctx.images:
+            txt = ocr_extract(img.abs_path)
+            if txt:
+                chunks.append(f"### {img.name}\n```\n{txt[:2000]}\n```")
+            else:
+                chunks.append(f"### {img.name}\n> ⚠️ OCR 未提取到文本")
+        ocr_excerpts_text = "\n\n".join(chunks) if chunks else "（无）"
+
+    placeholders["OCR_EXCERPTS"] = ocr_excerpts_text
+    placeholders["USER_PROMPT"] = user_prompt or "（用户未补充）"
+
+    # ── 3. 渲染 prompt ─────────────────────────────────────────────
+    template = _load_prompt("requirement_analysis_v2")
+    prompt = _render_prompt(template, placeholders)
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    # ── 4. 调用 LLM ────────────────────────────────────────────────
+    try:
+        if use_vision:
+            markdown, tokens_in, tokens_out = chat_markdown_with_images(
+                prompt, image_paths, cfg, timeout=180,
+            )
+            image_strategy = "vision"
+        else:
+            markdown, tokens_in, tokens_out = chat_markdown(
+                prompt, cfg, timeout=120,
+            )
+            image_strategy = "ocr" if image_paths else "none"
+    except ProviderDoesNotSupportVisionError as exc:
+        LOGGER.warning("[ai_task] vision 不支持，回退 OCR: %s", exc)
+        # 重新走 OCR 分支
+        if image_paths:
+            chunks = []
+            for img in ctx.images:
+                txt = ocr_extract(img.abs_path)
+                if txt:
+                    chunks.append(f"### {img.name}\n```\n{txt[:2000]}\n```")
+            placeholders["OCR_EXCERPTS"] = "\n\n".join(chunks) or "（无）"
+            prompt = _render_prompt(template, placeholders)
+            prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        markdown, tokens_in, tokens_out = chat_markdown(prompt, cfg, timeout=120)
+        image_strategy = "ocr_fallback"
+
+    if not markdown.strip():
+        raise ValueError("LLM 返回空 Markdown")
+
+    # ── 5. 写文档 + v1 ─────────────────────────────────────────────
+    model_label = f"{cfg.provider} / {cfg.model}"
+    if title_override:
+        title = title_override[:200]
+    else:
+        title = f"AI 分析 - {model_label} - {_dt.now().strftime('%Y-%m-%d %H:%M')}"[:200]
+
+    doc = RequirementAnalysisDocument(
+        requirement_id=int(requirement_id),
+        ai_run_id=run.id,
+        title=title,
+        current_markdown=markdown,
+        current_version=1,
+        model_label=model_label,
+        created_by_id=getattr(run, "created_by_id", None) or payload.get("created_by_id"),
+    )
+    session.add(doc)
+    session.flush()
+
+    version = RequirementAnalysisVersion(
+        document_id=doc.id,
+        version_no=1,
+        markdown=markdown,
+        change_summary="AI 初版生成",
+        author_id=doc.created_by_id,
+        is_ai_generated=True,
+    )
+    session.add(version)
+    session.flush()
+
+    summary_excerpt = markdown.strip()[:200]
+    return {
+        "output": {
+            "document_id": doc.id,
+            "version_no": 1,
+            "summary": summary_excerpt,
+            "image_strategy": image_strategy,
+            "image_count": len(image_paths),
+            "model_label": model_label,
+        },
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": None,
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "prompt_hash": prompt_hash,
+        "prompt_version": "v2",
+    }
+
+
 # Feature → handler 注册表。新增 feature 时在这里加一行。
 _HANDLERS = {
     "requirement_parse": _handle_requirement_parse,
+    "requirement_analyze": _handle_requirement_analyze,    # M6 新流程
     "test_plan": _handle_test_plan,
     # "functional_case_gen": _handle_functional_case_gen,
     # ... 后续 feature 在这里挂

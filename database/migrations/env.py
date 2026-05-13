@@ -32,15 +32,28 @@ from database.base import Base
 
 # ---------- 从 object_conf.ini 组装 DB URL ----------
 def _resolve_db_url() -> str:
+    from database.engine import build_db_url
+
     # 优先级 1：环境变量 ALEMBIC_DB_URL
     env_url = os.getenv("ALEMBIC_DB_URL")
     if env_url:
         return env_url
 
-    # 优先级 2：从 object_conf.ini 读取某个 section
-    section = os.getenv("ALEMBIC_DB_SECTION", "sqlite_local")
+    # 优先级 2：Docker 环境变量 DB_HOST 等 → 自动拼 postgresql URL
+    db_host = os.getenv("DB_HOST")
+    if db_host:
+        return build_db_url({
+            "type": "postgresql",
+            "host": db_host,
+            "port": os.getenv("DB_PORT", "5432"),
+            "user": os.getenv("DB_USER", "tap"),
+            "password": os.getenv("DB_PASSWORD", "tap_pass"),
+            "database": os.getenv("DB_NAME", "tap"),
+        })
+
+    # 优先级 3：从 object_conf.ini 读取某个 section
+    section = os.getenv("ALEMBIC_DB_SECTION", "postgres_local")
     from utils.read_conf import read_conf
-    from database.engine import build_db_url
 
     db_conf = read_conf.get_dict(section)
     return build_db_url(db_conf)

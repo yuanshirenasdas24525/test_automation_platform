@@ -21,6 +21,7 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
+import { DelayedBadge } from "@/components/badges/DelayedBadge";
 import { projectsApi, versionsApi } from "@/lib/api";
 
 import { ArchiveTab } from "./tabs/ArchiveTab";
@@ -93,8 +94,9 @@ export function VersionBoardPage() {
           </div>
           <div>
             <div className="text-xs text-muted-foreground">版本</div>
-            <div className="font-semibold">
+            <div className="flex items-center gap-2 font-semibold">
               {version.display_name || version.version_name}
+              {version.is_delayed ? <DelayedBadge /> : null}
             </div>
           </div>
           <div>

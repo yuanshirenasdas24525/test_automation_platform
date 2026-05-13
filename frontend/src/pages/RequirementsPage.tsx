@@ -1,17 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft,
-  CheckCircle2,
-  CircleDashed,
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  GitFork,
   Loader2,
   Pencil,
   Plus,
+  Search,
   Sparkles,
   Trash2,
-  XCircle,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -35,15 +39,31 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
+import { AttachmentList } from "@/components/attachments/AttachmentList";
+import { PriorityBadge } from "@/components/badges/PriorityBadge";
+import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBadge";
+import { RichTextEditor } from "@/components/editor/RichTextEditor";
+import { AssigneePicker } from "@/components/pickers/AssigneePicker";
+import { AiAnalysisLauncherDialog } from "./requirements/dialogs/AiAnalysisLauncherDialog";
+import { AnalysisDocumentListDialog } from "./requirements/dialogs/AnalysisDocumentListDialog";
+import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { cn } from "@/lib/utils";
+import { useUserId } from "@/lib/current-user";
 import {
   ApiError,
   aiApi,
+  modulesApi,
   projectsApi,
   requirementsApi,
+  versionsApi,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import type { AiRun, Requirement, RequirementStatus } from "@/types/domain";
+import type {
+  AiRun,
+  Requirement,
+  RequirementSystemStatus,
+} from "@/types/domain";
+import { ALL_REQUIREMENT_SYSTEM_STATUSES } from "@/types/domain";
 
 /**
  * 需求管理页（项目级）。
@@ -57,26 +77,28 @@ import type { AiRun, Requirement, RequirementStatus } from "@/types/domain";
  * AI 生成的会带 source=ai_generated 徽章 + 链回到 ai_run 详情（debug 用）。
  */
 
-const STATUS_META: Record<
-  RequirementStatus,
-  { label: string; tone: string; icon: React.ComponentType<{ className?: string }> }
-> = {
-  draft: {
-    label: "草稿",
-    tone: "text-amber-700 bg-amber-50 ring-amber-200",
-    icon: CircleDashed,
-  },
-  approved: {
-    label: "已确认",
-    tone: "text-emerald-700 bg-emerald-50 ring-emerald-200",
-    icon: CheckCircle2,
-  },
-  archived: {
-    label: "归档",
-    tone: "text-slate-600 bg-slate-100 ring-slate-200",
-    icon: XCircle,
-  },
+const SYSTEM_STATUS_LABEL_CN: Record<RequirementSystemStatus, string> = {
+  approved: "已立项",
+  developing: "开发中",
+  pm_review: "产品体验",
+  testing: "测试中",
+  ready_to_release: "待发版",
+  done: "已完成",
 };
+
+const PRIORITY_OPTIONS = [
+  { value: "0", label: "紧急" },
+  { value: "1", label: "高" },
+  { value: "2", label: "中" },
+  { value: "3", label: "低" },
+] as const;
+
+function formatPlannedRange(req: Requirement): string {
+  const s = req.planned_start_at?.slice(0, 10);
+  const e = req.planned_end_at?.slice(0, 10);
+  if (!s && !e) return "—";
+  return `${s ?? "—"} ~ ${e ?? "—"}`;
+}
 
 export function RequirementsPage() {
   const { id } = useParams<{ id: string }>();
@@ -84,13 +106,21 @@ export function RequirementsPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [moduleFilter, setModuleFilter] = useState<string>("all");
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [systemStatusFilter, setSystemStatusFilter] = useState<string>("all");
+  const [versionFilter, setVersionFilter] = useState<string>("all");
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editing, setEditing] = useState<
     | { mode: "create" }
     | { mode: "edit"; req: Requirement }
     | null
   >(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [splittingParent, setSplittingParent] = useState<Requirement | null>(null);
+  const [aiLauncherFor, setAiLauncherFor] = useState<Requirement | null>(null);
+  const [docsListFor, setDocsListFor] = useState<Requirement | null>(null);
+  const [detailReq, setDetailReq] = useState<Requirement | null>(null);
 
   const projectQuery = useQuery({
     queryKey: queryKeys.project(projectId),
@@ -98,18 +128,33 @@ export function RequirementsPage() {
     enabled: Number.isFinite(projectId),
   });
 
+  const modulesQuery = useQuery({
+    queryKey: ["modules", "picker", projectId],
+    queryFn: () => modulesApi.listForPicker(projectId),
+    enabled: Number.isFinite(projectId),
+    staleTime: 30_000,
+  });
+
+  const versionsQuery = useQuery({
+    queryKey: ["versions", projectId],
+    queryFn: () => versionsApi.list(projectId),
+    enabled: Number.isFinite(projectId),
+    staleTime: 30_000,
+  });
+
+  const listFilters = {
+    module_id: moduleFilter === "all" ? undefined : Number(moduleFilter),
+    system_status:
+      systemStatusFilter === "all"
+        ? undefined
+        : (systemStatusFilter as RequirementSystemStatus),
+    version_id: versionFilter === "all" ? undefined : Number(versionFilter),
+    tree: true,
+  };
+
   const listQuery = useQuery({
-    queryKey: queryKeys.requirements(
-      projectId,
-      statusFilter === "all" ? undefined : { status: statusFilter },
-    ),
-    queryFn: () =>
-      requirementsApi.list(projectId, {
-        status:
-          statusFilter === "all"
-            ? undefined
-            : (statusFilter as RequirementStatus),
-      }),
+    queryKey: ["requirements", projectId, "tree", listFilters],
+    queryFn: () => requirementsApi.list(projectId, listFilters),
     enabled: Number.isFinite(projectId),
   });
 
@@ -135,18 +180,54 @@ export function RequirementsPage() {
     onError: handleError,
   });
 
-  const updateStatus = useMutation({
-    mutationFn: ({ id: rid, status }: { id: number; status: RequirementStatus }) =>
-      requirementsApi.update(rid, { status }),
-    onSuccess: () => invalidate(),
-    onError: handleError,
-  });
+  const items = listQuery.data ?? [];
+
+  // 优先级筛选放前端：树形结果里命中父级才显示；命中子级则保留整条父级链。
+  const visibleRoots = useMemo(() => {
+    if (priorityFilter === "all") return items;
+    const target = Number(priorityFilter);
+    return items.filter((r) => {
+      if (r.priority === target) return true;
+      return (r.children ?? []).some((c) => c.priority === target);
+    });
+  }, [items, priorityFilter]);
+
+  const totalCount = useMemo(
+    () =>
+      visibleRoots.reduce(
+        (sum, r) => sum + 1 + (r.children?.length ?? 0),
+        0,
+      ),
+    [visibleRoots],
+  );
+
+  const toggleExpand = (rid: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(rid)) next.delete(rid);
+      else next.add(rid);
+      return next;
+    });
+  };
 
   if (!Number.isFinite(projectId)) {
     return <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>;
   }
 
-  const items = listQuery.data ?? [];
+  const modules = modulesQuery.data ?? [];
+  const versions = versionsQuery.data ?? [];
+
+  const moduleNames = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const mod of modules) m.set(mod.id, mod.name);
+    return m;
+  }, [modules]);
+
+  const versionNames = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const v of versions) m.set(v.id, v.display_name || v.version_name);
+    return m;
+  }, [versions]);
 
   return (
     <div className="space-y-4 p-6">
@@ -182,52 +263,107 @@ export function RequirementsPage() {
       </div>
 
       {/* 过滤栏 */}
-      <div className="flex items-center gap-2">
-        <Label className="text-xs text-muted-foreground">状态</Label>
-        <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="h-8 w-32">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部</SelectItem>
-            <SelectItem value="draft">草稿</SelectItem>
-            <SelectItem value="approved">已确认</SelectItem>
-            <SelectItem value="archived">归档</SelectItem>
-          </SelectContent>
-        </Select>
-        <span className="ml-2 text-xs text-muted-foreground">
-          共 {items.length} 条
-        </span>
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterSelect
+          label="模块"
+          value={moduleFilter}
+          onChange={setModuleFilter}
+          width="w-40"
+          options={[
+            { value: "all", label: "全部模块" },
+            ...modules.map((m) => ({ value: String(m.id), label: m.name })),
+          ]}
+        />
+        <FilterSelect
+          label="优先级"
+          value={priorityFilter}
+          onChange={setPriorityFilter}
+          width="w-32"
+          options={[
+            { value: "all", label: "全部" },
+            ...PRIORITY_OPTIONS,
+          ]}
+        />
+        <FilterSelect
+          label="状态"
+          value={systemStatusFilter}
+          onChange={setSystemStatusFilter}
+          width="w-32"
+          options={[
+            { value: "all", label: "全部" },
+            ...ALL_REQUIREMENT_SYSTEM_STATUSES.map((s) => ({
+              value: s,
+              label: SYSTEM_STATUS_LABEL_CN[s],
+            })),
+          ]}
+        />
+        <FilterSelect
+          label="迭代"
+          value={versionFilter}
+          onChange={setVersionFilter}
+          width="w-40"
+          options={[
+            { value: "all", label: "全部迭代" },
+            ...versions.map((v) => ({
+              value: String(v.id),
+              label: v.display_name || v.version_name,
+            })),
+          ]}
+        />
+        <span className="ml-2 text-xs text-muted-foreground">共 {totalCount} 条</span>
       </div>
 
-      {/* 列表 */}
+      {/* 树形表格 */}
       {listQuery.isLoading ? (
         <div className="space-y-2">
-          <Skeleton className="h-20 w-full" />
-          <Skeleton className="h-20 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
         </div>
-      ) : items.length === 0 ? (
+      ) : visibleRoots.length === 0 ? (
         <Card>
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
             还没有需求 —— 用 AI 解析 PRD 一键导入，或手工新建
           </CardContent>
         </Card>
       ) : (
-        <div className="space-y-2">
-          {items.map((r) => (
-            <RequirementRow
-              key={r.id}
-              req={r}
-              onEdit={() => setEditing({ mode: "edit", req: r })}
-              onDelete={() => {
-                if (confirm(`删除需求"${r.title}"？`))
-                  removeMutation.mutate(r.id);
-              }}
-              onStatusChange={(status) =>
-                updateStatus.mutate({ id: r.id, status })
-              }
-            />
-          ))}
+        <div className="overflow-hidden rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
+              <tr>
+                <th className="px-3 py-2 text-left font-medium w-24">编号</th>
+                <th className="px-3 py-2 text-left font-medium">名称</th>
+                <th className="px-3 py-2 text-left font-medium w-20">优先级</th>
+                <th className="px-3 py-2 text-left font-medium w-32">迭代</th>
+                <th className="px-3 py-2 text-left font-medium w-28">状态</th>
+                <th className="px-3 py-2 text-left font-medium w-48">起止时间</th>
+                <th className="px-3 py-2 text-right font-medium w-44">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRoots.map((req) => (
+                <RequirementTreeRows
+                  key={req.id}
+                  req={req}
+                  expanded={expanded}
+                  onToggle={toggleExpand}
+                  versions={versions}
+                  onEdit={(r) => setEditing({ mode: "edit", req: r })}
+                  onDelete={(r) => {
+                    const isChild = !!r.parent_requirement_id;
+                    const msg = isChild
+                      ? `删除子需求"${r.title}"？`
+                      : `删除需求"${r.title}"？同时会删除其子需求。`;
+                    if (confirm(msg))
+                      removeMutation.mutate(r.id);
+                  }}
+                  onSplit={(r) => setSplittingParent(r)}
+                  onAiAnalyze={(r) => setAiLauncherFor(r)}
+                  onOpenDocs={(r) => setDocsListFor(r)}
+                  onViewDetail={(r) => setDetailReq(r)}
+                />
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
@@ -238,6 +374,10 @@ export function RequirementsPage() {
         onDone={() => {
           invalidate();
           setEditing(null);
+        }}
+        onCreated={(req) => {
+          invalidate();
+          setEditing({ mode: "edit", req });
         }}
         onError={handleError}
       />
@@ -251,119 +391,359 @@ export function RequirementsPage() {
           setAiOpen(false);
         }}
       />
+
+      <SplitRequirementDialog
+        parent={splittingParent}
+        onClose={() => setSplittingParent(null)}
+        onDone={() => {
+          invalidate();
+          setSplittingParent(null);
+        }}
+        onError={handleError}
+      />
+
+      <AiAnalysisLauncherDialog
+        open={!!aiLauncherFor}
+        requirement={aiLauncherFor}
+        onClose={() => setAiLauncherFor(null)}
+        onTriggered={() => {
+          // 触发后直接打开文档列表，方便用户观察生成进度
+          if (aiLauncherFor) setDocsListFor(aiLauncherFor);
+          setAiLauncherFor(null);
+        }}
+      />
+
+      <AnalysisDocumentListDialog
+        open={!!docsListFor}
+        requirement={docsListFor}
+        onClose={() => setDocsListFor(null)}
+      />
+
+      <RequirementDetailDrawer
+        req={detailReq}
+        open={!!detailReq}
+        onClose={() => setDetailReq(null)}
+        onEdit={(r) => {
+          setDetailReq(null);
+          setEditing({ mode: "edit", req: r });
+        }}
+        onViewRequirement={(reqId) => {
+          requirementsApi.get(reqId).then((r) => {
+            setDetailReq(null);
+            setTimeout(() => setDetailReq(r), 100);
+          }).catch(handleError);
+        }}
+        moduleNames={moduleNames}
+        versionNames={versionNames}
+      />
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 单条需求渲染
+// 筛选下拉（toolbar 小封装）
 // ---------------------------------------------------------------------------
-function RequirementRow({
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  options,
+  width = "w-32",
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  width?: string;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <Label className="text-xs text-muted-foreground">{label}</Label>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className={cn("h-8 text-xs", width)}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {options.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value} className="text-xs">
+              {opt.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 树形渲染：父行 + 可选展开子行
+// ---------------------------------------------------------------------------
+function RequirementTreeRows({
   req,
+  expanded,
+  onToggle,
+  versions,
   onEdit,
   onDelete,
-  onStatusChange,
+  onSplit,
+  onAiAnalyze,
+  onOpenDocs,
+  onViewDetail,
 }: {
   req: Requirement;
+  expanded: Set<number>;
+  onToggle: (id: number) => void;
+  versions: { id: number; version_name: string; display_name?: string | null }[];
+  onEdit: (r: Requirement) => void;
+  onDelete: (r: Requirement) => void;
+  onSplit: (r: Requirement) => void;
+  onAiAnalyze: (r: Requirement) => void;
+  onOpenDocs: (r: Requirement) => void;
+  onViewDetail: (r: Requirement) => void;
+}) {
+  const children = req.children ?? [];
+  const isOpen = expanded.has(req.id);
+
+  return (
+    <>
+      <RequirementTableRow
+        req={req}
+        depth={0}
+        hasChildren={children.length > 0}
+        isOpen={isOpen}
+        onToggle={() => onToggle(req.id)}
+        versions={versions}
+        onEdit={() => onEdit(req)}
+        onDelete={() => onDelete(req)}
+        onSplit={() => onSplit(req)}
+        onAiAnalyze={() => onAiAnalyze(req)}
+        onOpenDocs={() => onOpenDocs(req)}
+        onViewDetail={() => onViewDetail(req)}
+      />
+      {isOpen
+        ? children.map((c) => (
+            <RequirementTableRow
+              key={c.id}
+              req={c}
+              depth={1}
+              hasChildren={false}
+              isOpen={false}
+              onToggle={() => {}}
+              versions={versions}
+              onEdit={() => onEdit(c)}
+              onDelete={() => onDelete(c)}
+              onSplit={null}
+              onAiAnalyze={() => onAiAnalyze(c)}
+              onOpenDocs={() => onOpenDocs(c)}
+              onViewDetail={() => onViewDetail(c)}
+            />
+          ))
+        : null}
+    </>
+  );
+}
+
+function RequirementTableRow({
+  req,
+  depth,
+  hasChildren,
+  isOpen,
+  onToggle,
+  versions,
+  onEdit,
+  onDelete,
+  onSplit,
+  onAiAnalyze,
+  onOpenDocs,
+  onViewDetail,
+}: {
+  req: Requirement;
+  depth: number;
+  hasChildren: boolean;
+  isOpen: boolean;
+  onToggle: () => void;
+  versions: { id: number; version_name: string; display_name?: string | null }[];
   onEdit: () => void;
   onDelete: () => void;
-  onStatusChange: (s: RequirementStatus) => void;
+  onSplit: (() => void) | null;
+  onAiAnalyze: () => void;
+  onOpenDocs: () => void;
+  onViewDetail: () => void;
 }) {
-  const meta = STATUS_META[req.status];
-  const Icon = meta.icon;
+  const version = versions.find((v) => v.id === req.version_id);
   return (
-    <Card>
-      <CardContent className="flex items-start gap-3 py-3">
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{req.title}</span>
-            <span
-              className={cn(
-                "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset",
-                meta.tone,
-              )}
+    <tr className="border-t hover:bg-accent/30">
+      <td className="px-3 py-2 align-top text-xs text-muted-foreground">
+        <button
+          type="button"
+          onClick={onViewDetail}
+          className="font-mono text-muted-foreground hover:text-foreground hover:underline cursor-pointer"
+        >
+          REQ-{req.id}
+        </button>
+      </td>
+      <td className="px-3 py-2 align-top">
+        <div
+          className="flex items-start gap-1"
+          style={{ paddingLeft: depth * 20 }}
+        >
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={onToggle}
+              className="mt-0.5 text-muted-foreground hover:text-foreground"
+              aria-label="展开子需求"
             >
-              <Icon className="h-3 w-3" />
-              {meta.label}
-            </span>
-            {req.priority != null ? (
-              <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-                P{req.priority}
-              </span>
-            ) : null}
-            {req.source === "ai_generated" ? (
-              <span className="inline-flex items-center gap-1 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] uppercase text-violet-700 ring-1 ring-inset ring-violet-200">
-                <Sparkles className="h-3 w-3" />
-                AI
-              </span>
-            ) : null}
-            {req.tags?.length
-              ? req.tags.map((t) => (
+              {isOpen ? (
+                <ChevronDown className="h-3.5 w-3.5" />
+              ) : (
+                <ChevronRight className="h-3.5 w-3.5" />
+              )}
+            </button>
+          ) : (
+            <span className="inline-block w-3.5" />
+          )}
+          <button
+            type="button"
+            onClick={onViewDetail}
+            className="min-w-0 flex-1 text-left cursor-pointer"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-medium hover:text-primary hover:underline">
+                  {req.title}
+                </span>
+                {req.source === "ai_generated" ? (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-0.5 text-[10px] text-violet-700 ring-1 ring-inset ring-violet-200">
+                    <Sparkles className="h-2.5 w-2.5" />
+                    AI
+                  </span>
+                ) : null}
+                {req.tags?.slice(0, 3).map((t) => (
                   <span
                     key={t}
-                    className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-secondary-foreground"
+                    className="rounded bg-secondary px-1 py-0.5 text-[10px] text-secondary-foreground"
                   >
                     {t}
                   </span>
-                ))
-              : null}
-          </div>
-          {req.description ? (
-            <p className="text-xs text-muted-foreground">{req.description}</p>
-          ) : null}
-          {req.acceptance_criteria?.length ? (
-            <ul className="ml-4 list-disc text-xs text-muted-foreground">
-              {req.acceptance_criteria.map((c, i) => (
-                <li key={i}>{c}</li>
-              ))}
-            </ul>
-          ) : null}
+                ))}
+              </div>
+              {req.description ? (
+                <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+                  {stripHtml(req.description)}
+                </div>
+              ) : null}
+            </div>
+          </button>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Select
-            value={req.status}
-            onValueChange={(v) => onStatusChange(v as RequirementStatus)}
+      </td>
+      <td className="px-3 py-2 align-top">
+        <PriorityBadge priority={req.priority} />
+      </td>
+      <td className="px-3 py-2 align-top text-xs text-muted-foreground">
+        {version ? version.display_name || version.version_name : "—"}
+      </td>
+      <td className="px-3 py-2 align-top">
+        {req.system_status ? (
+          <RequirementStatusBadge status={req.system_status} />
+        ) : (
+          <span className="text-xs text-muted-foreground">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 align-top text-xs text-muted-foreground">
+        {formatPlannedRange(req)}
+      </td>
+      <td className="px-3 py-2 align-top text-right">
+        <div className="inline-flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-violet-600 hover:text-violet-700"
+            onClick={onAiAnalyze}
+            title="AI 分析此需求"
           >
-            <SelectTrigger className="h-7 w-24 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="draft">草稿</SelectItem>
-              <SelectItem value="approved">已确认</SelectItem>
-              <SelectItem value="archived">归档</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onEdit}>
-            <Pencil className="h-4 w-4" />
+            <Bot className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={onOpenDocs}
+            title="查看 AI 分析文档"
+          >
+            <FileText className="h-3.5 w-3.5" />
+          </Button>
+          {onSplit ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={onSplit}
+              title="拆分子需求"
+            >
+              <GitFork className="h-3.5 w-3.5" />
+            </Button>
+          ) : null}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7"
+            onClick={onEdit}
+            title="编辑"
+          >
+            <Pencil className="h-3.5 w-3.5" />
           </Button>
           <Button
             variant="ghost"
             size="icon"
             className="h-7 w-7 text-destructive"
             onClick={onDelete}
+            title="删除"
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </td>
+    </tr>
   );
 }
 
 // ---------------------------------------------------------------------------
-// 手工创建/编辑对话框
+// 手工创建/编辑对话框（TAPD 风格大表单）
 // ---------------------------------------------------------------------------
+function emptyAssignees() {
+  return { dev: [] as number[], test: [] as number[], pm: [] as number[], ui: [] as number[] };
+}
+
+function isoDateInput(v: string | null | undefined): string {
+  if (!v) return "";
+  return v.slice(0, 10);
+}
+
+function dateToIso(d: string): string | null {
+  if (!d) return null;
+  return d + "T00:00:00+08:00";
+}
+
+function stripHtml(html: string): string {
+  if (!html) return "";
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+}
+
 function RequirementDialog({
   state,
   projectId,
   onClose,
   onDone,
+  onCreated,
   onError,
 }: {
   state: { mode: "create" } | { mode: "edit"; req: Requirement } | null;
   projectId: number;
   onClose: () => void;
   onDone: () => void;
+  onCreated: (req: Requirement) => void;
   onError: (e: unknown) => void;
 }) {
   const isEdit = state?.mode === "edit";
@@ -374,6 +754,27 @@ function RequirementDialog({
   const [criteriaText, setCriteriaText] = useState("");
   const [priority, setPriority] = useState<number>(2);
   const [tagsText, setTagsText] = useState("");
+  const [moduleId, setModuleId] = useState<string>("none");
+  const [systemStatus, setSystemStatus] = useState<string>("none");
+  const [versionId, setVersionId] = useState<string>("none");
+  const [plannedStart, setPlannedStart] = useState<string>("");
+  const [plannedEnd, setPlannedEnd] = useState<string>("");
+  const [dependsOnText, setDependsOnText] = useState<string>("");
+  const [assignees, setAssignees] = useState(emptyAssignees());
+  const userId = useUserId();
+
+  const modulesQuery = useQuery({
+    queryKey: ["modules", "picker", projectId],
+    queryFn: () => modulesApi.listForPicker(projectId),
+    enabled: !!state,
+    staleTime: 30_000,
+  });
+  const versionsQuery = useQuery({
+    queryKey: ["versions", projectId],
+    queryFn: () => versionsApi.list(projectId),
+    enabled: !!state,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     if (!state) return;
@@ -383,34 +784,72 @@ function RequirementDialog({
       setCriteriaText((initial.acceptance_criteria || []).join("\n"));
       setPriority(initial.priority ?? 2);
       setTagsText((initial.tags || []).join(","));
+      setModuleId(initial.module_id != null ? String(initial.module_id) : "none");
+      setSystemStatus(initial.system_status ?? "none");
+      setVersionId(initial.version_id != null ? String(initial.version_id) : "none");
+      setPlannedStart(isoDateInput(initial.planned_start_at));
+      setPlannedEnd(isoDateInput(initial.planned_end_at));
+      setDependsOnText((initial.depends_on ?? []).join(","));
+      setAssignees(
+        initial.assignees
+          ? {
+              dev: initial.assignees.dev ?? [],
+              test: initial.assignees.test ?? [],
+              pm: initial.assignees.pm ?? [],
+              ui: initial.assignees.ui ?? [],
+            }
+          : emptyAssignees(),
+      );
     } else {
       setTitle("");
       setDescription("");
       setCriteriaText("");
       setPriority(2);
       setTagsText("");
+      setModuleId("none");
+      setSystemStatus("none");
+      setVersionId("none");
+      setPlannedStart("");
+      setPlannedEnd("");
+      setDependsOnText("");
+      setAssignees(emptyAssignees());
     }
   }, [state, initial]);
+
+  const buildPayload = () => {
+    return {
+      title: title.trim(),
+      description: description.trim() || null,
+      acceptance_criteria: criteriaText
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      priority,
+      tags: tagsText
+        .split(/[,，]/)
+        .map((s) => s.trim())
+        .filter(Boolean),
+      depends_on: dependsOnText
+        .split(/[,，\s]+/)
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0),
+      module_id: moduleId === "none" ? null : Number(moduleId),
+      version_id: versionId === "none" ? null : Number(versionId),
+      planned_start_at: dateToIso(plannedStart),
+      planned_end_at: dateToIso(plannedEnd),
+      assignees,
+    };
+  };
 
   const createMutation = useMutation({
     mutationFn: () =>
       requirementsApi.create({
         project_id: projectId,
-        title: title.trim(),
-        description: description.trim() || null,
-        acceptance_criteria: criteriaText
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        priority,
-        tags: tagsText
-          .split(/[,，]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
+        ...buildPayload(),
       }),
-    onSuccess: () => {
-      toast.success("需求已创建");
-      onDone();
+    onSuccess: (data: Requirement) => {
+      toast.success("需求已创建，可编辑完整信息和附件");
+      onCreated(data);
     },
     onError,
   });
@@ -418,19 +857,15 @@ function RequirementDialog({
   const updateMutation = useMutation({
     mutationFn: () => {
       if (!initial) return Promise.reject(new Error("invalid"));
-      return requirementsApi.update(initial.id, {
-        title: title.trim(),
-        description: description.trim() || null,
-        acceptance_criteria: criteriaText
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        priority,
-        tags: tagsText
-          .split(/[,，]/)
-          .map((s) => s.trim())
-          .filter(Boolean),
-      });
+      const payload = buildPayload();
+      const updatePayload: Record<string, unknown> = { ...payload };
+      if (systemStatus !== "none") {
+        updatePayload.system_status = systemStatus;
+      }
+      if (userId) {
+        updatePayload.edited_by_id = userId;
+      }
+      return requirementsApi.update(initial.id, updatePayload);
     },
     onSuccess: () => {
       toast.success("已更新");
@@ -444,55 +879,113 @@ function RequirementDialog({
       toast.error("请填写标题");
       return;
     }
+    if (plannedStart && plannedEnd && plannedStart > plannedEnd) {
+      toast.error("起止时间不合法");
+      return;
+    }
     if (isEdit) updateMutation.mutate();
     else createMutation.mutate();
   };
 
   if (!state) return null;
   const submitting = createMutation.isPending || updateMutation.isPending;
+  const modules = modulesQuery.data ?? [];
+  const versions = versionsQuery.data ?? [];
 
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-xl">
+      <DialogContent
+        className="max-w-[960px] max-h-[90vh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle>{isEdit ? "编辑需求" : "新建需求"}</DialogTitle>
           <DialogDescription>
             一条需求 = 一个可被测试覆盖的功能点
+            {initial?.parent_requirement_id ? (
+              <span className="ml-2 rounded bg-violet-50 px-1.5 py-0.5 text-xs text-violet-700">
+                子需求（父 REQ-{initial.parent_requirement_id}）
+              </span>
+            ) : null}
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label className="text-xs">标题</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">描述</Label>
-            <Textarea
-              rows={2}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="一句话扩展，写明用户做什么 + 期望结果"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">验收标准（每行一条）</Label>
-            <Textarea
-              rows={4}
-              value={criteriaText}
-              onChange={(e) => setCriteriaText(e.target.value)}
-              placeholder="未登录用户访问 /admin 时跳转到 /login&#10;已登录普通用户访问 /admin 时返回 403"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">优先级（0-3）</Label>
+
+        <div className="space-y-5">
+          {/* 1. 基本信息 */}
+          <FormSection title="基本信息">
+            <div className="space-y-1 md:col-span-2">
+              <Label className="text-xs">标题 *</Label>
               <Input
-                type="number"
-                min={0}
-                max={3}
-                value={priority}
-                onChange={(e) => setPriority(Number(e.target.value) || 0)}
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                autoFocus
+                placeholder="一句话讲清这条需求做什么"
               />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">模块</Label>
+              <Select value={moduleId} onValueChange={setModuleId}>
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue placeholder="未指定" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">未指定</SelectItem>
+                  {modules.map((m) => (
+                    <SelectItem key={m.id} value={String(m.id)} className="text-xs">
+                      {m.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">优先级</Label>
+              <Select
+                value={String(priority)}
+                onValueChange={(v) => setPriority(Number(v))}
+              >
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PRIORITY_OPTIONS.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">状态</Label>
+              <Select value={systemStatus} onValueChange={setSystemStatus}>
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue placeholder="未指定" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">未指定（由 Task 自动派生）</SelectItem>
+                  {ALL_REQUIREMENT_SYSTEM_STATUSES.map((s) => (
+                    <SelectItem key={s} value={s} className="text-xs">
+                      {SYSTEM_STATUS_LABEL_CN[s]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">关联迭代</Label>
+              <Select value={versionId} onValueChange={setVersionId}>
+                <SelectTrigger className="h-9 text-xs">
+                  <SelectValue placeholder="未指定" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none" className="text-xs">未指定</SelectItem>
+                  {versions.map((v) => (
+                    <SelectItem key={v.id} value={String(v.id)} className="text-xs">
+                      {v.display_name || v.version_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="space-y-1">
               <Label className="text-xs">标签（逗号分隔）</Label>
@@ -502,8 +995,112 @@ function RequirementDialog({
                 placeholder="登录,权限"
               />
             </div>
-          </div>
+          </FormSection>
+
+          {/* 2. 时间 */}
+          <FormSection title="时间">
+            <div className="space-y-1">
+              <Label className="text-xs">预计开始</Label>
+              <Input
+                type="date"
+                value={plannedStart}
+                onChange={(e) => setPlannedStart(e.target.value)}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">预计完成</Label>
+              <Input
+                type="date"
+                value={plannedEnd}
+                onChange={(e) => setPlannedEnd(e.target.value)}
+              />
+            </div>
+          </FormSection>
+
+          {/* 3. 描述 */}
+          <FormSection title="描述" cols={1}>
+            <div className="md:col-span-2">
+              <RichTextEditor value={description} onChange={setDescription} height={400} toolbar="full" />
+            </div>
+          </FormSection>
+
+          {/* 4. 验收标准 + 依赖 */}
+          <FormSection title="验收 & 依赖">
+            <div className="space-y-1 md:col-span-2">
+              <Label className="text-xs">验收标准（每行一条，支持 Markdown）</Label>
+              <Textarea
+                rows={4}
+                value={criteriaText}
+                onChange={(e) => setCriteriaText(e.target.value)}
+                placeholder="未登录用户访问 /admin 时跳转到 /login&#10;已登录普通用户访问 /admin 时返回 403"
+              />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label className="text-xs">依赖需求</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={dependsOnText}
+                  onChange={(e) => setDependsOnText(e.target.value)}
+                  placeholder="例如：12, 18"
+                  className="flex-1"
+                />
+                <DependencyPickerButton
+                  projectId={projectId}
+                  currentIds={dependsOnText
+                    .split(/[,，\s]+/)
+                    .map((s) => Number(s.trim()))
+                    .filter((n) => Number.isFinite(n) && n > 0)}
+                  excludeId={initial?.id}
+                  onSelect={(ids) => setDependsOnText(ids.join(", "))}
+                />
+              </div>
+            </div>
+          </FormSection>
+
+          {/* 5. 协作（4 角色 assignee） */}
+          <FormSection title="协作">
+            <AssigneeRow
+              label="开发"
+              role="dev"
+              value={assignees.dev}
+              onChange={(v) => setAssignees((a) => ({ ...a, dev: v }))}
+            />
+            <AssigneeRow
+              label="测试"
+              role="test"
+              value={assignees.test}
+              onChange={(v) => setAssignees((a) => ({ ...a, test: v }))}
+            />
+            <AssigneeRow
+              label="产品"
+              role="pm"
+              value={assignees.pm}
+              onChange={(v) => setAssignees((a) => ({ ...a, pm: v }))}
+            />
+            <AssigneeRow
+              label="UI"
+              role="ui"
+              value={assignees.ui}
+              onChange={(v) => setAssignees((a) => ({ ...a, ui: v }))}
+            />
+          </FormSection>
+
+          {/* 6. 附件（仅 edit 模式） */}
+          {isEdit && initial ? (
+            <FormSection title="附件" cols={1}>
+              <div className="md:col-span-2">
+                <AttachmentList requirementId={initial.id} />
+              </div>
+            </FormSection>
+          ) : (
+            <FormSection title="附件" cols={1}>
+              <div className="md:col-span-2 rounded border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+                保存后即可在编辑视图里上传附件。
+              </div>
+            </FormSection>
+          )}
         </div>
+
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>
             取消
@@ -515,6 +1112,51 @@ function RequirementDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function FormSection({
+  title,
+  children,
+  cols = 2,
+}: {
+  title: string;
+  children: React.ReactNode;
+  cols?: 1 | 2;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </div>
+      <div
+        className={cn(
+          "grid gap-3",
+          cols === 2 ? "md:grid-cols-2" : "grid-cols-1",
+        )}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function AssigneeRow({
+  label,
+  role,
+  value,
+  onChange,
+}: {
+  label: string;
+  role: "dev" | "test" | "pm" | "ui";
+  value: number[];
+  onChange: (v: number[]) => void;
+}) {
+  return (
+    <div className="space-y-1">
+      <Label className="text-xs">{label}</Label>
+      <AssigneePicker role={role} value={value} onChange={onChange} />
+    </div>
   );
 }
 
@@ -888,5 +1530,217 @@ function AiRunProgress({
         ))}
       </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 子需求拆分对话框
+// ---------------------------------------------------------------------------
+function SplitRequirementDialog({
+  parent,
+  onClose,
+  onDone,
+  onError,
+}: {
+  parent: Requirement | null;
+  onClose: () => void;
+  onDone: () => void;
+  onError: (e: unknown) => void;
+}) {
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (parent) setText("");
+  }, [parent]);
+
+  const splitMutation = useMutation({
+    mutationFn: () => {
+      if (!parent) return Promise.reject(new Error("invalid"));
+      const lines = text
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (lines.length === 0) {
+        return Promise.reject(new Error("至少写一条子需求标题"));
+      }
+      return requirementsApi.split(
+        parent.id,
+        lines.map((title) => ({ title })),
+      );
+    },
+    onSuccess: (created) => {
+      toast.success(`已创建 ${created.length} 条子需求`);
+      onDone();
+    },
+    onError,
+  });
+
+  if (!parent) return null;
+  const lineCount = text
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean).length;
+
+  return (
+    <Dialog open={!!parent} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>拆分子需求</DialogTitle>
+          <DialogDescription>
+            父需求：<span className="font-medium">{parent.title}</span>
+            <br />
+            一行一条，子需求会继承父需求的模块 / 迭代 / 优先级。
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea
+          rows={8}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder={"接口：新增登录\nUI：登录页表单\n测试：登录用例覆盖"}
+          autoFocus
+        />
+        <div className="text-xs text-muted-foreground">将创建 {lineCount} 条子需求</div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            取消
+          </Button>
+          <Button
+            onClick={() => splitMutation.mutate()}
+            disabled={lineCount === 0 || splitMutation.isPending}
+          >
+            {splitMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            创建子需求
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 依赖需求选择器
+// ---------------------------------------------------------------------------
+function DependencyPickerButton({
+  projectId,
+  currentIds,
+  excludeId,
+  onSelect,
+}: {
+  projectId: number;
+  currentIds: number[];
+  excludeId?: number;
+  onSelect: (ids: number[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set(currentIds));
+
+  const reqsQuery = useQuery({
+    queryKey: ["requirements", "picker", projectId],
+    queryFn: () => requirementsApi.list(projectId, { tree: true }),
+    enabled: open,
+  });
+
+  const allReqs = useMemo(() => {
+    function flatten(list: Requirement[]): Requirement[] {
+      return list.flatMap((r) => [r, ...flatten(r.children ?? [])]);
+    }
+    return flatten(reqsQuery.data ?? []).filter(
+      (r) => excludeId == null || r.id !== excludeId,
+    );
+  }, [reqsQuery.data, excludeId]);
+
+  const filtered = useMemo(
+    () =>
+      search.trim()
+        ? allReqs.filter(
+            (r) =>
+              r.title.includes(search) || String(r.id).includes(search),
+          )
+        : allReqs,
+    [allReqs, search],
+  );
+
+  const toggle = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const apply = () => {
+    onSelect([...selected]);
+    setOpen(false);
+  };
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => {
+          setSelected(new Set(currentIds));
+          setSearch("");
+          setOpen(true);
+        }}
+      >
+        <Search className="mr-1 h-3 w-3" />
+        选择需求
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>选择依赖需求</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <Input
+              autoFocus
+              placeholder="搜索标题或 ID…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            <div className="max-h-64 space-y-0.5 overflow-y-auto">
+              {filtered.length === 0 ? (
+                <p className="py-4 text-center text-sm text-muted-foreground">
+                  没有匹配的需求
+                </p>
+              ) : (
+                filtered.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    onClick={() => toggle(r.id)}
+                    className="flex w-full items-center gap-3 rounded px-3 py-2 text-left text-sm hover:bg-accent"
+                  >
+                    <span
+                      className={
+                        selected.has(r.id)
+                          ? "flex h-4 w-4 items-center justify-center rounded bg-primary text-[10px] text-primary-foreground"
+                          : "h-4 w-4 rounded border"
+                      }
+                    >
+                      {selected.has(r.id) && <Check className="h-3 w-3" />}
+                    </span>
+                    <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                      REQ-{r.id}
+                    </span>
+                    <span className="truncate">{r.title}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={apply}>确定 ({selected.size})</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

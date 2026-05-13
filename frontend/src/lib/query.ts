@@ -81,4 +81,11 @@ export const queryKeys = {
       ? (["requirements", projectId, filters] as const)
       : (["requirements", projectId] as const),
   requirement: (id: number) => ["requirement", id] as const,
+  /** M6：AI 模型连接（配置中心）+ 需求分析文档 + 版本。 */
+  aiModels: () => ["ai_models"] as const,
+  analysisDocs: (requirementId: number) =>
+    ["analysis_docs", requirementId] as const,
+  analysisDoc: (docId: number) => ["analysis_doc", docId] as const,
+  analysisVersions: (docId: number) =>
+    ["analysis_doc", docId, "versions"] as const,
 };

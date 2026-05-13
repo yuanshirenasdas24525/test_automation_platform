@@ -8,23 +8,33 @@ HTTP 请求"入口在 v2 改造完成后没有用户路径。
 """
 from runners.api.request_data_processor import RequestDataProcessor
 from utils.reload_config import config_center
+from utils.logger import LOGGER
 from database.db import DB
+from sqlalchemy import text
 
 
 def create_request_data_processor(db=None):
     """构造 v2 http_request step 用的 RequestDataProcessor。
 
-    db 不传时自建一个临时 DB 连接做 config_center.reload；外部传 db 时，
-    复用它（避免在 worker 进程里重复连接）。
+    Celery prefork 环境下 DB 连接可能因 fork 变 stale，这里显式 dispose engine
+    再建新 session，保证能正常读 config_store。
     """
     if db is None:
         db = DB()
+    else:
+        # 外部传入的连接也做一下 pre-ping 保活
+        try:
+            db.session.execute(text("SELECT 1"))
+        except Exception:
+            db = DB()
 
     config_center.reload(db=db.sql, category="api")
+    host = config_center.get("host")
+    LOGGER.info(f"[factory] config_center host={host}")
 
     return RequestDataProcessor(
         header_key=config_center.get("header"),
-        host_key=config_center.get("host"),
+        host_key=host,
         default_parameters=config_center.get("default_parameters"),
         ed=config_center.get("encryption_decryption"),
         db=DB(config_center.get("target_db")) if config_center.get("target_db") else None,

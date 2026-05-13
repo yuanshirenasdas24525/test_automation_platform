@@ -1,4 +1,4 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   FolderKanban,
   LayoutDashboard,
@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 
 import { CurrentUserSwitcher } from "@/components/CurrentUserSwitcher";
-import { CurrentUserProvider } from "@/lib/current-user";
+import { useCurrentUser } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
@@ -33,9 +33,16 @@ const NAV: NavItem[] = [
 export function AppLayout() {
   const { pathname, search } = useLocation();
   const current = pathname + search;
+  const { user } = useCurrentUser();
+
+  // 没登录用户 → 跳到 /login。CurrentUserProvider 已经提到了 main.tsx，
+  // /login 页面也能拿到同一份 Context 来 setUser。
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
 
   return (
-    <CurrentUserProvider>
+    <>
       <div className="flex h-screen bg-muted/30">
         <aside className="flex w-56 flex-col border-r bg-background">
           <div className="flex h-14 items-center gap-2 border-b px-4">
@@ -94,6 +101,6 @@ export function AppLayout() {
           </div>
         </main>
       </div>
-    </CurrentUserProvider>
+    </>
   );
 }

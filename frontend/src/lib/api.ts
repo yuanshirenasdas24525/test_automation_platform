@@ -5,10 +5,18 @@
  */
 import type {
   AiFeature,
+  AiModelConfig,
+  AiModelConfigUpsert,
+  AiModelTestResult,
   AiRun,
   AiRunStatus,
+  AnalysisDiffResponse,
+  AnalysisDocument,
+  AnalysisTriggerResponse,
+  AnalysisVersion,
   ApiEnvelope,
   CaseType,
+  ChangePasswordRequest,
   ContentNode,
   FunctionalBatchMarkPayload,
   FunctionalBatchSummary,
@@ -18,6 +26,8 @@ import type {
   FunctionalCaseUpdate,
   FunctionalMarkPayload,
   FunctionalRunStatus,
+  LoginRequest,
+  LoginResponse,
   Module,
   ModuleCreate,
   Project,
@@ -26,10 +36,13 @@ import type {
   ProjectStackCounts,
   ProjectVersion,
   ReorderItem,
+  Attachment,
   Requirement,
   RequirementAcceptPayload,
   RequirementCreate,
+  RequirementEditHistory,
   RequirementListFilters,
+  RequirementSplitItem,
   RequirementUpdate,
   Role,
   RunTestRequest,
@@ -62,6 +75,25 @@ export class ApiError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Token 管理
+// ---------------------------------------------------------------------------
+const TOKEN_KEY = "pm.authToken";
+
+export function getToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
 type RequestInitJSON = Omit<RequestInit, "body"> & {
   body?: unknown;
 };
@@ -73,6 +105,11 @@ async function request<T>(path: string, init: RequestInitJSON = {}): Promise<T> 
   if (!headers.has("Accept")) headers.set("Accept", "application/json");
   if (!isFormData && init.body !== undefined && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
+  }
+
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
   const res = await fetch(path, {
@@ -97,7 +134,9 @@ async function request<T>(path: string, init: RequestInitJSON = {}): Promise<T> 
 
   if (!res.ok) {
     const msg =
-      (payload as ApiEnvelope)?.message ?? `HTTP ${res.status} ${res.statusText}`;
+      (payload as Record<string, unknown>)?.detail as string ||
+      (payload as ApiEnvelope)?.message ||
+      `HTTP ${res.status} ${res.statusText}`;
     throw new ApiError(msg, res.status, payload);
   }
 
@@ -420,99 +459,58 @@ export const functionalCasesApi = {
       body: payload,
     });
   },
-  /**
-   * 批量勾结果。partial-success 语义：单条失败不回滚整批，
-   * 失败原因汇总在 errors 数组里。
-   */
+  /** 获取新 batch_id（测试模式用）。 */
+  newBatchId() {
+    return request<{ batch_id: string }>("/api/functional_cases/new_batch_id", {
+      method: "POST",
+    });
+  },
+  /** 批量勾结果。 */
   batchMark(payload: FunctionalBatchMarkPayload) {
     return request<FunctionalBatchMarkResult>(
       "/api/functional_cases/batch_mark",
       { method: "POST", body: payload },
     );
   },
-  /** 某条用例的执行历史（倒序，默认 20 条）。 */
-  runs(caseId: number, limit?: number) {
-    const qs = limit != null ? `?limit=${limit}` : "";
+  /** 用例历史执行记录。 */
+  runs(caseId: number, limit: number = 20) {
     return request<FunctionalCaseRun[]>(
-      `/api/functional_cases/${caseId}/runs${qs}`,
+      `/api/functional_cases/${caseId}/runs?limit=${limit}`,
     );
   },
-  /**
-   * 一个项目下"按批次聚合"的回归概览（pass/fail/blocked/na 计数 + 起止时间）。
-   * 只统计带 batch_id 的 run；单点勾不在内。
-   */
-  batches(projectId: number, limit?: number) {
-    const qs = new URLSearchParams({ project_id: String(projectId) });
-    if (limit != null) qs.set("limit", String(limit));
+  /** 批次概览。 */
+  batches(projectId: number, limit: number = 20) {
     return request<FunctionalBatchSummary[]>(
-      `/api/functional_cases/batches?${qs.toString()}`,
+      `/api/functional_cases/batches?project_id=${projectId}&limit=${limit}`,
     );
   },
-  /**
-   * Excel 导入：模板列 name / description / preconditions / steps / expected /
-   * priority / tags（preconditions / steps 用 \n 分隔，tags 用逗号分隔）。
-   * 返回 imported 数量 + 单行级 errors。
-   */
+  /** Excel 导入功能用例。 */
   importExcel(moduleId: number, file: File) {
-    const fd = new FormData();
-    fd.append("file", file);
-    return request<FunctionalImportResult>(
+    const form = new FormData();
+    form.append("file", file);
+    return request<{ imported: number; errors: { row: number; error: string }[] }>(
       `/api/functional_cases/import?module_id=${moduleId}`,
-      { method: "POST", body: fd },
+      { method: "POST", body: form },
     );
   },
-  /**
-   * 导出 xlsx。模仿 casesApi.exportCases：直接拿 Blob 触发下载，
-   * 不走 request<T> 的 JSON 反序列化路径。
-   * - moduleId 不传 = 整个项目；传了 = 该模块及其子模块。
-   */
+  /** Excel 导出功能用例。 */
   async exportExcel(opts: { projectId: number; moduleId?: number | null }) {
-    const params = new URLSearchParams({ project_id: String(opts.projectId) });
-    if (opts.moduleId != null) params.set("module_id", String(opts.moduleId));
-    const url = `/api/functional_cases/export?${params.toString()}`;
-    const resp = await fetch(url, { method: "GET" });
-    if (!resp.ok) {
-      let detail = `导出失败 ${resp.status}`;
-      try {
-        const data = await resp.json();
-        detail =
-          (data && (data.detail || data.message)) ||
-          (data && typeof data === "string" ? data : detail);
-      } catch {
-        /* 非 JSON 错误体，沿用 status 文案 */
-      }
-      throw new ApiError(String(detail), resp.status);
-    }
-    const blob = await resp.blob();
-    let fileName = "functional_cases.xlsx";
-    const cd = resp.headers.get("Content-Disposition") || "";
-    const m =
-      /filename\*=UTF-8''([^;]+)/i.exec(cd) || /filename="?([^";]+)"?/i.exec(cd);
-    if (m && m[1]) {
-      try {
-        fileName = decodeURIComponent(m[1]);
-      } catch {
-        fileName = m[1];
-      }
-    }
-    const objectUrl = URL.createObjectURL(blob);
+    const qs = new URLSearchParams({ project_id: String(opts.projectId) });
+    if (opts.moduleId != null) qs.set("module_id", String(opts.moduleId));
+    const url = `/api/functional_cases/export?${qs}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new ApiError("导出失败", res.status);
+    const blob = await res.blob();
+    const contentDisposition = res.headers.get("Content-Disposition") ?? "";
+    const match = /filename\*=UTF-8''([^;]+)/.exec(contentDisposition);
+    const filename = match ? decodeURIComponent(match[1]) : `export_${Date.now()}.xlsx`;
     const a = document.createElement("a");
-    a.href = objectUrl;
-    a.download = fileName;
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(objectUrl);
-  },
-  /**
-   * 后端为"测试模式"开始时生成一个新 batch_id（uuid hex）。
-   * 前端也可以自己 crypto.randomUUID()，但走后端方便未来加项目+用户前缀的易读化。
-   */
-  newBatchId() {
-    return request<{ batch_id: string }>(
-      "/api/functional_cases/new_batch_id",
-      { method: "POST" },
-    );
+    a.remove();
+    URL.revokeObjectURL(a.href);
   },
 };
 
@@ -899,6 +897,9 @@ export const requirementsApi = {
     if (filters.business_status) qs.set("business_status", filters.business_status);
     if (filters.assignee_pm_id !== undefined)
       qs.set("assignee_pm_id", String(filters.assignee_pm_id));
+    if (filters.module_id !== undefined)
+      qs.set("module_id", String(filters.module_id));
+    if (filters.tree) qs.set("tree", "true");
     return request<Requirement[]>(`/api/requirements?${qs.toString()}`);
   },
   get(id: number) {
@@ -917,7 +918,16 @@ export const requirementsApi = {
     });
   },
   remove(id: number) {
-    return request<void>(`/api/requirements/${id}`, { method: "DELETE" });
+    return request<{ deleted_ids: number[] }>(`/api/requirements/${id}`, {
+      method: "DELETE",
+    });
+  },
+  /** M5：拆子需求，传入 N 个子需求规格，返回创建好的子需求列表。 */
+  split(id: number, items: RequirementSplitItem[]) {
+    return request<Requirement[]>(`/api/requirements/${id}/split`, {
+      method: "POST",
+      body: items,
+    });
   },
   /** PM 一键验收：要求 system_status='ready_to_release'，否则后端返 409。 */
   accept(id: number, payload: RequirementAcceptPayload = {}) {
@@ -925,6 +935,59 @@ export const requirementsApi = {
       method: "POST",
       body: payload,
     });
+  },
+  /** M6：查询需求编辑历史 */
+  getHistory(id: number) {
+    return request<RequirementEditHistory[]>(`/api/requirements/${id}/history`);
+  },
+};
+
+
+// =============================================================================
+// 附件（M5）—— 需求的外链 / 上传文件
+// =============================================================================
+
+export const attachmentsApi = {
+  list(requirementId: number) {
+    return request<Attachment[]>(
+      `/api/requirements/${requirementId}/attachments`,
+    );
+  },
+  createLink(
+    requirementId: number,
+    payload: { name: string; url: string; uploaded_by_id?: number },
+  ) {
+    const fd = new FormData();
+    fd.append("kind", "link");
+    fd.append("name", payload.name);
+    fd.append("url", payload.url);
+    if (payload.uploaded_by_id !== undefined) {
+      fd.append("uploaded_by_id", String(payload.uploaded_by_id));
+    }
+    return request<Attachment>(`/api/requirements/${requirementId}/attachments`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+  uploadFile(
+    requirementId: number,
+    file: File,
+    extras: { name?: string; uploaded_by_id?: number } = {},
+  ) {
+    const fd = new FormData();
+    fd.append("kind", "file");
+    fd.append("file", file);
+    if (extras.name) fd.append("name", extras.name);
+    if (extras.uploaded_by_id !== undefined) {
+      fd.append("uploaded_by_id", String(extras.uploaded_by_id));
+    }
+    return request<Attachment>(`/api/requirements/${requirementId}/attachments`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+  remove(attachmentId: number) {
+    return request<void>(`/api/attachments/${attachmentId}`, { method: "DELETE" });
   },
 };
 
@@ -1025,6 +1088,24 @@ export const usersApi = {
   },
 };
 
+export const authApi = {
+  login(payload: LoginRequest) {
+    return request<LoginResponse>("/api/auth/login", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  me() {
+    return request<User>("/api/auth/me");
+  },
+  changePassword(payload: ChangePasswordRequest) {
+    return request<{ message: string }>("/api/auth/password", {
+      method: "PUT",
+      body: payload,
+    });
+  },
+};
+
 export const rolesApi = {
   list() {
     return request<Role[]>("/api/roles");
@@ -1081,6 +1162,119 @@ export const tasksApi = {
 // =============================================================================
 // 版本测试汇总（按需生成 + 强制重算）
 // =============================================================================
+
+// =============================================================================
+// M6：AI 模型配置 CRUD
+// =============================================================================
+
+export const aiModelsApi = {
+  list() {
+    return request<AiModelConfig[]>("/api/ai-models");
+  },
+  create(payload: AiModelConfig) {
+    return request<AiModelConfig>("/api/ai-models", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  update(name: string, payload: AiModelConfigUpsert) {
+    return request<AiModelConfig>(`/api/ai-models/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: payload,
+    });
+  },
+  remove(name: string) {
+    return request<{ deleted: number }>(
+      `/api/ai-models/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    );
+  },
+  test(name: string) {
+    return request<AiModelTestResult>(
+      `/api/ai-models/${encodeURIComponent(name)}/test`,
+      { method: "POST" },
+    );
+  },
+};
+
+
+// =============================================================================
+// M6：AI 需求分析文档 + 版本历史
+// =============================================================================
+
+export const analysisDocsApi = {
+  listByRequirement(rid: number) {
+    return request<AnalysisDocument[]>(
+      `/api/requirements/${rid}/analysis-documents`,
+    );
+  },
+  trigger(
+    rid: number,
+    body: { model_names: string[]; user_prompt?: string; document_title?: string },
+  ) {
+    return request<AnalysisTriggerResponse>(
+      `/api/requirements/${rid}/analysis-documents`,
+      { method: "POST", body },
+    );
+  },
+  get(id: number) {
+    return request<AnalysisDocument>(`/api/analysis-documents/${id}`);
+  },
+  save(
+    id: number,
+    body: { markdown: string; change_summary?: string; title?: string },
+  ) {
+    return request<{ document: AnalysisDocument; new_version_no: number }>(
+      `/api/analysis-documents/${id}`,
+      { method: "PUT", body },
+    );
+  },
+  remove(id: number) {
+    return request<{ deleted: number }>(`/api/analysis-documents/${id}`, {
+      method: "DELETE",
+    });
+  },
+  listVersions(id: number) {
+    return request<AnalysisVersion[]>(`/api/analysis-documents/${id}/versions`);
+  },
+  getVersion(id: number, versionNo: number) {
+    return request<AnalysisVersion>(
+      `/api/analysis-documents/${id}/versions/${versionNo}`,
+    );
+  },
+  getDiff(id: number, a: number, b: number) {
+    return request<AnalysisDiffResponse>(
+      `/api/analysis-documents/${id}/versions/${a}/diff/${b}`,
+    );
+  },
+  /** 浏览器触发 .md 下载。返回 void —— 在调用方包 try/catch。 */
+  async export(id: number, fallbackTitle = `analysis_${id}`) {
+    const token = getToken();
+    const headers = new Headers();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const res = await fetch(`/api/analysis-documents/${id}/export`, { headers });
+    if (!res.ok) {
+      throw new ApiError(`导出失败 HTTP ${res.status}`, res.status);
+    }
+    const blob = await res.blob();
+    // 解 Content-Disposition 拿文件名（兼容 filename*=UTF-8''xxx）
+    const cd = res.headers.get("Content-Disposition") || "";
+    let filename = `${fallbackTitle}.md`;
+    const m1 = cd.match(/filename\*=UTF-8''([^;]+)/i);
+    const m2 = cd.match(/filename="?([^";]+)"?/i);
+    if (m1) filename = decodeURIComponent(m1[1]);
+    else if (m2) filename = m2[1];
+
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  },
+};
+
 
 export const versionSummariesApi = {
   /** 首次 GET 实时算 + 落库；后续 GET 直读缓存。 */

@@ -2,10 +2,12 @@ import { Navigate, createBrowserRouter } from "react-router-dom";
 
 import { AppLayout } from "@/components/AppLayout";
 import { AppPackagesPage } from "@/pages/AppPackagesPage";
+import { ChangePasswordPage } from "@/pages/ChangePasswordPage";
 import { ConfigPage } from "@/pages/ConfigPage";
 import { DevicesPage } from "@/pages/DevicesPage";
 import { FunctionalCasesPage } from "@/pages/FunctionalCasesPage";
 import { HomePage } from "@/pages/HomePage";
+import { LoginPage } from "@/pages/LoginPage";
 import { ProjectDetailPage } from "@/pages/ProjectDetailPage";
 import { ProjectManagementPage } from "@/pages/ProjectManagementPage";
 import { ProjectVersionDetailPage } from "@/pages/ProjectVersionDetailPage";
@@ -29,6 +31,9 @@ import {
  * - /config 配置中心
  */
 export const router = createBrowserRouter([
+  // /login 不挂在 AppLayout 下：登录页是无侧栏 / 无 header 的全屏页。
+  // AppLayout 内部会做"未登录 → /login"重定向，这里就不需要再包守卫。
+  { path: "/login", element: <LoginPage /> },
   {
     path: "/",
     element: <AppLayout />,
@@ -50,6 +55,7 @@ export const router = createBrowserRouter([
       { path: "devices", element: <DevicesPage /> },
       { path: "app-packages", element: <AppPackagesPage /> },
       { path: "config", element: <ConfigPage /> },
+      { path: "change-password", element: <ChangePasswordPage /> },
       { path: "*", element: <NotFound /> },
     ],
   },

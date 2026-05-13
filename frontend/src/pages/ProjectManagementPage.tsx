@@ -1,5 +1,5 @@
-/** 项目管理主页：左侧模块树（支持拖拽）+ 右侧版本迭代列表。 */
-import { useEffect, useState } from "react";
+/** 项目管理主页：需求池 / 版本迭代 标签页 + 左侧模块树。 */
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -12,10 +12,12 @@ import {
   FolderOpen,
   FolderPlus,
   GanttChart,
+  Inbox,
   Loader2,
   MoreHorizontal,
   Pencil,
   Plus,
+  Sparkles,
   Trash2,
 } from "lucide-react";
 
@@ -29,9 +31,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PriorityBadge } from "@/components/badges/PriorityBadge";
+import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBadge";
 import { cn } from "@/lib/utils";
-import { ApiError, type ModulePickerNode, modulesApi, versionsApi } from "@/lib/api";
-import type { ProjectVersion, VersionStatus } from "@/types/domain";
+import { ApiError, type ModulePickerNode, modulesApi, versionsApi, requirementsApi } from "@/lib/api";
+import type { ProjectVersion, Requirement, VersionStatus } from "@/types/domain";
+import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -48,6 +54,7 @@ export function ProjectManagementPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
+  const [activeTab, setActiveTab] = useState("pool");
   const [expandedModules, setExpandedModules] = useState<Set<number>>(new Set());
   const [editingModule, setEditingModule] = useState<
     { mode: "create"; parentId?: number | null } | { mode: "rename"; mod: ModulePickerNode } | null
@@ -58,6 +65,7 @@ export function ProjectManagementPage() {
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
   const [versionFilterStatus, setVersionFilterStatus] = useState<string>("all");
   const [versionFilterDates, setVersionFilterDates] = useState<{ start: string; end: string }>({ start: "", end: "" });
+  const [detailReq, setDetailReq] = useState<Requirement | null>(null);
 
   const modulesQuery = useQuery({
     queryKey: ["modules", projectId],
@@ -71,7 +79,17 @@ export function ProjectManagementPage() {
     enabled: Number.isFinite(projectId),
   });
 
+  const requirementsQuery = useQuery({
+    queryKey: ["requirements", projectId, "pool", selectedModuleId],
+    queryFn: () => requirementsApi.list(projectId, {
+      tree: true,
+      module_id: selectedModuleId ?? undefined,
+    }),
+    enabled: Number.isFinite(projectId),
+  });
+
   const invalidateModules = () => queryClient.invalidateQueries({ queryKey: ["modules", projectId] });
+  const invalidateRequirements = () => queryClient.invalidateQueries({ queryKey: ["requirements", projectId] });
 
   const removeModule = useMutation({
     mutationFn: (mid: number) => modulesApi.remove(mid),
@@ -83,6 +101,12 @@ export function ProjectManagementPage() {
     mutationFn: ({ id: mid, targetParentId }: { id: number; targetParentId: number | null }) =>
       modulesApi.move(mid, targetParentId),
     onSuccess: () => { toast.success("已移动"); invalidateModules(); },
+    onError: (e) => toast.error((e as ApiError).message),
+  });
+
+  const removeRequirement = useMutation({
+    mutationFn: (rid: number) => requirementsApi.remove(rid),
+    onSuccess: () => { toast.success("已删除"); invalidateRequirements(); },
     onError: (e) => toast.error((e as ApiError).message),
   });
 
@@ -111,7 +135,6 @@ export function ProjectManagementPage() {
     const target = modules.find((m) => m.id === targetId);
     if (!dragged || !target) return;
 
-    // 拖到另一个模块上 → 变成其子模块
     moveModule.mutate({ id: draggedId, targetParentId: targetId });
   };
   const handleRootDragOver = (e: React.DragEvent) => {
@@ -128,7 +151,6 @@ export function ProjectManagementPage() {
     setDragModuleId(null);
   };
 
-  // 排序：在同级中上移/下移，使用已有 PATCH /api/reorder
   const reorderModule = (mid: number, direction: "up" | "down") => {
     const m = modules.find((x) => x.id === mid);
     if (!m) return;
@@ -158,6 +180,18 @@ export function ProjectManagementPage() {
       return next;
     });
   };
+
+  const moduleNames = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const mod of modules) m.set(mod.id, mod.name);
+    return m;
+  }, [modules]);
+
+  const versionNames = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const v of versionsQuery.data ?? []) m.set(v.id, v.display_name || v.version_name);
+    return m;
+  }, [versionsQuery.data]);
 
   const renderModule = (m: ModulePickerNode, depth: number): React.ReactNode => {
     const children = childrenByParent.get(m.id) ?? [];
@@ -222,7 +256,6 @@ export function ProjectManagementPage() {
 
   const allVersions = versionsQuery.data ?? [];
 
-  // 全局筛选：状态 + 日期（对所有模块下的版本生效）
   const globallyFiltered = allVersions
     .filter((v) => versionFilterStatus === "all" || v.status === versionFilterStatus)
     .filter((v) => {
@@ -231,102 +264,204 @@ export function ProjectManagementPage() {
       return true;
     });
 
-  // 再叠加模块选中过滤
   const versions = selectedModuleId
     ? globallyFiltered.filter((v) => (v.associated_module_ids ?? []).includes(selectedModuleId))
     : globallyFiltered;
 
-  return (
-    <div className="flex h-[calc(100vh-120px)] gap-0">
-      <div className="w-64 shrink-0 border-r bg-muted/20 p-3 overflow-y-auto">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-muted-foreground">模块树 <span className="text-muted-foreground/40">（拖拽移动）</span></span>
-          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingModule({ mode: "create" })}>
-            <Plus className="h-3 w-3" />
-          </Button>
-        </div>
-        <div
-          onDragOver={handleRootDragOver}
-          onDragLeave={handleRootDragLeave}
-          onDrop={handleDropToRoot}
-          className={cn("min-h-[40px]", rootDragOver && "bg-blue-100 ring-2 ring-blue-400 rounded")}
-        >
-          <div className={cn(
-            "text-[10px] text-center py-1 rounded border border-dashed transition-colors mb-1",
-            rootDragOver ? "border-blue-400 text-blue-600 bg-blue-50" : "border-transparent text-muted-foreground/30",
-          )}>
-            {rootDragOver ? "释放到根层级" : "拖到此处移到根层级"}
-          </div>
-          {modulesQuery.isLoading ? (
-            <Skeleton className="h-40 w-full" />
-          ) : roots.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-4">暂无模块，拖拽或点击 [+] 创建</p>
-          ) : (
-            <div className="space-y-0.5">{roots.map((m) => renderModule(m, 0))}</div>
-          )}
-        </div>
-      </div>
+  const reqs = requirementsQuery.data ?? [];
+  // ---- 需求池树形展开 ----
+  const [reqExpanded, setReqExpanded] = useState<Set<number>>(new Set());
+  const toggleReqExpand = (rid: number) => {
+    setReqExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(rid) ? next.delete(rid) : next.add(rid);
+      return next;
+    });
+  };
 
-      <div className="flex-1 overflow-y-auto p-6">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg font-semibold flex items-center gap-2"><GanttChart className="h-5 w-5" />版本迭代</h2>
-            {selectedModuleId && (
-              <p className="text-xs mt-0.5">
-                模块：<span className="font-medium text-blue-600">{modules.find((m) => m.id === selectedModuleId)?.name}</span>
-                <span className="text-muted-foreground ml-1">（仅显示关联迭代，筛选为全局）</span>
-                <Button variant="ghost" size="sm" className="h-5 text-xs ml-1" onClick={() => setSelectedModuleId(null)}>清除</Button>
-              </p>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {/* 状态筛选 */}
-            <Select value={versionFilterStatus} onValueChange={setVersionFilterStatus}>
-              <SelectTrigger className="h-8 w-24 text-xs">
-                <SelectValue placeholder="状态" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部状态</SelectItem>
-                <SelectItem value="planning">规划中</SelectItem>
-                <SelectItem value="developing">开发中</SelectItem>
-                <SelectItem value="testing">测试中</SelectItem>
-                <SelectItem value="released">已发布</SelectItem>
-                <SelectItem value="archived">已归档</SelectItem>
-              </SelectContent>
-            </Select>
-            {/* 日期筛选 */}
-            <Input type="date" className="h-8 w-32 text-xs" value={versionFilterDates.start}
-              onChange={(e) => setVersionFilterDates((p) => ({ ...p, start: e.target.value }))} placeholder="开始" />
-            <span className="text-xs text-muted-foreground">-</span>
-            <Input type="date" className="h-8 w-32 text-xs" value={versionFilterDates.end}
-              onChange={(e) => setVersionFilterDates((p) => ({ ...p, end: e.target.value }))} placeholder="结束" />
-            <Button size="sm" onClick={() => setCreatingVersion(true)}><Plus className="h-4 w-4" />新建</Button>
-          </div>
+  // ---- 版本删除处理 ----
+  const handleVersionDelete = async (v: ProjectVersion) => {
+    const confirmed = confirm(
+      `删除版本"${v.version_name}"？\n\n` +
+      "如果有需求关联到此版本，将自动解除关联移回需求池。"
+    );
+    if (!confirmed) return;
+    try {
+      await versionsApi.remove(projectId, v.id);
+      toast.success("已删除，关联需求已自动移回需求池");
+      queryClient.invalidateQueries({ queryKey: ["versions", projectId] });
+      invalidateRequirements();
+    } catch (e) {
+      toast.error((e as ApiError).message);
+    }
+  };
+
+  // ---- 模块树渲染 ----
+  const moduleTree = (
+    <div className="w-64 shrink-0 border-r bg-muted/20 p-3 overflow-y-auto">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-medium text-muted-foreground">模块树 <span className="text-muted-foreground/40">（拖拽移动）</span></span>
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => setEditingModule({ mode: "create" })}>
+          <Plus className="h-3 w-3" />
+        </Button>
+      </div>
+      <div
+        onDragOver={handleRootDragOver}
+        onDragLeave={handleRootDragLeave}
+        onDrop={handleDropToRoot}
+        className={cn("min-h-[40px]", rootDragOver && "bg-blue-100 ring-2 ring-blue-400 rounded")}
+      >
+        <div className={cn(
+          "text-[10px] text-center py-1 rounded border border-dashed transition-colors mb-1",
+          rootDragOver ? "border-blue-400 text-blue-600 bg-blue-50" : "border-transparent text-muted-foreground/30",
+        )}>
+          {rootDragOver ? "释放到根层级" : "拖到此处移到根层级"}
         </div>
-        {versionsQuery.isLoading ? (
-          <div className="space-y-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>
-        ) : versions.length === 0 ? (
-          <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">
-            {selectedModuleId ? "该模块下暂无关联版本" : allVersions.length === 0 ? "还没有版本迭代" : "没有符合条件的版本"}
-          </CardContent></Card>
+        {modulesQuery.isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : roots.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-4">暂无模块，拖拽或点击 [+] 创建</p>
         ) : (
-          <div className="space-y-3">
-            {versions.map((v) => (
-              <VersionCard key={v.id} version={v} modules={modules}
-                onEdit={() => navigate(`/projects/${projectId}/versions/${v.id}`)}
-                onDelete={() => {
-                  if (confirm(`删除版本"${v.version_name}"？`)) {
-                    versionsApi.remove(projectId, v.id).then(() => {
-                      toast.success("已删除");
-                      queryClient.invalidateQueries({ queryKey: ["versions", projectId] });
-                    }).catch((e) => toast.error((e as ApiError).message));
-                  }
-                }}
-              />
-            ))}
-          </div>
+          <div className="space-y-0.5">{roots.map((m) => renderModule(m, 0))}</div>
         )}
       </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-120px)]">
+      <div className="flex flex-1 min-h-0 gap-0">
+        {moduleTree}
+        <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSelectedModuleId(null); }} className="flex-1 flex flex-col min-h-0">
+          <div className="flex items-center justify-between px-6 pt-4 pb-2 border-b">
+            <TabsList>
+              <TabsTrigger value="pool"><Inbox className="h-4 w-4 mr-1" />需求池</TabsTrigger>
+              <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
+            </TabsList>
+            {activeTab === "pool" ? (
+              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/requirements`)}>
+                进入需求管理
+              </Button>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Select value={versionFilterStatus} onValueChange={setVersionFilterStatus}>
+                  <SelectTrigger className="h-8 w-24 text-xs">
+                    <SelectValue placeholder="状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">全部状态</SelectItem>
+                    <SelectItem value="planning">规划中</SelectItem>
+                    <SelectItem value="developing">开发中</SelectItem>
+                    <SelectItem value="testing">测试中</SelectItem>
+                    <SelectItem value="released">已发布</SelectItem>
+                    <SelectItem value="archived">已归档</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Input type="date" className="h-8 w-32 text-xs" value={versionFilterDates.start}
+                  onChange={(e) => setVersionFilterDates((p) => ({ ...p, start: e.target.value }))} placeholder="开始" />
+                <span className="text-xs text-muted-foreground">-</span>
+                <Input type="date" className="h-8 w-32 text-xs" value={versionFilterDates.end}
+                  onChange={(e) => setVersionFilterDates((p) => ({ ...p, end: e.target.value }))} placeholder="结束" />
+                <Button size="sm" onClick={() => setCreatingVersion(true)}><Plus className="h-4 w-4" />新建</Button>
+              </div>
+            )}
+          </div>
+
+          {/* ---- 需求池 ---- */}
+          {activeTab === "pool" && (
+            <div className="flex-1 overflow-y-auto p-6">
+              {selectedModuleId && (
+                <p className="text-xs mb-3">
+                  模块：<span className="font-medium text-blue-600">{moduleNames.get(selectedModuleId)}</span>
+                  <Button variant="ghost" size="sm" className="h-5 text-xs ml-1" onClick={() => setSelectedModuleId(null)}>清除</Button>
+                </p>
+              )}
+              {requirementsQuery.isLoading ? (
+                <div className="space-y-2"><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
+              ) : reqs.length === 0 ? (
+                <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">
+                  {selectedModuleId ? "该模块下暂无需求" : "暂无需求，点击上方按钮进入需求管理页创建"}
+                </CardContent></Card>
+              ) : (
+                <div className="overflow-hidden rounded-md border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/40 text-xs text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-medium w-24">编号</th>
+                        <th className="px-3 py-2 text-left font-medium">名称</th>
+                        <th className="px-3 py-2 text-left font-medium w-20">优先级</th>
+                        <th className="px-3 py-2 text-left font-medium w-32">迭代</th>
+                        <th className="px-3 py-2 text-left font-medium w-28">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reqs.map((r) => (
+                        <PoolRequirementRows
+                          key={r.id}
+                          req={r}
+                          expanded={reqExpanded}
+                          onToggle={toggleReqExpand}
+                          versionNames={versionNames}
+                          onViewDetail={(r) => setDetailReq(r)}
+                          onDelete={(req: Requirement) => {
+                            if (confirm(`删除需求"${req.title}"？同时会删除其子需求。`))
+                              removeRequirement.mutate(req.id);
+                          }}
+                          depth={0}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ---- 版本迭代 ---- */}
+          {activeTab === "versions" && (
+            <div className="flex-1 overflow-y-auto p-6">
+              {selectedModuleId && (
+                <p className="text-xs mb-3">
+                  模块：<span className="font-medium text-blue-600">{moduleNames.get(selectedModuleId)}</span>
+                  <span className="text-muted-foreground ml-1">（仅显示关联迭代，筛选为全局）</span>
+                  <Button variant="ghost" size="sm" className="h-5 text-xs ml-1" onClick={() => setSelectedModuleId(null)}>清除</Button>
+                </p>
+              )}
+              {versionsQuery.isLoading ? (
+                <div className="space-y-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>
+              ) : versions.length === 0 ? (
+                <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">
+                  {selectedModuleId ? "该模块下暂无关联版本" : allVersions.length === 0 ? "还没有版本迭代" : "没有符合条件的版本"}
+                </CardContent></Card>
+              ) : (
+                <div className="space-y-3">
+                  {versions.map((v) => (
+                    <VersionCard key={v.id} version={v} modules={modules}
+                      onEdit={() => navigate(`/projects/${projectId}/versions/${v.id}`)}
+                      onDelete={() => handleVersionDelete(v)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </Tabs>
+      </div>
+
+      <RequirementDetailDrawer
+        req={detailReq}
+        open={!!detailReq}
+        onClose={() => setDetailReq(null)}
+        onEdit={() => {
+          setDetailReq(null);
+          navigate(`/projects/${projectId}/requirements`);
+        }}
+        onViewRequirement={() => {
+          navigate(`/projects/${projectId}/requirements`);
+        }}
+        moduleNames={moduleNames}
+        versionNames={versionNames}
+      />
 
       <ModuleEditDialog state={editingModule} projectId={projectId}
         onClose={() => setEditingModule(null)} onDone={() => { invalidateModules(); setEditingModule(null); }} />
@@ -337,6 +472,92 @@ export function ProjectManagementPage() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 需求池树形行
+// ---------------------------------------------------------------------------
+function PoolRequirementRows({
+  req,
+  expanded,
+  onToggle,
+  versionNames,
+  onViewDetail,
+  onDelete,
+  depth,
+}: {
+  req: Requirement;
+  expanded: Set<number>;
+  onToggle: (id: number) => void;
+  versionNames: Map<number, string>;
+  onViewDetail: (r: Requirement) => void;
+  onDelete: (r: Requirement) => void;
+  depth: number;
+}) {
+  const children = req.children ?? [];
+  const isOpen = expanded.has(req.id);
+
+  return (
+    <>
+      <tr className="border-t hover:bg-accent/30 cursor-pointer" onClick={() => onViewDetail(req)}>
+        <td className="px-3 py-2 text-xs text-muted-foreground font-mono">REQ-{req.id}</td>
+        <td className="px-3 py-2">
+          <div className="flex items-start gap-1" style={{ paddingLeft: depth * 20 }}>
+            {children.length > 0 ? (
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); onToggle(req.id); }}
+                className="mt-0.5 text-muted-foreground hover:text-foreground"
+              >
+                {isOpen ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+              </button>
+            ) : (
+              <span className="inline-block w-3.5" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium">{req.title}</span>
+                {req.source === "ai_generated" && (
+                  <span className="inline-flex items-center gap-0.5 rounded bg-violet-50 px-1 py-0.5 text-[10px] text-violet-700 ring-1 ring-inset ring-violet-200">
+                    <Sparkles className="h-2.5 w-2.5" />AI
+                  </span>
+                )}
+              </div>
+              {req.description ? (
+                <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{req.description}</div>
+              ) : null}
+            </div>
+          </div>
+        </td>
+        <td className="px-3 py-2"><PriorityBadge priority={req.priority} /></td>
+        <td className="px-3 py-2 text-xs text-muted-foreground">
+          {req.version_id && versionNames.has(req.version_id) ? versionNames.get(req.version_id) : "—"}
+        </td>
+        <td className="px-3 py-2">
+          {req.system_status ? (
+            <RequirementStatusBadge status={req.system_status} />
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          )}
+        </td>
+      </tr>
+      {isOpen && children.map((c) => (
+        <PoolRequirementRows
+          key={c.id}
+          req={c}
+          expanded={expanded}
+          onToggle={onToggle}
+          versionNames={versionNames}
+          onViewDetail={onViewDetail}
+          onDelete={onDelete}
+          depth={depth + 1}
+        />
+      ))}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 版本卡片
+// ---------------------------------------------------------------------------
 function VersionCard({ version, modules, onEdit, onDelete }: {
   version: ProjectVersion; modules: ModulePickerNode[]; onEdit: () => void; onDelete: () => void;
 }) {
@@ -369,6 +590,9 @@ function VersionCard({ version, modules, onEdit, onDelete }: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 模块编辑对话框
+// ---------------------------------------------------------------------------
 function ModuleEditDialog({ state, projectId, onClose, onDone }: {
   state: { mode: "create"; parentId?: number | null } | { mode: "rename"; mod: ModulePickerNode } | null;
   projectId: number; onClose: () => void; onDone: () => void;
@@ -405,6 +629,9 @@ function ModuleEditDialog({ state, projectId, onClose, onDone }: {
   );
 }
 
+// ---------------------------------------------------------------------------
+// 版本创建对话框
+// ---------------------------------------------------------------------------
 function VersionCreateDialog({ open, projectId, moduleId, onClose, onDone }: {
   open: boolean; projectId: number; moduleId: number | null; onClose: () => void; onDone: (v: ProjectVersion) => void;
 }) {

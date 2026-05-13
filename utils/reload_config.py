@@ -7,7 +7,8 @@ class ConfigCenter:
     _cache: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self):
-        self._configs = {}
+        if not hasattr(self, "_configs"):
+            self._configs: Dict[str, Dict[str, Any]] = {}
 
     def __new__(cls):
         if cls._instance is None:

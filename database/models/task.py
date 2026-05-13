@@ -30,9 +30,11 @@ from database.base import Base, JSONType
 TASK_TYPE_DEV = "dev"
 TASK_TYPE_TEST = "test"
 TASK_TYPE_UI_REVIEW = "ui_review"
+TASK_TYPE_PM_REVIEW = "pm_review"  # 产品体验 / PM 走查
 TASK_TYPE_BUG = "bug"
 ALL_TASK_TYPES = {
-    TASK_TYPE_DEV, TASK_TYPE_TEST, TASK_TYPE_UI_REVIEW, TASK_TYPE_BUG,
+    TASK_TYPE_DEV, TASK_TYPE_TEST, TASK_TYPE_UI_REVIEW,
+    TASK_TYPE_PM_REVIEW, TASK_TYPE_BUG,
 }
 
 # Task 状态

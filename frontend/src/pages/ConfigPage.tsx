@@ -50,6 +50,7 @@ import {
   type ConfigSchemaItem,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
+import { AiModelConfigTab } from "@/pages/config/tabs/AiModelConfigTab";
 
 /**
  * 配置中心：按 category (api / web / app / global) 切 Tab，
@@ -169,22 +170,26 @@ export function ConfigPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={() => configQuery.refetch()}
-            disabled={configQuery.isFetching}
-          >
-            {configQuery.isFetching ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            刷新
-          </Button>
-          <Button onClick={() => setCreating(true)}>
-            <Plus className="h-4 w-4" />
-            新增配置项
-          </Button>
+          {activeCategory === "ai" ? null : (
+            <>
+              <Button
+                variant="outline"
+                onClick={() => configQuery.refetch()}
+                disabled={configQuery.isFetching}
+              >
+                {configQuery.isFetching ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                刷新
+              </Button>
+              <Button onClick={() => setCreating(true)}>
+                <Plus className="h-4 w-4" />
+                新增配置项
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -198,6 +203,10 @@ export function ConfigPage() {
         </TabsList>
       </Tabs>
 
+      {activeCategory === "ai" ? (
+        <AiModelConfigTab />
+      ) : (
+        <>
       {schemaQuery.data && schemaQuery.data.length > 0 ? (
         <RecommendedConfigPanel
           items={schemaQuery.data}
@@ -373,6 +382,8 @@ export function ConfigPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </>
+      )}
     </div>
   );
 }
