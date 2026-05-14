@@ -13,7 +13,9 @@ requirements 表）。
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import re
 import sys
 import traceback
 from datetime import datetime
@@ -606,11 +608,260 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
     }
 
 
+def _handle_functional_case_gen(run: "AiRun", session) -> dict:
+    """M7 AI 一键生成 functional 测试用例草稿。
+
+    一次调用 = 一个 (requirement_id, model_name) pair（外层 server 端按 N×M 拆分）。
+
+    input_payload：
+      {
+        "requirement_id": int,
+        "model_name": str,
+        "batch_id": str,
+        "analysis_document_id": int | None,
+        "ui_image_attachment_ids": [int],
+        "count": int,                       # 1..30
+        "scenario_mix": str,                # positive_only / positive_and_negative / all_scenarios
+        "user_prompt": str | None,
+        "created_by_id": int | None,
+      }
+
+    产物：
+      - N 行 ai_case_drafts(status='pending')
+      - ai_run.output_payload = {batch_id, draft_count, draft_ids[], image_strategy}
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+
+    from database.models import (
+        AiCaseDraft,
+        AI_CASE_DRAFT_STATUS_PENDING,
+    )
+    from server.services.ai_model_service import get_ai_model
+    from server.services.case_generation_context_builder import (
+        build_case_generation_context,
+        render_case_generation_placeholders,
+    )
+    from ai_gateway.gateway import (
+        ProviderDoesNotSupportVisionError,
+        _load_prompt,
+        _render_prompt,
+        chat_markdown,
+        chat_markdown_with_images,
+        ocr_extract,
+    )
+
+    payload = run.input_payload or {}
+    requirement_id = payload.get("requirement_id")
+    model_name = (payload.get("model_name") or "").strip()
+    batch_id = (payload.get("batch_id") or "").strip()
+    analysis_document_id = payload.get("analysis_document_id")
+    ui_image_attachment_ids = payload.get("ui_image_attachment_ids") or []
+    count = int(payload.get("count") or 5)
+    scenario_mix = (payload.get("scenario_mix") or "positive_and_negative").strip()
+    user_prompt = (payload.get("user_prompt") or "").strip()
+
+    if not requirement_id:
+        raise ValueError("input_payload.requirement_id 必填")
+    if not model_name:
+        raise ValueError("input_payload.model_name 必填")
+    if not batch_id:
+        raise ValueError("input_payload.batch_id 必填")
+
+    cfg = get_ai_model(session, model_name)
+    if cfg is None:
+        raise ValueError(f"AI 模型 {model_name!r} 未配置")
+    if not cfg.enabled:
+        raise ValueError(f"AI 模型 {model_name!r} 未启用")
+
+    # ── 1. 构上下文 ───────────────────────────────────────
+    ctx = build_case_generation_context(
+        session,
+        requirement_id=int(requirement_id),
+        analysis_document_id=analysis_document_id,
+        ui_image_attachment_ids=ui_image_attachment_ids,
+    )
+
+    # 渲染占位符（含 OCR_EXCERPTS / IMAGE_COUNT 等 base 字段）
+    placeholders = render_case_generation_placeholders(
+        ctx, count=count, scenario_mix=scenario_mix, user_prompt=user_prompt,
+    )
+
+    # ── 2. UI 图：vision 优先，OCR 回退 ─────────────────────
+    image_paths = [img.abs_path for img in ctx.ui_images]
+    use_vision = bool(cfg.supports_vision and image_paths)
+
+    # M6 的 OCR 占位 —— 只对 UI 图做（业务附件文档已经在 base placeholder 里处理过了）
+    ocr_text = "（无 UI 截图）"
+    if image_paths and not use_vision:
+        chunks: list[str] = []
+        for img in ctx.ui_images:
+            txt = ocr_extract(img.abs_path)
+            if txt:
+                chunks.append(f"### {img.name}\n```\n{txt[:2000]}\n```")
+            else:
+                chunks.append(f"### {img.name}\n> ⚠️ OCR 未提取到文本")
+        ocr_text = "\n\n".join(chunks) if chunks else "（无）"
+    placeholders["OCR_EXCERPTS"] = ocr_text
+
+    # ── 3. 渲染 prompt + hash ───────────────────────────────
+    template = _load_prompt("case_generation_v1")
+    prompt = _render_prompt(template, placeholders)
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    # ── 4. 调 LLM ─────────────────────────────────────────
+    try:
+        if use_vision:
+            raw_text, tokens_in, tokens_out = chat_markdown_with_images(
+                prompt, image_paths, cfg, timeout=240,
+            )
+            image_strategy = "vision"
+        else:
+            raw_text, tokens_in, tokens_out = chat_markdown(
+                prompt, cfg, timeout=180,
+            )
+            image_strategy = "ocr" if image_paths else "none"
+    except ProviderDoesNotSupportVisionError as exc:
+        LOGGER.warning("[ai_task m7] vision 不支持，回退 OCR：%s", exc)
+        if image_paths:
+            chunks = []
+            for img in ctx.ui_images:
+                txt = ocr_extract(img.abs_path)
+                if txt:
+                    chunks.append(f"### {img.name}\n```\n{txt[:2000]}\n```")
+            placeholders["OCR_EXCERPTS"] = "\n\n".join(chunks) or "（无）"
+            prompt = _render_prompt(template, placeholders)
+            prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        raw_text, tokens_in, tokens_out = chat_markdown(prompt, cfg, timeout=180)
+        image_strategy = "ocr_fallback"
+
+    if not raw_text.strip():
+        raise ValueError("LLM 返回空文本")
+
+    # ── 5. 解析 JSON（三道兜底：```json``` 围栏 / 裸 JSON 数组 / 失败兜底） ─
+    parsed = _extract_case_json(raw_text)
+    if parsed is None:
+        raise ValueError(
+            "LLM 输出无法解析为 JSON 数组；原文已存 ai_runs.output_payload.raw"
+        )
+
+    if not isinstance(parsed, list):
+        raise ValueError(f"LLM 输出顶层不是数组：{type(parsed).__name__}")
+
+    # ── 6. 落 ai_case_drafts ─────────────────────────────────
+    model_label = f"{cfg.provider} / {cfg.model}"
+    created_ids: list[int] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+
+        step_template = item.get("step_template") or []
+        # needs_ui_detail 整条聚合：任一 step 标记 true 即整条 true
+        needs_ui = bool(
+            any(
+                isinstance(s, dict) and s.get("needs_ui_detail")
+                for s in step_template
+            )
+        )
+
+        draft = AiCaseDraft(
+            requirement_id=int(requirement_id),
+            analysis_document_id=ctx.analysis_document_id,
+            ai_run_id=run.id,
+            batch_id=batch_id,
+            model_label=model_label,
+            title=title[:200],
+            preconditions=str(item.get("preconditions") or "").strip() or None,
+            steps_text=str(item.get("steps_text") or "").strip() or None,
+            expected=str(item.get("expected") or "").strip() or None,
+            priority=_clamp_priority(item.get("priority")),
+            tags=list(item.get("tags") or []),
+            step_template=step_template,
+            needs_ui_detail=needs_ui,
+            ui_image_refs=list(ui_image_attachment_ids),
+            status=AI_CASE_DRAFT_STATUS_PENDING,
+        )
+        session.add(draft)
+        session.flush()
+        created_ids.append(draft.id)
+
+    LOGGER.info(
+        "[ai_task m7] requirement=%s model=%s batch=%s drafts=%d image=%s",
+        requirement_id, model_name, batch_id, len(created_ids), image_strategy,
+    )
+
+    return {
+        "output": {
+            "batch_id": batch_id,
+            "draft_count": len(created_ids),
+            "draft_ids": created_ids,
+            "image_strategy": image_strategy,
+            "ui_image_count": len(image_paths),
+            "model_label": model_label,
+            "scenario_mix": scenario_mix,
+        },
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "cost_usd": None,
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "prompt_hash": prompt_hash,
+        "prompt_version": "v1",
+    }
+
+
+_JSON_FENCE_PATTERN = re.compile(
+    r"```(?:json)?\s*([\[\{].*?[\]\}])\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _extract_case_json(raw: str):
+    """三道兜底：```json``` 围栏 / 第一个 [...] 块 / 整段直接 json.loads。返回 None 失败。"""
+    m = _JSON_FENCE_PATTERN.search(raw)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:  # noqa: BLE001
+            pass
+    # 第一个完整 [...] 块（贪婪匹配数组）
+    start = raw.find("[")
+    end = raw.rfind("]")
+    if start >= 0 and end > start:
+        try:
+            return json.loads(raw[start : end + 1])
+        except Exception:  # noqa: BLE001
+            pass
+    # 整段直接 parse
+    try:
+        return json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _clamp_priority(v) -> int:
+    try:
+        p = int(v)
+    except (TypeError, ValueError):
+        return 2
+    if p < 0:
+        return 0
+    if p > 3:
+        return 3
+    return p
+
+
 # Feature → handler 注册表。新增 feature 时在这里加一行。
 _HANDLERS = {
     "requirement_parse": _handle_requirement_parse,
     "requirement_analyze": _handle_requirement_analyze,    # M6 新流程
     "test_plan": _handle_test_plan,
-    # "functional_case_gen": _handle_functional_case_gen,
+    "functional_case_gen": _handle_functional_case_gen,    # M7
     # ... 后续 feature 在这里挂
 }

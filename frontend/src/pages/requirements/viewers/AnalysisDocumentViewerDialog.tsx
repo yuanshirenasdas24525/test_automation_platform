@@ -9,6 +9,7 @@ import {
   Pencil,
   Save,
   Trash2,
+  Wand2,
   X,
 } from "lucide-react";
 
@@ -29,7 +30,10 @@ import { MarkdownView } from "@/components/editor/MarkdownView";
 import { VersionDiffViewer } from "@/components/diff/VersionDiffViewer";
 import { analysisDocsApi, ApiError } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import type { AnalysisVersion } from "@/types/domain";
+import type { AnalysisVersion, CaseGenerationBatch } from "@/types/domain";
+
+import { CaseGenerationLauncherDialog } from "../dialogs/CaseGenerationLauncherDialog";
+import { CaseDraftReviewDialog } from "../dialogs/CaseDraftReviewDialog";
 
 interface Props {
   open: boolean;
@@ -59,6 +63,10 @@ export function AnalysisDocumentViewerDialog({
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(false);
   const [changeSummary, setChangeSummary] = useState("");
+  // M7：从分析文档触发"AI 一键生成用例"
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [reviewBatches, setReviewBatches] = useState<CaseGenerationBatch[]>([]);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   useEffect(() => {
     if (docQuery.data) {
@@ -188,6 +196,15 @@ export function AnalysisDocumentViewerDialog({
             </Button>
             <Button
               size="sm"
+              variant="outline"
+              onClick={() => setLauncherOpen(true)}
+              disabled={!docQuery.data}
+              title="基于本分析文档生成 functional 用例草稿"
+            >
+              <Wand2 className="h-4 w-4" /> 生成用例
+            </Button>
+            <Button
+              size="sm"
               variant={historyOpen ? "default" : "outline"}
               onClick={() => setHistoryOpen((v) => !v)}
             >
@@ -301,6 +318,26 @@ export function AnalysisDocumentViewerDialog({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* M7：从分析文档触发"一键生成用例" */}
+      {docQuery.data ? (
+        <CaseGenerationLauncherDialog
+          open={launcherOpen}
+          onClose={() => setLauncherOpen(false)}
+          requirements={[{ id: docQuery.data.requirement_id }]}
+          analysisDocumentId={docId}
+          onTriggered={(batches) => {
+            setReviewBatches(batches);
+            setReviewOpen(true);
+          }}
+        />
+      ) : null}
+      <CaseDraftReviewDialog
+        open={reviewOpen}
+        onClose={() => setReviewOpen(false)}
+        batches={reviewBatches}
+        onCommitted={() => onMutated?.()}
+      />
     </>
   );
 }

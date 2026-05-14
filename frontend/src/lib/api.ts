@@ -4,6 +4,9 @@
  * 这样上游用 try/catch 或 TanStack Query 都省事。
  */
 import type {
+  AiCaseDraft,
+  AiCaseDraftStatus,
+  AiCaseDraftUpdatePayload,
   AiFeature,
   AiModelConfig,
   AiModelConfigUpsert,
@@ -14,6 +17,11 @@ import type {
   AnalysisDocument,
   AnalysisTriggerResponse,
   AnalysisVersion,
+  CaseGenerationRun,
+  CaseGenerationTriggerPayload,
+  CaseGenerationTriggerResponse,
+  CommitDraftsPayload,
+  CommitDraftsResult,
   ApiEnvelope,
   CaseType,
   ChangePasswordRequest,
@@ -1272,6 +1280,61 @@ export const analysisDocsApi = {
     a.click();
     a.remove();
     URL.revokeObjectURL(a.href);
+  },
+};
+
+
+// =============================================================================
+// M7: AI 一键生成测试用例
+// =============================================================================
+
+export const aiCaseGenerationApi = {
+  /** 触发：requirement_ids × model_names 笛卡尔积 → 每对一个 batch。 */
+  trigger(payload: CaseGenerationTriggerPayload) {
+    return request<CaseGenerationTriggerResponse>("/api/ai/case-generation", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  /** 列草稿：requirement_id / batch_id / status 任意组合过滤。 */
+  listDrafts(filters: {
+    requirement_id?: number;
+    batch_id?: string;
+    status?: AiCaseDraftStatus;
+  } = {}) {
+    const qs = new URLSearchParams();
+    if (filters.requirement_id != null)
+      qs.set("requirement_id", String(filters.requirement_id));
+    if (filters.batch_id) qs.set("batch_id", filters.batch_id);
+    if (filters.status) qs.set("status", filters.status);
+    const q = qs.toString();
+    return request<AiCaseDraft[]>(`/api/ai/case-drafts${q ? `?${q}` : ""}`);
+  },
+  getDraft(id: number) {
+    return request<AiCaseDraft>(`/api/ai/case-drafts/${id}`);
+  },
+  updateDraft(id: number, patch: AiCaseDraftUpdatePayload) {
+    return request<AiCaseDraft>(`/api/ai/case-drafts/${id}`, {
+      method: "PUT",
+      body: patch,
+    });
+  },
+  /** 逻辑删：status → rejected。 */
+  rejectDraft(id: number) {
+    return request<AiCaseDraft>(`/api/ai/case-drafts/${id}`, {
+      method: "DELETE",
+    });
+  },
+  /** 批量入库：勾选若干草稿 → 写 test_cases；不通过的进 skipped[]。 */
+  commit(payload: CommitDraftsPayload) {
+    return request<CommitDraftsResult>("/api/ai/case-drafts/commit", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  /** 查任务进度（专用端点，扁平化了 batch_id / requirement_id）。 */
+  getRun(id: number) {
+    return request<CaseGenerationRun>(`/api/ai/case-generation/runs/${id}`);
   },
 };
 

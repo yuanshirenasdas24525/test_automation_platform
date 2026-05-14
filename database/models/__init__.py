@@ -195,6 +195,13 @@ from .requirement_analysis_document import (
     RequirementAnalysisDocument,
     RequirementAnalysisVersion,
 )
+from .ai_case_draft import (
+    AiCaseDraft,
+    AI_CASE_DRAFT_STATUS_PENDING,
+    AI_CASE_DRAFT_STATUS_ACCEPTED,
+    AI_CASE_DRAFT_STATUS_REJECTED,
+    ALL_AI_CASE_DRAFT_STATUSES,
+)
 from .test_plan import (
     TestPlan,
     TEST_PLAN_STATUS_DRAFT,
@@ -262,6 +269,9 @@ __all__ = [
     "Attachment", "ATTACHMENT_KIND_LINK", "ATTACHMENT_KIND_FILE",
     "ALL_ATTACHMENT_KINDS",
     "RequirementAnalysisDocument", "RequirementAnalysisVersion",
+    "AiCaseDraft",
+    "AI_CASE_DRAFT_STATUS_PENDING", "AI_CASE_DRAFT_STATUS_ACCEPTED",
+    "AI_CASE_DRAFT_STATUS_REJECTED", "ALL_AI_CASE_DRAFT_STATUSES",
     "TestPlan",
     "ProjectContext", "RequirementAnalysis",
     "ProjectVersion", "User",

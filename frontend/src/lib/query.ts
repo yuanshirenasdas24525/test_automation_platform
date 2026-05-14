@@ -88,4 +88,11 @@ export const queryKeys = {
   analysisDoc: (docId: number) => ["analysis_doc", docId] as const,
   analysisVersions: (docId: number) =>
     ["analysis_doc", docId, "versions"] as const,
+  /** M7：AI 用例草稿 + 一键生成任务进度。 */
+  aiCaseDrafts: (filters?: Record<string, unknown>) =>
+    filters && Object.keys(filters).length > 0
+      ? (["ai_case_drafts", filters] as const)
+      : (["ai_case_drafts"] as const),
+  aiCaseGenerationRun: (runId: number) =>
+    ["ai_case_generation_run", runId] as const,
 };

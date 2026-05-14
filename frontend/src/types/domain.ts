@@ -926,6 +926,109 @@ export interface AnalysisDiffResponse {
   after: AnalysisVersion;
 }
 
+// =============================================================================
+// M7：AI 一键生成测试用例
+// =============================================================================
+
+export type AiCaseDraftStatus = "pending" | "accepted" | "rejected";
+export type CaseGenerationScenarioMix =
+  | "positive_only"
+  | "positive_and_negative"
+  | "all_scenarios";
+
+export type CaseStepTypeHint =
+  | "navigate"
+  | "input"
+  | "select"
+  | "submit"
+  | "verify"
+  | "wait"
+  | "cleanup"
+  | "other";
+
+export interface CaseStepTemplateItem {
+  order: number;
+  step_type_hint: CaseStepTypeHint | string;
+  needs_ui_detail: boolean;
+  hint?: string | null;
+}
+
+export interface AiCaseDraft {
+  id: number;
+  requirement_id: number;
+  analysis_document_id?: number | null;
+  ai_run_id?: number | null;
+  batch_id: string;
+  model_label?: string | null;
+
+  title: string;
+  preconditions?: string | null;
+  steps_text?: string | null;
+  expected?: string | null;
+  priority: number;
+  tags: string[];
+
+  step_template: CaseStepTemplateItem[];
+  needs_ui_detail: boolean;
+  ui_image_refs: number[];
+
+  status: AiCaseDraftStatus;
+  committed_case_id?: number | null;
+
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface CaseGenerationTriggerPayload {
+  requirement_ids: number[];
+  analysis_document_id?: number | null;
+  model_names: string[];
+  count_per_requirement: number;
+  scenario_mix: CaseGenerationScenarioMix;
+  user_prompt?: string;
+  ui_image_attachment_ids?: number[];
+}
+
+export interface CaseGenerationBatch {
+  batch_id: string;
+  requirement_id: number;
+  run_id: number;
+  model_name: string;
+  model_label: string;
+}
+
+export interface CaseGenerationTriggerResponse {
+  batches: CaseGenerationBatch[];
+}
+
+export interface AiCaseDraftUpdatePayload {
+  title?: string;
+  preconditions?: string | null;
+  steps_text?: string | null;
+  expected?: string | null;
+  priority?: number;
+  tags?: string[];
+  step_template?: CaseStepTemplateItem[];
+  needs_ui_detail?: boolean;
+}
+
+export interface CommitDraftsPayload {
+  draft_ids: number[];
+  target_module_id?: number | null;
+}
+
+export interface CommitDraftsResult {
+  created_case_ids: number[];
+  skipped: Array<{ draft_id: number; reason: string }>;
+}
+
+/** /api/ai/case-generation/runs/{id} 返回的扁平化字段。 */
+export interface CaseGenerationRun extends AiRun {
+  batch_id?: string | null;
+  requirement_id?: number | null;
+  model_name?: string | null;
+}
+
 /** Requirements 列表过滤参数（GET /api/requirements）。 */
 export interface RequirementListFilters {
   status?: RequirementStatus;

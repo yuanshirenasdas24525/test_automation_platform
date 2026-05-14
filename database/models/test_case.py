@@ -102,3 +102,22 @@ class TestCase(Base):
     # functional 用例的"步骤 / 期望"自由文本结构（JSON）。
     # 仅 case_type='functional' 时使用；其它类型为 NULL。
     functional_spec = Column(JSONType, nullable=True)
+
+    # ============ M7 AI 一键生成回填 ============
+    # source = manual / ai_m7（后续 m8 自动化生成会扩展到 ai_m8_auto 等）
+    source = Column(String(20), nullable=False, default="manual", server_default="manual", index=True)
+    # 回指 ai_case_drafts.id（来源草稿）；逻辑删 draft 时 SET NULL
+    draft_id = Column(Integer, ForeignKey("ai_case_drafts.id", ondelete="SET NULL"), nullable=True)
+    # 直接关联到需求（绕开 module 反查）
+    requirement_id = Column(
+        Integer,
+        ForeignKey("requirements.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # M8 衔接：结构化业务步骤 [{order, action_text, step_type_hint, needs_ui_detail}, ...]
+    # commit 时由 ai_case_draft_service 从 draft.steps_text + step_template 合成
+    business_steps = Column(JSONType, nullable=True)
+
+    draft = relationship("AiCaseDraft", foreign_keys=[draft_id])
+    requirement = relationship("Requirement", foreign_keys=[requirement_id])

@@ -10,6 +10,7 @@ import {
   ChevronRight,
   FileText,
   GitFork,
+  ListPlus,
   Loader2,
   Pencil,
   Plus,
@@ -46,6 +47,8 @@ import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { AssigneePicker } from "@/components/pickers/AssigneePicker";
 import { AiAnalysisLauncherDialog } from "./requirements/dialogs/AiAnalysisLauncherDialog";
 import { AnalysisDocumentListDialog } from "./requirements/dialogs/AnalysisDocumentListDialog";
+import { CaseGenerationLauncherDialog } from "./requirements/dialogs/CaseGenerationLauncherDialog";
+import { CaseDraftReviewDialog } from "./requirements/dialogs/CaseDraftReviewDialog";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { cn } from "@/lib/utils";
 import { useUserId } from "@/lib/current-user";
@@ -60,6 +63,7 @@ import {
 import { queryKeys } from "@/lib/query";
 import type {
   AiRun,
+  CaseGenerationBatch,
   Requirement,
   RequirementSystemStatus,
 } from "@/types/domain";
@@ -121,6 +125,10 @@ export function RequirementsPage() {
   const [aiLauncherFor, setAiLauncherFor] = useState<Requirement | null>(null);
   const [docsListFor, setDocsListFor] = useState<Requirement | null>(null);
   const [detailReq, setDetailReq] = useState<Requirement | null>(null);
+  // M7：用例生成 Launcher / Review
+  const [caseGenFor, setCaseGenFor] = useState<Requirement[] | null>(null);
+  const [caseReviewBatches, setCaseReviewBatches] = useState<CaseGenerationBatch[]>([]);
+  const [caseReviewOpen, setCaseReviewOpen] = useState(false);
 
   const projectQuery = useQuery({
     queryKey: queryKeys.project(projectId),
@@ -255,6 +263,27 @@ export function RequirementsPage() {
             <Plus className="h-4 w-4" />
             新建需求
           </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              const flat: Requirement[] = [];
+              for (const r of visibleRoots) {
+                flat.push(r);
+                for (const c of r.children ?? []) flat.push(c);
+              }
+              if (flat.length === 0) {
+                toast.error("没有可用的需求");
+                return;
+              }
+              setCaseGenFor(flat);
+            }}
+            disabled={visibleRoots.length === 0}
+            title="对当前过滤结果下的所有需求批量生成用例草稿"
+          >
+            <ListPlus className="h-4 w-4" />
+            批量 AI 生成用例
+          </Button>
           <Button size="sm" onClick={() => setAiOpen(true)}>
             <Sparkles className="h-4 w-4" />
             AI 解析需求
@@ -359,6 +388,7 @@ export function RequirementsPage() {
                   onSplit={(r) => setSplittingParent(r)}
                   onAiAnalyze={(r) => setAiLauncherFor(r)}
                   onOpenDocs={(r) => setDocsListFor(r)}
+                  onGenerateCases={(r) => setCaseGenFor([r])}
                   onViewDetail={(r) => setDetailReq(r)}
                 />
               ))}
@@ -436,6 +466,23 @@ export function RequirementsPage() {
         moduleNames={moduleNames}
         versionNames={versionNames}
       />
+
+      <CaseGenerationLauncherDialog
+        open={!!caseGenFor}
+        onClose={() => setCaseGenFor(null)}
+        requirements={caseGenFor ?? []}
+        onTriggered={(batches) => {
+          setCaseReviewBatches(batches);
+          setCaseReviewOpen(true);
+          setCaseGenFor(null);
+        }}
+      />
+      <CaseDraftReviewDialog
+        open={caseReviewOpen}
+        onClose={() => setCaseReviewOpen(false)}
+        batches={caseReviewBatches}
+        onCommitted={() => invalidate()}
+      />
     </div>
   );
 }
@@ -488,6 +535,7 @@ function RequirementTreeRows({
   onSplit,
   onAiAnalyze,
   onOpenDocs,
+  onGenerateCases,
   onViewDetail,
 }: {
   req: Requirement;
@@ -499,6 +547,7 @@ function RequirementTreeRows({
   onSplit: (r: Requirement) => void;
   onAiAnalyze: (r: Requirement) => void;
   onOpenDocs: (r: Requirement) => void;
+  onGenerateCases: (r: Requirement) => void;
   onViewDetail: (r: Requirement) => void;
 }) {
   const children = req.children ?? [];
@@ -518,6 +567,7 @@ function RequirementTreeRows({
         onSplit={() => onSplit(req)}
         onAiAnalyze={() => onAiAnalyze(req)}
         onOpenDocs={() => onOpenDocs(req)}
+        onGenerateCases={() => onGenerateCases(req)}
         onViewDetail={() => onViewDetail(req)}
       />
       {isOpen
@@ -535,6 +585,7 @@ function RequirementTreeRows({
               onSplit={null}
               onAiAnalyze={() => onAiAnalyze(c)}
               onOpenDocs={() => onOpenDocs(c)}
+              onGenerateCases={() => onGenerateCases(c)}
               onViewDetail={() => onViewDetail(c)}
             />
           ))
@@ -555,6 +606,7 @@ function RequirementTableRow({
   onSplit,
   onAiAnalyze,
   onOpenDocs,
+  onGenerateCases,
   onViewDetail,
 }: {
   req: Requirement;
@@ -568,6 +620,7 @@ function RequirementTableRow({
   onSplit: (() => void) | null;
   onAiAnalyze: () => void;
   onOpenDocs: () => void;
+  onGenerateCases: () => void;
   onViewDetail: () => void;
 }) {
   const version = versions.find((v) => v.id === req.version_id);
@@ -672,6 +725,15 @@ function RequirementTableRow({
             title="查看 AI 分析文档"
           >
             <FileText className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-violet-600 hover:text-violet-700"
+            onClick={onGenerateCases}
+            title="AI 一键生成测试用例"
+          >
+            <ListPlus className="h-3.5 w-3.5" />
           </Button>
           {onSplit ? (
             <Button
