@@ -24,6 +24,16 @@ from database.models import (
     ProjectCreate,
     TestCase,
 )
+from database.schemas.git_config import (
+    GitConfigRead,
+    GitConfigTestResult,
+    GitConfigUpdate,
+)
+from server.services.git_config_service import (
+    get_git_config,
+    set_git_config,
+    test_git_connectivity,
+)
 from server.services.projects import list_projects_with_stats, serialize_project_basic
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -153,6 +163,71 @@ def get_stack_counts(project_id: int, db: DBDep):
             "total": total,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# AI Studio M1：Git 配置
+#   GET  /api/projects/{id}/git-config         读（脱敏，永不含明文凭证）
+#   PUT  /api/projects/{id}/git-config         写（secret 走 AES-256 加密落库）
+#   POST /api/projects/{id}/git-config/test    跑 ls-remote 测连通性
+# ---------------------------------------------------------------------------
+@router.get("/{project_id}/git-config", response_model=GitConfigRead)
+def read_git_config(project_id: int, db: DBDep):
+    try:
+        data = get_git_config(db.session, project_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return GitConfigRead(**data)
+
+
+@router.put("/{project_id}/git-config", response_model=GitConfigRead)
+def update_git_config(project_id: int, payload: GitConfigUpdate, db: DBDep):
+    """更新 git 配置 + 自动触发 RAG 索引（仅 git_url 非空时）。
+
+    - 首次写凭证：``auth_type`` + ``auth_secret`` 必须同时给
+    - 仅改 URL / 分支：``auth_secret`` 传 None，但 ``auth_type`` 不能换
+    - 清掉凭证（切回匿名 / 公开 repo）：``auth_type=None``
+
+    成功后异步派 ``tasks.rag_index_project``：clone + 扫文件 + 算 embedding 一条龙。
+    PUT 立刻返回；前端轮询 ``GET /git-config`` 看 ``rag_index_status`` 走到 ready。
+    """
+    try:
+        data = set_git_config(
+            db.session,
+            project_id,
+            git_url=payload.git_url,
+            default_branch=payload.default_branch or "main",
+            auth_type=payload.auth_type,
+            auth_secret_plain=payload.auth_secret,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # 触发索引。只在 git_url 真的填了的情况下派任务 —— 用户清空配置时不该再去 clone
+    if data.get("git_url"):
+        # set_git_config 内只 flush 未 commit；deps.py 会在请求收尾 commit。
+        # 这里先 commit 一次保证 worker 拿到的是最新行（凭证 / URL / status），
+        # 否则 EAGER 模式下 worker 在同一 session 看不到 flushed 但未 commit 的行。
+        db.session.commit()
+        from tasks.rag_index_task import rag_index_project_task
+        rag_index_project_task.delay(project_id)
+
+    return GitConfigRead(**data)
+
+
+@router.post("/{project_id}/git-config/test", response_model=GitConfigTestResult)
+def test_git_config(project_id: int, db: DBDep):
+    """跑一次 ``git ls-remote``，告诉前端凭证 / URL 是否能联通远端。
+
+    永远 200 返回，错误信息塞 ``error`` 字段；前端按 ``ok`` 渲染成功 / 失败。
+    """
+    try:
+        data = test_git_connectivity(db.session, project_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return GitConfigTestResult(**data)
 
 
 @router.delete("/{project_id}")

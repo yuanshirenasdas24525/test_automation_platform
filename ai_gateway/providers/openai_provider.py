@@ -79,3 +79,53 @@ def call_openai(
         raise ProviderError(f"openai 响应格式异常：{json.dumps(data)[:500]}") from exc
 
     return content, tokens_in, tokens_out
+
+
+def embed_openai(
+    api_key: str,
+    model: str,
+    texts: list[str],
+    base_url: Optional[str] = None,
+    timeout: int = 60,
+) -> tuple[list[list[float]], int]:
+    """调一次 OpenAI /v1/embeddings，返回 (vectors, tokens_used)。
+
+    - ``texts`` 一次最多丢几十条；调用方需要按 token 上限自行分批
+    - 走 ``/v1/embeddings`` 端点，跟 chat.completions 同 base_url 前缀
+    - DeepSeek 现在没 embedding 路由，但 Azure / 自建反代 / 通义 / Together 都兼容这条
+    """
+    if not api_key:
+        raise ProviderError("openai-embeddings: api_key 未配置")
+    if not texts:
+        return [], 0
+
+    url = (base_url or "https://api.openai.com").rstrip("/") + "/v1/embeddings"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {"model": model, "input": texts}
+
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+    except requests.RequestException as exc:
+        raise ProviderError(f"openai-embeddings 网络错误：{exc}") from exc
+
+    if resp.status_code != 200:
+        raise ProviderError(
+            f"openai-embeddings HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+
+    try:
+        data = resp.json()
+        # /v1/embeddings 返回顺序与 input 对齐，但保险起见按 index 重排
+        items = sorted(data["data"], key=lambda x: x.get("index", 0))
+        vectors = [item["embedding"] for item in items]
+        usage = data.get("usage") or {}
+        tokens = int(usage.get("total_tokens") or usage.get("prompt_tokens") or 0)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise ProviderError(
+            f"openai-embeddings 响应格式异常：{resp.text[:500]}"
+        ) from exc
+
+    return vectors, tokens

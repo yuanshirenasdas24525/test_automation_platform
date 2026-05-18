@@ -37,5 +37,13 @@ Provider 配置走配置中心 category="ai"：
     providers_config  JSON: 多 provider 配置（multi_model 使用）
 """
 from .gateway import chat_json, ProviderError, NoProviderConfiguredError
+from .embeddings import embed_texts, load_embedding_config, EmbeddingConfig
 
-__all__ = ["chat_json", "ProviderError", "NoProviderConfiguredError"]
+__all__ = [
+    "chat_json",
+    "ProviderError",
+    "NoProviderConfiguredError",
+    "embed_texts",
+    "load_embedding_config",
+    "EmbeddingConfig",
+]

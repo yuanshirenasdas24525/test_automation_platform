@@ -2,23 +2,30 @@
 import time
 import requests
 from utils.logger import LOGGER
-from utils.read_conf import read_conf
+from utils.reload_config import config_center
 from utils.captcha.request_builder import build_slider_request
 from database.redis import clear_cache
 from config.settings import ProjectPaths
 
 bg_annotated = ProjectPaths.IMG_DIR / f"bg_annotated.jpg"
-HOST = read_conf.get_dict('host')['url']
-GEN_URL = f"{HOST}/api/forex-user/v2/user/captcha/gen"
-CHECK_URL = f"{HOST}/api/forex-user/v2/user/captcha/check"
-HEADERS = read_conf.get_dict("header")
+
+
+def _get_host_url() -> str:
+    return config_center.get("host", "url", default="http://127.0.0.1:54351")
+
+
+def _get_headers() -> dict:
+    return config_center.get("header", default={})
 
 
 def gen_captcha(max_retries=15):
     """调用 /gen 获取验证码，失败时仅在返回失败时清理 Redis 缓存"""
+    host = _get_host_url()
+    headers = _get_headers()
+    gen_url = f"{host}/api/forex-user/v2/user/captcha/gen"
     for attempt in range(max_retries):
         try:
-            resp = requests.post(GEN_URL, headers=HEADERS, json={"type": "SLIDER"}).json()
+            resp = requests.post(gen_url, headers=headers, json={"type": "SLIDER"}).json()
         except Exception as e:
             LOGGER.error(f"[Gen] 请求异常: {e}, 第 {attempt+1} 次重试")
             time.sleep(0.5)
@@ -42,7 +49,10 @@ def gen_captcha(max_retries=15):
 
 def check_captcha(payload: dict):
     """调用 /check 校验验证码"""
-    resp = requests.post(CHECK_URL, headers=HEADERS, json=payload).json()
+    host = _get_host_url()
+    headers = _get_headers()
+    check_url = f"{host}/api/forex-user/v2/user/captcha/check"
+    resp = requests.post(check_url, headers=headers, json=payload).json()
     if resp.get("errorCode", {}):
         clear_cache("captcha*")
     return resp

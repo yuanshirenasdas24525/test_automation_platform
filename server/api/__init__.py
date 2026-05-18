@@ -6,7 +6,9 @@ src/runners、src/database 分层下沉。
 """
 from .ai import router as ai_router
 from .ai_case_generation import router as ai_case_generation_router
+from .ai_dialogue import router as ai_dialogue_router
 from .ai_models import router as ai_models_router
+from .ai_requirements import router as ai_requirements_router
 from .app_packages import router as app_packages_router
 from .attachments import router as attachments_router
 from .auth import router as auth_router
@@ -32,7 +34,9 @@ from .version_summaries import router as version_summaries_router
 __all__ = [
     "ai_router",
     "ai_case_generation_router",
+    "ai_dialogue_router",
     "ai_models_router",
+    "ai_requirements_router",
     "app_packages_router",
     "attachments_router",
     "auth_router",

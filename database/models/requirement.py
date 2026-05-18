@@ -154,6 +154,19 @@ class Requirement(Base):
     # PM 一键 Accept 时间
     accepted_at = Column(DateTime, nullable=True)
 
+    # -------------------- AI Studio M1：对话写需求结构化字段 --------------------
+    # 结构化需求规格：{title, user_story, acceptance_criteria[], nfr, module_deps[], priority}
+    # AI 对话 finalize 后写入；下游 coding_agent / RAG 直接消费
+    spec_json = Column(JSONType, nullable=True)
+    # 来源对话 session id（追溯哪场对话产出的需求）
+    source_dialogue_session_id = Column(
+        Integer,
+        ForeignKey("ai_dialogue_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # -------------------------------------------------------------------------
+
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime,

@@ -1,15 +1,19 @@
 import redis
 from utils.logger import LOGGER
-from utils.read_conf import read_conf
+from utils.reload_config import config_center
 
-d = read_conf.get_dict("redis")
+
+def _get_redis_conf() -> dict:
+    return config_center.get("redis", default={})
+
 
 def redis_connect():
+    d = _get_redis_conf()
     return redis.Redis(
-        host=d["host"],
-        port=int(d["port"]),
-        db=d["db"],
-        password=d["password"],
+        host=d.get("host", "127.0.0.1"),
+        port=int(d.get("port", 6379)),
+        db=int(d.get("db", 0)),
+        password=d.get("password", ""),
         decode_responses=True
     )
 

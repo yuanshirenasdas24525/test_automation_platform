@@ -163,7 +163,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         return result
 
     def _get_base_url(self) -> str:
-        # 1) 从 config_center 配置中心拿
+        # 从 config_center 配置中心拿
         try:
             url = (self.processor.base_url or {}).get("url", "")
             if url:
@@ -171,16 +171,7 @@ class HttpRequestStepRunner(BaseStepRunner):
                 return url
         except Exception as e:
             LOGGER.warning(f"[_get_base_url] 配置中心失败: {e}")
-        # 2) 兜底：从 object_conf.ini [host] 拿
-        try:
-            from utils.read_conf import read_conf
-            url = read_conf.get_dict("host").get("url", "")
-            if url:
-                LOGGER.info(f"[_get_base_url] object_conf.ini 兜底: {url}")
-                return url
-        except Exception:
-            pass
-        # 3) 最后兜底：环境变量
+        # 兜底：环境变量
         import os
         return os.getenv("CONFIG_HOST_URL", "")
 

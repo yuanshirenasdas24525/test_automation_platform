@@ -13,6 +13,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision: str = "pm_000004"
@@ -21,87 +22,109 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-def upgrade() -> None:
-    op.create_table(
-        "requirement_assignees",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column(
-            "requirement_id",
-            sa.Integer(),
-            sa.ForeignKey("requirements.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "user_id",
-            sa.Integer(),
-            sa.ForeignKey("users.id"),
-            nullable=False,
-        ),
-        sa.Column("role", sa.String(length=10), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-        sa.UniqueConstraint(
-            "requirement_id", "user_id", "role",
-            name="uq_requirement_assignee_req_user_role",
-        ),
-    )
-    op.create_index(
-        "ix_requirement_assignees_requirement_id",
-        "requirement_assignees", ["requirement_id"],
-    )
-    op.create_index(
-        "ix_requirement_assignees_user_id",
-        "requirement_assignees", ["user_id"],
-    )
+def _table_exists(name: str) -> bool:
+    bind = op.get_bind()
+    insp = inspect(bind)
+    return name in insp.get_table_names()
 
-    op.create_table(
-        "requirement_version_history",
-        sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column(
-            "requirement_id",
-            sa.Integer(),
-            sa.ForeignKey("requirements.id", ondelete="CASCADE"),
-            nullable=False,
-        ),
-        sa.Column(
-            "from_version_id",
-            sa.Integer(),
-            sa.ForeignKey("project_versions.id"),
-            nullable=True,
-        ),
-        sa.Column(
-            "to_version_id",
-            sa.Integer(),
-            sa.ForeignKey("project_versions.id"),
-            nullable=True,
-        ),
-        sa.Column("action", sa.String(length=20), nullable=False),
-        sa.Column("reason", sa.Text(), nullable=True),
-        sa.Column(
-            "operator_id",
-            sa.Integer(),
-            sa.ForeignKey("users.id"),
-            nullable=True,
-        ),
-        sa.Column(
-            "created_at",
-            sa.DateTime(),
-            server_default=sa.func.now(),
-            nullable=False,
-        ),
-    )
-    op.create_index(
-        "ix_requirement_version_history_requirement_id",
-        "requirement_version_history", ["requirement_id"],
-    )
-    op.create_index(
-        "ix_requirement_version_history_created_at",
-        "requirement_version_history", ["created_at"],
-    )
+
+def _index_exists(table: str, index_name: str) -> bool:
+    bind = op.get_bind()
+    insp = inspect(bind)
+    try:
+        indexes = insp.get_indexes(table)
+    except Exception:
+        return False
+    return any(i["name"] == index_name for i in indexes)
+
+
+def upgrade() -> None:
+    if not _table_exists("requirement_assignees"):
+        op.create_table(
+            "requirement_assignees",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column(
+                "requirement_id",
+                sa.Integer(),
+                sa.ForeignKey("requirements.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "user_id",
+                sa.Integer(),
+                sa.ForeignKey("users.id"),
+                nullable=False,
+            ),
+            sa.Column("role", sa.String(length=10), nullable=False),
+            sa.Column(
+                "created_at",
+                sa.DateTime(),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.UniqueConstraint(
+                "requirement_id", "user_id", "role",
+                name="uq_requirement_assignee_req_user_role",
+            ),
+        )
+    if not _index_exists("requirement_assignees", "ix_requirement_assignees_requirement_id"):
+        op.create_index(
+            "ix_requirement_assignees_requirement_id",
+            "requirement_assignees", ["requirement_id"],
+        )
+    if not _index_exists("requirement_assignees", "ix_requirement_assignees_user_id"):
+        op.create_index(
+            "ix_requirement_assignees_user_id",
+            "requirement_assignees", ["user_id"],
+        )
+
+    if not _table_exists("requirement_version_history"):
+        op.create_table(
+            "requirement_version_history",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column(
+                "requirement_id",
+                sa.Integer(),
+                sa.ForeignKey("requirements.id", ondelete="CASCADE"),
+                nullable=False,
+            ),
+            sa.Column(
+                "from_version_id",
+                sa.Integer(),
+                sa.ForeignKey("project_versions.id"),
+                nullable=True,
+            ),
+            sa.Column(
+                "to_version_id",
+                sa.Integer(),
+                sa.ForeignKey("project_versions.id"),
+                nullable=True,
+            ),
+            sa.Column("action", sa.String(length=20), nullable=False),
+            sa.Column("reason", sa.Text(), nullable=True),
+            sa.Column(
+                "operator_id",
+                sa.Integer(),
+                sa.ForeignKey("users.id"),
+                nullable=True,
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+        )
+    if not _index_exists("requirement_version_history", "ix_requirement_version_history_requirement_id"):
+        op.create_index(
+            "ix_requirement_version_history_requirement_id",
+            "requirement_version_history", ["requirement_id"],
+        )
+    if not _index_exists("requirement_version_history", "ix_requirement_version_history_created_at"):
+        op.create_index(
+            "ix_requirement_version_history_created_at",
+            "requirement_version_history", ["created_at"],
+        )
 
 
 def downgrade() -> None:

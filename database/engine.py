@@ -64,7 +64,7 @@ def get_engine(db_conf: dict):
         pool_pre_ping=True,
         # SQLite 需要 check_same_thread=False 给 web/celery 多线程用
         connect_args=(
-            {"check_same_thread": False, "timeout": 30, "foreign_keys": "ON"}
+            {"check_same_thread": False, "timeout": 30}
             if "sqlite" in url
             else {}
         ),

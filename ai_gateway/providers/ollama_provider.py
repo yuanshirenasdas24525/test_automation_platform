@@ -89,3 +89,56 @@ def call_ollama(
     )
 
     return cleaned, tokens_in, tokens_out
+
+
+def embed_ollama(
+    base_url: str,
+    model: str,
+    texts: list[str],
+    timeout: int = 60,
+) -> tuple[list[list[float]], int]:
+    """调用 Ollama /api/embed（批量）。
+
+    Ollama 0.1.45+ 支持 ``POST /api/embed`` 接收 ``input: list[str]`` 一次返
+    回多条 embedding；老版本只有单条的 ``/api/embeddings``，自动 fallback。
+    返回 ``(vectors, tokens_used)``；Ollama 不返 token 计数，固定回 0。
+    """
+    if not base_url:
+        raise ValueError("Ollama base_url 不能为空")
+    if not model:
+        raise ValueError("Ollama embed model 不能为空")
+    if not texts:
+        return [], 0
+
+    url = f"{base_url.rstrip('/')}/api/embed"
+    try:
+        resp = requests.post(
+            url,
+            json={"model": model, "input": texts},
+            timeout=timeout,
+        )
+    except requests.exceptions.ConnectionError as exc:
+        raise RuntimeError(f"无法连接 Ollama ({base_url})：{exc}") from exc
+
+    if resp.status_code == 404:
+        # 老版本：单条 /api/embeddings，循环调
+        vectors: list[list[float]] = []
+        for t in texts:
+            r2 = requests.post(
+                f"{base_url.rstrip('/')}/api/embeddings",
+                json={"model": model, "prompt": t},
+                timeout=timeout,
+            )
+            if r2.status_code != 200:
+                raise RuntimeError(
+                    f"Ollama embeddings HTTP {r2.status_code}: {r2.text[:300]}"
+                )
+            vectors.append(r2.json().get("embedding") or [])
+        return vectors, 0
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Ollama embed HTTP {resp.status_code}: {resp.text[:300]}"
+        )
+    data = resp.json()
+    return list(data.get("embeddings") or []), 0

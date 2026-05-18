@@ -31,3 +31,14 @@ python-jose[cryptography]~=3.3.0
 bcrypt~=4.0.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
+
+# ---- AI Studio M1：对话写需求 + AI 下发编码 ----
+# AES-256-GCM 加密 Git 凭证；utils/crypto.py 直接 import
+cryptography>=42.0.0
+# Git 操作（clone / branch / commit / push）；coding_agent/git_ops.py 用
+GitPython>=3.1.40
+# Unified diff 解析（LLM 输出 → hunks → apply）；coding_agent/diff/parser.py 用
+unidiff>=0.7.5
+# pgvector 向量列 + 检索（PostgreSQL only）；第 3 批 RAG 链路实施时使用，
+# 第 1 批迁移先用 sa.JSON() 占位，待该批切到 PG 后再做类型迁移
+pgvector>=0.2.5

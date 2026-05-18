@@ -64,3 +64,5 @@ celery_app.autodiscover_tasks(["tasks"])
 import tasks.run_test_task  # noqa: F401 — 注册 Celery 任务
 import tasks.probe_devices  # noqa: F401
 import tasks.ai_tasks  # noqa: F401
+import tasks.rag_index_task  # noqa: F401
+import tasks.ai_dialogue_task  # noqa: F401

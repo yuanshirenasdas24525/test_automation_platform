@@ -38,8 +38,8 @@ def _get_secret_key() -> str:
     key = os.getenv("JWT_SECRET_KEY")
     if key:
         return key
-    from utils.read_conf import read_conf
-    return read_conf.get_dict("auth").get("jwt_secret_key", "change-me-to-a-random-string-at-least-32-chars")
+    from utils.reload_config import config_center
+    return config_center.get("auth", "jwt_secret_key", default="change-me-to-a-random-string-at-least-32-chars")
 
 
 SECRET_KEY = _get_secret_key()

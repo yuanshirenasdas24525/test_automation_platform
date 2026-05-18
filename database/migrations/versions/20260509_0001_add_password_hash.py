@@ -7,6 +7,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 
 revision: str = "pm_000005"
@@ -15,11 +16,19 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _column_exists(table: str, column: str) -> bool:
+    bind = op.get_bind()
+    insp = inspect(bind)
+    cols = [c["name"] for c in insp.get_columns(table)]
+    return column in cols
+
+
 def upgrade() -> None:
-    op.add_column(
-        "users",
-        sa.Column("password_hash", sa.String(128), nullable=True),
-    )
+    if not _column_exists("users", "password_hash"):
+        op.add_column(
+            "users",
+            sa.Column("password_hash", sa.String(128), nullable=True),
+        )
 
 
 def downgrade() -> None:

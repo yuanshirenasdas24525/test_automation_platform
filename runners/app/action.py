@@ -7,7 +7,7 @@ from runners.app.assertions.assertion import AssertionEngine
 from runners.app.parameter_cache import ParameterCache
 from runners.app.device_action.device_action import DeviceAction
 from utils.platform_utils import rep_expr
-from utils.read_conf import read_conf
+from utils.reload_config import config_center
 
 
 class AppAction:
@@ -20,23 +20,20 @@ class AppAction:
         self.device = DeviceAction(driver)
         self.db = db_connection
 
-        # 配置读取
-        default_params = read_conf.get_dict("default_parameters")
+        # 配置读取（从 DB 配置中心）
+        default_params = config_center.get("default_parameters", default={})
 
-        bl = read_conf.get_list("ui_element_list", "blacklist")
-        wl = read_conf.get_list("ui_element_list", "whitelist")
+        ui_el = config_center.get("ui_element_list", default={})
+        bl_raw = [x.strip() for x in ui_el.get("blacklist", "").split(",") if x.strip()]
+        wl_raw = [x.strip() for x in ui_el.get("whitelist", "").split(",") if x.strip()]
 
-        # (by, locator) 两两配对。奇数个时丢掉最后一项（配置少写一半比炸有用），
-        # 并走 zip 天然短路，不靠 index 访问，避免 IndexError。
-        # 历史坑：配置里 `whitelist = ` 是空值，read_conf.get_list 早期返回 [""]
-        # 单元素列表，过了 `if wl` 判断，然后 wl[1] 越界。现在 get_list 已经
-        # 过滤空串，这里再兜一次，等于双保险。
+        # (by, locator) 两两配对。奇数个时丢掉最后一项
         def _pair(items):
             it = iter(items or [])
             return list(zip(it, it))
 
-        blacklist = _pair(bl)
-        whitelist = _pair(wl)
+        blacklist = _pair(bl_raw)
+        whitelist = _pair(wl_raw)
 
         # 核心模块实例化
         self.cache = ParameterCache(default_params)

@@ -38,7 +38,9 @@ from fastapi.staticfiles import StaticFiles
 from server.api import (
     ai_router,
     ai_case_generation_router,
+    ai_dialogue_router,
     ai_models_router,
+    ai_requirements_router,
     app_packages_router,
     attachments_router,
     auth_router,
@@ -155,7 +157,9 @@ for router in (
     test_plans_router,
     ai_router,
     ai_case_generation_router,
+    ai_dialogue_router,
     ai_models_router,
+    ai_requirements_router,
     users_router,
     version_summaries_router,
 ):

@@ -1,5 +1,5 @@
 from database.base import Base, JSONType
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, DateTime, Integer, String, Text
 from sqlalchemy.orm import relationship
 
 
@@ -17,6 +17,26 @@ ALL_PROJECT_STACKS = {
     PROJECT_STACK_ANDROID,
     PROJECT_STACK_IOS,
     PROJECT_STACK_FUNCTIONAL,
+}
+
+# Git 凭证类型（AI Studio M1）
+PROJECT_GIT_AUTH_PAT = "pat"          # GitHub Personal Access Token / GitLab token
+PROJECT_GIT_AUTH_SSH_KEY = "ssh_key"  # base64(SSH private key)
+ALL_PROJECT_GIT_AUTH_TYPES = {
+    PROJECT_GIT_AUTH_PAT,
+    PROJECT_GIT_AUTH_SSH_KEY,
+}
+
+# RAG 索引状态（AI Studio M1）
+PROJECT_RAG_STATUS_PENDING = "pending"   # 还没建过
+PROJECT_RAG_STATUS_RUNNING = "running"   # 索引中
+PROJECT_RAG_STATUS_READY = "ready"       # 可用
+PROJECT_RAG_STATUS_FAILED = "failed"     # 上次失败
+ALL_PROJECT_RAG_STATUSES = {
+    PROJECT_RAG_STATUS_PENDING,
+    PROJECT_RAG_STATUS_RUNNING,
+    PROJECT_RAG_STATUS_READY,
+    PROJECT_RAG_STATUS_FAILED,
 }
 
 
@@ -47,4 +67,26 @@ class Project(Base):
         server_default='["api"]',
     )
     sort_order = Column(Integer, default=0)
+
+    # -------------------- AI Studio M1：Git & RAG 配置 --------------------
+    # 项目绑定的 Git 仓库 URL（编码任务会 clone / push 到这里）
+    git_url = Column(String(500), nullable=True)
+    git_default_branch = Column(
+        String(80), nullable=True, server_default="main"
+    )
+    # 凭证类型，见 PROJECT_GIT_AUTH_* 常量
+    git_auth_type = Column(String(20), nullable=True)
+    # AES-256-GCM 加密的凭证密文（utils.crypto.encrypt_secret 产物）
+    git_auth_secret_encrypted = Column(Text, nullable=True)
+
+    # RAG 索引最后一次成功完成的时间
+    rag_indexed_at = Column(DateTime, nullable=True)
+    # RAG 索引当前状态，见 PROJECT_RAG_STATUS_* 常量
+    rag_index_status = Column(
+        String(20),
+        nullable=True,
+        server_default=PROJECT_RAG_STATUS_PENDING,
+    )
+    # ---------------------------------------------------------------------
+
     modules = relationship("Module", back_populates="project", cascade="all, delete-orphan")
