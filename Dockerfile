@@ -26,9 +26,12 @@ FROM node:20-bookworm AS frontend-build
 
 WORKDIR /frontend
 
+# 换淘宝镜像（解决 npm 官方源连接不稳定）
+RUN npm config set registry https://registry.npmmirror.com
+
 # 先 copy lock 文件单独装依赖 —— 源码改动不会让 npm ci 重跑
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund --prefer-offline
+RUN npm ci --no-audit --no-fund
 
 # 再 copy 源码 + 构建
 COPY frontend/ ./
@@ -60,6 +63,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   - fonts-noto-cjk：截图 / Allure 报告里的中文字符不变方块
 #   - tzdata：时区数据
 #   - curl/wget/unzip/ca-certificates：拉 Allure CLI
+#   - libgl1-mesa-glx：Playwright 浏览器渲染依赖
+#   - tesseract-ocr + tesseract-ocr-chi-sim：OCR 验证码识别
+#   - android-tools-adb：Android 设备探测（adb devices）
+#   - libimobiledevice-utils：iOS 真机探测（idevice_id -l）
 # 切国内镜像源（解决 deb.debian.org 连接不稳定问题）
 RUN sed -i "s@http://deb.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
     sed -i "s@http://deb.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sources.list 2>/dev/null; \
@@ -75,6 +82,8 @@ RUN sed -i "s@http://deb.debian.org@https://mirrors.aliyun.com@g" /etc/apt/sourc
         curl wget unzip ca-certificates \
         libgl1-mesa-glx \
         tesseract-ocr tesseract-ocr-chi-sim \
+        android-tools-adb \
+        libimobiledevice-utils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -84,8 +93,10 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-${TARGETARCH}
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Allure CLI（HTML 报告生成 — Celery worker 跑完 pytest 调用）
+# 国内连不上 repo.maven.apache.org，用阿里 Maven 镜像
 ARG ALLURE_VERSION=2.29.0
-RUN curl -fsSL "https://repo.maven.apache.org/maven2/io/qameta/allure/allure-commandline/${ALLURE_VERSION}/allure-commandline-${ALLURE_VERSION}.tgz" \
+RUN curl -fsSL --retry 3 --retry-delay 5 \
+        "https://maven.aliyun.com/repository/public/io/qameta/allure/allure-commandline/${ALLURE_VERSION}/allure-commandline-${ALLURE_VERSION}.tgz" \
         -o /tmp/allure.tgz \
     && tar -zxf /tmp/allure.tgz -C /opt/ \
     && rm /tmp/allure.tgz \
@@ -97,12 +108,15 @@ WORKDIR /app
 # Python 依赖：单独 copy requirements.txt 装一遍，最大化层缓存
 # 源码改动不会让 pip install 重跑
 COPY requirements.txt ./
-RUN pip install --upgrade pip \
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
+    && pip install --upgrade pip \
     && pip install -r requirements.txt
 
-# 可选：Playwright 浏览器内核（Web 用例需要）
-# 默认不装，开了镜像会从 ~250MB 涨到 ~900MB。需要时取消注释：
-# RUN python -m playwright install --with-deps chromium
+# Playwright 浏览器内核（Web 用例需要）
+# 国内网络连不上 Azure CDN，用 npmmirror 镜像
+RUN apt-get update \
+    && PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright \
+    python -m playwright install --with-deps chromium
 
 # 拷贝项目源码（.dockerignore 会过滤掉 venv / __pycache__ / data / .git 等）
 COPY . /app

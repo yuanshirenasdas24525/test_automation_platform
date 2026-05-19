@@ -36,6 +36,8 @@ x-app-common: &app-common
     # 数据 / 日志 / 报告 / app 包都挂出来，container 重建不丢数据
     - ./data:/app/data
     - ./config:/app/config
+    # Playwright 浏览器内核缓存（chromium 等），重建镜像后不用重新下载
+    - playwright_cache:/root/.cache/ms-playwright
   depends_on:
     redis:
       condition: service_healthy
@@ -139,7 +141,65 @@ services:
     healthcheck:
       disable: true
 
+  # -------------------------------------------------------------------------
+  # 6. Appium Server —— App 自动化（Android / iOS）
+  # Appium 2 镜像，预装 UiAutomator2（Android）和 XCUITest（iOS）驱动。
+  # 注意：
+  #   - Android 需要 adb 连通设备/模拟器，推荐 network_mode: host 或挂载 adb socket
+  #   - iOS 需要 macOS 宿主机 + Xcode，无法在 Linux 容器内运行
+  #   - 连接方式：在 devices 表注册设备时，agent_host 填 appium-server 的 host，
+  #     appium_port 填 4723
+  # -------------------------------------------------------------------------
+  appium:
+    image: appium/appium:latest
+    platform: linux/amd64
+    container_name: tap_appium
+    ports:
+      - "4723:4723"
+    volumes:
+      # adb key 持久化（Android 设备授权）
+      - appium_adb_keys:/home/androidusr/.android
+      # 可选：挂载 APK/IPA 目录（安装 app 步骤用）
+      - ./data/app_packages:/app/app_packages:ro
+    environment:
+      TZ: Asia/Shanghai
+      # Android：保持 adb 连接存活
+      ADB_SERVER_SOCKET: tcp:host.docker.internal:5037
+      # Android/iOS 驱动自动安装（首次启动从 npm 拉）
+      APPIUM_DRIVER_UIAUTOMATOR2: "true"
+      APPIUM_DRIVER_XCUITEST: "true"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4723/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # 7. Android Emulator（可选 —— 资源占用很大）
+  # 如果不想连真机，可以用容器化模拟器。需要宿主机支持 KVM。
+  # 取消注释下面这组配置，同时把 appium 的 ADB_SERVER_SOCKET 改成 emulator 地址。
+  # -------------------------------------------------------------------------
+  # android_emulator:
+  #   image: budtmo/docker-android:emulator_13.0
+  #   container_name: tap_android_emulator
+  #   privileged: true
+  #   ports:
+  #     - "6080:6080"     # noVNC 网页控制台
+  #     - "5554:5554"     # adb connect
+  #     - "5555:5555"
+  #   environment:
+  #     DEVICE: "pixel_6"
+  #     EMULATOR_ARGS: "-no-window -no-audio -gpu swiftshader_indirect"
+  #     APPIUM: "true"
+  #   volumes:
+  #     - android_emulator_data:/data
+  #   restart: unless-stopped
+
 
 volumes:
   redis_data:
   postgres_data:
+  playwright_cache:
+  appium_adb_keys:
