@@ -4,8 +4,9 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  ArrowLeft, BookOpen, Eye, FileText, GanttChart, Globe, Link2, Loader2,
-  MoreHorizontal, Palette, Pencil, Plus, Sparkles, TestTube, Trash2, Upload,
+  ArrowLeft, BookOpen, Bug, Eye, FileText, GanttChart, Globe, LayoutDashboard,
+  Link2, Loader2, MoreHorizontal, Palette, Pencil, Plus, Sparkles, TestTube,
+  Trash2, Upload,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -18,8 +19,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { ApiError, type ModulePickerNode, modulesApi, versionsApi } from "@/lib/api";
+import { ApiError, type ModulePickerNode, modulesApi, tasksApi, versionsApi } from "@/lib/api";
 import type { DocItem, VersionEntry, VersionStatus } from "@/types/domain";
+import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50" },
@@ -66,6 +68,14 @@ export function ProjectVersionDetailPage() {
   const [docDialog, setDocDialog] = useState<{ section: string; label: string; item?: DocItem } | null>(null);
   const allModules = modulesQuery.data ?? [];
   const version = versionQuery.data;
+
+  const [bugModalOpen, setBugModalOpen] = useState(false);
+  const bugsQuery = useQuery({
+    queryKey: ["tasks", "version-bugs", versionId],
+    queryFn: () => tasksApi.list({ type: "bug", version_id: versionId }),
+    enabled: Number.isFinite(versionId),
+  });
+  const bugs = bugsQuery.data ?? [];
 
   useEffect(() => {
     if (version) {
@@ -134,6 +144,10 @@ export function ProjectVersionDetailPage() {
           <span className="font-medium">{version.version_name}</span>
           {version.display_name ? <span className="text-muted-foreground text-sm">— {version.display_name}</span> : null}
           <span className={cn("rounded px-1.5 py-0.5 text-xs", meta.tone)}>{meta.label}</span>
+          <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/versions/${versionId}/board`)}>
+            <LayoutDashboard className="mr-1 h-3.5 w-3.5" />
+            看板视图
+          </Button>
         </div>
         <Select value={version.status} onValueChange={(v) => updateVersion.mutate({ status: v })}>
           <SelectTrigger className="h-8 w-28"><SelectValue /></SelectTrigger>
@@ -242,11 +256,104 @@ export function ProjectVersionDetailPage() {
         </div>
       </div>
 
+      {/* Bug 列表 */}
+      <Card>
+        <CardContent className="py-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Bug className="h-4 w-4 text-red-500" />
+              <span className="text-sm font-medium">Bug</span>
+              <span className="text-xs text-muted-foreground">({bugs.length})</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => navigate(`/projects/${projectId}/versions/${versionId}/board?tab=bugs`)}>
+                查看全部
+              </Button>
+              <Button size="sm" onClick={() => setBugModalOpen(true)}>
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                创建 Bug
+              </Button>
+            </div>
+          </div>
+          {bugsQuery.isLoading ? (
+            <p className="text-xs text-muted-foreground">加载中…</p>
+          ) : bugs.length === 0 ? (
+            <p className="text-xs text-muted-foreground">该版本暂无 Bug</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="border-b text-left text-xs text-muted-foreground">
+                <tr>
+                  <th className="py-2 pr-2">标题</th>
+                  <th className="py-2 pr-2">严重度</th>
+                  <th className="py-2 pr-2">状态</th>
+                  <th className="py-2 pr-2">需求</th>
+                  <th className="py-2 pr-2">负责人</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bugs.map((b) => (
+                  <tr
+                    key={b.id}
+                    className="cursor-pointer border-b last:border-0 hover:bg-accent/40"
+                    onClick={() => navigate(`/tasks/${b.id}`)}
+                  >
+                    <td className="py-2 pr-2">{b.title}</td>
+                    <td className={`py-2 pr-2 text-xs font-semibold ${severityClass(b.severity)}`}>
+                      {b.severity ?? "—"}
+                    </td>
+                    <td className="py-2 pr-2">
+                      <span className={`inline-flex rounded px-2 py-0.5 text-xs font-medium ${statusBadge(b.status).className}`}>
+                        {statusBadge(b.status).label}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-2 text-muted-foreground text-xs">
+                      #{b.requirement_id}
+                    </td>
+                    <td className="py-2 pr-2 text-muted-foreground text-xs">
+                      {b.assignee_dev_id ? `#${b.assignee_dev_id}` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+
+      <CreateBugModal
+        open={bugModalOpen}
+        onOpenChange={setBugModalOpen}
+        parentTaskId={null}
+      />
+
       <DocEditDialog state={docDialog} onClose={() => setDocDialog(null)}
         onSave={(section, item) => { saveDocItem(section, item); setDocDialog(null); }}
         onDelete={(section, itemId) => { deleteDocItem(section, itemId); setDocDialog(null); }} />
     </div>
   );
+}
+
+function severityClass(s: string | null | undefined): string {
+  switch (s) {
+    case "P0": return "text-red-600";
+    case "P1": return "text-orange-500";
+    case "P2": return "text-amber-600";
+    case "P3": return "text-muted-foreground";
+    default: return "";
+  }
+}
+
+function statusBadge(status: string): { label: string; className: string } {
+  switch (status) {
+    case "pending": return { label: "待处理", className: "bg-gray-100 text-gray-600" };
+    case "dev_doing": return { label: "修复中", className: "bg-blue-100 text-blue-700" };
+    case "dev_done": return { label: "已修复", className: "bg-emerald-100 text-emerald-700" };
+    case "test_doing": return { label: "测试中", className: "bg-violet-100 text-violet-700" };
+    case "passed": return { label: "通过", className: "bg-green-100 text-green-700" };
+    case "failed": return { label: "失败", className: "bg-red-100 text-red-700" };
+    case "closed": return { label: "关闭", className: "bg-gray-100 text-gray-500" };
+    default: return { label: status, className: "" };
+  }
 }
 
 function DocEditDialog({ state, onClose, onSave, onDelete }: {

@@ -1,10 +1,11 @@
 /**
- * /projects/:pid/versions/:vid/board —— 版本视图中心（4 tab）。
+ * /projects/:pid/versions/:vid/board —— 版本视图中心（5 tab）。
  *
  * Tabs：
  *   - board    （默认） 4 列需求看板 + 任务计数
  *   - report   测试报告 + 一键导出 PDF
  *   - cases    本版本绑定用例的扁平列表（用例库回流）
+ *   - bugs     Bug 列表 + 创建入口
  *   - archive  归档页（仅 status ∈ {released, archived} 时显示）
  *
  * Tab 状态用 useSearchParams('tab')；URL 即真理。
@@ -26,6 +27,7 @@ import { projectsApi, versionsApi } from "@/lib/api";
 
 import { ArchiveTab } from "./tabs/ArchiveTab";
 import { BoardTab } from "./tabs/BoardTab";
+import { BugTab } from "./tabs/BugTab";
 import { CasesTab } from "./tabs/CasesTab";
 import { ReportTab } from "./tabs/ReportTab";
 
@@ -123,6 +125,7 @@ export function VersionBoardPage() {
           <TabsTrigger value="board">看板</TabsTrigger>
           <TabsTrigger value="report">测试报告</TabsTrigger>
           <TabsTrigger value="cases">用例库</TabsTrigger>
+          <TabsTrigger value="bugs">Bug</TabsTrigger>
           {showArchive ? <TabsTrigger value="archive">归档</TabsTrigger> : null}
         </TabsList>
 
@@ -139,6 +142,9 @@ export function VersionBoardPage() {
         </TabsContent>
         <TabsContent value="cases" data-version-tab-content>
           <CasesTab projectId={projectId} versionId={versionId} />
+        </TabsContent>
+        <TabsContent value="bugs" data-version-tab-content>
+          <BugTab projectId={projectId} versionId={versionId} />
         </TabsContent>
         {showArchive ? (
           <TabsContent value="archive" data-version-tab-content>

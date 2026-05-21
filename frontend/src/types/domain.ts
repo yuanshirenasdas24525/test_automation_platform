@@ -757,6 +757,7 @@ export interface TaskListFilters {
   closed_at_after?: string;
   parent_task_id?: number;
   ids?: number[];
+  version_id?: number;
 }
 
 /** POST /api/tasks/from-test-failure payload。 */
@@ -1040,4 +1041,23 @@ export interface RequirementListFilters {
   module_id?: number;
   /** M5：返回树形（只列顶层 + children），默认扁平 */
   tree?: boolean;
+}
+
+// =============================================================================
+// 全局任务看板 —— GET /api/tasks/in-progress
+// =============================================================================
+
+/** 进行中的异步任务（AI + 执行 + 系统），由 task_registry 聚合生成。 */
+export interface InProgressTask {
+  type_key: string;
+  type_label: string;
+  category: string;       // "ai" | "execution" | "system"
+  icon: string;           // lucide 图标名
+  id: number;
+  name: string;
+  status: string;
+  project_id: number | null;
+  project_name: string | null;
+  started_at: string | null;
+  detail_url: string;
 }

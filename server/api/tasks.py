@@ -19,6 +19,8 @@ from server.api.deps import DBDep
 from server.services.task_service import recompute_requirement_status
 from database.models import (
     Task,
+    ProjectVersion,
+    Requirement,
     ALL_TASK_TYPES,
     ALL_TASK_STATUSES,
     ALL_BUG_SEVERITIES,
@@ -162,8 +164,23 @@ def list_tasks(
     closed_at_after: Optional[str] = Query(None),
     parent_task_id: Optional[int] = Query(None),
     ids: Optional[str] = Query(None, description="按主键过滤，多值逗号分隔；与其它过滤 AND"),
+    version_id: Optional[int] = Query(None, description="按版本过滤：先查出该版本的所有需求 id，再按这些 requirement_id 过滤"),
 ):
     query = db.session.query(Task)
+    if version_id is not None:
+        v = db.session.query(ProjectVersion).filter(ProjectVersion.id == version_id).first()
+        if v is None:
+            raise HTTPException(status_code=404, detail="版本不存在")
+        req_rows = (
+            db.session.query(Requirement.id)
+            .filter(Requirement.version_id == version_id)
+            .all()
+        )
+        req_ids = [r.id for r in req_rows]
+        if req_ids:
+            query = query.filter(Task.requirement_id.in_(req_ids))
+        else:
+            query = query.filter(Task.id == -1)  # 版本无需求时返回空集
     if requirement_id is not None:
         query = query.filter(Task.requirement_id == requirement_id)
     if assignee_dev_id is not None:

@@ -1142,6 +1142,8 @@ export const tasksApi = {
     if (filters.parent_task_id !== undefined)
       qs.set("parent_task_id", String(filters.parent_task_id));
     if (filters.ids?.length) qs.set("ids", filters.ids.join(","));
+    if (filters.version_id !== undefined)
+      qs.set("version_id", String(filters.version_id));
     const search = qs.toString();
     return request<Task[]>(`/api/tasks${search ? `?${search}` : ""}`);
   },
@@ -1348,6 +1350,22 @@ export const versionSummariesApi = {
     return request<VersionTestSummary>(
       `/api/version-summaries/${versionId}/regenerate`,
       { method: "POST" },
+    );
+  },
+};
+
+// =============================================================================
+// 全局任务看板 —— GET /api/tasks/in-progress
+// =============================================================================
+
+export const tasksOverviewApi = {
+  /** 获取所有进行中的异步任务（AI + 执行 + 系统）。 */
+  getInProgress(projectId?: number) {
+    const qs = new URLSearchParams();
+    if (projectId != null) qs.set("project_id", String(projectId));
+    const q = qs.toString();
+    return request<import("@/types/domain").InProgressTask[]>(
+      `/api/tasks-overview/in-progress${q ? `?${q}` : ""}`,
     );
   },
 };
