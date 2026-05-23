@@ -14,6 +14,7 @@ from datetime import datetime
 
 import pydantic
 from fastapi import APIRouter, HTTPException, Query
+from sqlalchemy import or_
 
 from server.api.deps import DBDep
 from server.services.task_service import recompute_requirement_status
@@ -42,13 +43,15 @@ class TaskCreate(pydantic.BaseModel):
     assignee_test_id: Optional[int] = None
     created_by_id: int
     parent_task_id: Optional[int] = None
+    version_id: Optional[int] = None
     description: Optional[str] = None
     metadata: Optional[dict] = None
     estimated_hours: Optional[float] = None
 
 
 class TaskFromTestFailure(pydantic.BaseModel):
-    parent_task_id: int
+    parent_task_id: Optional[int] = None
+    version_id: Optional[int] = None
     severity: str
     title: str = pydantic.Field(..., min_length=1, max_length=255)
     created_by_id: int
@@ -87,8 +90,8 @@ def create_task(payload: TaskCreate, db: DBDep):
 
     severity = payload.severity
     if payload.type == TASK_TYPE_BUG:
-        if payload.parent_task_id is None:
-            raise HTTPException(status_code=400, detail="bug 必须指定 parent_task_id")
+        if payload.parent_task_id is None and payload.version_id is None:
+            raise HTTPException(status_code=400, detail="bug 必须指定 parent_task_id 或 version_id")
         if severity is None or severity not in ALL_BUG_SEVERITIES:
             raise HTTPException(
                 status_code=400,
@@ -108,6 +111,7 @@ def create_task(payload: TaskCreate, db: DBDep):
         assignee_test_id=payload.assignee_test_id,
         created_by_id=payload.created_by_id,
         parent_task_id=payload.parent_task_id,
+        version_id=payload.version_id,
         description=payload.description,
         task_metadata=payload.metadata,
         estimated_hours=payload.estimated_hours,
@@ -121,13 +125,54 @@ def create_task(payload: TaskCreate, db: DBDep):
 
 @router.post("/from-test-failure")
 def create_task_from_test_failure(payload: TaskFromTestFailure, db: DBDep):
-    """测试失败 → 一键建 bug：自动 type=bug / status=dev_doing，
-    继承 parent_task 的 assignee_dev_id / requirement_id。"""
+    """测试失败 → 一键建 bug：自动 type=bug / status=dev_doing。
+
+    支持两种关联方式：
+      - version_id：关联到版本迭代，自动取该版本下第一个需求的 requirement_id
+      - parent_task_id：关联到父 dev 任务，继承其 requirement_id / assignee_dev_id
+    至少提供一个。"""
     if payload.severity not in ALL_BUG_SEVERITIES:
         raise HTTPException(
             status_code=400,
             detail=f"非法 severity，可选: {sorted(ALL_BUG_SEVERITIES)}",
         )
+
+    if payload.parent_task_id is None and payload.version_id is None:
+        raise HTTPException(status_code=400, detail="必须提供 parent_task_id 或 version_id")
+
+    # ---- 版本模式：通过 version_id 找到所属需求 ----
+    if payload.version_id is not None:
+        version = db.session.query(ProjectVersion).filter(ProjectVersion.id == payload.version_id).first()
+        if version is None:
+            raise HTTPException(status_code=404, detail="版本不存在")
+        req = (
+            db.session.query(Requirement)
+            .filter(Requirement.version_id == payload.version_id)
+            .order_by(Requirement.id)
+            .first()
+        )
+        if req is None:
+            raise HTTPException(status_code=400, detail="该版本下无需求，请先在版本下创建需求")
+
+        bug = Task(
+            requirement_id=req.id,
+            version_id=payload.version_id,
+            title=payload.title,
+            description=payload.description,
+            type=TASK_TYPE_BUG,
+            status=TASK_STATUS_DEV_DOING,
+            severity=payload.severity,
+            created_by_id=payload.created_by_id,
+            related_case_id=payload.related_case_id,
+            task_metadata=payload.metadata,
+        )
+        db.session.add(bug)
+        db.session.flush()
+        db.session.refresh(bug)
+        recompute_requirement_status(req.id, db.session)
+        return {"status": "success", "data": bug.to_dict()}
+
+    # ---- parent 模式（兼容旧行为）----
     parent = db.session.query(Task).filter(Task.id == payload.parent_task_id).first()
     if parent is None:
         raise HTTPException(status_code=404, detail="parent_task 不存在")
@@ -177,10 +222,14 @@ def list_tasks(
             .all()
         )
         req_ids = [r.id for r in req_rows]
+        conditions = []
         if req_ids:
-            query = query.filter(Task.requirement_id.in_(req_ids))
+            conditions.append(Task.requirement_id.in_(req_ids))
+        conditions.append(Task.version_id == version_id)
+        if conditions:
+            query = query.filter(or_(*conditions))
         else:
-            query = query.filter(Task.id == -1)  # 版本无需求时返回空集
+            query = query.filter(Task.version_id == version_id)
     if requirement_id is not None:
         query = query.filter(Task.requirement_id == requirement_id)
     if assignee_dev_id is not None:

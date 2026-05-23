@@ -323,7 +323,7 @@ export function ProjectVersionDetailPage() {
       <CreateBugModal
         open={bugModalOpen}
         onOpenChange={setBugModalOpen}
-        parentTaskId={null}
+        versionId={versionId}
       />
 
       <DocEditDialog state={docDialog} onClose={() => setDocDialog(null)}

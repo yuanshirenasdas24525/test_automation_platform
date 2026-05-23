@@ -4,9 +4,11 @@
  * 过滤参数全部通过 querystring 双绑（react-router useSearchParams），url 直接复制
  * 出去也能复用同一筛选；从工作台 widget 跳过来时 viewAllHref 直接拼好对应的 qs。
  */
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Sparkles, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { tasksApi, usersApi } from "@/lib/api";
+import { tasksApi, usersApi, aiApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   ALL_TASK_STATUSES,
@@ -31,11 +33,36 @@ import type {
   TaskType,
   User,
 } from "@/types/domain";
+import { BugFixDialog } from "@/pages/versions/tabs/BugFixDialog";
 
 const ANY = "__any__"; // shadcn Select 不支持空字符串值，用 sentinel 表示"任意"
 
 export function TaskListPage() {
   const [params, setParams] = useSearchParams();
+  const queryClient = useQueryClient();
+  const [fixTarget, setFixTarget] = useState<Task | null>(null);
+  const [fixingAiRunId, setFixingAiRunId] = useState<number | null>(null);
+
+  // 轮询 AI 修复任务状态
+  const fixStatusQuery = useQuery({
+    queryKey: ["ai-run", fixingAiRunId],
+    queryFn: () => aiApi.getRun(fixingAiRunId!),
+    enabled: fixingAiRunId != null,
+    refetchInterval: 2000,
+  });
+
+  // 监听修复完成/失败
+  const fixRunStatus = fixStatusQuery.data?.status;
+  const fixRunError = fixStatusQuery.data?.error;
+  if (fixRunStatus === "success" || fixRunStatus === "failed" || fixRunStatus === "cancelled") {
+    if (fixStatusQuery.data && fixRunStatus === "success") {
+      toast.success("AI 修复完成");
+    } else if (fixRunStatus === "failed") {
+      toast.error(`AI 修复失败：${fixRunError || "未知错误"}`);
+    }
+    queryClient.invalidateQueries({ queryKey: ["tasks", "list"] });
+    setTimeout(() => setFixingAiRunId(null), 0);
+  }
 
   const filters: TaskListFilters = useMemo(() => {
     const f: TaskListFilters = {};
@@ -192,6 +219,7 @@ export function TaskListPage() {
                 <th className="px-4 py-2 text-left">开发</th>
                 <th className="px-4 py-2 text-left">测试</th>
                 <th className="px-4 py-2 text-left">创建于</th>
+                <th className="px-4 py-2 text-left">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -219,12 +247,51 @@ export function TaskListPage() {
                   <td className="px-4 py-2 text-xs text-muted-foreground">
                     {formatDate(task.created_at)}
                   </td>
+                  <td className="px-4 py-2">
+                    {fixRunStatus === "running" && fixTarget?.id === task.id ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        修复中...
+                      </span>
+                    ) : task.fix_description || task.fix_suggestion ? (
+                      <span className="text-xs text-emerald-600">
+                        <Sparkles className="mr-1 inline h-3 w-3" />
+                        {task.fix_description ? "AI已修复" : "AI已分析"}
+                      </span>
+                    ) : task.type === "bug" &&
+                    task.status !== "dev_done" &&
+                    task.status !== "closed" ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-violet-600 hover:text-violet-700 hover:bg-violet-50"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFixTarget(task);
+                        }}
+                      >
+                        <Sparkles className="mr-1 h-3 w-3" />
+                        AI修复
+                      </Button>
+                    ) : null}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      <BugFixDialog
+        open={!!fixTarget}
+        onOpenChange={(v) => !v && setFixTarget(null)}
+        bug={fixTarget}
+        onTriggered={(aiRunId) => {
+          toast.success("AI 修复任务已启动");
+          setFixingAiRunId(aiRunId);
+          queryClient.invalidateQueries({ queryKey: ["tasks", "list"] });
+        }}
+      />
     </div>
   );
 }

@@ -81,6 +81,9 @@ class Task(Base):
     # bug 指向原 task；非 bug 留空
     parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True, index=True)
 
+    # bug 可直接关联版本迭代（可选，与 parent_task_id 二选一）
+    version_id = Column(Integer, ForeignKey("project_versions.id"), nullable=True, index=True)
+
     # 内容
     title = Column(String(255), nullable=False)
     description = Column(Text)
@@ -101,6 +104,14 @@ class Task(Base):
     # 重现步骤、环境快照、截图等
     task_metadata = Column("metadata", JSONType, nullable=True)
 
+    # ---- AI 修复 Bug 相关字段 ----
+    fix_description = Column(Text, nullable=True)          # AI 写的修复说明
+    fix_commit_sha = Column(String(64), nullable=True)     # Git commit SHA
+    fix_commit_branch = Column(String(200), nullable=True) # 临时分支名
+    fix_suggestion = Column(Text, nullable=True)           # 无 Git 时的修复建议文本
+    fix_agent_used = Column(String(50), nullable=True)     # 使用的智能体名称
+    fix_ai_run_id = Column(Integer, ForeignKey("ai_runs.id"), nullable=True)
+
     # 工时
     estimated_hours = Column(Numeric(5, 2), nullable=True)
     actual_hours = Column(Numeric(5, 2), nullable=True)
@@ -115,16 +126,19 @@ class Task(Base):
     # 关系
     requirement = relationship("Requirement")
     parent_task = relationship("Task", remote_side=[id])
+    version = relationship("ProjectVersion", foreign_keys=[version_id])
     assignee_dev = relationship("User", foreign_keys=[assignee_dev_id])
     assignee_test = relationship("User", foreign_keys=[assignee_test_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     related_case = relationship("TestCase", foreign_keys=[related_case_id])
+    fix_ai_run = relationship("AiRun", foreign_keys=[fix_ai_run_id])
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "requirement_id": self.requirement_id,
             "parent_task_id": self.parent_task_id,
+            "version_id": self.version_id,
             "title": self.title,
             "description": self.description,
             "type": self.type,
@@ -135,6 +149,12 @@ class Task(Base):
             "created_by_id": self.created_by_id,
             "related_case_id": self.related_case_id,
             "metadata": self.task_metadata or {},
+            "fix_description": self.fix_description,
+            "fix_commit_sha": self.fix_commit_sha,
+            "fix_commit_branch": self.fix_commit_branch,
+            "fix_suggestion": self.fix_suggestion,
+            "fix_agent_used": self.fix_agent_used,
+            "fix_ai_run_id": self.fix_ai_run_id,
             "estimated_hours": float(self.estimated_hours) if self.estimated_hours is not None else None,
             "actual_hours": float(self.actual_hours) if self.actual_hours is not None else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,

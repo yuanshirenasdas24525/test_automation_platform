@@ -18,6 +18,7 @@ from server.api.deps import DBDep
 from database.models import (
     AUTOMATED_CASE_TYPES,
     CASE_TYPE_FUNCTIONAL,
+    ConfigStore,
     Module,
     ReorderRequest,
     RunTestRequest,
@@ -133,14 +134,36 @@ async def run_test(req: RunTestRequest, db: DBDep):
     # Celery 异步触发（这里的 commit 由 get_db 兜底，确保 report 记录对 worker 可见）
     db.commit()
     LOGGER.info(f"看看cases_to_run是啥：{cases_to_run}")
-    run_test_task.delay(task_id, report_id, cases_to_run, req.category)
+
+    # 同步模式：读取配置中心 web.browser.sync_mode，
+    # 开启后任务直接在 uvicorn 进程内同步执行，浏览器弹窗可见
+    sync_mode = False
+    if cat_lower == "web":
+        sync_row = (
+            db.session.query(ConfigStore)
+            .filter(
+                ConfigStore.category == "web",
+                ConfigStore.config_group == "browser",
+                ConfigStore.config_key == "sync_mode",
+            )
+            .first()
+        )
+        if sync_row and sync_row.config_value:
+            val = sync_row.config_value.strip().lower()
+            sync_mode = val in ("1", "true", "yes", "on")
+
+    if sync_mode:
+        LOGGER.info("[sync_mode] 同步执行 Web 用例（apply），浏览器将弹出当前桌面")
+        run_test_task.apply(args=(task_id, report_id, cases_to_run, req.category))
+    else:
+        run_test_task.delay(task_id, report_id, cases_to_run, req.category)
 
     return {
         "status": "success",
         "report_id": report_id,
         "task_id": task_id,
         "case_number": case_number,
-        "message": "测试已在后台启动",
+        "message": "测试已在后台启动" if not sync_mode else "测试已在当前进程同步执行",
     }
 
 

@@ -153,6 +153,14 @@ WEB_CONFIG_SCHEMA: list[dict[str, Any]] = [
         "applies_to": ["playwright", "selenium"],
     },
     {
+        "key": "sync_mode",
+        "type": "bool",
+        "default": "false",
+        "description": "同步模式。开启后浏览器在本地桌面弹出，可直接看到操作过程（需本地非容器化运行 + headless=false）。",
+        "example": "false",
+        "applies_to": ["playwright", "selenium"],
+    },
+    {
         "key": "window_size",
         "type": "str",
         "default": "",

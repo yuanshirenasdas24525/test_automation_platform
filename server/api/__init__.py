@@ -12,6 +12,7 @@ from .ai_requirements import router as ai_requirements_router
 from .app_packages import router as app_packages_router
 from .attachments import router as attachments_router
 from .auth import router as auth_router
+from .bug_fix import router as bug_fix_router
 from .cases import router as cases_router
 from .config import router as config_router
 from .content import router as content_router
@@ -26,6 +27,7 @@ from .requirements import router as requirements_router
 from .runs import router as runs_router
 from .roles import router as roles_router
 from .tasks import router as tasks_router
+from .tasks_overview import router as tasks_overview_router
 from .users import router as users_router
 from .system import router as system_router
 from .test_plans import router as test_plans_router
@@ -40,6 +42,7 @@ __all__ = [
     "app_packages_router",
     "attachments_router",
     "auth_router",
+    "bug_fix_router",
     "cases_router",
     "config_router",
     "content_router",
@@ -54,6 +57,7 @@ __all__ = [
     "runs_router",
     "system_router",
     "tasks_router",
+    "tasks_overview_router",
     "test_plans_router",
     "roles_router",
     "users_router",

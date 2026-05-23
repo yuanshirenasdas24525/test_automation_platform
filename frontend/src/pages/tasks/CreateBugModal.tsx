@@ -1,17 +1,11 @@
 /**
- * 测试报告里"快捷建 bug"的弹窗。受控用法：
- *   <CreateBugModal
- *     open={open}
- *     onOpenChange={setOpen}
- *     parentTaskId={task.id}
- *     relatedCaseId={step.case_id}
- *     defaultTitle={`步骤失败：${step.name}`}
- *   />
+ * 建 Bug 弹窗。支持两种关联方式：
+ *   1. 版本模式（推荐）：选择版本迭代，后端自动取该版本下第一个需求作为 requirement_id
+ *   2. parent 任务模式（兼容）：选择 dev 任务作为 parent
  *
- * 提交直接调 POST /api/tasks/from-test-failure，让后端自动从 parent_task 继承
- * requirement_id / assignee_dev_id，前端只需要传严重度、标题和 reproduce_steps。
+ * 调用方可通过 versionId / parentTaskId prop 预选，此时不展示选择器。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,10 +30,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RichTextEditor } from "@/components/editor/RichTextEditor";
-import { tasksApi } from "@/lib/api";
+import { tasksApi, versionsApi } from "@/lib/api";
 import { useUserId } from "@/lib/current-user";
 import { ALL_BUG_SEVERITIES } from "@/types/domain";
-import type { BugSeverity } from "@/types/domain";
+import type { BugSeverity, VersionPickerItem } from "@/types/domain";
 
 const formSchema = z.object({
   title: z.string().min(1, "标题必填").max(255),
@@ -53,17 +47,19 @@ type FormValues = z.infer<typeof formSchema>;
 interface CreateBugModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 父 dev 任务。传 null 时弹窗顶部会渲染 parent picker 让用户挑。 */
-  parentTaskId: number | null;
+  /** 预选版本 id。传入时隐藏版本选择器。 */
+  versionId?: number | null;
+  /** 预选父 dev 任务（兼容旧逻辑）。传 null 时显示选择器。 */
+  parentTaskId?: number | null;
   relatedCaseId?: number | null;
   defaultTitle?: string;
-  /** 不传时从 useUserId() 取；无登录用户会校验失败。 */
   createdById?: number | null;
 }
 
 export function CreateBugModal({
   open,
   onOpenChange,
+  versionId,
   parentTaskId,
   relatedCaseId,
   defaultTitle,
@@ -73,27 +69,26 @@ export function CreateBugModal({
   const userId = createdById ?? fallbackUserId;
   const queryClient = useQueryClient();
 
-  // parent picker（仅在 parentTaskId 为 null 时启用）：拉所有 type=dev 的活动任务给用户选
-  const [pickedParentId, setPickedParentId] = useState<number | null>(null);
-  useEffect(() => {
-    if (open) setPickedParentId(parentTaskId);
-  }, [open, parentTaskId]);
+  // ── 版本选择器 ──
+  const [pickedVersionId, setPickedVersionId] = useState<number | null>(null);
+  const effectiveVersionId = versionId ?? pickedVersionId;
 
-  const candidatesQuery = useQuery({
-    queryKey: ["tasks", "dev-candidates"],
-    queryFn: () => tasksApi.list({ type: "dev" }),
-    enabled: open && parentTaskId === null,
+  const versionsQuery = useQuery({
+    queryKey: ["versions", "picker"],
+    queryFn: () => versionsApi.picker(),
+    enabled: open && versionId == null && parentTaskId == null,
   });
-  const candidates = useMemo(
-    () =>
-      (candidatesQuery.data ?? []).filter(
-        (t) => t.status !== "closed" && t.status !== "passed",
-      ),
-    [candidatesQuery.data],
-  );
+  const versions: VersionPickerItem[] = versionsQuery.data ?? [];
 
-  const effectiveParentId = parentTaskId ?? pickedParentId;
+  const effectiveParentId = parentTaskId ?? null;
 
+  useEffect(() => {
+    if (open) {
+      setPickedVersionId(versionId ?? null);
+    }
+  }, [open, versionId]);
+
+  // ── 表单 ──
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
@@ -104,7 +99,6 @@ export function CreateBugModal({
     },
   });
 
-  // open 重置：每次打开重新初始化（关键，否则上次的 title 会粘住）
   useEffect(() => {
     if (open) {
       form.reset({
@@ -116,20 +110,28 @@ export function CreateBugModal({
     }
   }, [open, defaultTitle, form]);
 
+  // ── 提交 ──
   const submit = useMutation({
     mutationFn: (values: FormValues) => {
       if (userId == null) {
         return Promise.reject(new Error("当前没有用户，先在右上角选一个"));
       }
-      if (effectiveParentId == null) {
-        return Promise.reject(new Error("请先选择 parent 任务"));
+
+      const useVersion = effectiveVersionId != null;
+      const useParent = !useVersion && effectiveParentId != null;
+
+      if (!useVersion && !useParent) {
+        return Promise.reject(new Error("请先选择版本迭代"));
       }
+
       const metadata: Record<string, unknown> = {};
       if (values.reproduce_steps && values.reproduce_steps.trim()) {
         metadata.reproduce_steps = values.reproduce_steps.trim();
       }
+
       return tasksApi.fromTestFailure({
-        parent_task_id: effectiveParentId,
+        version_id: effectiveVersionId ?? null,
+        parent_task_id: effectiveParentId ?? null,
         severity: values.severity,
         title: values.title.trim(),
         created_by_id: userId,
@@ -146,6 +148,17 @@ export function CreateBugModal({
     onError: (err: Error) => toast.error(err.message),
   });
 
+  // ── 决定是否显示选择器 ──
+  // 默认模式：显示版本选择器。若已预选版本或 parent 任务则不显示。
+  const showVersionPicker = versionId == null && parentTaskId == null;
+  const hasPreselected = versionId != null || parentTaskId != null;
+
+  const sourceLabel = effectiveVersionId
+    ? `版本 #${effectiveVersionId}`
+    : effectiveParentId
+      ? `parent 任务 #${effectiveParentId}`
+      : "(未选)";
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
@@ -156,38 +169,49 @@ export function CreateBugModal({
           onSubmit={form.handleSubmit((v) => submit.mutate(v))}
           className="space-y-3"
         >
-          {parentTaskId === null ? (
+          {/* ── 版本选择器（默认模式） ── */}
+          {showVersionPicker ? (
             <div>
-              <Label>父任务（dev）</Label>
+              <Label>关联版本迭代</Label>
               <Select
-                value={pickedParentId ? String(pickedParentId) : ""}
-                onValueChange={(v) => setPickedParentId(Number(v))}
-                disabled={candidatesQuery.isLoading}
+                value={pickedVersionId ? String(pickedVersionId) : ""}
+                onValueChange={(v) => setPickedVersionId(Number(v))}
+                disabled={versionsQuery.isLoading}
               >
                 <SelectTrigger className="h-9">
                   <SelectValue
                     placeholder={
-                      candidatesQuery.isLoading
-                        ? "加载候选任务…"
-                        : candidates.length === 0
-                          ? "暂无活动 dev 任务"
-                          : "选一个 dev 任务作为 parent"
+                      versionsQuery.isLoading
+                        ? "加载版本列表…"
+                        : versions.length === 0
+                          ? "暂无版本"
+                          : "选择版本迭代"
                     }
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {candidates.map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)}>
-                      #{t.id} · {t.title}
+                  {versions.map((v) => (
+                    <SelectItem key={v.id} value={String(v.id)}>
+                      {v.project_name} / {v.version_name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <div className="mt-1 text-[11px] text-muted-foreground">
-                bug 会从这个 parent 继承 requirement_id 和 dev 负责人。
+                bug 会关联到该版本迭代，自动归属该版本下的需求。
               </div>
             </div>
           ) : null}
+
+          {/* ── 预选提示 ── */}
+          {hasPreselected ? (
+            <div className="rounded border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+              {versionId != null
+                ? `已关联版本 #${versionId}`
+                : `已关联 parent 任务 #${parentTaskId}`}
+            </div>
+          ) : null}
+
           <div>
             <Label htmlFor="bug-title">标题</Label>
             <Input id="bug-title" autoFocus {...form.register("title")} />
@@ -243,8 +267,7 @@ export function CreateBugModal({
             </div>
           </div>
           <div className="rounded border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
-            来源：parent_task{" "}
-            {effectiveParentId ? `#${effectiveParentId}` : "(未选)"}
+            来源：{sourceLabel}
             {relatedCaseId ? ` · case #${relatedCaseId}` : ""}
             {userId == null ? " · 当前未选用户，提交会失败" : ""}
           </div>

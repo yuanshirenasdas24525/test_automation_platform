@@ -8,8 +8,8 @@
  * severity 做前端筛选（后端任务 API 暂不按 severity 过滤）
  */
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Bug, Plus } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bug, Loader2, Plus, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -21,10 +21,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { tasksApi } from "@/lib/api";
+import { tasksApi, aiApi } from "@/lib/api";
 import { ALL_BUG_SEVERITIES, ALL_TASK_STATUSES } from "@/types/domain";
 import type { Task, TaskStatus } from "@/types/domain";
 import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
+import { BugFixDialog } from "@/pages/versions/tabs/BugFixDialog";
+import { toast } from "sonner";
 
 const ANY = "__any__";
 
@@ -76,9 +78,34 @@ export function BugTab({
 }) {
   void projectId;
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [severityFilter, setSeverityFilter] = useState<string>(ANY);
   const [statusFilter, setStatusFilter] = useState<string>(ANY);
   const [createOpen, setCreateOpen] = useState(false);
+  const [fixTarget, setFixTarget] = useState<Task | null>(null);
+  const [fixingAiRunId, setFixingAiRunId] = useState<number | null>(null);
+
+  // 轮询 AI 修复任务状态
+  const fixStatusQuery = useQuery({
+    queryKey: ["ai-run", fixingAiRunId],
+    queryFn: () => aiApi.getRun(fixingAiRunId!),
+    enabled: fixingAiRunId != null,
+    refetchInterval: 2000,
+  });
+
+  // 监听修复任务状态变化
+  const fixRunStatus = fixStatusQuery.data?.status;
+  const fixRunError = fixStatusQuery.data?.error;
+  if (fixRunStatus === "success" || fixRunStatus === "failed" || fixRunStatus === "cancelled") {
+    if (fixStatusQuery.data && fixRunStatus === "success") {
+      toast.success("AI 修复完成，Bug 已标记为已修复");
+    } else if (fixRunStatus === "failed") {
+      toast.error(`AI 修复失败：${fixRunError || "未知错误"}`);
+    }
+    queryClient.invalidateQueries({ queryKey: ["tasks", "version-bugs"] });
+    // 延迟重置状态让 effect 只触发一次
+    setTimeout(() => setFixingAiRunId(null), 0);
+  }
 
   const query = useQuery({
     queryKey: ["tasks", "version-bugs", versionId, statusFilter],
@@ -188,6 +215,7 @@ export function BugTab({
                   <th className="px-4 py-2">需求</th>
                   <th className="px-4 py-2">开发负责人</th>
                   <th className="px-4 py-2">创建时间</th>
+                  <th className="px-4 py-2">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -227,6 +255,32 @@ export function BugTab({
                     <td className="px-4 py-2 text-muted-foreground">
                       {formatDate(b.created_at)}
                     </td>
+                    <td className="px-4 py-2">
+                      {fixRunStatus === "running" && fixTarget?.id === b.id ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          修复中...
+                        </span>
+                      ) : b.fix_description || b.fix_suggestion ? (
+                        <span className="text-xs text-emerald-600">
+                          <Sparkles className="mr-1 inline h-3 w-3" />
+                          {b.fix_description ? "AI已修复" : "AI已分析"}
+                        </span>
+                      ) : b.status !== "dev_done" && b.status !== "closed" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 text-violet-600 hover:text-violet-700 hover:bg-violet-50"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFixTarget(b);
+                          }}
+                        >
+                          <Sparkles className="mr-1 h-3 w-3" />
+                          AI修复
+                        </Button>
+                      ) : null}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -238,7 +292,18 @@ export function BugTab({
       <CreateBugModal
         open={createOpen}
         onOpenChange={setCreateOpen}
-        parentTaskId={null}
+        versionId={versionId}
+      />
+
+      <BugFixDialog
+        open={!!fixTarget}
+        onOpenChange={(v) => !v && setFixTarget(null)}
+        bug={fixTarget}
+        onTriggered={(aiRunId) => {
+          toast.success("AI 修复任务已启动");
+          setFixingAiRunId(aiRunId);
+          queryClient.invalidateQueries({ queryKey: ["tasks", "version-bugs"] });
+        }}
       />
     </div>
   );

@@ -95,4 +95,9 @@ export const queryKeys = {
       : (["ai_case_drafts"] as const),
   aiCaseGenerationRun: (runId: number) =>
     ["ai_case_generation_run", runId] as const,
+  /** 全局任务看板：进行中的异步任务（GET /api/tasks/in-progress）。 */
+  tasksInProgress: (projectId?: number | null) =>
+    projectId != null
+      ? (["tasks_in_progress", { project_id: projectId }] as const)
+      : (["tasks_in_progress"] as const),
 };

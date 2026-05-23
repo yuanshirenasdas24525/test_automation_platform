@@ -594,6 +594,14 @@ export interface VersionUpdate {
   planned_end_at?: string;
 }
 
+/** GET /api/versions/picker 返回的版本简要信息。 */
+export interface VersionPickerItem {
+  id: number;
+  version_name: string;
+  project_id: number;
+  project_name: string;
+}
+
 // =============================================================================
 // PM 重设计 · 用户 / 角色 / 任务 / 版本汇总（M3）
 // =============================================================================
@@ -700,6 +708,7 @@ export interface Task {
   id: number;
   requirement_id: number;
   parent_task_id?: number | null;
+  version_id?: number | null;
   title: string;
   description?: string | null;
   type: TaskType;
@@ -715,6 +724,13 @@ export interface Task {
   created_at?: string | null;
   updated_at?: string | null;
   closed_at?: string | null;
+  // AI 修复 Bug 相关字段
+  fix_description?: string | null;
+  fix_commit_sha?: string | null;
+  fix_commit_branch?: string | null;
+  fix_suggestion?: string | null;
+  fix_agent_used?: string | null;
+  fix_ai_run_id?: number | null;
 }
 
 export interface TaskCreate {
@@ -731,6 +747,7 @@ export interface TaskCreate {
   metadata?: Record<string, unknown> | null;
   estimated_hours?: number | null;
   parent_task_id?: number | null;
+  version_id?: number | null;
 }
 
 export interface TaskUpdate {
@@ -762,13 +779,30 @@ export interface TaskListFilters {
 
 /** POST /api/tasks/from-test-failure payload。 */
 export interface TaskFromTestFailurePayload {
-  parent_task_id: number;
+  parent_task_id?: number | null;
+  version_id?: number | null;
   severity: BugSeverity;
   title: string;
   created_by_id: number;
   related_case_id?: number | null;
   description?: string | null;
   metadata?: Record<string, unknown> | null;
+}
+
+/** AI Bug Fix 智能体配置。 */
+export interface BugFixAgent {
+  name: string;
+  agent_type: "llm" | "cli";
+  available: boolean;
+  label: string;
+  description: string;
+}
+
+/** POST /api/tasks/{id}/ai-fix 响应。 */
+export interface AiBugFixResponse {
+  ai_run_id: number;
+  agent_name: string;
+  has_git: boolean;
 }
 
 /** GET /api/version-summaries/{version_id} 返回的 VersionTestSummary。 */

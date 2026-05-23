@@ -352,7 +352,7 @@ APP_CONFIG_SCHEMA: list[dict[str, Any]] = [
 AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
     {
         "config_group": "provider",
-        "config_key": "provider",
+        "key": "provider",
         "type": "string",
         "default": "openai",
         "description": "LLM 提供商。当前支持 openai / anthropic（其它走自建反代时也用 openai）。",
@@ -361,7 +361,7 @@ AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "config_group": "provider",
-        "config_key": "api_key",
+        "key": "api_key",
         "type": "string",
         "default": "",
         "description": "对应 provider 的 API Key。生产环境强烈建议从环境变量注入，不要明文存这里。",
@@ -370,7 +370,7 @@ AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "config_group": "provider",
-        "config_key": "model",
+        "key": "model",
         "type": "string",
         "default": "gpt-4o-mini",
         "description": "默认 model 名。OpenAI: gpt-4o / gpt-4o-mini；Anthropic: claude-3-5-sonnet-20241022 / claude-3-5-haiku-20241022。",
@@ -379,7 +379,7 @@ AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "config_group": "provider",
-        "config_key": "base_url",
+        "key": "base_url",
         "type": "string",
         "default": "",
         "description": "自定义 endpoint（自建反代 / Azure OpenAI 用）。留空走官方默认。",
@@ -388,7 +388,7 @@ AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "config_group": "provider",
-        "config_key": "max_tokens",
+        "key": "max_tokens",
         "type": "int",
         "default": "4096",
         "description": "单次响应最大 token 上限。",
@@ -418,4 +418,49 @@ def get_schema(category: str) -> list[dict[str, Any]]:
             return []
         # web schema 没带 config_group 字段（它的隐式 group 是 'browser'），统一补上
         return [{"config_group": "browser", **dict(item)} for item in WEB_CONFIG_SCHEMA]
+    if cat == "other":
+        return OTHER_CONFIG_SCHEMA
     return []
+
+
+# ---------------------------------------------------------------------------
+# 其他配置 —— 自由 key-value，不限定 config_group
+# ---------------------------------------------------------------------------
+OTHER_CONFIG_SCHEMA: list[dict[str, Any]] = [
+    {
+        "config_group": "git",
+        "key": "git_url",
+        "type": "string",
+        "default": "",
+        "description": "Git 仓库地址（HTTPS 或 SSH 格式）。",
+        "example": "git@github.com:user/repo.git",
+        "applies_to": ["other"],
+    },
+    {
+        "config_group": "git",
+        "key": "git_default_branch",
+        "type": "string",
+        "default": "main",
+        "description": "默认分支名。",
+        "example": "main",
+        "applies_to": ["other"],
+    },
+    {
+        "config_group": "git",
+        "key": "git_auth_type",
+        "type": "string",
+        "default": "ssh_key",
+        "description": "认证方式：pat（Personal Access Token）或 ssh_key。",
+        "example": "ssh_key",
+        "applies_to": ["other"],
+    },
+    {
+        "config_group": "git",
+        "key": "git_auth_secret",
+        "type": "string",
+        "default": "",
+        "description": "认证密钥：PAT token 或 SSH 私钥内容。",
+        "example": "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "applies_to": ["other"],
+    },
+]

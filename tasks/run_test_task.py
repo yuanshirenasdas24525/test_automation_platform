@@ -116,3 +116,59 @@ def run_test_task(t_id, r_id, cases, category):
             db_session.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# 注册到全局任务看板（Task Registry）
+# ---------------------------------------------------------------------------
+def _query_test_reports(categories: list[str]):
+    """返回查询某类测试执行的进行中 query_fn。"""
+    def _query(db_session, project_id: int | None, limit: int):
+        from database.models import TestReport, Project
+
+        q = db_session.query(
+            TestReport.id,
+            TestReport.category,
+            TestReport.status,
+            TestReport.project_id,
+            TestReport.scene_name,
+            TestReport.start_time,
+            Project.name.label("project_name"),
+        ).outerjoin(Project, Project.id == TestReport.project_id).filter(
+            TestReport.status == "running",
+            TestReport.category.in_(categories),
+        )
+        if project_id is not None:
+            q = q.filter(TestReport.project_id == project_id)
+        rows = q.order_by(TestReport.start_time.desc().nullslast()).limit(limit).all()
+        return [
+            {
+                "id": r.id,
+                "name": r.scene_name or f"#{r.id}",
+                "status": r.status,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "started_at": r.start_time,
+            }
+            for r in rows
+        ]
+    return _query
+
+
+from server.services.task_registry import task_registry, TaskTypeInfo  # noqa: E402
+
+_EXECUTION_ENTRIES = [
+    ("test_run_api", "API 自动化执行", "Globe", ["api", "mixed"]),
+    ("test_run_web", "Web 自动化执行", "Monitor", ["web"]),
+    ("test_run_app", "App 自动化执行", "Smartphone", ["android", "ios"]),
+]
+
+for _key, _label, _icon, _cats in _EXECUTION_ENTRIES:
+    task_registry.register(TaskTypeInfo(
+        key=_key,
+        label=_label,
+        category="execution",
+        icon=_icon,
+        query_fn=_query_test_reports(_cats),
+        detail_url_tpl="/runs",
+    ))

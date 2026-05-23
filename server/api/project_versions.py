@@ -462,6 +462,37 @@ def list_version_cases(
 # ---------------------------------------------------------------------------
 # 工具
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 版本选择器（供 bug 创建弹窗等场景使用）
+# ---------------------------------------------------------------------------
+@router.get("/versions/picker")
+def versions_picker(db: DBDep):
+    """返回所有版本的基本信息，供选择器使用。"""
+    from database.models import Project as ProjectModel
+    versions = (
+        db.session.query(ProjectVersion)
+        .order_by(ProjectVersion.created_at.desc())
+        .all()
+    )
+    project_ids = {v.project_id for v in versions}
+    projects_map = {}
+    if project_ids:
+        rows = db.session.query(ProjectModel).filter(ProjectModel.id.in_(project_ids)).all()
+        projects_map = {p.id: p.name for p in rows}
+    return {
+        "status": "success",
+        "data": [
+            {
+                "id": v.id,
+                "version_name": v.version_name,
+                "project_id": v.project_id,
+                "project_name": projects_map.get(v.project_id, ""),
+            }
+            for v in versions
+        ],
+    }
+
+
 def _parse_dt(s):
     if not s:
         return None

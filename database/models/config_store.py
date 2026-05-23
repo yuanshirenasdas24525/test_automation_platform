@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, ForeignKey
 from database.base import Base
 
 
@@ -11,6 +11,9 @@ class ConfigStore(Base):
       * 不再 seed，改成『推荐配置项』面板由前端按需『一键填入』；
       * 不再有删除限制；
       * `is_system` 列已通过 alembic 删除。
+
+    project_id 为 NULL 表示全局模板（仅用于拷贝，不作为任何项目的实际配置）。
+    project_id 不为 NULL 表示该项目专属配置。
     """
     __tablename__ = "config_store"
     id = Column(Integer, primary_key=True)
@@ -18,3 +21,4 @@ class ConfigStore(Base):
     config_key = Column(String)
     config_value = Column(String)
     category = Column(String)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)

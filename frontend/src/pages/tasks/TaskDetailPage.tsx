@@ -10,7 +10,7 @@
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowLeft, Trash2 } from "lucide-react";
+import { ArrowLeft, Trash2, Sparkles, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { tasksApi, usersApi } from "@/lib/api";
+import { tasksApi, usersApi, bugFixApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   ALL_BUG_SEVERITIES,
@@ -81,6 +81,17 @@ export function TaskDetailPage() {
       toast.success("已删除");
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
       navigate("/tasks");
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const rollbackMutation = useMutation({
+    mutationFn: () =>
+      bugFixApi.rollback(taskId, taskQuery.data?.fix_ai_run_id ?? 0),
+    onSuccess: (res) => {
+      toast.success(res.message ?? "已回滚");
+      queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -224,6 +235,71 @@ export function TaskDetailPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* AI 修复结果 */}
+      {task.type === "bug" && (task.fix_description || task.fix_commit_sha || task.fix_suggestion) ? (
+        <Card className="border-violet-200">
+          <div className="flex items-center gap-2 border-b border-violet-100 px-4 py-3">
+            <Sparkles className="h-4 w-4 text-violet-500" />
+            <span className="text-sm font-semibold text-violet-700">
+              AI 修复结果
+            </span>
+            {task.fix_agent_used ? (
+              <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-600">
+                {task.fix_agent_used}
+              </span>
+            ) : null}
+            {task.fix_commit_branch ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto h-7 text-xs text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                onClick={() => {
+                  if (window.confirm("确认回滚该 AI 修复？（将删除远程分支）")) {
+                    rollbackMutation.mutate();
+                  }
+                }}
+                disabled={rollbackMutation.isPending}
+              >
+                <Undo2 className="mr-1 h-3 w-3" />
+                回滚修复
+              </Button>
+            ) : null}
+          </div>
+          <CardContent className="space-y-3 p-4">
+            {task.fix_description ? (
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">修复说明</div>
+                <pre className="whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-sm">
+                  {task.fix_description}
+                </pre>
+              </div>
+            ) : null}
+            {task.fix_commit_sha ? (
+              <div className="flex items-center gap-4 text-sm">
+                <div>
+                  <div className="text-xs text-muted-foreground">Commit</div>
+                  <code className="text-xs">{task.fix_commit_sha?.slice(0, 12)}</code>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground">分支</div>
+                  <code className="text-xs">{task.fix_commit_branch}</code>
+                </div>
+              </div>
+            ) : null}
+            {task.fix_suggestion ? (
+              <div>
+                <div className="mb-1 text-xs text-muted-foreground">
+                  修复建议（未应用，需手动处理）
+                </div>
+                <pre className="whitespace-pre-wrap break-words rounded bg-amber-50 p-2 text-sm text-amber-800">
+                  {task.fix_suggestion}
+                </pre>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <div className="border-b px-4 py-3">

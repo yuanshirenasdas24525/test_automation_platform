@@ -40,7 +40,7 @@ alembic upgrade head --sql > upgrade.sql
 
 ## 切换数据库
 
-默认连 `config/object_conf.ini` 里的 `[sqlite_local]`。切换方式：
+默认连 `config/object_conf.ini` 里的 `[postgres_local]`（PostgreSQL 统一标准，SQLite 已废弃）。切换方式：
 
 ```bash
 # 方式 1：通过 section（推荐）

@@ -39,6 +39,7 @@ AI_FEATURE_API_CASE_GEN = "api_case_gen"             # OpenAPI → API 用例
 AI_FEATURE_REPORT_SUMMARY = "report_summary"         # 报告 → 自然语言摘要
 AI_FEATURE_FUNCTIONAL_TO_AUTO = "functional_to_auto"  # functional → web/app step
 AI_FEATURE_LOAD_PLAN_GEN = "load_plan_gen"           # OpenAPI → locust 压测脚本
+AI_FEATURE_BUG_FIX = "bug_fix"                         # AI 一键修复 Bug
 
 
 class AiRun(Base):

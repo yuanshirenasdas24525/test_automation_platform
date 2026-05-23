@@ -163,6 +163,18 @@ class PlaywrightAdapter(WebDriverAdapter):
         slow_mo = int(self.config.get("slow_mo") or 0)
         launch_args = list(self.config.get("launch_args") or [])
 
+        # 安全兜底：无显示器环境（Docker / SSH 服务器）强制无头模式，
+        # 否则 Chromium 会因 Missing X server 直接崩溃（TargetClosedError）
+        if not headless and not os.environ.get("DISPLAY"):
+            print(
+                "[PlaywrightAdapter] 检测到无 DISPLAY 环境，"
+                "自动将 headless=false → true（避免 XServer 报错）"
+            )
+            logger.warning(
+                "PlaywrightAdapter: 无 DISPLAY，强制 headless=true（原配置为 false）"
+            )
+            headless = True
+
         print(
             f"[PlaywrightAdapter] 启动浏览器 browser={browser_type} "
             f"headless={headless} slow_mo={slow_mo}ms"
@@ -364,6 +376,17 @@ class SeleniumAdapter(WebDriverAdapter):
         arguments = list(self.config.get("arguments") or [])
         binary = self.config.get("binary")
         window_size = self.config.get("window_size")
+
+        # 安全兜底：无显示器环境强制无头模式
+        if not headless and not os.environ.get("DISPLAY"):
+            print(
+                "[SeleniumAdapter] 检测到无 DISPLAY 环境，"
+                "自动将 headless=false → true（避免 XServer 报错）"
+            )
+            logger.warning(
+                "SeleniumAdapter: 无 DISPLAY，强制 headless=true（原配置为 false）"
+            )
+            headless = True
 
         def _add_common_args(opts):
             if headless:

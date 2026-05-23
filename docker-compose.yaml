@@ -25,13 +25,18 @@ x-app-common: &app-common
     # 探活
     REDIS_HOST: redis
     REDIS_PORT: "6379"
+    # Web 自动化：容器内无显示器，强制无头模式；本地调试时可 docker run -e WEB_HEADLESS=false
+    WEB_HEADLESS: "true"
     # Celery broker / backend（celery_app.py 当前是写死的，
     # 改造成读 env 后这两行就生效；现状下作为文档保留）
     CELERY_BROKER_URL: redis://redis:6379/0
     CELERY_RESULT_BACKEND: redis://redis:6379/1
-    # 平台 DB —— 使用 SQLite（从 object_conf.ini [sqlite_local] 读配置）
-    DB_SECTION: sqlite_local
-    ALEMBIC_DB_SECTION: sqlite_local
+    # 平台 DB —— 使用 PostgreSQL
+    DB_HOST: postgres
+    DB_PORT: "5432"
+    DB_USER: tap
+    DB_PASSWORD: tap_pass
+    DB_NAME: tap
   volumes: &app-vols
     # 数据 / 日志 / 报告 / app 包都挂出来，container 重建不丢数据
     - ./data:/app/data
@@ -40,6 +45,8 @@ x-app-common: &app-common
     - playwright_cache:/root/.cache/ms-playwright
   depends_on:
     redis:
+      condition: service_healthy
+    postgres:
       condition: service_healthy
   restart: unless-stopped
 

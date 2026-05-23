@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { CurrentUserSwitcher } from "@/components/CurrentUserSwitcher";
+import { FloatingTaskWidget } from "@/components/FloatingTaskWidget";
 import { useCurrentUser } from "@/lib/current-user";
 import { cn } from "@/lib/utils";
 
@@ -27,7 +28,7 @@ const NAV: NavItem[] = [
   { to: "/runs", label: "执行记录", icon: PlayCircle },
   { to: "/devices", label: "设备池", icon: Smartphone },
   { to: "/app-packages", label: "App 包管理", icon: Package },
-  { to: "/config", label: "配置中心", icon: Settings },
+  { to: "/config", label: "全局模板", icon: Settings },
 ];
 
 export function AppLayout() {
@@ -99,6 +100,7 @@ export function AppLayout() {
           <div className="flex-1 overflow-y-auto">
             <Outlet />
           </div>
+          <FloatingTaskWidget />
         </main>
       </div>
     </>

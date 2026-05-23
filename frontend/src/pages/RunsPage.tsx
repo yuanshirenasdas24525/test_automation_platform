@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -9,6 +9,7 @@ import {
   ChevronUp,
   ExternalLink,
   Loader2,
+  Play,
   RefreshCw,
   Trash2,
   XCircle,
@@ -38,12 +39,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ApiError,
   reportsApi,
+  tasksOverviewApi,
   type TestReportDetail,
   type TestReportSummary,
   type TestStepReportItem,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
+import type { InProgressTask } from "@/types/domain";
 
 /**
  * 执行记录页。
@@ -105,6 +108,16 @@ export function RunsPage() {
   });
 
   const queryClient = useQueryClient();
+
+  // 进行中任务（执行类 + AI 类）
+  const inProgressQuery = useQuery<InProgressTask[]>({
+    queryKey: queryKeys.tasksInProgress(),
+    queryFn: () => tasksOverviewApi.getInProgress(),
+    refetchInterval: 5_000,
+    staleTime: 4_000,
+  });
+
+  const inProgressTasks = inProgressQuery.data ?? [];
 
   const handleError = (err: unknown) => {
     const msg =
@@ -207,6 +220,46 @@ export function RunsPage() {
           />
         </div>
       </div>
+
+      {/* 进行中任务卡片 */}
+      {inProgressTasks.length > 0 ? (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Play className="h-4 w-4 text-blue-600" />
+              <h2 className="text-sm font-semibold text-blue-800">
+                进行中的任务 · {inProgressTasks.length}
+              </h2>
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {inProgressTasks.map((task) => {
+                const isRunning = task.status === "running";
+                return (
+                  <Link
+                    key={`${task.type_key}-${task.id}`}
+                    to={task.detail_url || "#"}
+                    className="flex items-center gap-2.5 rounded-lg bg-background p-2.5 text-sm shadow-sm hover:shadow transition-shadow"
+                  >
+                    {isRunning ? (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-blue-600" />
+                    ) : (
+                      <Loader2 className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium">{task.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {task.type_label}
+                        {task.project_name ? ` · ${task.project_name}` : ""}
+                      </div>
+                    </div>
+                    <StatusBadge status={task.status} />
+                  </Link>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* 列表 */}
       {listQuery.isLoading ? (
@@ -400,6 +453,14 @@ function StatusBadge({ status }: { status: string | null }) {
       <span className="inline-flex items-center gap-1 text-blue-600">
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
         运行中
+      </span>
+    );
+  }
+  if (s === "pending") {
+    return (
+      <span className="inline-flex items-center gap-1 text-amber-600">
+        <Loader2 className="h-3.5 w-3.5" />
+        等待中
       </span>
     );
   }

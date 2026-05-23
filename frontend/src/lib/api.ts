@@ -4,6 +4,7 @@
  * 这样上游用 try/catch 或 TanStack Query 都省事。
  */
 import type {
+  AiBugFixResponse,
   AiCaseDraft,
   AiCaseDraftStatus,
   AiCaseDraftUpdatePayload,
@@ -17,6 +18,7 @@ import type {
   AnalysisDocument,
   AnalysisTriggerResponse,
   AnalysisVersion,
+  BugFixAgent,
   CaseGenerationRun,
   CaseGenerationTriggerPayload,
   CaseGenerationTriggerResponse,
@@ -68,6 +70,7 @@ import type {
   VersionBoard,
   VersionCase,
   VersionCreate,
+  VersionPickerItem,
   VersionTestSummary,
   VersionUpdate,
 } from "@/types/domain";
@@ -540,6 +543,7 @@ export interface ConfigItem {
   config_key: string;
   config_value: string;
   category: string;
+  project_id: number | null;
 }
 
 export interface ConfigSchemaItem {
@@ -553,23 +557,38 @@ export interface ConfigSchemaItem {
 }
 
 export const configApi = {
-  list(category?: string) {
-    const qs = category ? `?category=${encodeURIComponent(category)}` : "";
-    return request<ConfigItem[]>(`/api/config/all${qs}`);
+  list(category?: string, projectId?: number | null) {
+    const qs = new URLSearchParams();
+    if (category) qs.set("category", category);
+    if (projectId != null) qs.set("project_id", String(projectId));
+    const q = qs.toString();
+    return request<ConfigItem[]>(`/api/config/all${q ? `?${q}` : ""}`);
   },
   schema(category: string) {
     return request<ConfigSchemaItem[]>(
       `/api/config/schema/${encodeURIComponent(category)}`,
     );
   },
-  save(body: Omit<ConfigItem, "id">) {
+  save(body: Omit<ConfigItem, "id" | "project_id"> & { project_id?: number | null }) {
     return request<void>("/api/config/save", { method: "POST", body });
   },
-  add(body: Omit<ConfigItem, "id">) {
+  add(body: Omit<ConfigItem, "id" | "project_id"> & { project_id?: number | null }) {
     return request<void>("/api/config/add", { method: "POST", body });
   },
   remove(id: number) {
     return request<void>(`/api/config/delete/${id}`, { method: "DELETE" });
+  },
+  copyFromGlobal(projectId: number, categories?: string[]) {
+    return request<{ copied: number }>("/api/config/copy-from-global", {
+      method: "POST",
+      body: { project_id: projectId, categories },
+    });
+  },
+  testAiModel(projectId: number, modelName: string) {
+    return request<{ ok: boolean; result?: string; error?: string }>(
+      "/api/config/test-ai-model",
+      { method: "POST", body: { project_id: projectId, model_name: modelName } },
+    );
   },
 };
 
@@ -1005,6 +1024,10 @@ export const attachmentsApi = {
 // =============================================================================
 
 export const versionsApi = {
+  /** 全局版本选择器（供 bug 创建弹窗等场景使用）。 */
+  picker() {
+    return request<VersionPickerItem[]>("/api/versions/picker");
+  },
   list(projectId: number) {
     return request<ProjectVersion[]>(`/api/projects/${projectId}/versions`);
   },
@@ -1165,6 +1188,31 @@ export const tasksApi = {
     return request<Task>("/api/tasks/from-test-failure", {
       method: "POST",
       body: payload,
+    });
+  },
+};
+
+// =============================================================================
+// AI Bug Fix —— 智能体修复 Bug
+// =============================================================================
+
+export const bugFixApi = {
+  /** 获取可用智能体列表。 */
+  listAgents() {
+    return request<{ agents: BugFixAgent[] }>("/api/ai/bug-fix-agents");
+  },
+  /** 触发 AI 修复 Bug。 */
+  fixBug(taskId: number, agentName: string) {
+    return request<AiBugFixResponse>(`/api/tasks/${taskId}/ai-fix`, {
+      method: "POST",
+      body: { agent_name: agentName },
+    });
+  },
+  /** 回滚 AI 修复。 */
+  rollback(taskId: number, aiRunId: number) {
+    return request<{ message: string }>(`/api/tasks/${taskId}/ai-fix/rollback`, {
+      method: "POST",
+      body: { ai_run_id: aiRunId },
     });
   },
 };

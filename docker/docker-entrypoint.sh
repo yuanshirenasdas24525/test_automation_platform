@@ -30,7 +30,7 @@ wait_for() {
 }
 
 # ---------- 1. 探活依赖 ----------
-# 通过环境变量声明依赖；不设就跳过（比如本地 SQLite 跑就不用 postgres）
+# 通过环境变量声明依赖；不设就跳过
 [ -n "${REDIS_HOST:-}" ] && wait_for "${REDIS_HOST}" "${REDIS_PORT:-6379}" "Redis"
 [ -n "${POSTGRES_HOST:-}" ] && wait_for "${POSTGRES_HOST}" "${POSTGRES_PORT:-5432}" "Postgres"
 [ -n "${MYSQL_HOST:-}" ] && wait_for "${MYSQL_HOST}" "${MYSQL_PORT:-3306}" "MySQL"

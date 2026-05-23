@@ -66,3 +66,4 @@ import tasks.probe_devices  # noqa: F401
 import tasks.ai_tasks  # noqa: F401
 import tasks.rag_index_task  # noqa: F401
 import tasks.ai_dialogue_task  # noqa: F401
+import tasks.bug_fix_task  # noqa: F401

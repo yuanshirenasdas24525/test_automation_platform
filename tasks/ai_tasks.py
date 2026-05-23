@@ -865,3 +865,94 @@ _HANDLERS = {
     "functional_case_gen": _handle_functional_case_gen,    # M7
     # ... 后续 feature 在这里挂
 }
+
+
+# ---------------------------------------------------------------------------
+# 注册到全局任务看板（Task Registry）
+# ---------------------------------------------------------------------------
+def _query_ai_runs(feature: str):
+    """返回查询某类 AI 任务进行中的 query_fn。"""
+    def _query(db_session, project_id: int | None, limit: int):
+        from datetime import datetime, timedelta
+        from sqlalchemy import and_, or_
+        from database.models import AiRun, Project, \
+            AI_RUN_STATUS_PENDING, AI_RUN_STATUS_RUNNING
+
+        # pending 超过 2 小时视为死任务，不展示
+        stale_cutoff = datetime.now() - timedelta(hours=2)
+
+        q = db_session.query(
+            AiRun.id,
+            AiRun.feature,
+            AiRun.status,
+            AiRun.project_id,
+            AiRun.started_at,
+            Project.name.label("project_name"),
+        ).outerjoin(Project, Project.id == AiRun.project_id).filter(
+            and_(
+                AiRun.feature == feature,
+                or_(
+                    # running：进行中
+                    AiRun.status == AI_RUN_STATUS_RUNNING,
+                    # pending：且创建时间在 2h 内
+                    and_(
+                        AiRun.status == AI_RUN_STATUS_PENDING,
+                        AiRun.created_at >= stale_cutoff,
+                    ),
+                ),
+            )
+        )
+        if project_id is not None:
+            q = q.filter(AiRun.project_id == project_id)
+        rows = q.order_by(AiRun.started_at.desc().nullslast()).limit(limit).all()
+        return [
+            {
+                "id": r.id,
+                "name": _AI_FEATURE_LABELS.get(feature, feature),
+                "status": r.status,
+                "project_id": r.project_id,
+                "project_name": r.project_name,
+                "started_at": r.started_at,
+            }
+            for r in rows
+        ]
+    return _query
+
+
+_AI_FEATURE_LABELS: dict[str, str] = {
+    "requirement_parse": "AI 需求分析（文本→需求点）",
+    "requirement_analyze": "AI 生成测试分析文档",
+    "test_plan": "AI 生成测试计划",
+    "functional_case_gen": "AI 生成测试用例",
+    "functional_case_review": "AI 用例质量检查",
+    "api_case_gen": "AI 生成 API 用例",
+    "functional_to_auto": "AI 功能转自动化用例",
+    "report_summary": "AI 报告摘要",
+    "load_plan_gen": "AI 压测脚本生成",
+    "bug_fix": "AI 一键修复 Bug",
+}
+
+_AI_FEATURE_ICONS: dict[str, str] = {
+    "requirement_parse": "Brain",
+    "requirement_analyze": "FileText",
+    "test_plan": "ClipboardList",
+    "functional_case_gen": "Sparkles",
+    "functional_case_review": "SearchCheck",
+    "api_case_gen": "Globe",
+    "functional_to_auto": "Workflow",
+    "report_summary": "FileBarChart",
+    "load_plan_gen": "Gauge",
+    "bug_fix": "Bug",
+}
+
+from server.services.task_registry import task_registry, TaskTypeInfo  # noqa: E402
+
+for _feat in _AI_FEATURE_LABELS:
+    task_registry.register(TaskTypeInfo(
+        key=f"ai_{_feat}",
+        label=_AI_FEATURE_LABELS[_feat],
+        category="ai",
+        icon=_AI_FEATURE_ICONS.get(_feat, "Brain"),
+        query_fn=_query_ai_runs(_feat),
+        detail_url_tpl="/projects/{project_id}/requirements",
+    ))

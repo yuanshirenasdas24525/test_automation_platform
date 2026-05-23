@@ -44,6 +44,7 @@ from server.api import (
     app_packages_router,
     attachments_router,
     auth_router,
+    bug_fix_router,
     cases_router,
     config_router,
     content_router,
@@ -59,6 +60,7 @@ from server.api import (
     runs_router,
     system_router,
     tasks_router,
+    tasks_overview_router,
     test_plans_router,
     users_router,
     version_summaries_router,
@@ -154,6 +156,7 @@ for router in (
     requirements_router,
     requirement_analysis_router,
     tasks_router,
+    tasks_overview_router,
     test_plans_router,
     ai_router,
     ai_case_generation_router,
@@ -162,6 +165,7 @@ for router in (
     ai_requirements_router,
     users_router,
     version_summaries_router,
+    bug_fix_router,
 ):
     app.include_router(router, prefix="/api")
 

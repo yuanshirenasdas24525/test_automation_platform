@@ -16,6 +16,7 @@
   - M6：需求分析（输入需求 → 输出测试维度文档）
   - M7：AI 一键生成测试用例（草稿态 → 批量入库）
   - M1（AI Studio，本期主推）：对话式写需求 + AI 下发编码（RAG + 单次 patch → UI diff 审核 → push）
+  - **Bug Fix**：AI 一键修复 Bug（LLM Agent 主路径 + CLI Agent 可选），自动拉代码仓库 → 修复 → git commit/push → Bug 标记"已修复"
 
 技术栈：
 - **后端**：Python 3.12（Docker runtime）、FastAPI 0.135、SQLAlchemy 2.0、Pydantic 2.12、Celery 5.6、Alembic 1.13
@@ -147,6 +148,33 @@ requirement (committed)
   → POST /accept（按 hunks）→ /push
 ```
 
+### 3. AI 一键修复 Bug 链路
+
+```
+Bug 列表 [AI修复] 按钮
+  → BugFixDialog（选择智能体：LLM / OpenCode / Codex / Claude Code）
+  → POST /api/tasks/{id}/ai-fix  { agent_name }
+    → 创建 AiRun(status=pending, feature='bug_fix')
+    → Celery: tasks/bug_fix_task.py::run_bug_fix_task
+      ├─ 有 Git 配置 ──────────────────────────────
+      │  ① GitOps.ensure_clone()  拉取仓库
+      │  ② GitOps.temp_branch("fix/bug-{id}-{ts}")
+      │  ③ 执行智能体修改代码
+      │     LLM: RAG 检索 → chat_json("bug_fix") → diff → patch apply
+      │     CLI: subprocess.run → 直接改文件
+      │  ④ GitOps.commit_all("fix: {title}")
+      │  ⑤ GitOps.push(branch)
+      │  ⑥ Task.status=dev_done, 写入 fix_description/fix_commit_sha
+      │
+      └─ 无 Git 配置 ──────────────────────────────
+         ① LLM 生成修复建议
+         ② 写入 Task.metadata.fix_suggestion
+  前端轮询 GET /api/ai/runs/{id}
+  POST /api/tasks/{id}/ai-fix/rollback → 回滚（删远程分支 + 恢复状态）
+```
+
+智能体抽象：`server/services/bug_fix_service.py` 定义 `execute_fix(bug, agent_config, git_ops)`，LLM 与 CLI 实现同一接口。CLI Agent 通过 `which` 检测可用性，不可用时前端灰显。
+
 **异步任务统一范式**（所有 AI 任务沿用）：
 1. API 层创建 `AiRun(status=pending, feature, project_id, input_payload, operator)` → `db.commit()`
 2. API 层 `task.delay(ai_run_id)` → 回写 `celery_task_id`
@@ -164,7 +192,7 @@ requirement (committed)
 | AI 网关 | `ai_gateway/` | `gateway.chat_json(feature, ...)` + `embeddings.py`；providers 在 `ai_gateway/providers/`（anthropic / openai / ollama）；prompt 模板在 `ai_gateway/prompts/`。**不做持久化**，由 `tasks/ai_tasks.py` / `tasks/ai_dialogue_task.py` 落库。 |
 | 编码 agent | `coding_agent/` | `prompt_templates` + `rag/` (indexer / embedder / retriever) + `diff/` (parser / applier / validator) + `git_ops`。底层 LLM 调用复用 `ai_gateway.chat_json`，不在 ai_gateway 里塞业务逻辑。 |
 | 执行上下文 | `runners/context/` + `core/` | `ExecutionContext` 装变量 / 日志 / attachments / `record_property` 句柄 |
-| 异步任务 | `tasks/` | `run_test_task` / `probe_devices`（30s 心跳）/ `ai_tasks` / `ai_dialogue_task` / `rag_index_task` |
+| 异步任务 | `tasks/` | `run_test_task` / `probe_devices`（30s 心跳）/ `ai_tasks` / `ai_dialogue_task` / `rag_index_task` / `bug_fix_task` |
 
 ### 4. 目录约定
 
@@ -341,6 +369,7 @@ import type { AiDialogueSession } from "@/types/domain";
 | 改 DB schema | 编辑 `database/models/` → `alembic revision --autogenerate -m "..."` → **review 迁移文件** → `alembic upgrade head` |
 | 加 Celery 任务 | `tasks/` 加文件 → `celery_app.py` 底部 `import tasks.xxx  # noqa: F401` 注册 → `tasks/__init__.py` 按需 re-export |
 | 加 AI feature | `ai_gateway/prompts/` 加 prompt 模板 → `coding_agent/prompt_templates.py`（或新 wrapper）封装 → `tasks/` 加 Celery 任务 → `server/api/` 加路由 → 前端 hooks |
+| 加 Bug Fix 智能体 | `server/services/bug_fix_service.py` 加 Agent 类 → `config_store` 表注册配置（category=`bug_fix_agent`）→ CLI 类型自动检测 PATH 可用性 |
 | 加 LLM provider | `ai_gateway/providers/` 实现 `chat` / `embed` 接口 → 在 `ai_gateway/gateway.py` 注册 → `ai_models` 表新增配置 |
 | 加前端页面 | `src/pages/<feature>/` → 在 `src/routes.tsx` 注册 → 数据获取统一 react-query → 入口按钮挂到对应 Workspace |
 

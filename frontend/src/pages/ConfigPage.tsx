@@ -164,9 +164,9 @@ export function ConfigPage() {
     <div className="space-y-6 p-8">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold">配置中心</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            管理运行时配置（host / 数据库 / 默认参数 等）。修改后会立刻热更新到执行引擎。
+          <h1 className="text-2xl font-semibold">全局模板</h1>
+          <p className="text-sm text-muted-foreground">
+            全局配置模板，新建项目时可从此处一键导入。
           </p>
         </div>
         <div className="flex gap-2">

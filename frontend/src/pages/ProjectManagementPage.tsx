@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Settings,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -38,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { ApiError, type ModulePickerNode, modulesApi, versionsApi, requirementsApi } from "@/lib/api";
 import type { ProjectVersion, Requirement, VersionStatus } from "@/types/domain";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
+import { ProjectConfigTab } from "./config/ProjectConfigTab";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -337,6 +339,7 @@ export function ProjectManagementPage() {
             <TabsList>
               <TabsTrigger value="pool"><Inbox className="h-4 w-4 mr-1" />需求池</TabsTrigger>
               <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
+              <TabsTrigger value="config"><Settings className="h-4 w-4 mr-1" />项目配置</TabsTrigger>
             </TabsList>
             {activeTab === "pool" ? (
               <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/requirements`)}>
@@ -444,6 +447,9 @@ export function ProjectManagementPage() {
                 </div>
               )}
             </div>
+          )}
+          {activeTab === "config" && (
+            <ProjectConfigTab projectId={projectId} />
           )}
         </Tabs>
       </div>
