@@ -11,6 +11,7 @@ import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import DOMPurify from "dompurify";
 import { ArrowLeft, Trash2, Sparkles, Undo2, RefreshCw, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -263,7 +264,7 @@ export function TaskDetailPage() {
           {task.description ? (
             <div
               className="prose prose-sm max-w-none break-words text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
-              dangerouslySetInnerHTML={{ __html: task.description }}
+              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(task.description) }}
             />
           ) : (
             <div className="text-sm text-muted-foreground">无描述。</div>
@@ -313,7 +314,7 @@ export function TaskDetailPage() {
                 <div className="mb-1 text-xs text-muted-foreground">修复说明</div>
                 <div
                   className="prose prose-sm max-w-none break-words rounded bg-muted/50 p-2 text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
-                  dangerouslySetInnerHTML={{ __html: task.fix_description }}
+                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(task.fix_description) }}
                 />
               </div>
             ) : null}
