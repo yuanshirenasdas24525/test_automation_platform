@@ -35,8 +35,6 @@ INDEXABLE_EXTENSIONS: frozenset[str] = frozenset(
         # configs / data
         ".json", ".jsonc", ".yaml", ".yml", ".toml", ".ini", ".env",
         ".sql", ".graphql", ".gql",
-        # docs / text
-        ".md", ".mdx", ".rst", ".txt",
         # shell / make
         ".sh", ".bash", ".zsh", ".fish", ".dockerfile",
     }

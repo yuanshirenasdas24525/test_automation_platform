@@ -6,6 +6,11 @@
 - **JSON 回退** → 把 project 全部 chunks 拉到内存做 Python cosine；
   适合 <5K chunks，第 1 期单机部署够用。后期切 pgvector 后无需改 retriever 调用方
 
+Hybrid 混合检索（BM25 + Embedding + RRF）：
+- embedding 搜索负责语义匹配
+- BM25 搜索负责关键词精确命中（文件名、API 名、变量名）
+- Reciprocal Rank Fusion 融合两种排序，优先返回两种方法都命中的结果
+
 为啥不在 retriever 里管"换 embedding 模型 → 维度对不上"：
 - 切模型必须重建索引（plan 风险表已写）；
 - 这里碰到维度不匹配直接抛 RuntimeError，让用户去运维流程；
@@ -23,6 +28,8 @@ from sqlalchemy.orm import Session
 
 from ai_gateway.embeddings import EmbeddingConfig, embed_texts, load_embedding_config
 from database.models.code_chunk import CodeChunk
+
+from .bm25 import Bm25Index
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +56,7 @@ def retrieve_relevant(
     top_k: int = DEFAULT_TOP_K,
     cfg: Optional[EmbeddingConfig] = None,
     git_sha: Optional[str] = None,
+    hybrid: bool = True,
 ) -> list[RetrievedChunk]:
     """对单条 query 取 top-k 相关 chunk。
 
@@ -57,23 +65,27 @@ def retrieve_relevant(
         project_id: 限定项目
         query: 自然语言或代码片段
         top_k: 返回条数
-        cfg: 不传则从 ``config_store`` 自动加载（embedding model 必须跟索引时一致）
-        git_sha: 限定到某个 commit；不传则匹配 project 下所有 sha
+        cfg: 不传则从 ``config_store`` 自动加载
+        git_sha: 限定到某个 commit
+        hybrid: True → embedding + BM25 混合检索（RRF 融合）；False → 纯 embedding
 
     Returns:
-        按 score 降序的 ``RetrievedChunk`` 列表；可能为空（项目还没索引）
+        按 score 降序的 ``RetrievedChunk`` 列表
     """
     if not query or not query.strip():
         return []
     if top_k <= 0:
         raise ValueError(f"top_k 必须 > 0，当前 {top_k}")
 
+    if hybrid:
+        return _retrieve_hybrid(session, project_id, query, top_k, cfg, git_sha)
+
     if cfg is None:
         cfg = load_embedding_config()
 
     vectors, _tokens = embed_texts([query], cfg=cfg)
     if not vectors:
-        logger.warning("retrieve_relevant: query embedding 为空，跳过 — query=%r", query[:100])
+        logger.warning("retrieve_relevant: query embedding 为空 — query=%r", query[:100])
         return []
     query_vec = vectors[0]
 
@@ -176,6 +188,90 @@ def _retrieve_json_fallback(
             score=float(score),
         )
         for score, row in scored[:top_k]
+    ]
+
+
+
+# ---------------------------------------------------------------------------
+# Hybrid 混合检索：Embedding + BM25 → 加权组合排序
+# ---------------------------------------------------------------------------
+def _retrieve_hybrid(
+    session: Session,
+    project_id: int,
+    query: str,
+    top_k: int,
+    cfg: Optional[EmbeddingConfig],
+    git_sha: Optional[str],
+) -> list[RetrievedChunk]:
+    """Embedding 语义检索 + BM25 关键词检索 → 归一化加权组合排序。
+
+    权重：BM25 0.6（关键词精确匹配优先），Embedding 0.4（语义兜底）。
+    """
+    # 1. 加载所有 chunks
+    q = session.query(CodeChunk).filter(
+        CodeChunk.project_id == project_id,
+        CodeChunk.embedding.isnot(None),
+    )
+    if git_sha:
+        q = q.filter(CodeChunk.git_sha == git_sha)
+    all_chunks = q.all()
+    if not all_chunks:
+        return []
+
+    # 2. Embedding 检索
+    if cfg is None:
+        cfg = load_embedding_config()
+    vectors, _tokens = embed_texts([query], cfg=cfg)
+    if not vectors:
+        logger.warning("retrieve_hybrid: query embedding 为空 — query=%r", query[:100])
+        return []
+    query_vec = vectors[0]
+    q_norm = math.sqrt(sum(x * x for x in query_vec)) or 1.0
+
+    emb_scores: dict[int, float] = {}
+    for row in all_chunks:
+        vec = row.embedding
+        if not isinstance(vec, list) or not vec:
+            continue
+        dot = sum(a * b for a, b in zip(query_vec, vec))
+        v_norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+        emb_scores[row.id] = dot / (q_norm * v_norm)
+
+    # 3. BM25 检索
+    bm25 = Bm25Index([(c.id, c.content or "") for c in all_chunks])
+    bm25_hits = bm25.search(query, top_k=max(top_k * 5, 50))
+    bm25_scores: dict[int, float] = {h.chunk_id: h.score for h in bm25_hits}
+
+    # 4. min-max 归一化 + 加权组合
+    combined: dict[int, float] = {}
+    emb_max = max(emb_scores.values()) if emb_scores else 1.0
+    emb_min = min(emb_scores.values()) if emb_scores else 0.0
+    emb_range = emb_max - emb_min or 1.0
+
+    bm25_max = max(bm25_scores.values()) if bm25_scores else 1.0
+    bm25_min = min(bm25_scores.values()) if bm25_scores else 0.0
+    bm25_range = bm25_max - bm25_min or 1.0
+
+    EMB_WEIGHT = 0.4
+    BM25_WEIGHT = 0.6
+
+    for cid in {*emb_scores, *bm25_scores}:
+        emb_norm = (emb_scores.get(cid, emb_min) - emb_min) / emb_range
+        bm25_norm = (bm25_scores.get(cid, 0.0) - bm25_min) / bm25_range
+        combined[cid] = EMB_WEIGHT * emb_norm + BM25_WEIGHT * bm25_norm
+
+    id_to_row = {c.id: c for c in all_chunks}
+    merged = sorted(combined.items(), key=lambda x: -x[1])[:top_k]
+    return [
+        RetrievedChunk(
+            file_path=id_to_row[cid].file_path,
+            chunk_idx=id_to_row[cid].chunk_idx,
+            start_line=id_to_row[cid].start_line or 0,
+            end_line=id_to_row[cid].end_line or 0,
+            content=id_to_row[cid].content,
+            score=round(score, 4),
+        )
+        for cid, score in merged
     ]
 
 

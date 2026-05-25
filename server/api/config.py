@@ -246,3 +246,56 @@ async def test_project_ai_model(payload: TestAiModelRequest, db: DBDep):
         return {"status": "success", "data": {"ok": True, "result": ping_result}}
     except Exception as exc:
         return {"status": "success", "data": {"ok": False, "error": str(exc)[:500]}}
+
+
+# ---------------------------------------------------------------------------
+# 测试 RAG Embedding 模型连通性
+# ---------------------------------------------------------------------------
+class TestEmbeddingRequest(pydantic.BaseModel):
+    project_id: int
+
+
+@router.post("/test-embedding")
+async def test_embedding_model(payload: TestEmbeddingRequest, db: DBDep):
+    """测试项目级 RAG Embedding 模型是否可连通。"""
+    rows = db.sql.query(
+        "SELECT config_key, config_value FROM config_store "
+        "WHERE category = 'ai' AND config_group = 'rag_embedding' AND project_id = :pid",
+        {"pid": payload.project_id},
+    )
+    if not rows:
+        return {
+            "status": "success",
+            "data": {"ok": False, "error": "未配置 Embedding 模型（config_group=rag_embedding）"},
+        }
+
+    kvs: dict[str, str] = {}
+    for r in rows:
+        kvs[r["config_key"]] = r["config_value"]
+
+    provider = kvs.get("provider", "")
+    model = kvs.get("model", "")
+    if not provider or not model:
+        return {
+            "status": "success",
+            "data": {"ok": False, "error": "Embedding 配置不完整：缺少 provider 或 model"},
+        }
+
+    try:
+        from ai_gateway.embeddings import EmbeddingConfig, embed_texts
+
+        cfg = EmbeddingConfig(
+            provider=provider,
+            model=model,
+            api_key=kvs.get("api_key") or None,
+            base_url=kvs.get("base_url") or None,
+            dim=int(kvs.get("dim") or 768),
+        )
+        vectors, _tokens = embed_texts(["hello"], cfg=cfg, timeout=15)
+        dim = len(vectors[0]) if vectors else 0
+        return {
+            "status": "success",
+            "data": {"ok": True, "result": f"连通成功，向量维度 {dim}"},
+        }
+    except Exception as exc:
+        return {"status": "success", "data": {"ok": False, "error": str(exc)[:500]}}

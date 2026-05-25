@@ -24,12 +24,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 
-from database.base import Base, embedding_column
+from database.base import Base, JSONType
 
-
-# 第 1 期 embedding 维度的默认值。换 embedding 模型时按需调整；维度变了
-# 必须重建索引（在 ai_models 表里记录 dim，迁移期对比）。
-DEFAULT_EMBEDDING_DIM = 1536
+DEFAULT_EMBEDDING_DIM = 768
 
 
 class CodeChunk(Base):
@@ -64,8 +61,9 @@ class CodeChunk(Base):
     # 原文（拼 prompt 用）；用 Text 避免长度限制
     content = Column(Text, nullable=False)
 
-    # 向量列（PG → pgvector；其他 → JSON）
-    embedding = Column(embedding_column(DEFAULT_EMBEDDING_DIM), nullable=True)
+    # 向量列 —— 使用 JSONType 存储任意维度的向量
+    # pgvector 扩展在 PostgreSQL 中不可用时，retriever 走 JSON fallback 路径
+    embedding = Column(JSONType, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 

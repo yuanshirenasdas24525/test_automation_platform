@@ -590,6 +590,12 @@ export const configApi = {
       { method: "POST", body: { project_id: projectId, model_name: modelName } },
     );
   },
+  testEmbedding(projectId: number) {
+    return request<{ ok: boolean; result?: string; error?: string }>(
+      "/api/config/test-embedding",
+      { method: "POST", body: { project_id: projectId } },
+    );
+  },
 };
 
 // -------------------------------------------------------------------------

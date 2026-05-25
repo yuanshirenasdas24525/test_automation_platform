@@ -261,9 +261,10 @@ export function TaskDetailPage() {
         <div className="border-b px-4 py-3 text-sm font-semibold">描述</div>
         <CardContent className="p-4">
           {task.description ? (
-            <pre className="whitespace-pre-wrap break-words text-sm">
-              {task.description}
-            </pre>
+            <div
+              className="prose prose-sm max-w-none break-words text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
+              dangerouslySetInnerHTML={{ __html: task.description }}
+            />
           ) : (
             <div className="text-sm text-muted-foreground">无描述。</div>
           )}
@@ -310,9 +311,10 @@ export function TaskDetailPage() {
             {task.fix_description ? (
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">修复说明</div>
-                <pre className="whitespace-pre-wrap break-words rounded bg-muted/50 p-2 text-sm">
-                  {task.fix_description}
-                </pre>
+                <div
+                  className="prose prose-sm max-w-none break-words rounded bg-muted/50 p-2 text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
+                  dangerouslySetInnerHTML={{ __html: task.fix_description }}
+                />
               </div>
             ) : null}
             {task.fix_commit_sha ? (
