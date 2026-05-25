@@ -27,7 +27,12 @@ from utils.logger import LOGGER
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="tasks.run_bug_fix_task", bind=True)
+@celery_app.task(
+    name="tasks.run_bug_fix_task",
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+)
 def run_bug_fix_task(self, ai_run_id: int) -> dict:
     """AI 修复 Bug 主任务。"""
     from database.db import DB
@@ -91,14 +96,26 @@ def run_bug_fix_task(self, ai_run_id: int) -> dict:
             gops = None
             repo_dir = None
 
-        # ── 5. 执行 Agent ─────────────────────────────────────────
+        # ── 5. 确保仓库已 clone（Agent 需要读取代码文件） ──────
+        if has_git and gops:
+            try:
+                gops.ensure_clone()
+            except Exception:
+                LOGGER.warning(
+                    "[bug_fix_task] clone 失败，降级为无 Git 模式", exc_info=True
+                )
+                has_git = False
+                gops = None
+                repo_dir = None
+
+        # ── 6. 执行 Agent ─────────────────────────────────────────
         LOGGER.info(
             f"[bug_fix_task] executing agent={agent_name} has_git={has_git}"
         )
 
         result = agent.fix(bug=bug, repo_dir=repo_dir)
 
-        # ── 6. 落地结果 ───────────────────────────────────────────
+        # ── 7. 落地结果 ───────────────────────────────────────────
         if has_git and gops and result.files_changed:
             # 有 Git 且有文件改动 → 应用 diff + commit + push
             _apply_and_push(bug, result, gops, session)
@@ -115,7 +132,7 @@ def run_bug_fix_task(self, ai_run_id: int) -> dict:
             bug.fix_ai_run_id = ai_run_id
             session.flush()
 
-        # ── 7. 回写 AiRun ─────────────────────────────────────────
+        # ── 8. 回写 AiRun ─────────────────────────────────────────
         run.output_payload = {
             "bug_id": bug.id,
             "agent_name": agent_name,
@@ -134,6 +151,27 @@ def run_bug_fix_task(self, ai_run_id: int) -> dict:
     except Exception as exc:
         LOGGER.error(f"[bug_fix_task] ai_run {ai_run_id} failed: {exc}")
         traceback.print_exc()
+
+        # ValueError 是参数/校验错误，不重试
+        if isinstance(exc, ValueError):
+            retryable = False
+        else:
+            retryable = True
+
+        if retryable and self.request.retries < self.max_retries:
+            LOGGER.info(
+                f"[bug_fix_task] 第 {self.request.retries + 1} 次重试 ai_run {ai_run_id}"
+            )
+            try:
+                run = session.query(AiRun).filter(AiRun.id == ai_run_id).first()
+                if run is not None:
+                    run.status = AI_RUN_STATUS_RUNNING
+                    run.error = f"重试 {self.request.retries + 1}/{self.max_retries}: {type(exc).__name__}"
+                    db.commit()
+            except Exception:
+                pass
+            raise self.retry(exc=exc)
+
         try:
             run = session.query(AiRun).filter(AiRun.id == ai_run_id).first()
             if run is not None:
@@ -174,6 +212,9 @@ def _apply_and_push(
         if result.diff:
             _apply_diff(result.diff, gops.repo_dir)
 
+        # ── 清理 patch 残留 ───────────────────────────────────────
+        _cleanup_patch_artifacts(gops.repo_dir)
+
         # ── 提交 ──────────────────────────────────────────────────
         commit_msg = f"fix: {bug.title[:72]}"
         commit_sha = gops.commit_all(
@@ -205,7 +246,6 @@ def _apply_diff(diff_text: str, repo_dir: Path) -> None:
     if not diff_text.strip():
         return
 
-    # 写 diff 到临时文件
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".diff", delete=False, encoding="utf-8"
     ) as f:
@@ -214,17 +254,48 @@ def _apply_diff(diff_text: str, repo_dir: Path) -> None:
 
     try:
         proc = sp.run(
-            ["patch", "-p1", "-i", diff_path],
+            [
+                "patch", "-p1", "--no-backup-if-mismatch",
+                "--reject-format=unified", "-i", diff_path,
+            ],
             cwd=str(repo_dir),
             capture_output=True,
             text=True,
             timeout=60,
         )
+        logger.info(
+            f"[bug_fix_task] patch stdout: {proc.stdout[:500]}"
+        )
+
         if proc.returncode != 0:
-            logger.warning(
-                f"[bug_fix_task] patch apply 非零退出 (code={proc.returncode}): "
-                f"{proc.stderr[:500]}"
+            stderr_summary = proc.stderr[:500]
+            logger.error(
+                f"[bug_fix_task] patch 失败 (code={proc.returncode}): {stderr_summary}"
             )
-        logger.info(f"[bug_fix_task] patch applied: {proc.stdout[:500]}")
+            # 清理可能的 .rej 残留
+            _cleanup_patch_artifacts(repo_dir)
+            raise RuntimeError(
+                f"AI 生成的 diff 应用失败 (exit={proc.returncode}): {stderr_summary}"
+            )
+
+        # 检查是否有 .rej 残留（部分 hunk 失败但 exit 码可能为 0）
+        rej_files = list(repo_dir.rglob("*.rej"))
+        if rej_files:
+            rej_paths = [str(f.relative_to(repo_dir)) for f in rej_files[:5]]
+            _cleanup_patch_artifacts(repo_dir)
+            raise RuntimeError(
+                f"AI 生成的 diff 部分应用失败，以下文件有 rejected hunks: {', '.join(rej_paths)}"
+            )
     finally:
         Path(diff_path).unlink(missing_ok=True)
+
+
+def _cleanup_patch_artifacts(repo_dir: Path) -> None:
+    """删除 patch 产生的 .orig / .rej 文件。"""
+    for pattern in ["*.orig", "*.rej"]:
+        for f in repo_dir.rglob(pattern):
+            try:
+                f.unlink(missing_ok=True)
+                logger.info(f"[bug_fix_task] 清理 patch 残留: {f}")
+            except Exception:
+                pass

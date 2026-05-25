@@ -246,8 +246,8 @@ export function RequirementsPage() {
             variant="ghost"
             size="icon"
             className="shrink-0"
-            onClick={() => navigate(`/projects/${projectId}`)}
-            title="返回项目详情"
+            onClick={() => navigate(`/projects/${projectId}?stack=management`)}
+            title="返回项目管理"
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>

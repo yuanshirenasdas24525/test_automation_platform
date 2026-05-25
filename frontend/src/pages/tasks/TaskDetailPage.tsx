@@ -7,10 +7,11 @@
  * - 描述：纯文本展示（先不渲染 markdown）
  * - 子任务：tasksApi.list({ parent_task_id })，列表可点
  */
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowLeft, Trash2, Sparkles, Undo2 } from "lucide-react";
+import { ArrowLeft, Trash2, Sparkles, Undo2, RefreshCw, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -21,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { tasksApi, usersApi, bugFixApi } from "@/lib/api";
+import { tasksApi, usersApi, bugFixApi, aiApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import {
   ALL_BUG_SEVERITIES,
@@ -92,6 +93,39 @@ export function TaskDetailPage() {
       toast.success(res.message ?? "已回滚");
       queryClient.invalidateQueries({ queryKey: ["task", taskId] });
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const [fixingAiRunId, setFixingAiRunId] = useState<number | null>(null);
+
+  const fixStatusQuery = useQuery({
+    queryKey: ["ai-run", fixingAiRunId],
+    queryFn: () => aiApi.getRun(fixingAiRunId!),
+    enabled: fixingAiRunId != null,
+    refetchInterval: 2000,
+  });
+
+  const fixRunStatus = fixStatusQuery.data?.status;
+  const fixRunError = fixStatusQuery.data?.error;
+  if (fixRunStatus === "success" || fixRunStatus === "failed" || fixRunStatus === "cancelled") {
+    if (fixStatusQuery.data && fixRunStatus === "success") {
+      toast.success("AI 修复完成");
+    } else if (fixRunStatus === "failed") {
+      toast.error(`AI 修复失败：${fixRunError || "未知错误"}`);
+    }
+    queryClient.invalidateQueries({ queryKey: ["task", taskId] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    setTimeout(() => setFixingAiRunId(null), 0);
+  }
+
+  const retryFixMutation = useMutation({
+    mutationFn: (agentName: string) =>
+      bugFixApi.fixBug(taskId, agentName),
+    onSuccess: (res) => {
+      toast.success("AI 修复任务已启动");
+      setFixingAiRunId(res.ai_run_id);
+      queryClient.invalidateQueries({ queryKey: ["task", taskId] });
     },
     onError: (err: Error) => toast.error(err.message),
   });
@@ -237,7 +271,7 @@ export function TaskDetailPage() {
       </Card>
 
       {/* AI 修复结果 */}
-      {task.type === "bug" && (task.fix_description || task.fix_commit_sha || task.fix_suggestion) ? (
+      {task.type === "bug" && (task.fix_description || task.fix_commit_sha || task.fix_suggestion || fixingAiRunId) ? (
         <Card className="border-violet-200">
           <div className="flex items-center gap-2 border-b border-violet-100 px-4 py-3">
             <Sparkles className="h-4 w-4 text-violet-500" />
@@ -247,6 +281,12 @@ export function TaskDetailPage() {
             {task.fix_agent_used ? (
               <span className="rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-600">
                 {task.fix_agent_used}
+              </span>
+            ) : null}
+            {fixingAiRunId ? (
+              <span className="ml-auto inline-flex items-center gap-1 text-xs text-violet-600">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                修复中...
               </span>
             ) : null}
             {task.fix_commit_branch ? (
@@ -289,8 +329,20 @@ export function TaskDetailPage() {
             ) : null}
             {task.fix_suggestion ? (
               <div>
-                <div className="mb-1 text-xs text-muted-foreground">
-                  修复建议（未应用，需手动处理）
+                <div className="mb-1 flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>修复建议（未应用，需手动处理）</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-xs text-violet-600 hover:text-violet-700 hover:bg-violet-50"
+                    disabled={retryFixMutation.isPending}
+                    onClick={() =>
+                      retryFixMutation.mutate(task.fix_agent_used || "opencode")
+                    }
+                  >
+                    <RefreshCw className="mr-1 h-3 w-3" />
+                    重试修复
+                  </Button>
                 </div>
                 <pre className="whitespace-pre-wrap break-words rounded bg-amber-50 p-2 text-sm text-amber-800">
                   {task.fix_suggestion}

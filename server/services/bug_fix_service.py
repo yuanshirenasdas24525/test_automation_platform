@@ -11,6 +11,7 @@ Agent 抽象 + GitOps 编排 + Bug 状态更新。
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -117,6 +118,22 @@ class LlmBugFixAgent:
                         db.close()
             except Exception:
                 logger.warning("RAG 检索失败，跳过代码上下文", exc_info=True)
+
+        # RAG 未命中时，通过关键词搜索 repo 文件内容作为备选上下文
+        if (
+            repo_dir is not None
+            and user_input["CODE_CONTEXT"].startswith("（无代码上下文")
+        ):
+            try:
+                context_text = _build_fallback_code_context(
+                    repo_dir,
+                    bug_title=bug.title,
+                    bug_description=bug.description or "",
+                )
+                if context_text:
+                    user_input["CODE_CONTEXT"] = context_text
+            except Exception:
+                logger.warning("构建备选代码上下文失败", exc_info=True)
 
         # 调 LLM
         res = chat_json(
@@ -275,6 +292,201 @@ def _find_agent(name: str) -> BugFixAgent | None:
                 return None
             return agent
     return None
+
+
+_SKIP_DIRS = {
+    ".git", "__pycache__", "node_modules", "venv", ".venv",
+    "vendor", ".idea", ".vscode", "dist", "build", ".next",
+    "target", ".gradle", ".mvn", "egg-info",
+    ".angular", "coverage", ".nyc_output", "__snapshots__",
+}
+
+_CODE_EXTS = {
+    ".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte",
+    ".py", ".java", ".kt", ".swift", ".go", ".rs",
+    ".c", ".cpp", ".h", ".hpp", ".cs", ".rb", ".php",
+    ".css", ".scss", ".less", ".html", ".htm",
+}
+
+
+def _extract_keywords(text: str) -> list[str]:
+    """从中文/英文混合文本中抽取搜索关键词。"""
+    import re
+
+    keywords: list[str] = []
+
+    # 中文连续 2+ 字的关键短语
+    cn_phrases = re.findall(r"[\u4e00-\u9fff]{2,}", text)
+    for phrase in cn_phrases:
+        # 滑动窗口 2-4 字
+        for wlen in range(2, min(5, len(phrase) + 1)):
+            for i in range(len(phrase) - wlen + 1):
+                keywords.append(phrase[i:i + wlen])
+
+    # 英文单词
+    en_words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", text)
+    keywords.extend(w.lower() for w in en_words)
+
+    # 去重 + 去停用词
+    stop = {
+        "功能", "问题", "进行", "需要", "可能", "应该", "可以", "没有", "已经",
+        "或者", "但是", "因为", "所以", "如果", "这个", "那个", "什么", "怎么",
+        "the", "and", "for", "are", "not", "but", "can", "has", "was",
+        "from", "with", "that", "this", "will", "have", "been", "when", "its",
+    }
+    seen: set[str] = set()
+    result: list[str] = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower not in stop and kw_lower not in seen:
+            seen.add(kw_lower)
+            result.append(kw)
+
+    return result[:60]
+
+
+def _build_fallback_code_context(
+    repo_dir: Path,
+    bug_title: str,
+    bug_description: str,
+    max_files: int = 8,
+    max_file_bytes: int = 8000,
+) -> str:
+    """RAG 不可用时，从 repo_dir 搜索与 Bug 相关的文件内容。
+
+    策略：
+    1. 从 Bug 标题/描述中提取关键词
+    2. 遍历 repo_dir 中的代码文件，按关键词命中数排序
+    3. 将 top-N 文件的内容（截断）拼入上下文
+    4. 附上项目文件树
+    """
+    keywords = _extract_keywords(f"{bug_title}\n{bug_description}")
+    if not keywords:
+        keywords = _extract_keywords("路由 页面 导航 返回 按钮 跳转")
+
+    # ── 收集候选文件 ──
+    candidate_scores: dict[str, int] = {}
+    all_files: list[str] = []
+
+    for root, dirs, files in os.walk(str(repo_dir)):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS)
+        rel_root = os.path.relpath(root, str(repo_dir))
+
+        for fname in sorted(files):
+            if fname.startswith("."):
+                continue
+            rel_path = os.path.join(rel_root, fname) if rel_root != "." else fname
+            _, ext = os.path.splitext(fname)
+
+            if ext.lower() not in _CODE_EXTS:
+                continue
+
+            all_files.append(rel_path)
+
+            # 文件名打分
+            fname_lower = fname.lower()
+            score = sum(1 for kw in keywords if kw in fname_lower) * 3
+
+            # 文件内容前部搜索关键词（只读前 20KB）
+            try:
+                file_path = os.path.join(root, fname)
+                size = os.path.getsize(file_path)
+                if size > 500 * 1024:  # 跳过 >500KB 的文件
+                    continue
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+                    head = fh.read(50000)
+                head_lower = head.lower()
+                content_hits = sum(1 for kw in keywords if kw in head_lower)
+                score += content_hits * 3
+            except Exception:
+                pass
+
+            if score > 0:
+                candidate_scores[rel_path] = score
+
+    # ── 排序取 top-N ──
+    ranked = sorted(candidate_scores.items(), key=lambda x: -x[1])[:max_files]
+
+    # ── 构建上下文 ──
+    parts: list[str] = []
+
+    if ranked:
+        parts.append("## 相关代码文件（通过关键词搜索匹配）\n")
+        for i, (file_path, score) in enumerate(ranked, 1):
+            full_path = repo_dir / file_path
+            try:
+                raw = full_path.read_text(encoding="utf-8", errors="ignore")
+                if len(raw.encode("utf-8")) > max_file_bytes * 3:
+                    lines = raw.split("\n")
+                    truncated: list[str] = []
+                    byte_count = 0
+                    for line in lines:
+                        lb = len(line.encode("utf-8")) + 1
+                        if byte_count + lb > max_file_bytes * 2:
+                            truncated.append("...（文件过长，已截断）")
+                            break
+                        truncated.append(line)
+                        byte_count += lb
+                    raw = "\n".join(truncated)
+                elif len(raw.encode("utf-8")) > max_file_bytes:
+                    raw = raw[:max_file_bytes] + "\n...（文件过长，已截断）"
+
+                parts.append(
+                    f"### [{i}] `{file_path}` (关键词匹配分={score})\n"
+                    f"```{_lang_from_ext(file_path)}\n{raw}\n```\n"
+                )
+            except Exception:
+                parts.append(f"### [{i}] `{file_path}` (无法读取)\n")
+    else:
+        parts.append("## 未找到匹配关键词的文件，以下是项目结构供参考\n")
+
+    # ── 附上精简文件树 ──
+    tree_lines: list[str] = []
+    dir_count = 0
+    file_count = 0
+    for root, dirs, files in os.walk(str(repo_dir)):
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d not in _SKIP_DIRS)
+        rel = Path(root).relative_to(repo_dir)
+        depth = len(rel.parts) if rel != Path(".") else 0
+        if depth > 4:
+            continue
+        indent = "  " * depth
+        dn = rel.name if rel != Path(".") else repo_dir.name
+        if dn != ".":
+            tree_lines.append(f"{indent}{dn}/")
+            dir_count += 1
+        for f in sorted(files)[:15]:
+            if f.startswith("."):
+                continue
+            if len(tree_lines) >= 80:
+                break
+            tree_lines.append(f"{indent}  {f}")
+            file_count += 1
+        if len(tree_lines) >= 80:
+            tree_lines.append("...（树已截断）")
+            break
+
+    parts.append(
+        f"## 项目文件结构（{dir_count} 个目录、{file_count}+ 个文件）\n```\n"
+        + "\n".join(tree_lines)
+        + "\n```"
+    )
+
+    return "\n\n".join(parts)
+
+
+def _lang_from_ext(file_path: str) -> str:
+    """根据文件扩展名返回 markdown 代码块语言标识。"""
+    ext = os.path.splitext(file_path)[1].lower()
+    lang_map = {
+        ".ts": "typescript", ".tsx": "tsx", ".js": "javascript", ".jsx": "jsx",
+        ".vue": "vue", ".py": "python", ".java": "java", ".kt": "kotlin",
+        ".go": "go", ".rs": "rust", ".swift": "swift",
+        ".c": "c", ".cpp": "cpp", ".h": "c", ".cs": "csharp",
+        ".rb": "ruby", ".php": "php", ".css": "css", ".scss": "scss",
+        ".html": "html", ".svelte": "svelte",
+    }
+    return lang_map.get(ext, "")
 
 
 # ---------------------------------------------------------------------------
