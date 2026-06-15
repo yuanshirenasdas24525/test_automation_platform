@@ -14,6 +14,14 @@ import { toast } from "sonner";
 import DOMPurify from "dompurify";
 import { ArrowLeft, Trash2, Sparkles, Undo2, RefreshCw, Loader2 } from "lucide-react";
 
+const sanitizeHtml = (html: string): string => {
+  try {
+    return DOMPurify.sanitize(html);
+  } catch {
+    return html.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+};
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -264,13 +272,26 @@ export function TaskDetailPage() {
           {task.description ? (
             <div
               className="prose prose-sm max-w-none break-words text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(task.description) }}
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(task.description || "") }}
             />
           ) : (
             <div className="text-sm text-muted-foreground">无描述。</div>
           )}
         </CardContent>
       </Card>
+
+      {/* 复现步骤 */}
+      {task.metadata?.reproduce_steps ? (
+        <Card>
+          <div className="border-b px-4 py-3 text-sm font-semibold">复现步骤</div>
+          <CardContent className="p-4">
+            <div
+              className="prose prose-sm max-w-none break-words text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(String(task.metadata.reproduce_steps)) }}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
 
       {/* AI 修复结果 */}
       {task.type === "bug" && (task.fix_description || task.fix_commit_sha || task.fix_suggestion || fixingAiRunId) ? (
@@ -314,7 +335,7 @@ export function TaskDetailPage() {
                 <div className="mb-1 text-xs text-muted-foreground">修复说明</div>
                 <div
                   className="prose prose-sm max-w-none break-words rounded bg-muted/50 p-2 text-sm [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-4"
-                  dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(task.fix_description) }}
+                  dangerouslySetInnerHTML={{ __html: sanitizeHtml(task.fix_description || "") }}
                 />
               </div>
             ) : null}

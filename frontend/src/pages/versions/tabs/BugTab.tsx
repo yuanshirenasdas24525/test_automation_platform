@@ -9,7 +9,7 @@
  */
 import { useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bug, Loader2, Plus, Sparkles } from "lucide-react";
+import { Bug, Loader2, Plus, Sparkles, Pencil } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -84,6 +84,7 @@ export function BugTab({
   const [createOpen, setCreateOpen] = useState(false);
   const [fixTarget, setFixTarget] = useState<Task | null>(null);
   const [fixingAiRunId, setFixingAiRunId] = useState<number | null>(null);
+  const [editBug, setEditBug] = useState<Task | null>(null);
 
   // 轮询 AI 修复任务状态
   const fixStatusQuery = useQuery({
@@ -103,6 +104,10 @@ export function BugTab({
       toast.error(`AI 修复失败：${fixRunError || "未知错误"}`);
     }
     queryClient.invalidateQueries({ queryKey: ["tasks", "version-bugs"] });
+    queryClient.invalidateQueries({ queryKey: ["tasks"] });
+    if (fixTarget) {
+      queryClient.invalidateQueries({ queryKey: ["task", fixTarget.id] });
+    }
     // 延迟重置状态让 effect 只触发一次
     setTimeout(() => setFixingAiRunId(null), 0);
   }
@@ -280,6 +285,19 @@ export function BugTab({
                           AI修复
                         </Button>
                       ) : null}
+                      {b.status !== "closed" ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 ml-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditBug(b);
+                          }}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
                     </td>
                   </tr>
                 ))}
@@ -302,6 +320,17 @@ export function BugTab({
         onTriggered={(aiRunId) => {
           toast.success("AI 修复任务已启动");
           setFixingAiRunId(aiRunId);
+          queryClient.invalidateQueries({ queryKey: ["tasks", "version-bugs"] });
+        }}
+      />
+
+      {/* 编辑 Bug */}
+      <CreateBugModal
+        open={!!editBug}
+        onOpenChange={(v) => { if (!v) setEditBug(null); }}
+        editingBug={editBug}
+        onEdited={() => {
+          setEditBug(null);
           queryClient.invalidateQueries({ queryKey: ["tasks", "version-bugs"] });
         }}
       />

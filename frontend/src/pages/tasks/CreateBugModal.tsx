@@ -1,9 +1,8 @@
 /**
- * 建 Bug 弹窗。支持两种关联方式：
- *   1. 版本模式（推荐）：选择版本迭代，后端自动取该版本下第一个需求作为 requirement_id
- *   2. parent 任务模式（兼容）：选择 dev 任务作为 parent
+ * 建 Bug / 编辑 Bug 弹窗。
  *
- * 调用方可通过 versionId / parentTaskId prop 预选，此时不展示选择器。
+ * 创建模式：versionId / parentTaskId 控制关联方式
+ * 编辑模式：传 editingBug 触发，使用 tasksApi.update
  */
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -30,16 +29,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { RichTextEditor } from "@/components/editor/RichTextEditor";
-import { tasksApi, versionsApi } from "@/lib/api";
+import { tasksApi, versionsApi, usersApi } from "@/lib/api";
 import { useUserId } from "@/lib/current-user";
 import { ALL_BUG_SEVERITIES } from "@/types/domain";
-import type { BugSeverity, VersionPickerItem } from "@/types/domain";
+import type { BugSeverity, VersionPickerItem, Task, User } from "@/types/domain";
 
 const formSchema = z.object({
   title: z.string().min(1, "标题必填").max(255),
   severity: z.enum(ALL_BUG_SEVERITIES),
   description: z.string().max(4000).optional(),
   reproduce_steps: z.string().max(4000).optional(),
+  related_case_id: z.number().int().positive().optional().nullable(),
+  estimated_hours: z.number().min(0).max(999).optional().nullable(),
+  assignee_dev_id: z.number().int().positive().optional().nullable(),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -47,13 +49,14 @@ type FormValues = z.infer<typeof formSchema>;
 interface CreateBugModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** 预选版本 id。传入时隐藏版本选择器。 */
   versionId?: number | null;
-  /** 预选父 dev 任务（兼容旧逻辑）。传 null 时显示选择器。 */
   parentTaskId?: number | null;
   relatedCaseId?: number | null;
   defaultTitle?: string;
   createdById?: number | null;
+  /** 编辑模式：传入已有 Bug */
+  editingBug?: Task | null;
+  onEdited?: () => void;
 }
 
 export function CreateBugModal({
@@ -64,10 +67,13 @@ export function CreateBugModal({
   relatedCaseId,
   defaultTitle,
   createdById,
+  editingBug,
+  onEdited,
 }: CreateBugModalProps) {
   const fallbackUserId = useUserId();
   const userId = createdById ?? fallbackUserId;
   const queryClient = useQueryClient();
+  const isEdit = !!editingBug;
 
   // ── 版本选择器 ──
   const [pickedVersionId, setPickedVersionId] = useState<number | null>(null);
@@ -76,11 +82,19 @@ export function CreateBugModal({
   const versionsQuery = useQuery({
     queryKey: ["versions", "picker"],
     queryFn: () => versionsApi.picker(),
-    enabled: open && versionId == null && parentTaskId == null,
+    enabled: open && versionId == null && parentTaskId == null && !isEdit,
   });
   const versions: VersionPickerItem[] = versionsQuery.data ?? [];
 
   const effectiveParentId = parentTaskId ?? null;
+
+  // ── 用户列表（处理人选择器） ──
+  const usersQuery = useQuery({
+    queryKey: ["users", { is_active: true }],
+    queryFn: () => usersApi.list({ is_active: true }),
+    enabled: open,
+  });
+  const users: User[] = usersQuery.data ?? [];
 
   useEffect(() => {
     if (open) {
@@ -92,35 +106,54 @@ export function CreateBugModal({
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      title: defaultTitle ?? "",
+      title: "",
       severity: "P2",
       description: "",
       reproduce_steps: "",
+      related_case_id: null,
+      estimated_hours: null,
+      assignee_dev_id: null,
     },
   });
 
   useEffect(() => {
     if (open) {
-      form.reset({
-        title: defaultTitle ?? "",
-        severity: "P2",
-        description: "",
-        reproduce_steps: "",
-      });
+      if (editingBug) {
+          const meta = (editingBug as unknown as Record<string, unknown>).metadata as Record<string, unknown> | undefined;
+        form.reset({
+          title: editingBug.title,
+          severity: editingBug.severity ?? "P2",
+          description: editingBug.description ?? "",
+          reproduce_steps: (meta?.reproduce_steps as string) ?? "",
+          related_case_id: editingBug.related_case_id ?? null,
+          estimated_hours: editingBug.estimated_hours ?? null,
+          assignee_dev_id: editingBug.assignee_dev_id ?? null,
+        });
+      } else {
+        form.reset({
+          title: defaultTitle ?? "",
+          severity: "P2",
+          description: "",
+          reproduce_steps: "",
+          related_case_id: relatedCaseId ?? null,
+          estimated_hours: null,
+          assignee_dev_id: null,
+        });
+      }
     }
-  }, [open, defaultTitle, form]);
+  }, [open, editingBug, defaultTitle, relatedCaseId, form]);
 
-  // ── 提交 ──
-  const submit = useMutation({
+  // ── 提交（创建） ──
+  const createMutation = useMutation({
     mutationFn: (values: FormValues) => {
       if (userId == null) {
-        return Promise.reject(new Error("当前没有用户，先在右上角选一个"));
+        return Promise.reject(new Error("当前没有用户"));
       }
 
       const useVersion = effectiveVersionId != null;
       const useParent = !useVersion && effectiveParentId != null;
 
-      if (!useVersion && !useParent) {
+      if (!isEdit && !useVersion && !useParent) {
         return Promise.reject(new Error("请先选择版本迭代"));
       }
 
@@ -135,8 +168,10 @@ export function CreateBugModal({
         severity: values.severity,
         title: values.title.trim(),
         created_by_id: userId,
-        related_case_id: relatedCaseId ?? null,
+        related_case_id: values.related_case_id ?? null,
         description: values.description?.trim() || null,
+        assignee_dev_id: values.assignee_dev_id ?? null,
+        estimated_hours: values.estimated_hours ?? null,
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
       });
     },
@@ -148,9 +183,37 @@ export function CreateBugModal({
     onError: (err: Error) => toast.error(err.message),
   });
 
-  // ── 决定是否显示选择器 ──
-  // 默认模式：显示版本选择器。若已预选版本或 parent 任务则不显示。
-  const showVersionPicker = versionId == null && parentTaskId == null;
+  // ── 提交（编辑） ──
+  const editMutation = useMutation({
+    mutationFn: (values: FormValues) => {
+      if (!editingBug) return Promise.reject(new Error("缺少编辑目标"));
+      const metadata: Record<string, unknown> = {};
+      if (values.reproduce_steps && values.reproduce_steps.trim()) {
+        metadata.reproduce_steps = values.reproduce_steps.trim();
+      }
+      return tasksApi.update(editingBug.id, {
+        title: values.title.trim(),
+        severity: values.severity,
+        description: values.description?.trim() || null,
+        assignee_dev_id: values.assignee_dev_id ?? null,
+        related_case_id: values.related_case_id ?? null,
+        estimated_hours: values.estimated_hours ?? null,
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+      });
+    },
+    onSuccess: () => {
+      toast.success("Bug 已更新");
+      queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      onEdited?.();
+      onOpenChange(false);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const submitMutation = isEdit ? editMutation : createMutation;
+
+  // ── 显示逻辑 ──
+  const showVersionPicker = versionId == null && parentTaskId == null && !isEdit;
   const hasPreselected = versionId != null || parentTaskId != null;
 
   const sourceLabel = effectiveVersionId
@@ -163,13 +226,13 @@ export function CreateBugModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>建 Bug</DialogTitle>
+          <DialogTitle>{isEdit ? "编辑 Bug" : "建 Bug"}</DialogTitle>
         </DialogHeader>
         <form
-          onSubmit={form.handleSubmit((v) => submit.mutate(v))}
+          onSubmit={form.handleSubmit((v) => submitMutation.mutate(v))}
           className="space-y-3"
         >
-          {/* ── 版本选择器（默认模式） ── */}
+          {/* 版本选择器（仅创建模式） */}
           {showVersionPicker ? (
             <div>
               <Label>关联版本迭代</Label>
@@ -198,12 +261,11 @@ export function CreateBugModal({
                 </SelectContent>
               </Select>
               <div className="mt-1 text-[11px] text-muted-foreground">
-                bug 会关联到该版本迭代，自动归属该版本下的需求。
+                bug 会关联到该版本迭代
               </div>
             </div>
           ) : null}
 
-          {/* ── 预选提示 ── */}
           {hasPreselected ? (
             <div className="rounded border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
               {versionId != null
@@ -221,14 +283,13 @@ export function CreateBugModal({
               </div>
             ) : null}
           </div>
+
           <div>
             <Label>严重度</Label>
             <Select
               value={form.watch("severity")}
               onValueChange={(v) =>
-                form.setValue("severity", v as BugSeverity, {
-                  shouldValidate: true,
-                })
+                form.setValue("severity", v as BugSeverity, { shouldValidate: true })
               }
             >
               <SelectTrigger className="h-9">
@@ -236,13 +297,54 @@ export function CreateBugModal({
               </SelectTrigger>
               <SelectContent>
                 {ALL_BUG_SEVERITIES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
+                  <SelectItem key={s} value={s}>{s}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* 处理人 */}
+          <div>
+            <Label>开发负责人</Label>
+            <Select
+              value={form.watch("assignee_dev_id") ? String(form.watch("assignee_dev_id")) : ""}
+              onValueChange={(v) =>
+                form.setValue("assignee_dev_id", v ? Number(v) : null, { shouldValidate: true })
+              }
+            >
+              <SelectTrigger className="h-9">
+                <SelectValue placeholder="选择开发负责人" />
+              </SelectTrigger>
+              <SelectContent>
+                {users.map((u) => (
+                  <SelectItem key={u.id} value={String(u.id)}>
+                    {u.full_name || u.username}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>关联用例 ID</Label>
+              <Input
+                type="number"
+                placeholder="可选"
+                {...form.register("related_case_id", { valueAsNumber: true })}
+              />
+            </div>
+            <div>
+              <Label>预估工时 (h)</Label>
+              <Input
+                type="number"
+                step="0.5"
+                placeholder="可选"
+                {...form.register("estimated_hours", { valueAsNumber: true })}
+              />
+            </div>
+          </div>
+
           <div>
             <Label htmlFor="bug-desc">描述</Label>
             <RichTextEditor
@@ -253,6 +355,7 @@ export function CreateBugModal({
               placeholder="可选：bug 现象 / 影响范围"
             />
           </div>
+
           <div>
             <Label htmlFor="bug-repro">复现步骤</Label>
             <RichTextEditor
@@ -260,27 +363,21 @@ export function CreateBugModal({
               onChange={(html) => form.setValue("reproduce_steps", html, { shouldValidate: true })}
               height={160}
               toolbar="minimal"
-              placeholder="可选：1. 打开 X；2. 点击 Y；3. ..."
+              placeholder="可选：1. 打开 X；2. 点击 Y"
             />
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              会落到 metadata.reproduce_steps，方便后续按字段查询。
-            </div>
           </div>
+
           <div className="rounded border bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
             来源：{sourceLabel}
-            {relatedCaseId ? ` · case #${relatedCaseId}` : ""}
-            {userId == null ? " · 当前未选用户，提交会失败" : ""}
+            {!isEdit && userId == null ? " · 当前未选用户" : ""}
           </div>
+
           <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-            >
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            <Button type="submit" disabled={submit.isPending}>
-              {submit.isPending ? "提交中…" : "提交"}
+            <Button type="submit" disabled={submitMutation.isPending}>
+              {submitMutation.isPending ? "保存中…" : isEdit ? "保存" : "提交"}
             </Button>
           </DialogFooter>
         </form>

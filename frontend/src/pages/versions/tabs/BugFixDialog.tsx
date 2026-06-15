@@ -55,6 +55,9 @@ export function BugFixDialog({
     onSuccess: (res) => {
       toast.success("AI 修复任务已提交，正在后台执行");
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      if (bug) {
+        queryClient.invalidateQueries({ queryKey: ["task", bug.id] });
+      }
       onTriggered?.(res.ai_run_id);
       onOpenChange(false);
     },

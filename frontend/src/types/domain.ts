@@ -786,6 +786,8 @@ export interface TaskFromTestFailurePayload {
   created_by_id: number;
   related_case_id?: number | null;
   description?: string | null;
+  assignee_dev_id?: number | null;
+  estimated_hours?: number | null;
   metadata?: Record<string, unknown> | null;
 }
 

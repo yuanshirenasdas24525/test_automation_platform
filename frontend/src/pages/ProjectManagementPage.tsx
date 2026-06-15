@@ -62,6 +62,7 @@ export function ProjectManagementPage() {
     { mode: "create"; parentId?: number | null } | { mode: "rename"; mod: ModulePickerNode } | null
   >(null);
   const [creatingVersion, setCreatingVersion] = useState(false);
+  const [editingVersion, setEditingVersion] = useState<ProjectVersion | null>(null);
   const [dragModuleId, setDragModuleId] = useState<number | null>(null);
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
@@ -439,8 +440,8 @@ export function ProjectManagementPage() {
               ) : (
                 <div className="space-y-3">
                   {versions.map((v) => (
-                    <VersionCard key={v.id} version={v} modules={modules}
-                      onEdit={() => navigate(`/projects/${projectId}/versions/${v.id}`)}
+                    <VersionCard key={v.id} version={v} modules={modules} projectId={projectId}
+                      onEdit={() => setEditingVersion(v)}
                       onDelete={() => handleVersionDelete(v)}
                     />
                   ))}
@@ -473,7 +474,18 @@ export function ProjectManagementPage() {
         onClose={() => setEditingModule(null)} onDone={() => { invalidateModules(); setEditingModule(null); }} />
       <VersionCreateDialog open={creatingVersion} projectId={projectId} moduleId={selectedModuleId}
         onClose={() => setCreatingVersion(false)}
-        onDone={(v) => { queryClient.invalidateQueries({ queryKey: ["versions", projectId] }); setCreatingVersion(false); navigate(`/projects/${projectId}/versions/${v.id}`); }} />
+        onDone={(v) => { queryClient.invalidateQueries({ queryKey: ["versions", projectId] }); setCreatingVersion(false); if (v) navigate(`/projects/${projectId}/versions/${v.id}`); }} />
+      <VersionCreateDialog
+        open={!!editingVersion}
+        projectId={projectId}
+        moduleId={null}
+        editingVersion={editingVersion}
+        onClose={() => setEditingVersion(null)}
+        onDone={() => {
+          queryClient.invalidateQueries({ queryKey: ["versions", projectId] });
+          setEditingVersion(null);
+        }}
+      />
     </div>
   );
 }
@@ -564,14 +576,16 @@ function PoolRequirementRows({
 // ---------------------------------------------------------------------------
 // 版本卡片
 // ---------------------------------------------------------------------------
-function VersionCard({ version, modules, onEdit, onDelete }: {
-  version: ProjectVersion; modules: ModulePickerNode[]; onEdit: () => void; onDelete: () => void;
+function VersionCard({ version, modules, projectId, onEdit, onDelete }: {
+  version: ProjectVersion; modules: ModulePickerNode[]; projectId: number; onEdit: () => void; onDelete: () => void;
 }) {
+  const navigate = useNavigate();
   const meta = STATUS_META[version.status];
   const names = (version.associated_module_ids ?? [])
     .map((mid) => modules.find((m) => m.id === mid)?.name).filter(Boolean) as string[];
   return (
-    <Card className="cursor-pointer hover:shadow-sm transition-shadow" onClick={onEdit}>
+    <Card className="cursor-pointer hover:shadow-sm transition-shadow"
+      onClick={() => navigate(`/projects/${projectId}/versions/${version.id}`)}>
       <CardContent className="py-3">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
@@ -638,26 +652,53 @@ function ModuleEditDialog({ state, projectId, onClose, onDone }: {
 // ---------------------------------------------------------------------------
 // 版本创建对话框
 // ---------------------------------------------------------------------------
-function VersionCreateDialog({ open, projectId, moduleId, onClose, onDone }: {
-  open: boolean; projectId: number; moduleId: number | null; onClose: () => void; onDone: (v: ProjectVersion) => void;
+function VersionCreateDialog({ open, projectId, moduleId, editingVersion, onClose, onDone }: {
+  open: boolean; projectId: number; moduleId: number | null;
+  editingVersion?: ProjectVersion | null;
+  onClose: () => void; onDone: (v?: ProjectVersion) => void;
 }) {
+  const isEdit = !!editingVersion;
   const [versionName, setVersionName] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [status, setStatus] = useState<VersionStatus>("planning");
+
+  useEffect(() => {
+    if (open) {
+      if (editingVersion) {
+        setVersionName(editingVersion.version_name);
+        setDisplayName(editingVersion.display_name || "");
+        setStatus(editingVersion.status);
+      } else {
+        setVersionName("");
+        setDisplayName("");
+        setStatus("planning");
+      }
+    }
+  }, [open, editingVersion]);
+
   const create = useMutation({
-    mutationFn: () => versionsApi.create(projectId, {
-      version_name: versionName.trim(),
-      display_name: displayName.trim() || undefined,
-      status,
-      module_ids: moduleId ? [moduleId] : [],
-    }),
-    onSuccess: (v) => { toast.success("版本已创建"); onDone(v); },
+    mutationFn: async () => {
+      if (isEdit && editingVersion) {
+        return versionsApi.update(projectId, editingVersion.id, {
+          version_name: versionName.trim(),
+          display_name: displayName.trim() || undefined,
+          status,
+        } as any);
+      }
+      return versionsApi.create(projectId, {
+        version_name: versionName.trim(),
+        display_name: displayName.trim() || undefined,
+        status,
+        module_ids: moduleId ? [moduleId] : [],
+      });
+    },
+    onSuccess: (v) => { toast.success(isEdit ? "版本已更新" : "版本已创建"); onDone(v); },
     onError: (e) => toast.error((e as ApiError).message),
   });
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-sm">
-        <DialogHeader><DialogTitle>新建迭代版本</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{isEdit ? "编辑迭代版本" : "新建迭代版本"}</DialogTitle></DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1"><Label className="text-xs">版本名 *</Label><Input value={versionName} onChange={(e) => setVersionName(e.target.value)} placeholder="v2.3.0" autoFocus /></div>
           <div className="space-y-1"><Label className="text-xs">展示名</Label><Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="如：2026年Q2" /></div>
@@ -677,7 +718,7 @@ function VersionCreateDialog({ open, projectId, moduleId, onClose, onDone }: {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>取消</Button>
           <Button onClick={() => create.mutate()} disabled={!versionName.trim() || create.isPending}>
-            {create.isPending && <Loader2 className="h-4 w-4 animate-spin" />}创建
+            {create.isPending && <Loader2 className="h-4 w-4 animate-spin" />}{isEdit ? "保存" : "创建"}
           </Button>
         </DialogFooter>
       </DialogContent>

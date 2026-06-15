@@ -179,6 +179,16 @@ def run_bug_fix_task(self, ai_run_id: int) -> dict:
                 run.error = f"{type(exc).__name__}: {exc}"[:2000]
                 run.ended_at = datetime.now()
                 db.commit()
+            # 把错误信息写到 Bug 的 fix_suggestion，前端详情页可见
+            try:
+                b = session.query(Task).filter(Task.id == bug_id).first()
+                if b is not None and not b.fix_description:
+                    b.fix_suggestion = f"AI 修复失败：{type(exc).__name__}: {exc}"[:2000]
+                    b.fix_agent_used = agent_name
+                    b.fix_ai_run_id = ai_run_id
+                    db.commit()
+            except Exception:
+                pass
         except Exception as inner:
             LOGGER.error(f"[bug_fix_task] 兜底状态更新也失败：{inner}")
         return {"status": "error", "message": str(exc)}
@@ -240,11 +250,16 @@ def _apply_and_push(
 
 
 def _apply_diff(diff_text: str, repo_dir: Path) -> None:
-    """把 unified diff 文本通过 patch -p1 应用到仓库。"""
+    """把 unified diff 文本通过 patch -p1 应用到仓库。
+
+    LLM 生成的 diff 常有格式瑕疵，先做清理再 apply。
+    """
     import subprocess as sp
 
     if not diff_text.strip():
         return
+
+    diff_text = _sanitize_diff(diff_text)
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".diff", delete=False, encoding="utf-8"
@@ -256,6 +271,7 @@ def _apply_diff(diff_text: str, repo_dir: Path) -> None:
         proc = sp.run(
             [
                 "patch", "-p1", "--no-backup-if-mismatch",
+                "--fuzz=2", "--ignore-whitespace",
                 "--reject-format=unified", "-i", diff_path,
             ],
             cwd=str(repo_dir),
@@ -272,13 +288,11 @@ def _apply_diff(diff_text: str, repo_dir: Path) -> None:
             logger.error(
                 f"[bug_fix_task] patch 失败 (code={proc.returncode}): {stderr_summary}"
             )
-            # 清理可能的 .rej 残留
             _cleanup_patch_artifacts(repo_dir)
             raise RuntimeError(
                 f"AI 生成的 diff 应用失败 (exit={proc.returncode}): {stderr_summary}"
             )
 
-        # 检查是否有 .rej 残留（部分 hunk 失败但 exit 码可能为 0）
         rej_files = list(repo_dir.rglob("*.rej"))
         if rej_files:
             rej_paths = [str(f.relative_to(repo_dir)) for f in rej_files[:5]]
@@ -288,6 +302,46 @@ def _apply_diff(diff_text: str, repo_dir: Path) -> None:
             )
     finally:
         Path(diff_path).unlink(missing_ok=True)
+
+
+def _sanitize_diff(diff_text: str) -> str:
+    """修正 LLM 生成的 diff 中的常见格式问题。"""
+    lines = diff_text.splitlines(keepends=True)
+    cleaned: list[str] = []
+
+    in_hunk = False
+    for i, line in enumerate(lines):
+        stripped = line.rstrip("\n").rstrip("\r")
+
+        # 跳过 diff 之前的解释文字（LLM 有时会先写一段说明）
+        if not in_hunk and not stripped:
+            continue
+
+        # 检测 hunk header（@@ -x,y +a,b @@）
+        if stripped.startswith("@@ ") and "@@" in stripped[3:]:
+            in_hunk = True
+            cleaned.append(line)
+            continue
+
+        # 检测文件头
+        if stripped.startswith("--- ") or stripped.startswith("+++ "):
+            cleaned.append(line)
+            continue
+        if stripped.startswith("diff --git "):
+            cleaned.append(line)
+            continue
+
+        # 在 hunk 内的行：必须以 '+' / '-' / ' ' 开头
+        if in_hunk and stripped and stripped[0] not in ("+", "-", " "):
+            stripped = " " + stripped  # 缺前导空格的上下文行
+            line = stripped + "\n"
+
+        cleaned.append(line)
+
+    result = "".join(cleaned)
+    if not result.strip():
+        return diff_text  # 清理失败，用原始文本
+    return result
 
 
 def _cleanup_patch_artifacts(repo_dir: Path) -> None:

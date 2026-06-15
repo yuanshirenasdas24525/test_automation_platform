@@ -22,6 +22,7 @@ def call_openai(
     base_url: Optional[str] = None,
     max_tokens: int = 4096,
     timeout: int = 60,
+    json_mode: bool = True,
 ) -> tuple[str, int, int]:
     """调一次 OpenAI chat.completions，返回 (raw_text, tokens_in, tokens_out)。
 
@@ -49,10 +50,11 @@ def call_openai(
             },
             {"role": "user", "content": prompt},
         ],
-        "response_format": {"type": "json_object"},
         "max_tokens": max_tokens,
         "temperature": 0.3,
     }
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
 
     try:
         resp = requests.post(url, headers=headers, json=body, timeout=timeout)

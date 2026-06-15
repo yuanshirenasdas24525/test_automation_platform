@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft, BookOpen, Bug, Eye, FileText, GanttChart, Globe, LayoutDashboard,
-  Link2, Loader2, MoreHorizontal, Palette, Pencil, Plus, Sparkles, TestTube,
+  Link2, MoreHorizontal, Palette, Pencil, Plus, Sparkles, TestTube,
   Trash2, Upload,
 } from "lucide-react";
 
@@ -39,13 +39,6 @@ const DOC_SECTIONS = [
   { key: "ui_prototype_items" as const, label: "UI 原型图", icon: Globe, color: "text-emerald-600" },
 ];
 
-const NOTE_FIELDS = [
-  { key: "sql" as const, label: "SQL 变更", hint: "本次版本需要执行的 SQL 语句" },
-  { key: "config" as const, label: "配置变更", hint: "需要调整或新增的配置项" },
-  { key: "commands" as const, label: "常用命令", hint: "部署、回滚、数据修复等命令" },
-  { key: "notes" as const, label: "注意事项与测试要点", hint: "该版本的风险点、测试重点、特殊说明" },
-];
-
 export function ProjectVersionDetailPage() {
   const { id: projectIdStr, vid: versionIdStr } = useParams<{ id: string; vid: string }>();
   const projectId = Number(projectIdStr);
@@ -64,7 +57,6 @@ export function ProjectVersionDetailPage() {
     enabled: Number.isFinite(projectId),
   });
 
-  const [fields, setFields] = useState({ sql: "", config: "", commands: "", notes: "" });
   const [docDialog, setDocDialog] = useState<{ section: string; label: string; item?: DocItem } | null>(null);
   const allModules = modulesQuery.data ?? [];
   const version = versionQuery.data;
@@ -77,17 +69,6 @@ export function ProjectVersionDetailPage() {
   });
   const bugs = bugsQuery.data ?? [];
 
-  useEffect(() => {
-    if (version) {
-      try {
-        const parsed = JSON.parse(version.release_notes || "{}");
-        setFields({ sql: parsed.sql || "", config: parsed.config || "", commands: parsed.commands || "", notes: parsed.notes || "" });
-      } catch {
-        setFields({ sql: version.release_notes || "", config: "", commands: "", notes: "" });
-      }
-    }
-  }, [version?.id]);
-
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["version", projectId, versionId] });
 
   const updateVersion = useMutation({
@@ -95,12 +76,6 @@ export function ProjectVersionDetailPage() {
     onSuccess: () => invalidate(),
     onError: (e) => toast.error((e as ApiError).message),
   });
-
-  const saveField = (key: string, val: string) => {
-    const updated = { ...fields, [key]: val };
-    setFields(updated);
-    updateVersion.mutate({ release_notes: JSON.stringify(updated) });
-  };
 
   const addVersionEntry = (field: "frontend_versions" | "backend_versions") => {
     updateVersion.mutate({ [field]: [...(version?.[field] ?? []), { version: "", date: new Date().toISOString().slice(0, 10), notes: "" }] });
@@ -235,24 +210,16 @@ export function ProjectVersionDetailPage() {
           </Card>
         </div>
 
-        {/* 右侧：结构化版本信息 */}
+        {/* 右侧：版本信息 */}
         <div className="lg:col-span-2 space-y-4">
-          {NOTE_FIELDS.map(({ key, label, hint }) => (
-            <Card key={key}>
-              <CardContent className="py-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div><span className="text-sm font-medium">{label}</span><span className="text-xs text-muted-foreground ml-2">{hint}</span></div>
-                  <Button size="sm" variant="ghost" onClick={() => saveField(key, fields[key])} disabled={updateVersion.isPending}>
-                    {updateVersion.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}保存
-                  </Button>
-                </div>
-                <Textarea className="min-h-[120px] font-mono text-sm" value={fields[key]}
-                  onChange={(e) => setFields((p) => ({ ...p, [key]: e.target.value }))}
-                  onBlur={(e) => { if (e.target.value !== fields[key]) saveField(key, e.target.value); }}
-                  placeholder={`输入${label}...`} />
-              </CardContent>
-            </Card>
-          ))}
+          <Card>
+            <CardContent className="py-3 space-y-2">
+              <span className="text-sm font-medium">版本信息</span>
+              <p className="text-xs text-muted-foreground">
+                该版本的迭代信息请通过左侧文档区和看板进行管理。
+              </p>
+            </CardContent>
+          </Card>
         </div>
       </div>
 

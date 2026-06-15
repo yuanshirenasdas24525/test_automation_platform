@@ -255,13 +255,44 @@ def _retrieve_hybrid(
     EMB_WEIGHT = 0.4
     BM25_WEIGHT = 0.6
 
+    id_to_row = {c.id: c for c in all_chunks}
+
     for cid in {*emb_scores, *bm25_scores}:
         emb_norm = (emb_scores.get(cid, emb_min) - emb_min) / emb_range
         bm25_norm = (bm25_scores.get(cid, 0.0) - bm25_min) / bm25_range
-        combined[cid] = EMB_WEIGHT * emb_norm + BM25_WEIGHT * bm25_norm
+        score = EMB_WEIGHT * emb_norm + BM25_WEIGHT * bm25_norm
 
-    id_to_row = {c.id: c for c in all_chunks}
-    merged = sorted(combined.items(), key=lambda x: -x[1])[:top_k]
+        # 文件名匹配加权：query 中提取的英文词命中文件路径片段
+        import re as _re
+        fp = id_to_row.get(cid)
+        if fp:
+            fname_lower = fp.file_path.lower()
+            query_en_words = set(_re.findall(r'[a-z]{3,}', query.lower()))
+            hits = sum(1 for w in query_en_words if w in fname_lower)
+            score += min(hits * 0.20, 0.40)
+
+        combined[cid] = score
+
+    merged = sorted(combined.items(), key=lambda x: -x[1])
+
+    # 同文件加分：排名靠前的 chunk 所在文件，其所有 chunk 获得小量加权（最多 5 个文件）
+    file_bonus: dict[str, float] = {}
+    for rank, (cid, score) in enumerate(merged[:20]):
+        fp = id_to_row[cid].file_path
+        if fp not in file_bonus:
+            file_bonus[fp] = max(file_bonus.get(fp, 0.0), 0.15 * (1.0 - rank / 20))
+        if len(file_bonus) >= 8:
+            break
+    for fp, bonus in file_bonus.items():
+        for row in all_chunks:
+            if row.file_path == fp:
+                old = combined.get(row.id, 0.0)
+                combined[row.id] = old + bonus * (1.0 if row.id not in {c for c, _ in merged[:top_k]} else 0.5)
+
+    # 重新排序，限制总量
+    merged = sorted(combined.items(), key=lambda x: -x[1])
+    final_sorted = merged[:top_k * 3]
+
     return [
         RetrievedChunk(
             file_path=id_to_row[cid].file_path,
@@ -269,9 +300,9 @@ def _retrieve_hybrid(
             start_line=id_to_row[cid].start_line or 0,
             end_line=id_to_row[cid].end_line or 0,
             content=id_to_row[cid].content,
-            score=round(score, 4),
+            score=round(max(score, 0), 4),
         )
-        for cid, score in merged
+        for cid, score in final_sorted
     ]
 
 

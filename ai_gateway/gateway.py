@@ -216,6 +216,7 @@ def chat_json(
     timeout: int = 120,
     analysis_mode: str = "standard",
     context_text: str = "",
+    json_mode: bool = True,
 ) -> dict:
     """调一次 LLM，强制 JSON 输出。
 
@@ -253,7 +254,7 @@ def chat_json(
 
     # 路由
     raw, tokens_in, tokens_out = _call_provider(
-        provider_name, api_key, model, prompt, base_url, max_tokens, timeout
+        provider_name, api_key, model, prompt, base_url, max_tokens, timeout, json_mode
     )
 
     output = _parse_json_output(raw)
@@ -361,10 +362,11 @@ def _chat_json_multi(
 def _call_provider(
     provider_name: str, api_key: str, model: str, prompt: str,
     base_url: Optional[str], max_tokens: int, timeout: int,
+    json_mode: bool = True,
 ) -> tuple:
     if provider_name in ("openai", "deepseek", "azure"):
         from .providers.openai_provider import call_openai
-        return call_openai(api_key, model, prompt, base_url, max_tokens, timeout)
+        return call_openai(api_key, model, prompt, base_url, max_tokens, timeout, json_mode=json_mode)
     elif provider_name == "anthropic":
         from .providers.anthropic_provider import call_anthropic
         return call_anthropic(api_key, model, prompt, base_url, max_tokens, timeout)
