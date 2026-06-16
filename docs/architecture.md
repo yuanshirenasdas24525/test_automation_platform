@@ -1,8 +1,9 @@
 # 自动化测试平台架构重构方案
 
-> 基于对现有 `test_automation_platform` 代码的分析，给出完整的评估、目标架构、数据模型重构、App UI 接入方案、AI 能力规划、以及分阶段演进路线。
+> ⚠️ **本文档是历史设计稿（2025 年重构方案），实际落地结构请参考项目根 `AGENTS.md`。**
+> 文中提到的 `src/` 前缀、`core/` 目录、`api_runner.py`/`mobile_runner.py` 等已在 v2 重构中废弃或重组。
 >
-> **已确认技术栈**：PostgreSQL + React (TypeScript + Vite + Ant Design 5) + LiteLLM AI Gateway + Swagger 转用例优先
+> 基于对现有 `test_automation_platform` 代码的分析，给出完整的评估、目标架构、数据模型重构、App UI 接入方案、AI 能力规划、以及分阶段演进路线。
 
 ---
 
@@ -734,7 +735,7 @@ test_automation_platform/
 │  ├─ web_runner.py             # 预留
 │  └─ load_runner.py
 │
-├─ core/                        # 底层能力（原 src/core/）
+├─ core/                        # 底层能力（v2 已拆分至 runners/context/ + runners/app/ + utils/captcha/）
 │  ├─ api/
 │  ├─ mobile/
 │  ├─ web/

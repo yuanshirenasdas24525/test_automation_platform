@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from coding_agent.diff.applier import changes_to_unified_diff, apply_change_text
+
 from database.models import (
     AiRun,
     Task,
@@ -163,7 +165,7 @@ class LlmBugFixAgent:
 
         # 新格式：从 changes 数组生成 unified diff
         if changes and repo_dir:
-            diff_raw = _changes_to_diff(changes, repo_dir)
+            diff_raw = changes_to_unified_diff(changes, repo_dir)
         elif not diff_raw and changes and not repo_dir:
             pass  # 无 Git 时 changes 描述在 fix_description 里
 
@@ -506,103 +508,6 @@ def _lang_from_ext(file_path: str) -> str:
         ".html": "html", ".svelte": "svelte",
     }
     return lang_map.get(ext, "")
-
-
-def _changes_to_diff(changes: list[dict], repo_dir: Path) -> str:
-    """把 LLM 输出的结构化 changes 转换为 unified diff 文本。"""
-    import difflib
-
-    file_changes: dict[str, list[dict]] = {}
-    for c in changes:
-        fp = c.get("file", "")
-        if not fp:
-            continue
-        file_changes.setdefault(fp, []).append(c)
-
-    diff_parts: list[str] = []
-    for fp, fp_changes in file_changes.items():
-        full_path = repo_dir / fp
-        if not full_path.exists():
-            logger.warning(f"_changes_to_diff: 文件不存在 {fp}，跳过")
-            continue
-        try:
-            original = full_path.read_text(encoding="utf-8")
-        except Exception:
-            logger.warning(f"_changes_to_diff: 读取 {fp} 失败，跳过")
-            continue
-
-        modified = original
-        errors: list[str] = []
-        for c in fp_changes:
-            try:
-                modified = _apply_change_text(c, modified)
-            except ValueError as exc:
-                errors.append(str(exc))
-                continue
-
-        if modified == original:
-            if errors:
-                logger.warning(f"_changes_to_diff: {fp} 部分改动失败: {'; '.join(errors)}")
-            continue
-        if errors:
-            logger.warning(f"_changes_to_diff: {fp} 部分改动失败但继续: {'; '.join(errors)}")
-
-        diff_lines = list(
-            difflib.unified_diff(
-                original.splitlines(keepends=True),
-                modified.splitlines(keepends=True),
-                fromfile=f"a/{fp}",
-                tofile=f"b/{fp}",
-            )
-        )
-        if diff_lines:
-            diff_parts.append("".join(diff_lines))
-
-    return "\n".join(diff_parts)
-
-
-def _apply_change_text(c: dict, text: str) -> str:
-    """基于文本锚点的 change 应用。"""
-    action = c.get("action", "")
-    code = c.get("code", "")
-
-    if action == "append":
-        return text.rstrip("\n") + "\n" + code.rstrip("\n") + "\n"
-
-    if action in ("insert_after", "insert_before"):
-        anchor_key = "after_text" if action == "insert_after" else "before_text"
-        anchor = c.get(anchor_key, "")
-        if not anchor:
-            raise ValueError(f"{action} 缺少 {anchor_key}")
-        index = text.find(anchor)
-        if index == -1:
-            # 容错：移除末尾换行后重试
-            stripped_anchor = anchor.rstrip("\n")
-            index = text.find(stripped_anchor)
-        if index == -1:
-            raise ValueError(f"{action} 未找到匹配文本: {anchor[:50]}...")
-        if action == "insert_after":
-            insert_pos = index + len(anchor)
-            if insert_pos < len(text) and text[insert_pos] == "\n":
-                insert_pos += 1
-        else:
-            insert_pos = index
-            if insert_pos > 0 and text[insert_pos - 1] != "\n":
-                code = "\n" + code
-        code = code.rstrip("\n") + "\n"
-        return text[:insert_pos] + code + text[insert_pos:]
-
-    if action == "replace":
-        find_text = c.get("find_text", "")
-        if not find_text:
-            raise ValueError("replace 缺少 find_text")
-        index = text.find(find_text)
-        if index == -1:
-            raise ValueError(f"replace 未找到匹配文本: {find_text[:50]}...")
-        code = code.rstrip("\n") + "\n"
-        return text[:index] + code + text[index + len(find_text):]
-
-    return text
 
 
 # ---------------------------------------------------------------------------

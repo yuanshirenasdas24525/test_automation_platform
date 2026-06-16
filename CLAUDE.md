@@ -86,7 +86,7 @@ POST /api/run_test  (server/api/runs.py)
 | 业务 | `server/services/` | 不碰 HTTP，可被路由 / Celery 任务复用 |
 | ORM + Schema | `database/models/` + `database/schemas/` | SQLAlchemy 2.0 风格；JSON 列用 `database.base.JSONType`（PG → JSONB，其他 → JSON）；预加载用 `selectinload()` |
 | 步骤执行 | `runners/` | 协议 `runners/protocol.py` → Dispatcher → Runner |
-| 执行上下文 | `runners/context/` + `core/` | `ExecutionContext` 装变量 / 日志 / attachments / `record_property` 句柄 |
+| 执行上下文 | `runners/context/` + `runners/app/` + `utils/captcha/` | `ExecutionContext` 装变量 / 日志 / attachments / `record_property` 句柄；设备池在 `runners/app/`；captcha 在 `utils/captcha/` |
 | 异步任务 | `tasks/` | `run_test_task` / `probe_devices`（30s 心跳）/ `ai_tasks` |
 | AI 网关 | `ai_gateway/` | 多 provider（OpenAI / Anthropic / Ollama）+ 分析模式（quick/standard/deep/multi_model）；不做持久化，由 `tasks/ai_tasks.py` 落库 |
 

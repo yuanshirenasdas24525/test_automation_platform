@@ -191,7 +191,7 @@ Bug 列表 [AI修复] 按钮
 | 步骤执行 | `runners/` | `runners/protocol.py` → `StepDispatcher` → `Runner`。不依赖 ORM。 |
 | AI 网关 | `ai_gateway/` | `gateway.chat_json(feature, ...)` + `embeddings.py`；providers 在 `ai_gateway/providers/`（anthropic / openai / ollama）；prompt 模板在 `ai_gateway/prompts/`。**不做持久化**，由 `tasks/ai_tasks.py` / `tasks/ai_dialogue_task.py` 落库。 |
 | 编码 agent | `coding_agent/` | `prompt_templates` + `rag/` (indexer / embedder / retriever) + `diff/` (parser / applier / validator) + `git_ops`。底层 LLM 调用复用 `ai_gateway.chat_json`，不在 ai_gateway 里塞业务逻辑。 |
-| 执行上下文 | `runners/context/` + `core/` | `ExecutionContext` 装变量 / 日志 / attachments / `record_property` 句柄 |
+| 执行上下文 | `runners/context/` + `runners/app/` + `utils/captcha/` | `ExecutionContext` 装变量 / 日志 / attachments / `record_property` 句柄；设备池在 `runners/app/`；captcha 在 `utils/captcha/` |
 | 异步任务 | `tasks/` | `run_test_task` / `probe_devices`（30s 心跳）/ `ai_tasks` / `ai_dialogue_task` / `rag_index_task` / `bug_fix_task` |
 
 ### 4. 目录约定
@@ -204,7 +204,6 @@ Bug 列表 [AI修复] 按钮
 | `ai_gateway/` | 多 provider AI 网关 + 通用 prompt 模板 |
 | `coding_agent/` | RAG + diff + git_ops；AI 写代码闭环模块 |
 | `tasks/` | Celery 异步任务 |
-| `core/` | 执行上下文、设备池、代理 mock、captcha |
 | `config/` | `pytest.ini`、`pytest_config.py`、`object_conf.ini`（业务配置） |
 | `utils/` | 工具函数（Allure / 加密 / 日志 / read_conf 等） |
 | `frontend/` | React SPA；产物落 `frontend/dist/`，由 FastAPI 兜底托管（SPA fallback） |
@@ -381,3 +380,5 @@ import type { AiDialogueSession } from "@/types/domain";
 - `venv/`、`__pycache__/`：忽略
 - `frontend/node_modules/`、`frontend/dist/`：忽略
 - `.env`：放 `PLATFORM_SECRET_KEY` 等敏感量，**绝不入仓**
+
+## Imported Claude Cowork project instructions
