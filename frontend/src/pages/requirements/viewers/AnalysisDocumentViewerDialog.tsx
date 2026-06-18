@@ -74,6 +74,9 @@ export function AnalysisDocumentViewerDialog({
       setTitle(docQuery.data.title);
       setMode("view");
     }
+    // 仅在文档 id / 版本变化时同步进编辑器；若把整个 docQuery.data 加进依赖，
+    // 每次后台刷新（对象引用变化）都会重置 draft，覆盖用户正在编辑的内容。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [docQuery.data?.id, docQuery.data?.current_version]);
 
   useEffect(() => {

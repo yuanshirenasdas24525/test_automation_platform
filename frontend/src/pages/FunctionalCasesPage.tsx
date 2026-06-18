@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -10,7 +10,6 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleHelp,
-  ClipboardList,
   Download,
   Folder,
   FolderPlus,
@@ -67,8 +66,8 @@ import { queryKeys } from "@/lib/query";
 import type {
   ContentNode,
   FunctionalBatchItem,
-  FunctionalBatchSummary,
   FunctionalCase,
+  FunctionalCaseRun,
   FunctionalRunStatus,
   FunctionalSpec,
 } from "@/types/domain";
@@ -134,6 +133,15 @@ const STATUS_META: Record<
   },
 };
 
+/** 优先级颜色表。P1=红 P2=橙 P3=绿 P4=蓝 P5=灰 */
+const PRIORITY_META: Record<number, { label: string; tone: string; ring: string }> = {
+  1: { label: "P1", tone: "bg-red-100 text-red-700", ring: "ring-red-300" },
+  2: { label: "P2", tone: "bg-orange-100 text-orange-700", ring: "ring-orange-300" },
+  3: { label: "P3", tone: "bg-emerald-100 text-emerald-700", ring: "ring-emerald-300" },
+  4: { label: "P4", tone: "bg-blue-100 text-blue-700", ring: "ring-blue-300" },
+  5: { label: "P5", tone: "bg-gray-100 text-gray-600", ring: "ring-gray-300" },
+};
+
 /** 自动化 RunStatus 子集（不含 pending；勾结果只能勾这四个）。 */
 const MARKABLE_STATUSES: Exclude<FunctionalRunStatus, "pending">[] = [
   "passed",
@@ -190,7 +198,7 @@ type CaseFormValues = z.infer<typeof caseSchema>;
 // ---------------------------------------------------------------------------
 // 主页面
 // ---------------------------------------------------------------------------
-export function FunctionalCasesPage() {
+export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
   const navigate = useNavigate();
@@ -284,13 +292,23 @@ export function FunctionalCasesPage() {
 
   const [historyCase, setHistoryCase] = useState<FunctionalCase | null>(null);
 
-  const [batchesOpen, setBatchesOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  // ------ 详情弹窗 ------
+  const [detailCase, setDetailCase] = useState<FunctionalCase | null>(null);
 
   // ------ 测试模式状态 ------
   // 进入测试模式后：每行出现选择框，底部固定操作栏；离开则清空选择 + batchId
-  const [testMode, setTestMode] = useState(false);
+  // 默认进入测试模式（页面一加载或进入模块后自动拿 batch_id）
+  const [testMode, setTestMode] = useState(true);
   const [batchId, setBatchId] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  // ------ 快速编辑模式状态 ------
+  const [quickEditMode, setQuickEditMode] = useState(false);
+  const [newRows, setNewRows] = useState<
+    Array<{ tempId: string; belowCaseId?: number }>
+  >([]);
 
   // 测试模式开关：进入时拿一个新 batch_id；退出时清空
   const enterTestMode = async () => {
@@ -299,6 +317,8 @@ export function FunctionalCasesPage() {
       setBatchId(batch_id);
       setSelected(new Set());
       setTestMode(true);
+      setQuickEditMode(false);
+      setNewRows([]);
       toast.info(`已进入测试模式 · 批次 ${batch_id.slice(0, 8)}…`);
     } catch (e) {
       handleError(e);
@@ -309,6 +329,71 @@ export function FunctionalCasesPage() {
     setBatchId(null);
     setSelected(new Set());
   };
+
+  const enterQuickEditMode = () => {
+    setQuickEditMode(true);
+    setTestMode(false);
+    setBatchId(null);
+    setSelected(new Set());
+    // 进入快速编辑时，底部先放一行空的快速输入
+    setNewRows([{ tempId: genTempId() }]);
+  };
+  const exitQuickEditMode = () => {
+    setQuickEditMode(false);
+    setNewRows([]);
+  };
+
+  const addNewRow = useCallback((belowCaseId?: number) => {
+    const tempId = genTempId();
+    setNewRows((prev) => {
+      if (belowCaseId === undefined) return [...prev, { tempId }];
+      const idx = prev.findIndex((r) => r.belowCaseId === belowCaseId);
+      if (idx >= 0) {
+        const next = [...prev];
+        next.splice(idx + 1, 0, { tempId, belowCaseId });
+        return next;
+      }
+      return [...prev, { tempId, belowCaseId }];
+    });
+  }, []);
+
+  const removeNewRow = useCallback((tempId: string) => {
+    setNewRows((prev) => prev.filter((r) => r.tempId !== tempId));
+  }, []);
+
+  // 底部快速输入：在“最后一行”里输入第一个字符时，自动追加一行新的空快速输入
+  const handleFirstInput = useCallback((tempId: string) => {
+    setNewRows((prev) => {
+      const bottoms = prev.filter((r) => r.belowCaseId === undefined);
+      const last = bottoms[bottoms.length - 1];
+      if (last && last.tempId === tempId) {
+        return [...prev, { tempId: genTempId() }];
+      }
+      return prev;
+    });
+  }, []);
+
+  // 进入快速编辑后，若底部没有任何空的快速输入行，补一行（保证永远有一个录入入口）
+  useEffect(() => {
+    if (!quickEditMode) return;
+    setNewRows((prev) =>
+      prev.some((r) => r.belowCaseId === undefined)
+        ? prev
+        : [...prev, { tempId: genTempId() }],
+    );
+  }, [quickEditMode]);
+
+  // 默认测试模式：页面加载 / 进入模块后自动拿 batch_id
+  useEffect(() => {
+    if (testMode && !batchId) {
+      functionalCasesApi.newBatchId()
+        .then(({ batch_id }) => {
+          setBatchId(batch_id);
+          toast.info(`已进入测试模式 · 批次 ${batch_id.slice(0, 8)}…`);
+        })
+        .catch(handleError);
+    }
+  }, [testMode, batchId]);
 
   // ------ Mutations ------
   const createModule = useMutation({
@@ -345,12 +430,32 @@ export function FunctionalCasesPage() {
 
   const deleteCase = useMutation({
     mutationFn: (cid: number) => functionalCasesApi.remove(cid),
+    // 乐观更新：先把这条从所有用例列表缓存里抹掉，UI 立即生效，不用等 refetch
+    onMutate: async (cid: number) => {
+      await queryClient.cancelQueries({ queryKey: ["functional_cases"] });
+      const snapshots = queryClient.getQueriesData<{ items: FunctionalCase[]; total: number }>({
+        queryKey: ["functional_cases"],
+      });
+      for (const [key, data] of snapshots) {
+        if (data?.items) {
+          queryClient.setQueryData(key, {
+            ...data,
+            items: data.items.filter((c) => c.id !== cid),
+            total: Math.max(0, (data.total ?? 1) - 1),
+          });
+        }
+      }
+      setPendingDelete(null);
+      return { snapshots };
+    },
+    onError: (err, _cid, ctx) => {
+      ctx?.snapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
+      handleError(err);
+    },
     onSuccess: () => {
       toast.success("用例已删除");
-      invalidateAll();
-      setPendingDelete(null);
     },
-    onError: handleError,
+    onSettled: () => invalidateAll(),
   });
 
   // ------ 业务动作 ------
@@ -416,19 +521,21 @@ export function FunctionalCasesPage() {
   };
 
   return (
-    <div className="space-y-4 p-6 pb-24">
+    <div className={cn("space-y-4 pb-24", !embedded && "p-6")}>
       {/* 顶栏：返回 + 面包屑 */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex min-w-0 items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="shrink-0"
-            onClick={() => navigate(`/projects/${projectId}?stack=functional`)}
-            title="返回项目详情"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
+          {!embedded ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
+              onClick={() => navigate(`/projects/${projectId}?stack=functional`)}
+              title="返回项目详情"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          ) : null}
           <Breadcrumb
             project={project?.name ?? "…"}
             trail={breadcrumb}
@@ -439,20 +546,31 @@ export function FunctionalCasesPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => setBatchesOpen(true)}
+            onClick={() => setHistoryOpen(true)}
           >
-            <ClipboardList className="h-4 w-4" />
-            批次概览
+            <History className="h-4 w-4" />
+            历史记录
           </Button>
-          {testMode ? (
-            <Button variant="default" size="sm" onClick={exitTestMode}>
-              退出测试模式
-            </Button>
-          ) : (
-            <Button variant="outline" size="sm" onClick={enterTestMode}>
-              进入测试模式
-            </Button>
-          )}
+          <div className="inline-flex rounded-md border overflow-hidden">
+            <button
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition-colors",
+                testMode ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent",
+              )}
+              onClick={testMode ? exitTestMode : enterTestMode}
+            >
+              测试模式
+            </button>
+            <button
+              className={cn(
+                "px-3 py-1.5 text-xs font-medium transition-colors border-l",
+                quickEditMode ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent",
+              )}
+              onClick={quickEditMode ? exitQuickEditMode : enterQuickEditMode}
+            >
+              快速编辑
+            </button>
+          </div>
         </div>
       </div>
 
@@ -524,36 +642,38 @@ export function FunctionalCasesPage() {
         <ErrorBox onRetry={() => contentQuery.refetch()} />
       ) : (
         <div className="space-y-6">
-          {/* 模块行 */}
-          <Section title={`子模块（${modules.length}）`}>
-            {modules.length === 0 ? (
-              <EmptyHint text="当前层级没有子模块" />
-            ) : (
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {modules.map((m) => (
-                  <ModuleRow
-                    key={m.id}
-                    node={m}
-                    onEnter={() => handleEnterModule(m)}
-                    onRename={() =>
-                      setModuleDialog({
-                        mode: "rename",
-                        moduleId: m.id,
-                        name: m.name,
-                      })
-                    }
-                    onDelete={() =>
-                      setPendingDelete({
-                        kind: "module",
-                        id: m.id,
-                        name: m.name,
-                      })
-                    }
-                  />
-                ))}
-              </div>
-            )}
-          </Section>
+          {/* 模块行：进入模块后若当前层级没有子模块，则不渲染这一块（避免用例列表上方出现空区块） */}
+          {currentParentId === null || modules.length > 0 ? (
+            <Section title={`子模块（${modules.length}）`}>
+              {modules.length === 0 ? (
+                <EmptyHint text="当前层级没有子模块" />
+              ) : (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                  {modules.map((m) => (
+                    <ModuleRow
+                      key={m.id}
+                      node={m}
+                      onEnter={() => handleEnterModule(m)}
+                      onRename={() =>
+                        setModuleDialog({
+                          mode: "rename",
+                          moduleId: m.id,
+                          name: m.name,
+                        })
+                      }
+                      onDelete={() =>
+                        setPendingDelete({
+                          kind: "module",
+                          id: m.id,
+                          name: m.name,
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </Section>
+          ) : null}
 
           {/* 用例行：仅在模块层显示 */}
           {currentParentId !== null ? (
@@ -574,8 +694,11 @@ export function FunctionalCasesPage() {
                 <CaseList
                   cases={cases}
                   testMode={testMode}
+                  quickEditMode={quickEditMode}
                   selected={selected}
+                  newRows={newRows}
                   allSelectedOnPage={allSelectedOnPage}
+                  moduleId={currentParentId}
                   onToggleSelectAll={toggleSelectAll}
                   onToggleSelect={toggleSelect}
                   onMark={(c) => setMarkingCase(c)}
@@ -584,6 +707,10 @@ export function FunctionalCasesPage() {
                     setPendingDelete({ kind: "case", id: c.id, name: c.name })
                   }
                   onShowHistory={(c) => setHistoryCase(c)}
+                  onOpenDetail={(c) => setDetailCase(c)}
+                  onAddNewRow={addNewRow}
+                  onRemoveNewRow={removeNewRow}
+                  onFirstInput={handleFirstInput}
                 />
               )}
               {totalCases > PAGE_SIZE ? (
@@ -685,15 +812,36 @@ export function FunctionalCasesPage() {
         submitting={deleteModule.isPending || deleteCase.isPending}
       />
 
+      <CaseDetailDialog
+        target={detailCase}
+        onClose={() => setDetailCase(null)}
+        onMark={(c) => {
+          setDetailCase(null);
+          setMarkingCase(c);
+        }}
+        onEdit={(c) => {
+          setDetailCase(null);
+          setCaseDialog({ mode: "edit", caseId: c.id });
+        }}
+        onDelete={(c) => {
+          setDetailCase(null);
+          setPendingDelete({ kind: "case", id: c.id, name: c.name });
+        }}
+        onShowHistory={(c) => {
+          setDetailCase(null);
+          setHistoryCase(c);
+        }}
+      />
+
       <HistoryDialog
         target={historyCase}
         onClose={() => setHistoryCase(null)}
       />
 
-      <BatchesDialog
-        projectId={projectId}
-        open={batchesOpen}
-        onClose={() => setBatchesOpen(false)}
+      <ModuleHistoryDialog
+        moduleId={currentParentId}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
       />
     </div>
   );
@@ -803,57 +951,107 @@ function ModuleRow({
 function CaseList({
   cases,
   testMode,
+  quickEditMode,
   selected,
+  newRows,
   allSelectedOnPage,
+  moduleId,
   onToggleSelectAll,
   onToggleSelect,
   onMark,
   onEdit,
   onDelete,
   onShowHistory,
+  onOpenDetail,
+  onAddNewRow,
+  onRemoveNewRow,
+  onFirstInput,
 }: {
   cases: FunctionalCase[];
   testMode: boolean;
+  quickEditMode: boolean;
   selected: Set<number>;
+  newRows: Array<{ tempId: string; belowCaseId?: number }>;
   allSelectedOnPage: boolean;
+  moduleId: number | null;
   onToggleSelectAll: () => void;
   onToggleSelect: (id: number) => void;
   onMark: (c: FunctionalCase) => void;
   onEdit: (c: FunctionalCase) => void;
   onDelete: (c: FunctionalCase) => void;
   onShowHistory: (c: FunctionalCase) => void;
+  onOpenDetail: (c: FunctionalCase) => void;
+  onAddNewRow: (belowCaseId?: number) => void;
+  onRemoveNewRow: (tempId: string) => void;
+  onFirstInput: (tempId: string) => void;
 }) {
+  const cols = testMode ? 8 : 7;
+  // 底部快速输入行（belowCaseId 为空的都算底部行；最后一行是“trailing”录入入口）
+  const bottomRows = newRows.filter((nr) => nr.belowCaseId === undefined);
   return (
-    <div className="overflow-hidden rounded-lg border bg-card">
-      {/* 头：测试模式时多一列全选；统一表头视觉 */}
-      <div className="flex items-center gap-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {testMode ? (
-          <SelectToggle
-            checked={allSelectedOnPage}
-            onChange={onToggleSelectAll}
-            ariaLabel="全选当前页"
-          />
-        ) : null}
-        <div className="flex-1">用例</div>
-        <div className="w-32 shrink-0">最近状态</div>
-        <div className="w-44 shrink-0">最近执行</div>
-        <div className="w-32 shrink-0 text-right">操作</div>
-      </div>
-      <ul className="divide-y">
-        {cases.map((c) => (
-          <CaseRow
-            key={c.id}
-            row={c}
-            testMode={testMode}
-            selected={selected.has(c.id)}
-            onToggleSelect={() => onToggleSelect(c.id)}
-            onMark={() => onMark(c)}
-            onEdit={() => onEdit(c)}
-            onDelete={() => onDelete(c)}
-            onShowHistory={() => onShowHistory(c)}
-          />
-        ))}
-      </ul>
+    <div className="overflow-hidden rounded-md border">
+      <table className="w-full text-sm border-collapse">
+        <thead className="bg-muted/40 text-xs text-muted-foreground">
+          <tr>
+            {testMode ? (
+              <th className="w-10 border border-border px-1 py-2 text-center align-middle">
+                <SelectToggle checked={allSelectedOnPage} onChange={onToggleSelectAll} ariaLabel="全选当前页" />
+              </th>
+            ) : null}
+            <th className="border border-border px-3 py-2 text-left font-medium">用例名称</th>
+            <th className="border border-border px-3 py-2 text-left font-medium w-[12%]">前置条件</th>
+            <th className="border border-border px-3 py-2 text-left font-medium w-[40%]">操作步骤</th>
+            <th className="border border-border px-3 py-2 text-left font-medium w-[12%]">预期结果</th>
+            <th className="border border-border px-3 py-2 text-center font-medium w-20">优先级</th>
+            <th className="border border-border px-3 py-2 text-center font-medium w-28">最近状态</th>
+            <th className="border border-border px-3 py-2 text-right font-medium w-36">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cases.map((c) => {
+            const pendingNew = newRows.find((nr) => nr.belowCaseId === c.id);
+            return (
+              <Fragment key={c.id}>
+                <CaseRow
+                  row={c}
+                  testMode={testMode}
+                  quickEditMode={quickEditMode}
+                  selected={selected.has(c.id)}
+                  onToggleSelect={() => onToggleSelect(c.id)}
+                  onMark={() => onMark(c)}
+                  onEdit={() => onEdit(c)}
+                  onDelete={() => onDelete(c)}
+                  onShowHistory={() => onShowHistory(c)}
+                  onOpenDetail={() => onOpenDetail(c)}
+                />
+                {pendingNew ? (
+                  <NewCaseRow
+                    key={pendingNew.tempId}
+                    moduleId={moduleId!}
+                    onCreated={() => onRemoveNewRow(pendingNew.tempId)}
+                    onRemove={() => onRemoveNewRow(pendingNew.tempId)}
+                  />
+                ) : null}
+                {quickEditMode && (
+                  <InsertRowBelow key={`ins-${c.id}`} onInsert={() => onAddNewRow(c.id)} colSpan={cols} />
+                )}
+              </Fragment>
+            );
+          })}
+          {quickEditMode && moduleId != null
+            ? bottomRows.map((nr, idx) => (
+                <NewCaseRow
+                  key={nr.tempId}
+                  moduleId={moduleId}
+                  isTrailing={idx === bottomRows.length - 1}
+                  onFirstInput={() => onFirstInput(nr.tempId)}
+                  onCreated={() => onRemoveNewRow(nr.tempId)}
+                  onRemove={() => onRemoveNewRow(nr.tempId)}
+                />
+              ))
+            : null}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -861,138 +1059,610 @@ function CaseList({
 function CaseRow({
   row,
   testMode,
+  quickEditMode,
   selected,
   onToggleSelect,
   onMark,
   onEdit,
   onDelete,
   onShowHistory,
+  onOpenDetail,
 }: {
   row: FunctionalCase;
   testMode: boolean;
+  quickEditMode: boolean;
   selected: boolean;
   onToggleSelect: () => void;
   onMark: () => void;
   onEdit: () => void;
   onDelete: () => void;
   onShowHistory: () => void;
+  onOpenDetail: () => void;
 }) {
+  const queryClient = useQueryClient();
   const status: FunctionalRunStatus = row.latest_run?.status ?? "pending";
+  const meta = STATUS_META[status];
+  const Icon = meta.icon;
+  const spec = row.functional_spec ?? { preconditions: [], steps: [], expected: null };
+
+  const saveField = async (field: string, rawValue: string) => {
+    let data: Record<string, unknown>;
+    switch (field) {
+      case "name":
+        data = { name: rawValue };
+        break;
+      case "priority":
+        data = { priority: rawValue ? Number(rawValue) : null };
+        break;
+      case "preconditions":
+        data = { functional_spec: { ...spec, preconditions: splitLines(rawValue) } };
+        break;
+      case "steps":
+        data = { functional_spec: { ...spec, steps: splitLines(rawValue) } };
+        break;
+      case "expected":
+        data = { functional_spec: { ...spec, expected: rawValue || null } };
+        break;
+      default:
+        return;
+    }
+    await functionalCasesApi.update(row.id, data);
+    queryClient.invalidateQueries({ queryKey: ["functional_cases"] });
+  };
+
+  const stepsDisplay = spec.steps.length > 0
+    ? spec.steps.map((s, i) => `${i + 1}. ${s}`).join("\n")
+    : "";
+  const preconditionsDisplay = spec.preconditions.length > 0
+    ? spec.preconditions.map((s, i) => `${i + 1}. ${s}`).join("\n")
+    : "";
+  const expectedLines = splitLines(spec.expected ?? "");
+  const expectedDisplay = expectedLines.length > 0
+    ? expectedLines.map((s, i) => `${i + 1}. ${s}`).join("\n")
+    : "";
+  const pmeta = row.priority != null ? PRIORITY_META[row.priority] : null;
+
+  return (
+    <tr className={cn("hover:bg-accent/30", selected && "bg-accent/40", row.skip && "opacity-60")}>
+      {testMode ? (
+        <td className="border border-border px-1 py-2 text-center align-middle">
+          <SelectToggle checked={selected} onChange={onToggleSelect} ariaLabel={`选中用例 ${row.name}`} />
+        </td>
+      ) : null}
+      {/* 用例名称 */}
+      <td className="border border-border px-3 py-2">
+        <NameCell name={row.name} onOpenDetail={onOpenDetail} onSave={(v) => saveField("name", v)} quickEditMode={quickEditMode} />
+      </td>
+      {/* 前置条件 - 有序列表 */}
+      <td className="border border-border px-3 py-2 align-top">
+        {quickEditMode ? (
+          <OrderedInlineInput value={spec.preconditions.join("\n")} onSave={(v) => saveField("preconditions", v)} />
+        ) : (
+          <div className="whitespace-pre-wrap text-xs text-muted-foreground break-words" title={preconditionsDisplay}>
+            {preconditionsDisplay || <span className="text-muted-foreground/50">—</span>}
+          </div>
+        )}
+      </td>
+      {/* 操作步骤 - 有序列表 */}
+      <td className="border border-border px-3 py-2 align-top">
+        {quickEditMode ? (
+          <OrderedInlineInput value={spec.steps.join("\n")} onSave={(v) => saveField("steps", v)} />
+        ) : (
+          <div className="whitespace-pre-wrap text-xs text-muted-foreground break-words" title={stepsDisplay}>
+            {stepsDisplay || <span className="text-muted-foreground/50">—</span>}
+          </div>
+        )}
+      </td>
+      {/* 预期结果 - 有序列表 */}
+      <td className="border border-border px-3 py-2 align-top">
+        {quickEditMode ? (
+          <OrderedInlineInput value={spec.expected ?? ""} onSave={(v) => saveField("expected", v)} />
+        ) : (
+          <div className="whitespace-pre-wrap text-xs text-muted-foreground break-words" title={expectedDisplay}>
+            {expectedDisplay || <span className="text-muted-foreground/50">—</span>}
+          </div>
+        )}
+      </td>
+      {/* 优先级 */}
+      <td className="border border-border px-3 py-2 text-center align-middle">
+        {quickEditMode ? (
+          <PrioritySelect value={row.priority} onSave={(v) => saveField("priority", v)} />
+        ) : (
+          pmeta ? (
+            <span className={cn("inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset", pmeta.tone, pmeta.ring)}>
+              {pmeta.label}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          )
+        )}
+      </td>
+      {/* 最近状态 */}
+      <td className="border border-border px-3 py-2 text-center align-middle">
+        <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset", meta.tone, meta.ring)}>
+          <Icon className="h-3.5 w-3.5" />
+          {meta.label}
+        </span>
+      </td>
+      {/* 操作 */}
+      <td className="border border-border px-3 py-2 text-right align-middle">
+        <div className="inline-flex items-center gap-1">
+          {testMode ? (
+            <Button variant="outline" size="sm" onClick={onMark}>标记</Button>
+          ) : quickEditMode ? (
+            <>
+              <Button variant="outline" size="sm" onClick={onMark}>标记</Button>
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive hover:text-destructive" onClick={onDelete} title="删除用例">
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" onClick={onMark}>标记</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-7 w-7">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={onEdit}><Pencil className="mr-2 h-4 w-4" />编辑</DropdownMenuItem>
+                  <DropdownMenuItem onClick={onShowHistory}><History className="mr-2 h-4 w-4" />历史记录</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={onDelete} className="text-destructive focus:text-destructive">
+                    <Trash2 className="mr-2 h-4 w-4" />删除
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// ===== NameCell: single click → detail dialog, double-click → inline edit =====
+function NameCell({
+  name,
+  onOpenDetail,
+  onSave,
+  quickEditMode,
+}: {
+  name: string;
+  onOpenDetail: () => void;
+  onSave: (v: string) => Promise<void>;
+  quickEditMode: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  // 进入行内编辑态：用受控 InlineInput，初始即处于编辑模式
+  const [editValue, setEditValue] = useState(name);
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={editValue}
+        onChange={(e) => setEditValue(e.target.value)}
+        onBlur={async () => {
+          setEditing(false);
+          if (editValue !== name) await onSave(editValue);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLElement).blur();
+          if (e.key === "Escape") { setEditValue(name); setEditing(false); }
+        }}
+        className="w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none ring-1 ring-ring"
+      />
+    );
+  }
+
+  return (
+    <div
+      className="truncate text-sm font-medium hover:text-primary cursor-pointer"
+      onClick={() => {
+        // 快速编辑模式：单击用例名直接进入行内编辑，不弹详情框
+        if (quickEditMode) {
+          setEditValue(name);
+          setEditing(true);
+        } else {
+          onOpenDetail();
+        }
+      }}
+      title={quickEditMode ? "单击编辑" : `查看"${name}"详情`}
+    >
+      {name}
+    </div>
+  );
+}
+
+// ===== OrderedInlineInput: 有序列表行内编辑（双击编辑、回车自动加序号、失焦保存） =====
+// value 为纯文本（按行分隔、不含序号）；保存时同样回吐纯文本，序号只在显示/编辑时生成。
+function OrderedInlineInput({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (v: string) => Promise<void> | void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(""); // 编辑态文本（带序号）
+  const [saving, setSaving] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  const stripNumber = (l: string) => l.replace(/^\s*\d+[.、]\s*/, "").trim();
+
+  // 纯文本 → 带序号文本
+  const toNumbered = (plain: string) =>
+    plain
+      .split(/\r?\n/)
+      .map(stripNumber)
+      .filter(Boolean)
+      .map((l, i) => `${i + 1}. ${l}`)
+      .join("\n");
+
+  // 带序号文本 → 纯文本（去掉序号）
+  const toPlain = (numbered: string) =>
+    numbered.split(/\r?\n/).map(stripNumber).filter(Boolean).join("\n");
+
+  const plainLines = value.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const numberedDisplay = plainLines.map((l, i) => `${i + 1}. ${l}`).join("\n");
+
+  useEffect(() => {
+    if (editing && ref.current) {
+      ref.current.focus();
+      const len = ref.current.value.length;
+      ref.current.setSelectionRange(len, len);
+    }
+  }, [editing]);
+
+  const finish = async () => {
+    const plain = toPlain(draft);
+    setEditing(false);
+    if (plain !== value) {
+      setSaving(true);
+      try {
+        await onSave(plain);
+      } finally {
+        setSaving(false);
+      }
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Escape") {
+      setEditing(false);
+      return;
+    }
+    if (e.key === "Enter") {
+      // 回车：在末尾另起一行并自动带上下一个序号（Excel 体验）
+      e.preventDefault();
+      const lines = draft.split(/\r?\n/).filter((l) => l.trim().length > 0);
+      const next = lines.length + 1;
+      setDraft((lines.length ? lines.join("\n") + "\n" : "") + `${next}. `);
+    }
+  };
+
+  if (editing) {
+    return (
+      <textarea
+        ref={ref}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={finish}
+        onKeyDown={handleKeyDown}
+        rows={Math.max(2, draft.split(/\r?\n/).length)}
+        className={cn(
+          "w-full resize-none rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none ring-1 ring-ring",
+          saving && "opacity-50",
+        )}
+        disabled={saving}
+      />
+    );
+  }
+
+  return (
+    <div
+      // 负边距把可点击区域撑满整个单元格（含 td 的 px-3 py-2 内边距），
+      // 这样双击单元格任意位置都能进入编辑，而不只是文字那一行
+      className="-mx-3 -my-2 min-h-[2.5rem] cursor-pointer whitespace-pre-wrap px-3 py-2 text-xs hover:bg-accent/40"
+      onDoubleClick={() => {
+        setDraft(toNumbered(value) || "1. ");
+        setEditing(true);
+      }}
+      title="双击编辑"
+    >
+      {numberedDisplay || <span className="text-muted-foreground/50">—</span>}
+    </div>
+  );
+}
+
+// ===== PrioritySelect =====
+function PrioritySelect({
+  value,
+  onSave,
+}: {
+  value: number | null | undefined;
+  onSave: (v: string) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(String(value ?? ""));
+  const [saving, setSaving] = useState(false);
+
+  const handleBlur = async () => {
+    setEditing(false);
+    if (draft !== String(value ?? "")) {
+      setSaving(true);
+      try {
+        await onSave(draft);
+      } catch {
+        setDraft(String(value ?? ""));
+      } finally {
+        setSaving(false);
+      }
+    }
+  };
+
+  if (editing) {
+    return (
+      <select
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={handleBlur}
+        autoFocus
+        className={cn(
+          "w-16 rounded border border-input bg-background px-1 py-0.5 text-xs outline-none ring-1 ring-ring",
+          saving && "opacity-50",
+        )}
+        disabled={saving}
+      >
+        <option value="">—</option>
+        {[1, 2, 3, 4, 5].map((p) => {
+          const pm = PRIORITY_META[p];
+          return <option key={p} value={p} className={cn(pm.tone)}>P{p}</option>;
+        })}
+      </select>
+    );
+  }
+
+  const pm = value != null ? PRIORITY_META[value] : null;
+
+  return (
+    <div
+      className="inline-block cursor-pointer rounded px-0.5 hover:bg-accent/40"
+      onDoubleClick={() => { setDraft(String(value ?? "")); setEditing(true); }}
+    >
+      {pm ? (
+        <span className={cn("inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset", pm.tone, pm.ring)}>
+          {pm.label}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground">—</span>
+      )}
+    </div>
+  );
+}
+
+// ===== InsertRowBelow: "+" button between rows =====
+function InsertRowBelow({ onInsert, colSpan }: { onInsert: () => void; colSpan: number }) {
+  return (
+    <tr className="group/ins">
+      <td colSpan={colSpan} className="border-x border-border p-0">
+        <button
+          type="button"
+          onClick={onInsert}
+          className="flex w-full items-center justify-center gap-1 py-px text-[11px] text-transparent transition-colors hover:bg-primary/5 group-hover/ins:py-0.5 group-hover/ins:text-primary"
+          title="在此处插入一行"
+        >
+          <Plus className="h-3 w-3" />
+          插入
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// ===== NewCaseRow: empty row for creating new case (quick edit mode) =====
+function NewCaseRow({
+  moduleId,
+  onCreated,
+  onRemove,
+  onFirstInput,
+  isTrailing = false,
+}: {
+  moduleId: number;
+  onCreated: () => void;
+  onRemove: () => void;
+  onFirstInput?: () => void;
+  isTrailing?: boolean;
+}) {
+  // 三列预填一个 "1."，用户直接接着写即可（保存时会去掉序号前缀，避免显示叠加）
+  const [name, setName] = useState("");
+  const [preconditions, setPreconditions] = useState("1. ");
+  const [steps, setSteps] = useState("1. ");
+  const [expected, setExpected] = useState("1. ");
+  const [priority, setPriority] = useState("");
+  const [saving, setSaving] = useState(false);
+  const queryClient = useQueryClient();
+  const rowRef = useRef<HTMLTableRowElement>(null);
+  const spawnedRef = useRef(false);
+
+  // 是否已有“真内容”：用例名非空，或三列去掉默认 "1." 后还剩东西
+  const hasContent =
+    name.trim() !== "" ||
+    stripNumbering(preconditions).length > 0 ||
+    stripNumbering(steps).length > 0 ||
+    stripNumbering(expected).length > 0;
+
+  // 输入第一个字符 → 让父级在底部追加一行新的空快速输入（只触发一次）
+  const markInput = () => {
+    if (!spawnedRef.current) {
+      spawnedRef.current = true;
+      onFirstInput?.();
+    }
+  };
+
+  const handleSave = async () => {
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try {
+      await functionalCasesApi.create({
+        module_id: moduleId,
+        name: name.trim(),
+        functional_spec: {
+          preconditions: stripNumbering(preconditions),
+          steps: stripNumbering(steps),
+          expected: stripNumbering(expected).join("\n") || null,
+        },
+        priority: priority ? Number(priority) : null,
+      });
+      onCreated();
+      queryClient.invalidateQueries({ queryKey: ["functional_cases"] });
+      toast.success("用例已创建");
+    } catch (e) {
+      handleApiError(e);
+      setSaving(false);
+    }
+  };
+
+  // 焦点离开整行：有用例名 → 保存；空行且不是末行 → 关闭（移除）；末行留着继续录入
+  const handleRowBlur = () => {
+    setTimeout(() => {
+      if (!rowRef.current || rowRef.current.contains(document.activeElement) || saving) return;
+      if (name.trim()) {
+        void handleSave();
+      } else if (!isTrailing) {
+        onRemove();
+      }
+    }, 120);
+  };
+
+  const inputCls =
+    "w-full rounded border border-input bg-background px-1.5 py-0.5 text-xs outline-none ring-1 ring-ring";
+
+  return (
+    <tr ref={rowRef} onBlur={handleRowBlur} className="bg-muted/10">
+      <td className="border border-border px-3 py-2">
+        <input value={name} onChange={(e) => { setName(e.target.value); markInput(); }} placeholder="输入用例名" className={inputCls} disabled={saving} />
+      </td>
+      <td className="border border-border px-3 py-2">
+        <input value={preconditions} onChange={(e) => { setPreconditions(e.target.value); markInput(); }} placeholder="前置条件" className={inputCls} disabled={saving} />
+      </td>
+      <td className="border border-border px-3 py-2">
+        <input value={steps} onChange={(e) => { setSteps(e.target.value); markInput(); }} placeholder="操作步骤" className={inputCls} disabled={saving} />
+      </td>
+      <td className="border border-border px-3 py-2">
+        <input value={expected} onChange={(e) => { setExpected(e.target.value); markInput(); }} placeholder="预期结果" className={inputCls} disabled={saving} />
+      </td>
+      <td className="border border-border px-3 py-2 text-center align-middle">
+        <select value={priority} onChange={(e) => { setPriority(e.target.value); markInput(); }} className="w-14 rounded border border-input bg-background px-1 py-0.5 text-xs" disabled={saving}>
+          <option value="">—</option>
+          {[1, 2, 3, 4, 5].map((p) => (<option key={p} value={p}>P{p}</option>))}
+        </select>
+      </td>
+      <td className="border border-border px-3 py-2 text-center text-xs text-muted-foreground">—</td>
+      <td className="border border-border px-3 py-2 text-right align-middle">
+        {saving ? (
+          <Loader2 className="ml-auto h-4 w-4 animate-spin text-muted-foreground" />
+        ) : hasContent ? (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-destructive hover:text-destructive"
+            onClick={onRemove}
+            title="删除这一行"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
+// ===== CaseDetailDialog =====
+function CaseDetailDialog({
+  target,
+  onClose,
+  onMark,
+  onEdit,
+  onDelete,
+  onShowHistory,
+}: {
+  target: FunctionalCase | null;
+  onClose: () => void;
+  onMark: (c: FunctionalCase) => void;
+  onEdit: (c: FunctionalCase) => void;
+  onDelete: (c: FunctionalCase) => void;
+  onShowHistory: (c: FunctionalCase) => void;
+}) {
+  if (!target) return null;
+  const spec = target.functional_spec ?? { preconditions: [], steps: [], expected: null };
+  const status: FunctionalRunStatus = target.latest_run?.status ?? "pending";
   const meta = STATUS_META[status];
   const Icon = meta.icon;
 
   return (
-    <li
-      className={cn(
-        "flex items-start gap-3 px-4 py-3 transition-colors",
-        selected ? "bg-accent/40" : "hover:bg-accent/20",
-        row.skip && "opacity-60",
-      )}
-    >
-      {testMode ? (
-        <div className="pt-0.5">
-          <SelectToggle
-            checked={selected}
-            onChange={onToggleSelect}
-            ariaLabel={`选中用例 ${row.name}`}
-          />
-        </div>
-      ) : null}
-      <div className="min-w-0 flex-1 space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium">{row.name}</span>
-          {row.priority != null ? (
-            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-              P{row.priority}
+    <Dialog open={!!target} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {target.name}
+            {(() => {
+              const pm = target.priority != null ? PRIORITY_META[target.priority] : null;
+              return pm ? (
+                <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset", pm.tone, pm.ring)}>
+                  {pm.label}
+                </span>
+              ) : null;
+            })()}
+          </DialogTitle>
+          <DialogDescription>
+            最近状态：
+            <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset", meta.tone, meta.ring)}>
+              <Icon className="h-3 w-3" />{meta.label}
             </span>
-          ) : null}
-          {row.skip ? (
-            <span className="rounded border border-dashed px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
-              skip
-            </span>
-          ) : null}
-        </div>
-        {row.description ? (
-          <div className="line-clamp-1 text-xs text-muted-foreground">
-            {row.description}
-          </div>
-        ) : null}
-        {row.tags?.length ? (
-          <div className="flex flex-wrap gap-1">
-            {row.tags.map((t) => (
-              <span
-                key={t}
-                className="rounded bg-secondary px-1.5 py-0.5 text-[10px] text-secondary-foreground"
-              >
-                {t}
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </div>
-      <div className="w-32 shrink-0">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset",
-            meta.tone,
-            meta.ring,
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 max-h-[55vh] overflow-y-auto pr-1">
+          {spec.preconditions.length > 0 && (
+            <div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">前置条件</div>
+              <ul className="ml-4 list-disc text-sm">{spec.preconditions.map((p, i) => <li key={i}>{p}</li>)}</ul>
+            </div>
           )}
-        >
-          <Icon className="h-3.5 w-3.5" />
-          {meta.label}
-        </span>
-      </div>
-      <div className="w-44 shrink-0 text-xs text-muted-foreground">
-        {row.latest_run ? (
-          <>
-            <div>{formatTime(row.latest_run.executed_at)}</div>
-            {row.latest_run.operator ? (
-              <div className="truncate text-[11px]">
-                by {row.latest_run.operator}
-              </div>
-            ) : null}
-          </>
-        ) : (
-          "—"
-        )}
-      </div>
-      <div className="flex w-32 shrink-0 items-center justify-end gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onMark}
-          title="勾结果"
-        >
-          标记
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-7 w-7">
-              <MoreHorizontal className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={onEdit}>
-              <Pencil className="mr-2 h-4 w-4" />
-              编辑
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={onShowHistory}>
-              <History className="mr-2 h-4 w-4" />
-              历史记录
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              onClick={onDelete}
-              className="text-destructive focus:text-destructive"
-            >
-              <Trash2 className="mr-2 h-4 w-4" />
-              删除
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </li>
+          {spec.steps.length > 0 && (
+            <div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">操作步骤</div>
+              <ol className="ml-4 list-decimal text-sm">{spec.steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
+            </div>
+          )}
+          {spec.expected && (
+            <div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">预期结果</div>
+              <p className="text-sm">{spec.expected}</p>
+            </div>
+          )}
+          {spec.preconditions.length === 0 && spec.steps.length === 0 && !spec.expected && (
+            <p className="py-4 text-center text-sm text-muted-foreground">该用例尚未填写具体步骤</p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="outline" size="sm" onClick={() => onMark(target)}>标记</Button>
+          <Button variant="outline" size="sm" onClick={() => onEdit(target)}>编辑</Button>
+          <Button variant="outline" size="sm" onClick={() => onShowHistory(target)}>历史记录</Button>
+          <Button variant="destructive" size="sm" onClick={() => onDelete(target)}>删除</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
+}
+
+function handleApiError(err: unknown) {
+  const msg = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "操作失败";
+  toast.error(msg);
 }
 
 /**
@@ -1465,6 +2135,19 @@ function splitLines(text?: string): string[] {
     .filter(Boolean);
 }
 
+/** 去掉每行开头的序号前缀（"1. " / "1、"），把带序号的输入还原成纯文本入库，避免显示时序号叠加 */
+function stripNumbering(text?: string): string[] {
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((s) => s.replace(/^\s*\d+[.、]\s*/, "").trim())
+    .filter(Boolean);
+}
+
+function genTempId(): string {
+  return `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
 function splitTags(text?: string): string[] {
   if (!text) return [];
   return text
@@ -1774,87 +2457,98 @@ function HistoryDialog({
 }
 
 // ---------------------------------------------------------------------------
-// 批次概览对话框
+// 模块历史记录对话框 - 展示用例执行历史（按时间倒序）
 // ---------------------------------------------------------------------------
-function BatchesDialog({
-  projectId,
+function ModuleHistoryDialog({
+  moduleId,
   open,
   onClose,
 }: {
-  projectId: number;
+  moduleId: number | null;
   open: boolean;
   onClose: () => void;
 }) {
-  const batchesQuery = useQuery({
-    queryKey: queryKeys.functionalBatches(projectId),
-    queryFn: () => functionalCasesApi.batches(projectId, 30),
-    enabled: open,
-    staleTime: 0,
+  const historyQuery = useQuery({
+    queryKey: ["module-history", moduleId],
+    queryFn: async () => {
+      if (moduleId == null) return [];
+      const res = await functionalCasesApi.list({ moduleId: moduleId, pageSize: 200 });
+      const cases = res.items;
+      const runResults = await Promise.allSettled(
+        cases.map((c) => functionalCasesApi.runs(c.id, 5))
+      );
+      type Entry = FunctionalCaseRun & { caseName: string };
+      const all: Entry[] = [];
+      for (let i = 0; i < cases.length; i++) {
+        const r = runResults[i];
+        if (r.status === "fulfilled") {
+          for (const run of r.value) {
+            all.push({ ...run, caseName: cases[i].name });
+          }
+        }
+      }
+      all.sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime());
+      return all;
+    },
+    enabled: open && moduleId != null,
   });
 
-  const batches: FunctionalBatchSummary[] = batchesQuery.data ?? [];
+  const entries: Array<FunctionalCaseRun & { caseName: string }> = historyQuery.data ?? [];
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-4xl">
         <DialogHeader>
-          <DialogTitle>批次概览</DialogTitle>
+          <DialogTitle>执行历史记录</DialogTitle>
           <DialogDescription>
-            "测试模式"下批量勾的批次聚合，最近 30 个；单点勾不在内
+            模块内所有用例的执行记录，按时间倒序
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[60vh] overflow-y-auto">
-          {batchesQuery.isLoading ? (
+        <div className="max-h-[65vh] overflow-y-auto">
+          {historyQuery.isLoading ? (
             <Skeleton className="h-32 w-full" />
-          ) : batches.length === 0 ? (
+          ) : entries.length === 0 ? (
             <p className="py-6 text-center text-sm text-muted-foreground">
-              本项目还没有任何"测试模式"批次
+              该模块下还没有任何执行记录
             </p>
           ) : (
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-muted-foreground">
+            <table className="w-full text-sm border-collapse">
+              <thead className="bg-muted/40 text-xs text-muted-foreground">
                 <tr>
-                  <th className="px-2 py-2">批次</th>
-                  <th className="px-2 py-2">开始</th>
-                  <th className="px-2 py-2">结束</th>
-                  <th className="px-2 py-2 text-right">总数</th>
-                  <th className="px-2 py-2 text-right">通过</th>
-                  <th className="px-2 py-2 text-right">失败</th>
-                  <th className="px-2 py-2 text-right">阻塞</th>
-                  <th className="px-2 py-2 text-right">N.A.</th>
-                  <th className="px-2 py-2 text-right">通过率</th>
+                  <th className="border border-border px-2 py-2 text-left">时间</th>
+                  <th className="border border-border px-2 py-2 text-left">用例名</th>
+                  <th className="border border-border px-2 py-2 text-center">状态</th>
+                  <th className="border border-border px-2 py-2 text-left">操作人</th>
+                  <th className="border border-border px-2 py-2 text-left">批次</th>
                 </tr>
               </thead>
-              <tbody className="divide-y">
-                {batches.map((b) => (
-                  <tr key={b.batch_id}>
-                    <td className="px-2 py-2 font-mono text-xs">
-                      {b.batch_id.slice(0, 12)}…
-                    </td>
-                    <td className="px-2 py-2 text-xs text-muted-foreground">
-                      {formatTime(b.started_at)}
-                    </td>
-                    <td className="px-2 py-2 text-xs text-muted-foreground">
-                      {formatTime(b.finished_at)}
-                    </td>
-                    <td className="px-2 py-2 text-right">{b.total}</td>
-                    <td className="px-2 py-2 text-right text-emerald-700">
-                      {b.passed}
-                    </td>
-                    <td className="px-2 py-2 text-right text-red-700">
-                      {b.failed}
-                    </td>
-                    <td className="px-2 py-2 text-right text-amber-700">
-                      {b.blocked}
-                    </td>
-                    <td className="px-2 py-2 text-right text-slate-600">
-                      {b.na}
-                    </td>
-                    <td className="px-2 py-2 text-right font-medium">
-                      {Math.round(b.pass_rate * 100)}%
-                    </td>
-                  </tr>
-                ))}
+              <tbody>
+                {entries.map((e) => {
+                  const m = STATUS_META[e.status as FunctionalRunStatus];
+                  const Icon = m.icon;
+                  return (
+                    <tr key={e.id} className="hover:bg-accent/30">
+                      <td className="border border-border px-2 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                        {formatTime(e.executed_at)}
+                      </td>
+                      <td className="border border-border px-2 py-2 text-sm font-medium">
+                        {e.caseName}
+                      </td>
+                      <td className="border border-border px-2 py-2 text-center">
+                        <span className={cn("inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs ring-1 ring-inset", m.tone, m.ring)}>
+                          <Icon className="h-3 w-3" />
+                          {m.label}
+                        </span>
+                      </td>
+                      <td className="border border-border px-2 py-2 text-sm text-muted-foreground">
+                        {e.operator || "—"}
+                      </td>
+                      <td className="border border-border px-2 py-2 text-xs font-mono text-muted-foreground">
+                        {e.batch_id ? `${e.batch_id.slice(0, 12)}…` : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
@@ -2010,10 +2704,8 @@ function ErrorBox({ onRetry }: { onRetry: () => void }) {
 
 function EmptyHint({ text }: { text: string }) {
   return (
-    <Card>
-      <CardContent className="py-8 text-center text-sm text-muted-foreground">
-        {text}
-      </CardContent>
-    </Card>
+    <div className="py-8 text-center text-sm text-muted-foreground">
+      {text}
+    </div>
   );
 }

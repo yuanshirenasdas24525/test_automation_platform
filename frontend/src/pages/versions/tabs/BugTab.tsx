@@ -125,7 +125,7 @@ export function BugTab({
     enabled: !Number.isNaN(versionId),
   });
 
-  const allBugs: Task[] = query.data ?? [];
+  const allBugs = useMemo<Task[]>(() => query.data ?? [], [query.data]);
 
   const bugs = useMemo(() => {
     if (severityFilter === ANY) return allBugs;

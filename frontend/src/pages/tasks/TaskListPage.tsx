@@ -92,7 +92,7 @@ export function TaskListPage() {
     queryKey: ["users", { is_active: true }],
     queryFn: () => usersApi.list({ is_active: true }),
   });
-  const users = usersQuery.data ?? [];
+  const users = useMemo(() => usersQuery.data ?? [], [usersQuery.data]);
   const userById = useMemo(() => {
     const m = new Map<number, User>();
     users.forEach((u) => m.set(u.id, u));

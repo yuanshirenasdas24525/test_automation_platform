@@ -5,6 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { FunctionalCasesPage } from "./FunctionalCasesPage";
 import {
   Apple,
   ArrowLeft,
@@ -679,9 +680,9 @@ export function ProjectDetailPage() {
         </div>
       </div>
 
-      {/* functional Tab 引导 */}
+      {/* functional Tab：整页内嵌功能用例管理 */}
       {isFunctionalTab ? (
-        <FunctionalTabBanner projectId={projectId} />
+        <FunctionalCasesPage embedded />
       ) : (
         <>
         <div className="flex flex-wrap items-center gap-2">
@@ -881,7 +882,6 @@ export function ProjectDetailPage() {
         onConfirm={(deviceId) => {
           if (!devicePicker) return;
           // device_id 可能为 null（= 自动），后端 runs.py 只对非 null 的值强校验 idle
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
           const { target: _t, ...runArgs } = devicePicker;
           runTest.mutate({
             ...runArgs,
@@ -1031,40 +1031,6 @@ function StackTabs({
         );
       })}
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// functional Tab 占位横幅
-//
-// 功能用例（人工执行）的"步骤 / 期望 / 勾结果 / 测试模式 / 批量导入导出"链路
-// 走独立的 FunctionalCasesPage（路由 /projects/:id/functional），UX 跟自动化栈
-// 完全不同，硬塞回这页只会互相干扰。这里只在 functional Tab 下显示一个引导卡片。
-// ---------------------------------------------------------------------------
-function FunctionalTabBanner({ projectId }: { projectId: number }) {
-  const navigate = useNavigate();
-  return (
-    <Card>
-      <CardContent className="flex flex-col gap-2 py-4 text-sm">
-        <div className="flex items-center gap-2 font-medium">
-          <Info className="h-4 w-4 text-muted-foreground" />
-          功能用例由独立编辑器管理
-        </div>
-        <p className="text-muted-foreground">
-          功能用例（人工执行）的"步骤 / 期望 / 勾结果 / 测试模式 / 批量导入导出"
-          走独立的功能用例管理页，不在这里维护。当前页只展示模块树和当前栈的自动化用例。
-        </p>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => navigate(`/projects/${projectId}/functional`)}
-          >
-            进入功能用例管理
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -1791,7 +1757,7 @@ function MoveModuleDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, moving?.id]);
 
-  const nodes = pickerQuery.data ?? [];
+  const nodes = useMemo(() => pickerQuery.data ?? [], [pickerQuery.data]);
   // group by parent_id（null = 顶层）
   const childrenOf = useMemo(() => {
     const map = new Map<number | "root", typeof nodes>();

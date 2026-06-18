@@ -59,7 +59,7 @@ export function DevicePickerDialog(props: DevicePickerDialogProps) {
     refetchInterval: open ? 5000 : false,  // 开着的时候每 5s 刷一次，状态能跟上心跳探测
   });
 
-  const devices: Device[] = devicesQuery.data ?? [];
+  const devices = useMemo<Device[]>(() => devicesQuery.data ?? [], [devicesQuery.data]);
 
   const { idleList, nonIdleList } = useMemo(() => {
     const idle: Device[] = [];

@@ -55,7 +55,7 @@ const schema = z.object({
     .trim()
     .min(1, "请填写别名")
     .max(50, "别名 ≤ 50 字")
-    .regex(/^[A-Za-z0-9_.\-]+$/, "只允许字母/数字/._-"),
+    .regex(/^[A-Za-z0-9_.-]+$/, "只允许字母/数字/._-"),
   provider: z.string().min(1, "请选 provider"),
   model: z.string().trim().min(1, "model 必填").max(120),
   base_url: z.string().max(300).optional().or(z.literal("")),

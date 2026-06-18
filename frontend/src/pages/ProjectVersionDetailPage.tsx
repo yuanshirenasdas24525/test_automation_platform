@@ -72,7 +72,8 @@ export function ProjectVersionDetailPage() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["version", projectId, versionId] });
 
   const updateVersion = useMutation({
-    mutationFn: (payload: Record<string, unknown>) => versionsApi.update(projectId, versionId, payload as any),
+    mutationFn: (payload: Record<string, unknown>) =>
+      versionsApi.update(projectId, versionId, payload as unknown as Parameters<typeof versionsApi.update>[2]),
     onSuccess: () => invalidate(),
     onError: (e) => toast.error((e as ApiError).message),
   });
@@ -90,12 +91,12 @@ export function ProjectVersionDetailPage() {
   };
 
   const saveDocItem = (section: string, item: DocItem) => {
-    const existing = ((version as any)?.[section] as DocItem[]) ?? [];
+    const existing = ((version as unknown as Record<string, unknown>)?.[section] as DocItem[]) ?? [];
     const idx = existing.findIndex((x) => x.id === item.id);
     updateVersion.mutate({ [section]: idx >= 0 ? existing.map((x, i) => i === idx ? item : x) : [...existing, item] });
   };
   const deleteDocItem = (section: string, itemId: string) => {
-    const existing = ((version as any)?.[section] as DocItem[]) ?? [];
+    const existing = ((version as unknown as Record<string, unknown>)?.[section] as DocItem[]) ?? [];
     updateVersion.mutate({ [section]: existing.filter((x) => x.id !== itemId) });
   };
 
@@ -140,7 +141,7 @@ export function ProjectVersionDetailPage() {
         {/* 左侧：文档 + 提测记录 + 模块 */}
         <div className="space-y-4">
           {DOC_SECTIONS.map(({ key, label, icon: Icon, color }) => {
-            const items = ((version as any)[key] as DocItem[]) ?? [];
+            const items = ((version as unknown as Record<string, unknown>)[key] as DocItem[]) ?? [];
             return (
               <Card key={key}>
                 <CardContent className="py-3 space-y-2">

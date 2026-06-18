@@ -19,7 +19,7 @@ type Token = { text: string; className?: string };
 //   function:xxx(args?)            → 绿色（helper：随机时间、签名、转换等）
 //   sql:select ... (到行尾)        → 橙色（断言里的 sql: 前缀）
 const HIGHLIGHT_RE =
-  /(\$\{[^}\n]*\})|(\$(?:\.[A-Za-z0-9_\[\]]+|\[[^\]\n]*\])+)|(\bfunction:[A-Za-z_][\w.]*(?:\([^)\n]*\))?)|(\bsql:[^\n]*)/g;
+  /(\$\{[^}\n]*\})|(\$(?:\.[A-Za-z0-9_[\]]+|\[[^\]\n]*\])+)|(\bfunction:[A-Za-z_][\w.]*(?:\([^)\n]*\))?)|(\bsql:[^\n]*)/g;
 
 function tokenize(text: string): Token[] {
   if (!text) return [];

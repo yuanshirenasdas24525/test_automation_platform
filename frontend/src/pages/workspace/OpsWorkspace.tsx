@@ -44,7 +44,7 @@ export function OpsWorkspace() {
     queryFn: () => versionsApi.list(effectiveProjectId as number),
     enabled: effectiveProjectId !== undefined,
   });
-  const versions = versionsQuery.data ?? [];
+  const versions = useMemo(() => versionsQuery.data ?? [], [versionsQuery.data]);
 
   const upcomingReleases = useMemo(
     () =>

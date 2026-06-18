@@ -167,7 +167,7 @@ export function ProjectManagementPage() {
     modulesApi.reorder(items).then(() => invalidateModules()).catch((e) => toast.error((e as ApiError).message));
   };
 
-  const modules = modulesQuery.data ?? [];
+  const modules = useMemo(() => modulesQuery.data ?? [], [modulesQuery.data]);
   const roots = modules.filter((m) => !m.parent_id);
   const childrenByParent = new Map<number | null, ModulePickerNode[]>();
   for (const m of modules) {
@@ -179,7 +179,8 @@ export function ProjectManagementPage() {
   const toggleExpand = (mid: number) => {
     setExpandedModules((prev) => {
       const next = new Set(prev);
-      next.has(mid) ? next.delete(mid) : next.add(mid);
+      if (next.has(mid)) next.delete(mid);
+      else next.add(mid);
       return next;
     });
   };
@@ -277,7 +278,8 @@ export function ProjectManagementPage() {
   const toggleReqExpand = (rid: number) => {
     setReqExpanded((prev) => {
       const next = new Set(prev);
-      next.has(rid) ? next.delete(rid) : next.add(rid);
+      if (next.has(rid)) next.delete(rid);
+      else next.add(rid);
       return next;
     });
   };
@@ -683,7 +685,7 @@ function VersionCreateDialog({ open, projectId, moduleId, editingVersion, onClos
           version_name: versionName.trim(),
           display_name: displayName.trim() || undefined,
           status,
-        } as any);
+        } as Parameters<typeof versionsApi.update>[2]);
       }
       return versionsApi.create(projectId, {
         version_name: versionName.trim(),

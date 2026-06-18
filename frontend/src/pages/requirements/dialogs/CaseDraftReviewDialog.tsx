@@ -189,7 +189,7 @@ function BatchPanel({
     refetchInterval: run?.status === "running" || run?.status === "pending" ? 3000 : false,
   });
 
-  const drafts = draftsQuery.data ?? [];
+  const drafts = useMemo(() => draftsQuery.data ?? [], [draftsQuery.data]);
   const pendingDrafts = useMemo(
     () => drafts.filter((d) => d.status === "pending"),
     [drafts],

@@ -188,7 +188,7 @@ export function RequirementsPage() {
     onError: handleError,
   });
 
-  const items = listQuery.data ?? [];
+  const items = useMemo(() => listQuery.data ?? [], [listQuery.data]);
 
   // 优先级筛选放前端：树形结果里命中父级才显示；命中子级则保留整条父级链。
   const visibleRoots = useMemo(() => {
@@ -218,13 +218,11 @@ export function RequirementsPage() {
     });
   };
 
-  if (!Number.isFinite(projectId)) {
-    return <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>;
-  }
+  const modules = useMemo(() => modulesQuery.data ?? [], [modulesQuery.data]);
+  const versions = useMemo(() => versionsQuery.data ?? [], [versionsQuery.data]);
 
-  const modules = modulesQuery.data ?? [];
-  const versions = versionsQuery.data ?? [];
-
+  // 注意：以下两个 useMemo 必须放在任何 early return 之前，
+  // 否则 projectId 非法时会改变 Hook 调用顺序（rules-of-hooks）。
   const moduleNames = useMemo(() => {
     const m = new Map<number, string>();
     for (const mod of modules) m.set(mod.id, mod.name);
@@ -236,6 +234,10 @@ export function RequirementsPage() {
     for (const v of versions) m.set(v.id, v.display_name || v.version_name);
     return m;
   }, [versions]);
+
+  if (!Number.isFinite(projectId)) {
+    return <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>;
+  }
 
   return (
     <div className="space-y-4 p-6">
@@ -1243,13 +1245,11 @@ function AiParseDialog({
 
   const submitMutation = useMutation({
     mutationFn: () => {
-      const payload: any = {
+      const payload = {
         project_id: projectId,
         analysis_mode: analysisMode,
+        ...(inputMode === "text" ? { text: text.trim() } : {}),
       };
-      if (inputMode === "text") {
-        payload.text = text.trim();
-      }
       return aiApi.submitRequirementParse(payload);
     },
     onSuccess: (res) => {
@@ -1405,7 +1405,7 @@ function AiParseDialog({
               </Button>
               <Button
                 onClick={() => submitMutation.mutate()}
-                disabled={inputMode === "text" ? text.trim().length < 10 : false || submitMutation.isPending}
+                disabled={(inputMode === "text" ? text.trim().length < 10 : false) || submitMutation.isPending}
               >
                 {submitMutation.isPending ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -1495,7 +1495,13 @@ function AiRunProgress({
     | {
         summary?: string;
         created_count?: number;
-        requirements?: any[];
+        requirements?: {
+          title?: string;
+          description?: string;
+          priority?: number;
+          tags?: string[];
+          _confidence?: string;
+        }[];
         context_items_count?: number;
         matched_contexts_count?: number;
         analysis_notes?: { topic: string; note: string }[];
@@ -1563,7 +1569,7 @@ function AiRunProgress({
       {/* 需求列表 */}
       <div className="space-y-2">
         <div className="text-xs font-medium text-muted-foreground">生成的需求条目</div>
-        {requirements.map((r: any, i: number) => (
+        {requirements.map((r, i: number) => (
           <div key={i} className="rounded border bg-card p-2">
             <div className="flex items-center gap-2">
               {r._confidence === "high" ? (

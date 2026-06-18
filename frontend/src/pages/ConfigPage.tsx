@@ -147,7 +147,7 @@ export function ConfigPage() {
     setSearchParams(next, { replace: true });
   };
 
-  const items = configQuery.data ?? [];
+  const items = useMemo(() => configQuery.data ?? [], [configQuery.data]);
 
   // 按 group 聚合，展示更清晰
   const grouped = useMemo(() => {

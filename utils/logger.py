@@ -58,6 +58,16 @@ LOGGING_DIC = {
     }
 }
 
+# 确保日志目录存在
+try:
+    ProjectPaths.LOG_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    # Docker 环境无写权限时 fallback: 去掉 file 处理器
+    LOGGING_DIC['loggers']['']['handlers'] = ['console']
+    for key in list(LOGGING_DIC['handlers']):
+        if key.startswith('file_'):
+            del LOGGING_DIC['handlers'][key]
+
 logging.config.dictConfig(LOGGING_DIC)
 # 统一使用这一个实例即可，内部会自动分流
 LOGGER = logging.getLogger('API_PLATFORM')
