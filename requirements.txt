@@ -31,6 +31,9 @@ python-jose[cryptography]~=3.3.0
 bcrypt~=4.0.0
 pytesseract>=0.3.10
 Pillow>=10.0.0
+# 需求文档解析（AI 生成用例的 PDF/Word 输入）；server/services/doc_parser.py 用
+pypdf>=4.0.0
+python-docx>=1.1.0
 
 # ---- AI Studio M1：对话写需求 + AI 下发编码 ----
 # AES-256-GCM 加密 Git 凭证；utils/crypto.py 直接 import

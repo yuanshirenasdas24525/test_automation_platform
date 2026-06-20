@@ -10,14 +10,19 @@
 from __future__ import annotations
 
 import io
+import json
+import re
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from server.api.deps import DBDep
 from database.models import (
     ALL_CASE_TYPES,
+    CASE_TYPE_FUNCTIONAL,
     ALL_PROJECT_STACKS,
     Module,
     Project,
@@ -113,6 +118,128 @@ def get_project_info(project_id: int, db: DBDep):
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     return {"status": "success", "data": serialize_project_basic(project)}
+
+
+# ---------------------------------------------------------------------------
+# AI 项目概览（模块关联图谱）—— 给「按模块生成用例」提供跨模块关联依据
+# ---------------------------------------------------------------------------
+class AiOverviewGenRequest(BaseModel):
+    model_name: str
+
+
+def _overview_payload(project: "Project") -> dict:
+    return {
+        "overview": project.ai_overview,
+        "updated_at": project.ai_overview_updated_at.isoformat()
+        if project.ai_overview_updated_at
+        else None,
+    }
+
+
+def _build_modules_block(db, project_id: int) -> str:
+    """模块名 + 各自功能用例标题，喂给 AI 推断模块职责与关联。"""
+    modules = (
+        db.session.query(Module)
+        .filter(Module.project_id == project_id)
+        .limit(40)
+        .all()
+    )
+    lines = []
+    for m in modules:
+        titles = (
+            db.session.query(TestCase.name)
+            .filter(TestCase.module_id == m.id, TestCase.case_type == CASE_TYPE_FUNCTIONAL)
+            .limit(10)
+            .all()
+        )
+        t = "、".join(x[0] for x in titles) if titles else "（暂无用例）"
+        lines.append(f"- {m.name}：{t}")
+    return "\n".join(lines) if lines else "（项目下暂无模块）"
+
+
+def _parse_overview_obj(raw: str):
+    m = re.search(r"```json\s*(.+?)\s*```", raw, re.S)
+    for cand in ([m.group(1)] if m else []) + [raw]:
+        try:
+            obj = json.loads(cand)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+    s, e = raw.find("{"), raw.rfind("}")
+    if 0 <= s < e:
+        try:
+            obj = json.loads(raw[s : e + 1])
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+    return None
+
+
+@router.get("/{project_id}/ai_overview")
+def get_ai_overview(project_id: int, db: DBDep):
+    project = db.session.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    return {"status": "success", "data": _overview_payload(project)}
+
+
+@router.post("/{project_id}/ai_overview")
+def gen_ai_overview(project_id: int, payload: AiOverviewGenRequest, db: DBDep):
+    """让 AI 读取项目所有模块，产出 {summary, modules[], relations[]} 并持久化到项目。"""
+    from server.services.ai_model_service import get_ai_model
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    project = db.session.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="项目不存在")
+
+    cfg = get_ai_model(db.session, payload.model_name)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 未配置，请先到「配置中心 → AI 模型」添加")
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 未启用")
+
+    placeholders = {
+        "PROJECT_NAME": project.name,
+        "PROJECT_DESC": (project.description or "").strip() or "（无项目描述）",
+        "MODULES_BLOCK": _build_modules_block(db, project_id),
+    }
+    template = _load_prompt("project_overview")
+    prompt = _render_prompt(template, placeholders)
+
+    try:
+        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+
+    obj = _parse_overview_obj(raw)
+    if not isinstance(obj, dict):
+        raise HTTPException(status_code=502, detail="项目概览解析失败，请重试或更换模型")
+
+    # 规整
+    overview = {
+        "summary": str(obj.get("summary") or "").strip(),
+        "modules": [
+            {"name": str(x.get("name") or "").strip(), "purpose": str(x.get("purpose") or "").strip()}
+            for x in (obj.get("modules") or [])
+            if isinstance(x, dict) and str(x.get("name") or "").strip()
+        ],
+        "relations": [
+            {
+                "from": str(x.get("from") or "").strip(),
+                "to": str(x.get("to") or "").strip(),
+                "relation": str(x.get("relation") or "").strip(),
+            }
+            for x in (obj.get("relations") or [])
+            if isinstance(x, dict) and str(x.get("from") or "").strip() and str(x.get("to") or "").strip()
+        ],
+    }
+    project.ai_overview = overview
+    project.ai_overview_updated_at = datetime.utcnow()
+    db.session.add(project)
+    return {"status": "success", "data": _overview_payload(project)}
 
 
 # ---------------------------------------------------------------------------

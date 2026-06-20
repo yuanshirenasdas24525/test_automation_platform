@@ -6,6 +6,7 @@ import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FunctionalCasesPage } from "./FunctionalCasesPage";
+import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
 import {
   Apple,
   ArrowLeft,
@@ -680,9 +681,23 @@ export function ProjectDetailPage() {
         </div>
       </div>
 
-      {/* functional Tab：整页内嵌功能用例管理 */}
+      {/* functional Tab：项目概览面板 + 整页内嵌功能用例管理 */}
       {isFunctionalTab ? (
-        <FunctionalCasesPage embedded />
+        <>
+          <Card>
+            <CardContent className="p-4">
+              <details>
+                <summary className="cursor-pointer text-sm font-medium">
+                  项目概览 · 模块关联（AI 生成用例时据此设计跨模块联动用例）
+                </summary>
+                <div className="mt-3">
+                  <ProjectAiOverviewView projectId={projectId} />
+                </div>
+              </details>
+            </CardContent>
+          </Card>
+          <FunctionalCasesPage embedded />
+        </>
       ) : (
         <>
         <div className="flex flex-wrap items-center gap-2">
@@ -721,8 +736,9 @@ export function ProjectDetailPage() {
         </div>
       </>)}
 
-      {/* 主列表 */}
-      {contentQuery.isLoading ? (
+      {/* 主列表：functional Tab 已用内嵌的 FunctionalCasesPage 展示，这里不再渲染，
+          否则功能页下面会多出一块「模块/用例」列表卡片（名称/信息/操作）。 */}
+      {!isFunctionalTab && (contentQuery.isLoading ? (
         <ListSkeleton />
       ) : contentQuery.isError ? (
         <ErrorBox
@@ -791,7 +807,7 @@ export function ProjectDetailPage() {
           }}
           runningKey={runningId}
         />
-      )}
+      ))}
 
       {/* Dialogs */}
       <ModuleDialog

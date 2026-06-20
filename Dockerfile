@@ -39,9 +39,9 @@ RUN npm run build && ls -la dist/
 
 
 # -----------------------------------------------------------------------------
-# Stage 2: Python runtime（python 3.12 + Java 17 + Allure CLI）
+# Stage 2: Python runtime（python 3.13 + Java 17 + Allure CLI）
 # -----------------------------------------------------------------------------
-FROM python:3.12-bookworm AS runtime
+FROM python:3.13-bookworm AS runtime
 
 # Python 行为收紧：不缓存 .pyc、stdout 不缓冲、pip 不缓存
 # 时区默认上海；如果你的环境是 UTC，docker run 时用 -e TZ=UTC 覆盖

@@ -250,6 +250,63 @@ export interface FunctionalCaseRun {
   batch_id?: string | null;
 }
 
+/** 模块测试历史里的一条勾结果，带用例名（来自 /test_history）。 */
+export interface FunctionalTestHistoryRun extends FunctionalCaseRun {
+  case_name: string;
+}
+
+/** AI 生成的一条功能用例草稿（来自 /functional_cases/ai_generate_batch）。 */
+export interface AiGeneratedCase {
+  name: string;
+  preconditions: string[];
+  steps: string[];
+  expected: string[];
+  /** 与模块现有用例重名（后端标记），前端默认不勾、显示「已存在」。 */
+  duplicate?: boolean;
+}
+
+/** AI 规划出的一个测试点（来自 /functional_cases/ai_generate_outline）。 */
+export interface AiOutlinePoint {
+  title: string;
+  category: string;
+}
+
+/** AI 项目概览（模块关联图谱，存在项目上）。 */
+export interface ProjectAiOverview {
+  summary: string;
+  modules: { name: string; purpose: string }[];
+  relations: { from: string; to: string; relation: string }[];
+}
+
+/** /projects/{id}/ai_overview 的返回。 */
+export interface ProjectAiOverviewResp {
+  overview: ProjectAiOverview | null;
+  updated_at: string | null;
+}
+
+export type FunctionalEditAction = "create" | "update" | "delete";
+
+export interface FunctionalEditChange {
+  field: string;
+  old: string;
+  new: string;
+}
+
+/** 功能用例编辑历史（新建/修改/删除）一条记录（来自 /edit_history）。 */
+export interface FunctionalCaseEditRecord {
+  id: number;
+  case_id: number | null;
+  module_id: number | null;
+  case_name: string | null;
+  action: FunctionalEditAction;
+  changes: FunctionalEditChange[];
+  /** 快速编辑会话 id：同会话的多条改动聚合成一条编辑记录 */
+  session_id: string | null;
+  operator: string | null;
+  /** ISO 字符串 */
+  created_at: string;
+}
+
 export interface FunctionalCase {
   id: number;
   module_id: number;

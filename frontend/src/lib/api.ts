@@ -9,6 +9,8 @@ import type {
   AiCaseDraftStatus,
   AiCaseDraftUpdatePayload,
   AiFeature,
+  AiGeneratedCase,
+  AiOutlinePoint,
   AiModelConfig,
   AiModelConfigUpsert,
   AiModelTestResult,
@@ -32,16 +34,19 @@ import type {
   FunctionalBatchSummary,
   FunctionalCase,
   FunctionalCaseCreate,
+  FunctionalCaseEditRecord,
   FunctionalCaseRun,
   FunctionalCaseUpdate,
   FunctionalMarkPayload,
   FunctionalRunStatus,
+  FunctionalTestHistoryRun,
   LoginRequest,
   LoginResponse,
   Module,
   ModuleCreate,
   Project,
   ProjectCreate,
+  ProjectAiOverviewResp,
   ProjectStack,
   ProjectStackCounts,
   ProjectVersion,
@@ -195,6 +200,17 @@ export const projectsApi = {
    */
   stackCounts(id: number) {
     return request<ProjectStackCounts>(`/api/projects/${id}/stack_counts`);
+  },
+  /** 读取项目 AI 概览（模块关联图谱）。 */
+  getAiOverview(id: number) {
+    return request<ProjectAiOverviewResp>(`/api/projects/${id}/ai_overview`);
+  },
+  /** （重新）生成项目 AI 概览，持久化到项目。 */
+  genAiOverview(id: number, modelName: string) {
+    return request<ProjectAiOverviewResp>(`/api/projects/${id}/ai_overview`, {
+      method: "POST",
+      body: { model_name: modelName },
+    });
   },
 };
 
@@ -421,23 +437,26 @@ export interface FunctionalImportResult {
 }
 
 export const functionalCasesApi = {
-  /** 创建一条功能用例（写入 test_cases，case_type='functional'）。 */
-  create(body: FunctionalCaseCreate) {
-    return request<FunctionalCase>("/api/functional_cases", {
+  /** 创建一条功能用例（写入 test_cases，case_type='functional'）。sessionId=快速编辑会话 id。 */
+  create(body: FunctionalCaseCreate, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<FunctionalCase>(`/api/functional_cases${q}`, {
       method: "POST",
       body,
     });
   },
   /** 部分更新；后端用 exclude_unset 区分"没传 vs 传了 null"。 */
-  update(id: number, body: FunctionalCaseUpdate) {
-    return request<FunctionalCase>(`/api/functional_cases/${id}`, {
+  update(id: number, body: FunctionalCaseUpdate, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<FunctionalCase>(`/api/functional_cases/${id}${q}`, {
       method: "PUT",
       body,
     });
   },
   /** 删除（关联 FunctionalCaseRun 会随 cascade 一起删）。 */
-  remove(id: number) {
-    return request<void>(`/api/functional_cases/${id}`, { method: "DELETE" });
+  remove(id: number, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<void>(`/api/functional_cases/${id}${q}`, { method: "DELETE" });
   },
   /** 单条详情，含 latest_run。 */
   get(id: number) {
@@ -493,6 +512,55 @@ export const functionalCasesApi = {
   batches(projectId: number, limit: number = 20) {
     return request<FunctionalBatchSummary[]>(
       `/api/functional_cases/batches?project_id=${projectId}&limit=${limit}`,
+    );
+  },
+  /** 模块测试（勾结果）历史，带用例名（给"测试记录"按批次聚合）。 */
+  testHistory(moduleId: number, limit: number = 300) {
+    return request<FunctionalTestHistoryRun[]>(
+      `/api/functional_cases/test_history?module_id=${moduleId}&limit=${limit}`,
+    );
+  },
+  /** 模块编辑历史（新建/修改/删除）。 */
+  editHistory(moduleId: number, limit: number = 100) {
+    return request<FunctionalCaseEditRecord[]>(
+      `/api/functional_cases/edit_history?module_id=${moduleId}&limit=${limit}`,
+    );
+  },
+  /** AI 生成 第一步：文本 + 截图/原型图 + PDF/Word → 测试点大纲 + 需求摘要 digest。 */
+  aiGenerateOutline(body: {
+    module_id: number;
+    text: string;
+    model_name: string;
+    mode?: "functional" | "interface";
+    images?: File[];
+    docs?: File[];
+  }) {
+    const fd = new FormData();
+    fd.append("module_id", String(body.module_id));
+    fd.append("model_name", body.model_name);
+    fd.append("text", body.text);
+    fd.append("mode", body.mode ?? "functional");
+    (body.images ?? []).forEach((f) => fd.append("images", f));
+    (body.docs ?? []).forEach((f) => fd.append("docs", f));
+    return request<{
+      digest: string;
+      points: AiOutlinePoint[];
+      model: string;
+      image_strategy: string;
+    }>("/api/functional_cases/ai_generate_outline", { method: "POST", body: fd });
+  },
+  /** AI 生成 第二步：基于 digest + 本批测试点 + 已生成用例名 → 本批控件级详细用例。 */
+  aiGenerateBatch(body: {
+    module_id: number;
+    model_name: string;
+    digest: string;
+    points: AiOutlinePoint[];
+    done_names: string[];
+    mode?: "functional" | "interface";
+  }) {
+    return request<{ cases: AiGeneratedCase[]; model: string }>(
+      "/api/functional_cases/ai_generate_batch",
+      { method: "POST", body },
     );
   },
   /** Excel 导入功能用例。 */

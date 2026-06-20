@@ -89,4 +89,14 @@ class Project(Base):
     )
     # ---------------------------------------------------------------------
 
+    # -------------------- AI 项目概览（模块关联图谱） --------------------
+    # AI 生成的项目概览，结构：
+    #   {"summary": str,
+    #    "modules": [{"name": str, "purpose": str}],
+    #    "relations": [{"from": str, "to": str, "relation": str}]}
+    # 给「按模块生成用例」时提供跨模块关联依据；前端项目页/AI 弹窗可预览。
+    ai_overview = Column(JSONType, nullable=True)
+    ai_overview_updated_at = Column(DateTime, nullable=True)
+    # ---------------------------------------------------------------------
+
     modules = relationship("Module", back_populates="project", cascade="all, delete-orphan")

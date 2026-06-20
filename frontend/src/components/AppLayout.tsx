@@ -47,9 +47,11 @@ export function AppLayout() {
       <div className="flex h-screen bg-muted/30">
         <aside className="flex w-56 flex-col border-r bg-background">
           <div className="flex h-14 items-center gap-2 border-b px-4">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <PlayCircle className="h-5 w-5" />
-            </div>
+            <img
+              src="/brand-mark.svg"
+              alt=""
+              className="h-9 w-9 shrink-0 rounded-md"
+            />
             <div className="text-sm font-semibold leading-tight">
               自动化测试平台
               <div className="text-xs font-normal text-muted-foreground">v2 · React</div>

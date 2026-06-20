@@ -78,6 +78,13 @@ from .functional_case_run import (
     RUN_STATUS_PENDING,
     ALL_RUN_STATUSES,
 )
+from .functional_case_edit_history import (
+    FunctionalCaseEditHistory,
+    EDIT_ACTION_CREATE,
+    EDIT_ACTION_UPDATE,
+    EDIT_ACTION_DELETE,
+    ALL_EDIT_ACTIONS,
+)
 from .test_step import (
     TestStep,
     # 步骤类型常量，方便业务代码直接引用
@@ -385,6 +392,9 @@ __all__ = [
     # Functional run status constants
     "RUN_STATUS_PASSED", "RUN_STATUS_FAILED", "RUN_STATUS_BLOCKED",
     "RUN_STATUS_NA", "RUN_STATUS_PENDING", "ALL_RUN_STATUSES",
+    "FunctionalCaseEditHistory",
+    "EDIT_ACTION_CREATE", "EDIT_ACTION_UPDATE", "EDIT_ACTION_DELETE",
+    "ALL_EDIT_ACTIONS",
     # Step type constants
     "STEP_TYPE_HTTP_REQUEST", "STEP_TYPE_SQL_QUERY", "STEP_TYPE_SCRIPT",
     "STEP_TYPE_APP_LAUNCH", "STEP_TYPE_APP_CLOSE",
