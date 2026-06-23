@@ -64,7 +64,19 @@ async def run_test(req: RunTestRequest, db: DBDep):
     # （database/migrations/data_migrations/v2_cases_to_steps.py）。
     cat = cat_lower
     try:
-        cases_to_run = get_cases_v2_from_db(params, db.session)
+        if req.case_ids:
+            cases_to_run = []
+            seen_ids: set[int] = set()
+            for case_id in req.case_ids:
+                if case_id in seen_ids:
+                    continue
+                seen_ids.add(case_id)
+                cases_to_run.extend(get_cases_v2_from_db(
+                    {**params, "module": None, "case": case_id},
+                    db.session,
+                ))
+        else:
+            cases_to_run = get_cases_v2_from_db(params, db.session)
     except Exception as exc:
         # Loader 自己的异常按 400 吐：上游多半是参数错（project/module/case 不存在等）
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -81,7 +93,7 @@ async def run_test(req: RunTestRequest, db: DBDep):
         ct = raw or ""
         if ct == CASE_TYPE_FUNCTIONAL:
             return False
-        if not allowed or req.case is not None:
+        if not allowed or req.case is not None or bool(req.case_ids):
             return ct in AUTOMATED_CASE_TYPES
         return ct in allowed
     cases_to_run = [c for c in cases_to_run if _is_runnable(c)]

@@ -41,12 +41,17 @@ import pydantic
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func
+from sqlalchemy.orm import selectinload
 
 from server.api.deps import DBDep
 from server.api.auth import _get_optional_user
 from database.models import (
     ALL_RUN_STATUSES,
+    CASE_TYPE_API,
     CASE_TYPE_FUNCTIONAL,
+    ConfigStore,
+    EditOperationEvent,
+    TestStepReport,
     EDIT_ACTION_CREATE,
     EDIT_ACTION_DELETE,
     EDIT_ACTION_UPDATE,
@@ -56,6 +61,14 @@ from database.models import (
     Project,
     TestCase,
     User,
+)
+from database.models.edit_operation import ENTITY_TYPE_TEST_CASE
+from server.services.edit_history_service import (
+    record_test_case_create,
+    record_test_case_delete,
+    record_test_case_update,
+    serialize_test_case_event,
+    snapshot_test_case,
 )
 
 # 可选当前用户：带了有效 token 就解出 User，否则 None（不强制登录，记录 operator 用）
@@ -90,6 +103,16 @@ def _record_edit(
             changes=changes or None,
             session_id=session_id,
         )
+    )
+
+
+def _load_case_for_history(db, case_id: int) -> TestCase | None:
+    """加载用于生成可回滚快照的功能用例。"""
+    return (
+        db.session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.id == case_id)
+        .first()
     )
 
 
@@ -309,6 +332,17 @@ def _summarize_postman(data: dict) -> str:
     return "\n".join(lines[:400])
 
 
+def _api_text_from_obj(data) -> str:
+    """已解析的 OpenAPI/Postman/任意结构 → 人读接口清单文本。"""
+    if not isinstance(data, dict):
+        return json.dumps(data, ensure_ascii=False)[:8000] if data is not None else ""
+    if "openapi" in data or "swagger" in data or "paths" in data:
+        return _summarize_openapi(data)
+    if "item" in data:
+        return _summarize_postman(data)
+    return json.dumps(data, ensure_ascii=False)[:8000]
+
+
 def _parse_api_spec(path: str, ext: str) -> str:
     """接口文件（OpenAPI/Swagger/Postman/任意 json·yaml）→ 喂给 AI 的接口清单文本。"""
     try:
@@ -326,14 +360,66 @@ def _parse_api_spec(path: str, ext: str) -> str:
                 return f.read()[:8000]
         except Exception as e:  # noqa: BLE001
             return f"（接口文件解析失败：{e}）"
+    return _api_text_from_obj(data)
 
-    if not isinstance(data, dict):
-        return str(data)[:8000]
-    if "openapi" in data or "swagger" in data or "paths" in data:
-        return _summarize_openapi(data)
-    if "item" in data:
-        return _summarize_postman(data)
-    return json.dumps(data, ensure_ascii=False)[:8000]
+
+def _html_to_text(html: str) -> str:
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    html = re.sub(r"(?s)<[^>]+>", " ", html)
+    return re.sub(r"\s+", " ", html).strip()
+
+
+def _discover_spec_url(html: str, base: str) -> Optional[str]:
+    """从 Swagger UI / 文档 HTML 里找规范文件地址（json/yaml 或 *api-docs*）。"""
+    from urllib.parse import urljoin
+
+    m = re.search(r'url:\s*["\']([^"\']+\.(?:json|yaml|yml)[^"\']*)["\']', html)
+    if m:
+        return urljoin(base, m.group(1))
+    m = re.search(r'["\'](/?[^"\']*(?:api-docs|openapi|swagger)[^"\']*\.(?:json|yaml|yml)[^"\']*)["\']', html)
+    if m:
+        return urljoin(base, m.group(1))
+    m = re.search(r'["\'](/?[^"\']*(?:v\d+/api-docs|api-docs|openapi)[^"\']*)["\']', html)
+    if m:
+        return urljoin(base, m.group(1))
+    return None
+
+
+def _fetch_doc_url(url: str, _depth: int = 0) -> str:
+    """拉取接口文档链接 → 接口清单/正文文字。支持规范文件直链、Swagger UI、普通文档页。"""
+    import requests  # 已在 requirements
+
+    url = (url or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return f"（不是合法链接：{url}）"
+    try:
+        resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+    except Exception as e:  # noqa: BLE001
+        return f"（链接拉取失败：{e}）"
+
+    ctype = (resp.headers.get("content-type") or "").lower()
+    text = resp.text or ""
+    bare = url.lower().split("?", 1)[0]
+
+    if "json" in ctype or text.lstrip().startswith(("{", "[")):
+        try:
+            return _api_text_from_obj(json.loads(text))
+        except Exception:
+            pass
+    if "yaml" in ctype or bare.endswith((".yaml", ".yml")):
+        try:
+            import yaml
+
+            return _api_text_from_obj(yaml.safe_load(text))
+        except Exception:
+            pass
+    # HTML：先找规范地址，找到就拉它（最多再下钻一层）
+    if _depth < 1:
+        spec_url = _discover_spec_url(text, url)
+        if spec_url and spec_url != url:
+            return _fetch_doc_url(spec_url, _depth + 1)
+    return _html_to_text(text)[:8000]
 
 
 def _extract_json_list(raw: str):
@@ -464,10 +550,37 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[\s\-_:：、，,。.（）()【】\[\]]+", "", str(s or "")).lower()
 
 
+_VAR_POOL_DESC = {"my_account": "默认账号", "my_password": "默认密码", "mobile": "默认手机号"}
+
+
+def _variable_pool_block(db, project_id: int) -> str:
+    """读项目 default_parameters 变量池（项目专属覆盖全局），喂给 AI 让接口用例优先用 ${变量}。"""
+    rows = (
+        db.session.query(ConfigStore)
+        .filter(
+            ConfigStore.config_group == "default_parameters",
+            (ConfigStore.project_id == project_id) | (ConfigStore.project_id.is_(None)),
+        )
+        .all()
+    )
+    seen: dict[str, ConfigStore] = {}
+    for r in sorted(rows, key=lambda x: 0 if x.project_id is None else 1):
+        if r.config_key:
+            seen[r.config_key] = r
+    if not seen:
+        return ""
+    lines = []
+    for key in seen:
+        desc = _VAR_POOL_DESC.get(key, "")
+        lines.append(f"- ${{{key}}}{('：' + desc) if desc else ''}")
+    return "\n".join(lines)
+
+
 def _existing_case_names(db, module_id: int, limit: int = 300) -> list[str]:
     rows = (
         db.session.query(TestCase.name)
         .filter(TestCase.module_id == module_id, TestCase.case_type == CASE_TYPE_FUNCTIONAL)
+        .order_by(TestCase.sort_order)
         .limit(limit)
         .all()
     )
@@ -485,13 +598,34 @@ def _shape_cases(parsed) -> list[dict]:
         name = str(it.get("name") or "").strip()
         if not name:
             continue
-        out.append({
+        # 把测试点类别拼进用例名：【参数校验】缺少 username 返回 422
+        cat = str(it.get("category") or "").strip()
+        if cat and not name.startswith("【"):
+            name = f"【{cat}】{name}"
+        item = {
             "name": name[:200],
             "preconditions": [str(x).strip() for x in (it.get("preconditions") or []) if str(x).strip()],
             "steps": [str(x).strip() for x in (it.get("steps") or []) if str(x).strip()],
             "expected": [str(x).strip() for x in (it.get("expected") or []) if str(x).strip()],
-        })
+            "after": str(it.get("after") or "").strip(),
+        }
+        # 接口模式的结构化字段（功能模式不会出现，透传给前端映射到 api 用例字段）
+        for key in ("method", "path", "headers", "body", "extract", "assertion", "sql"):
+            if key in it and it[key] not in (None, "", [], {}):
+                item[key] = it[key]
+        out.append(item)
     return out
+
+
+_COVERAGE_TEXT = {
+    "standard": "标准覆盖：主流程 + 主要的异常/边界/权限场景即可，控制数量、别太碎。",
+    "full": "全面覆盖：按下方维度清单，对每个功能点/每个参数逐项系统出点，适用维度都要覆盖，不要只写主流程。",
+    "exhaustive": "穷尽覆盖：把每个输入字段/参数的每个维度都拆成独立测试点（等价类的每个无效类、每个边界值、每种格式错误都单列），并覆盖组合场景。宁可几十上百条，越细越好。",
+}
+
+
+def _coverage_text(c: str) -> str:
+    return _COVERAGE_TEXT.get((c or "standard").strip().lower(), _COVERAGE_TEXT["standard"])
 
 
 def _resolve_model(db, model_name: str):
@@ -512,6 +646,8 @@ def ai_generate_outline(
     model_name: str = Form(...),
     text: str = Form(""),
     mode: str = Form("functional"),
+    coverage: str = Form("standard"),
+    doc_urls: str = Form(""),
     images: list[UploadFile] = File(default=[]),
     docs: list[UploadFile] = File(default=[]),
 ):
@@ -541,6 +677,14 @@ def ai_generate_outline(
         if (text or "").strip():
             parts.append((text or "").strip())
         parts.extend(text_chunks)
+        # 接口文档链接：逐个拉取解析
+        for u in re.split(r"[\s,，;；]+", doc_urls or ""):
+            u = u.strip()
+            if not u:
+                continue
+            fetched = _fetch_doc_url(u)
+            if fetched:
+                parts.append(f"## 接口文档（链接）：{u}\n{fetched}")
         if use_vision and image_paths:
             parts.append(f"（另附 {len(image_paths)} 张界面/原型截图，请结合图片内容规划测试点）")
         requirement_text = "\n\n".join(parts) or "（未提供需求文本，请基于模块名与下方跨模块信息合理推断）"
@@ -552,6 +696,8 @@ def ai_generate_outline(
             "REQUIREMENT_TEXT": requirement_text,
             "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
             "EXISTING_CASES": existing_block,
+            "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if mode == "interface" else "",
+            "COVERAGE_LEVEL": _coverage_text(coverage),
         }
         template = _load_prompt(
             "interface_case_outline" if mode == "interface" else "functional_case_outline"
@@ -610,6 +756,69 @@ class BatchPoint(pydantic.BaseModel):
     category: str = ""
 
 
+class OutlineGapRequest(pydantic.BaseModel):
+    module_id: int
+    model_name: str
+    mode: str = "functional"
+    digest: str = ""
+    points: list[BatchPoint] = []
+
+
+@router.post("/ai_outline_gaps")
+def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
+    """查漏补缺：给已有大纲找遗漏的测试点，返回补充点（已去重已有点/已有用例）。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    cfg = _resolve_model(db, payload.model_name)
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    existing_points = (
+        "\n".join(f"- [{p.category or '未分类'}] {p.title}" for p in payload.points)
+        if payload.points
+        else "（暂无）"
+    )
+    existing = _existing_case_names(db, payload.module_id)
+    placeholders = {
+        "DIGEST": payload.digest.strip() or "（无摘要，请按已规划测试点合理推断）",
+        "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
+        "EXISTING_POINTS": existing_points,
+        "EXISTING_CASES": "、".join(existing) if existing else "（无）",
+    }
+    template = _load_prompt("outline_gaps")
+    prompt = _render_prompt(template, placeholders)
+    try:
+        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+
+    obj = None
+    m = re.search(r"```json\s*(.+?)\s*```", raw, re.S)
+    for cand in ([m.group(1)] if m else []) + [raw]:
+        try:
+            obj = json.loads(cand)
+            break
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        s, e = raw.find("{"), raw.rfind("}")
+        if 0 <= s < e:
+            try:
+                obj = json.loads(raw[s : e + 1])
+            except Exception:
+                obj = None
+    have = {_norm_name(p.title) for p in payload.points} | {_norm_name(n) for n in existing}
+    points = []
+    for p in (obj or {}).get("points") or []:
+        if isinstance(p, dict):
+            title = str(p.get("title") or "").strip()
+            if title and _norm_name(title) not in have:
+                have.add(_norm_name(title))
+                points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
+    return {"status": "success", "data": {"points": points}}
+
+
 class AiBatchRequest(pydantic.BaseModel):
     module_id: int
     model_name: str
@@ -641,6 +850,12 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
     # 喂给模型的「不要重复」清单：模块现有用例 + 本次已生成（截断防 prompt 过长）
     avoid = (existing[:200] + session_done)[-300:]
     done_names = "、".join(avoid) if avoid else "（暂无，这是第一批）"
+    # 现有用例的有序清单（供 AI 决定每条新用例插在谁后面）
+    existing_ordered = (
+        "\n".join(f"{i + 1}. {n}" for i, n in enumerate(existing[:200]))
+        if existing
+        else "（本模块暂无已有用例，新用例按本批顺序排列即可）"
+    )
 
     placeholders = {
         "MODULE_NAME": module.name,
@@ -648,6 +863,8 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
         "BATCH_POINTS": batch_points,
         "DONE_NAMES": done_names,
+        "EXISTING_ORDERED": existing_ordered,
+        "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if payload.mode == "interface" else "",
     }
     template = _load_prompt(
         "interface_case_batch" if payload.mode == "interface" else "functional_case_batch"
@@ -676,6 +893,197 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         c["duplicate"] = key in existing_norm
         cases.append(c)
     return {"status": "success", "data": {"cases": cases, "model": payload.model_name}}
+
+
+class DiagnoseRunRequest(pydantic.BaseModel):
+    case_id: int
+    model_name: str
+
+
+@router.post("/ai_diagnose_run")
+def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
+    """分析一条接口用例最近一次执行结果：分类(用例问题/接口问题/环境其他)+原因+建议，
+    用例问题给出修正后的 extract/assertion 供「一键修复」。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    cfg = _resolve_model(db, payload.model_name)
+    case = db.session.query(TestCase).filter(TestCase.id == payload.case_id).first()
+    if case is None:
+        raise HTTPException(status_code=404, detail="用例不存在")
+    if case.case_type != CASE_TYPE_API:
+        raise HTTPException(status_code=400, detail="只支持分析接口(API)用例")
+
+    latest = (
+        db.session.query(TestStepReport.report_id)
+        .filter(TestStepReport.case_id == payload.case_id)
+        .order_by(TestStepReport.report_id.desc())
+        .first()
+    )
+    if not latest:
+        raise HTTPException(status_code=400, detail="该用例还没有执行记录，请先运行一次再分析")
+    rows = (
+        db.session.query(TestStepReport)
+        .filter(TestStepReport.case_id == payload.case_id, TestStepReport.report_id == latest[0])
+        .order_by(TestStepReport.id)
+        .all()
+    )
+    run_result = [
+        {
+            "step_name": r.step_name,
+            "request": (r.input_data or "")[:2000],
+            "status_code": r.status_code,
+            "response": (r.output_data or "")[:3000],
+            "assertion_results": (r.assertion_results or "")[:1500],
+            "extract_values": (r.extract_values or "")[:800],
+            "error_message": (r.error_message or "")[:1500],
+            "status": r.status,
+        }
+        for r in rows
+    ]
+    case_def = {
+        "name": case.name,
+        "method": case.method,
+        "path": case.path,
+        "params": case.params,
+        "extract_data": case.extract_data,
+        "assertion": case.assertion,
+    }
+    placeholders = {
+        "CASE_DEF": json.dumps(case_def, ensure_ascii=False)[:4000],
+        "RUN_RESULT": json.dumps(run_result, ensure_ascii=False)[:9000],
+    }
+    template = _load_prompt("api_run_diagnose")
+    prompt = _render_prompt(template, placeholders)
+    try:
+        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+
+    obj = None
+    m = re.search(r"```json\s*(.+?)\s*```", raw, re.S)
+    for cand in ([m.group(1)] if m else []) + [raw]:
+        try:
+            obj = json.loads(cand)
+            break
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        s, e = raw.find("{"), raw.rfind("}")
+        if 0 <= s < e:
+            try:
+                obj = json.loads(raw[s : e + 1])
+            except Exception:
+                obj = None
+    if not isinstance(obj, dict):
+        raise HTTPException(status_code=502, detail="分析结果解析失败，请重试")
+    fix = obj.get("fix") if isinstance(obj.get("fix"), dict) else {}
+    return {
+        "status": "success",
+        "data": {
+            "classification": str(obj.get("classification") or "").strip(),
+            "reason": str(obj.get("reason") or "").strip(),
+            "suggestion": str(obj.get("suggestion") or "").strip(),
+            "fix": {
+                "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
+                "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
+            },
+        },
+    }
+
+
+class ReportDiagnoseRequest(pydantic.BaseModel):
+    report_id: int
+    model_name: str
+
+
+@router.post("/ai_diagnose_report")
+def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
+    """对一份测试报告里所有接口用例的执行结果做全面分析（分块调 AI），逐条返回分类+发现+修正。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    cfg = _resolve_model(db, payload.model_name)
+    rows = (
+        db.session.query(TestStepReport)
+        .filter(TestStepReport.report_id == payload.report_id)
+        .order_by(TestStepReport.case_id, TestStepReport.id)
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status_code=400, detail="该报告没有执行记录")
+
+    by_case: dict[int, list] = {}
+    for r in rows:
+        if r.case_id is None:
+            continue
+        by_case.setdefault(r.case_id, []).append(r)
+
+    case_map = {
+        c.id: c
+        for c in db.session.query(TestCase).filter(TestCase.id.in_(list(by_case.keys()))).all()
+    }
+
+    items_in = []
+    for cid, rs in by_case.items():
+        c = case_map.get(cid)
+        if c is None:
+            continue
+        items_in.append({
+            "case_id": cid,
+            "name": c.name,
+            "def": {
+                "method": c.method,
+                "path": c.path,
+                "params": c.params,
+                "extract_data": c.extract_data,
+                "assertion": c.assertion,
+            },
+            "result": [
+                {
+                    "request": (r.input_data or "")[:1200],
+                    "status_code": r.status_code,
+                    "response": (r.output_data or "")[:1800],
+                    "assertion_results": (r.assertion_results or "")[:800],
+                    "extract_values": (r.extract_values or "")[:500],
+                    "error_message": (r.error_message or "")[:800],
+                    "status": r.status,
+                }
+                for r in rs
+            ],
+        })
+
+    out = []
+    template = _load_prompt("api_report_diagnose")
+    chunk_size = 6
+    for i in range(0, len(items_in), chunk_size):
+        chunk = items_in[i : i + chunk_size]
+        prompt = _render_prompt(template, {"CASES": json.dumps(chunk, ensure_ascii=False)[:14000]})
+        try:
+            raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=240)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+        parsed = _extract_json_list(raw)
+        if isinstance(parsed, list):
+            for x in parsed:
+                if not isinstance(x, dict):
+                    continue
+                fix = x.get("fix") if isinstance(x.get("fix"), dict) else {}
+                try:
+                    _cid = int(x.get("case_id"))
+                except Exception:
+                    _cid = None
+                out.append({
+                    "case_id": _cid,
+                    "module_id": case_map[_cid].module_id if _cid in case_map else None,
+                    "name": str(x.get("name") or "").strip(),
+                    "classification": str(x.get("classification") or "").strip(),
+                    "findings": [str(f).strip() for f in (x.get("findings") or []) if str(f).strip()],
+                    "fix": {
+                        "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
+                        "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
+                    },
+                })
+
+    return {"status": "success", "data": {"items": out, "total": len(items_in)}}
 
 
 @router.post("")
@@ -724,6 +1132,14 @@ def create_functional_case(
     db.session.add(new_case)
     db.session.flush()
     db.session.refresh(new_case)
+    hist_case = _load_case_for_history(db, new_case.id)
+    if hist_case is not None:
+        record_test_case_create(
+            db.session,
+            hist_case,
+            operator_id=user.id if user else None,
+            summary=f"新增功能用例：{hist_case.name}",
+        )
     _record_edit(
         db,
         case_id=new_case.id,
@@ -746,6 +1162,8 @@ def update_functional_case(
 ):
     """部分更新。Pydantic 字段为 None 视为"用户没碰它"，保留旧值。"""
     case = _get_functional_case_or_404(db, case_id)
+    hist_case = _load_case_for_history(db, case_id)
+    before_snapshot = snapshot_test_case(hist_case) if hist_case is not None else {}
 
     data = payload.model_dump(exclude_unset=True)
     if "functional_spec" in data and data["functional_spec"] is not None:
@@ -782,6 +1200,19 @@ def update_functional_case(
 
     db.session.flush()
     db.session.refresh(case)
+    hist_case = _load_case_for_history(db, case_id)
+    if hist_case is not None:
+        record_test_case_update(
+            db.session,
+            hist_case,
+            before_snapshot=before_snapshot,
+            field_changes=[
+                {"field": ch["field"], "label": ch.get("field", ""), "old": ch["old"], "new": ch["new"]}
+                for ch in changes
+            ],
+            operator_id=user.id if user else None,
+            summary=f"修改功能用例：{hist_case.name}",
+        )
     if changes:
         _record_edit(
             db,
@@ -811,6 +1242,7 @@ def delete_functional_case(
     历史勾结果会一起被删掉（如果要保留审计就改 cascade 策略）。
     编辑历史用 ON DELETE SET NULL，删除后仍保留（靠 module_id/case_name 快照查询）。"""
     case = _get_functional_case_or_404(db, case_id)
+    hist_case = _load_case_for_history(db, case_id)
     _record_edit(
         db,
         case_id=case.id,
@@ -820,9 +1252,21 @@ def delete_functional_case(
         operator=_operator_name(user),
         session_id=session_id,
     )
+    event = None
+    if hist_case is not None:
+        event = record_test_case_delete(
+            db.session,
+            hist_case,
+            operator_id=user.id if user else None,
+            summary=f"删除功能用例：{hist_case.name}",
+        )
     db.session.flush()  # 确保历史行先落库拿到 case_id，再删 case 触发 SET NULL
     db.session.delete(case)
-    return {"status": "success", "message": "用例已删除"}
+    return {
+        "status": "success",
+        "message": "用例已删除",
+        "data": {"batch_id": event.batch_id if event is not None else None},
+    }
 
 
 @router.get("/batches")
@@ -949,7 +1393,28 @@ def list_edit_history(
         .limit(limit)
         .all()
     )
-    return {"status": "success", "data": [r.to_dict() for r in rows]}
+    case_ids = [
+        case_id for (case_id,) in db.session.query(TestCase.id).filter(
+            TestCase.module_id == module_id,
+            TestCase.case_type == CASE_TYPE_FUNCTIONAL,
+        ).all()
+    ]
+    event_rows = []
+    if case_ids:
+        event_rows = (
+            db.session.query(EditOperationEvent)
+            .filter(
+                EditOperationEvent.entity_type == ENTITY_TYPE_TEST_CASE,
+                EditOperationEvent.entity_id.in_(case_ids),
+            )
+            .order_by(EditOperationEvent.created_at.desc(), EditOperationEvent.id.desc())
+            .limit(limit)
+            .all()
+        )
+    data = [serialize_test_case_event(row) for row in event_rows]
+    data.extend(r.to_dict() for r in rows)
+    data.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return {"status": "success", "data": data[:limit]}
 
 
 @router.get("/test_history")

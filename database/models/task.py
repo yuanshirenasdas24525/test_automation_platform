@@ -99,7 +99,11 @@ class Task(Base):
     created_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     # bug 来源用例
-    related_case_id = Column(Integer, ForeignKey("test_cases.id"), nullable=True)
+    related_case_id = Column(
+        Integer,
+        ForeignKey("test_cases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # 重现步骤、环境快照、截图等
     task_metadata = Column("metadata", JSONType, nullable=True)

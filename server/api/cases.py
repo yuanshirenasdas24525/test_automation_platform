@@ -20,17 +20,76 @@ v2 新增（2026-04）：
 """
 from __future__ import annotations
 
-from typing import Any
+import json
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException
+import pydantic
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import selectinload
 
+from server.api.auth import _get_optional_user
 from server.api.deps import DBDep
-from database.models import TestCase, TestCaseCreate
+from database.models import ApiCaseEditHistory, Task, TestCase, TestCaseCreate, User
+from server.services.edit_history_service import (
+    record_test_case_create,
+    record_test_case_delete,
+    record_test_case_update,
+    rollback_test_case_events,
+    snapshot_test_case,
+)
 from database.models.test_step import ALL_STEP_TYPES, TestStep
 
 router = APIRouter(prefix="/test_cases", tags=["test_cases"])
+OptionalUserDep = Annotated[User | None, Depends(_get_optional_user)]
+
+
+def _operator_name(user: User | None) -> str | None:
+    if user is None:
+        return None
+    return getattr(user, "username", None) or getattr(user, "name", None)
+
+
+def _record_api_edit(
+    db,
+    case: TestCase,
+    action: str,
+    operator: str | None,
+    *,
+    changes: list[dict] | None = None,
+    session_id: str | None = None,
+) -> None:
+    """仅记录 API 用例编辑审计；其它自动化栈暂不混入本页面记录。"""
+    if (case.case_type or "api") != "api":
+        return
+    db.session.add(ApiCaseEditHistory(
+        case_id=case.id,
+        module_id=case.module_id,
+        case_name=case.name,
+        action=action,
+        changes=changes or [],
+        session_id=session_id,
+        operator=operator,
+    ))
+
+
+def _load_case_for_history(db, case_id: int) -> TestCase | None:
+    """加载用于生成可回滚快照的用例。"""
+    return (
+        db.session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.id == case_id)
+        .first()
+    )
+
+
+class TestCaseRollbackPayload(pydantic.BaseModel):
+    mode: str = "full"
+    event_ids: list[int] | None = None
+    fields: dict[str, list[str]] | None = None
+    operator_id: int | None = None
+    reason: str | None = None
+    force: bool = False
 
 
 # ---------- 请求体里的 steps → test_steps 行 ----------
@@ -83,6 +142,55 @@ def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
         ))
 
 
+def _v1_extract_to_step(raw) -> list[dict]:
+    """v1 提取参数 {"token": "$.data.token"} → step.extract [{name,from,jsonpath}]。"""
+    if not raw:
+        return []
+    obj = raw
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return []
+    out: list[dict] = []
+    if isinstance(obj, dict):
+        for name, jp in obj.items():
+            if str(name).strip() and str(jp).strip():
+                out.append({"name": str(name), "from": "response.body", "jsonpath": str(jp)})
+    return out
+
+
+def _v1_assertion_to_step(raw) -> list[dict]:
+    """v1 断言 {"$.code": 0, "status_code": 200} → step.assertion [{type,target,expected}]。
+    target 以 $ 开头视为 jsonpath；status_code 用 equal；其余按 equal。"""
+    if not raw:
+        return []
+    obj = raw
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return []
+    _NOT_NULL = {"not_empty", "not_null", "非空", "@notnull", "@notempty", "notnull", "notempty"}
+    _IS_NULL = {"is_null", "null", "为空", "空", "@null"}
+    out: list[dict] = []
+    if isinstance(obj, dict):
+        for target, expected in obj.items():
+            t = str(target).strip()
+            if not t:
+                continue
+            ev = expected.strip().lower() if isinstance(expected, str) else expected
+            if isinstance(expected, str) and ev in _NOT_NULL:
+                # token / id 这类每次都变的值：断言「非空」（引擎类型名是 is_not_null）
+                out.append({"type": "is_not_null", "target": t, "expected": None})
+            elif isinstance(expected, str) and ev in _IS_NULL:
+                out.append({"type": "is_null", "target": t, "expected": None})
+            else:
+                atype = "jsonpath" if t.startswith("$") else "equal"
+                out.append({"type": atype, "target": t, "expected": expected})
+    return out
+
+
 def _synthesize_http_step_from_v1_fields(payload: dict) -> dict | None:
     """从 v1 风格字段（method/path/headers/...）合成一条 http_request step。
 
@@ -112,10 +220,10 @@ def _synthesize_http_step_from_v1_fields(payload: dict) -> dict | None:
             "file_path": payload.get("file_path"),
             "sql_query": payload.get("sql_query"),
         },
-        # extract_data / assertion 是 v1 自由文本格式，先不转 —— 用户后续
-        # 在 step editor 里能手工补结构化的 extract / assertion
-        "extract": [],
-        "assertion": [],
+        # v1 的 extract_data / assertion（JSON）转成结构化 extract / assertion，
+        # 这样 AI 生成或用户手填的提取/断言才会真正进入执行链路。
+        "extract": _v1_extract_to_step(payload.get("extract_data")),
+        "assertion": _v1_assertion_to_step(payload.get("assertion")),
         "wait_before": int(payload.get("wait_time") or 0),
         "timeout": 60,
         "retry": 0,
@@ -154,7 +262,12 @@ def _infer_case_type(payload: dict) -> str:
 
 
 @router.post("")
-def create_case(case: TestCaseCreate, db: DBDep):
+def create_case(
+    case: TestCaseCreate,
+    db: DBDep,
+    user: OptionalUserDep = None,
+    session_id: str | None = Query(None, description="快速编辑会话 id"),
+):
     """
     创建用例。
     - 指定 sort_order：把同模块里 >= 该位置的用例整体后移一位，新用例插进去；
@@ -204,12 +317,38 @@ def create_case(case: TestCaseCreate, db: DBDep):
 
     _replace_case_steps(db, new_case.id, steps)
     db.session.flush()
+    new_case = _load_case_for_history(db, new_case.id)
+    if new_case is not None:
+        record_test_case_create(
+            db.session,
+            new_case,
+            operator_id=user.id if user else None,
+            summary=f"新增 API 用例：{new_case.name}" if (new_case.case_type or "api") == "api" else None,
+        )
+    _record_api_edit(
+        db,
+        new_case,
+        "create",
+        _operator_name(user),
+        changes=[
+            {"field": key, "old": "", "new": "" if value is None else str(value)}
+            for key, value in payload.items()
+            if key not in {"module_id", "sort_order"} and value not in (None, "", [], {})
+        ],
+        session_id=session_id,
+    )
 
     return {"status": "success", "data": _serialize_case(new_case, include_steps=True, db=db)}
 
 
 @router.put("/{case_id}")
-def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
+def update_case(
+    case_id: int,
+    case: TestCaseCreate,
+    db: DBDep,
+    user: OptionalUserDep = None,
+    session_id: str | None = Query(None, description="快速编辑会话 id"),
+):
     """按主键更新用例。允许改 module_id。payload 带 steps 就整体重写。
 
     历史坑（2026-04 修）：以前 `case.model_dump()` 把所有 Optional 字段都倒
@@ -221,9 +360,10 @@ def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
     传过来的字段，没传的字段保留 DB 原值。前端要显式清空某个字段时，要明确
     传 null（pydantic 会把 None 也算 set）。
     """
-    db_case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
+    db_case = _load_case_for_history(db, case_id)
     if not db_case:
         raise HTTPException(status_code=404, detail="用例不存在")
+    before_snapshot = snapshot_test_case(db_case)
 
     # 关键：exclude_unset → 没传的字段不进 payload，避免 setattr None 把 DB 清空
     payload = case.model_dump(exclude_unset=True)
@@ -235,7 +375,15 @@ def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
     # sort_order 不通过这条接口改 —— 想换顺序走 /api/reorder
     payload.pop("sort_order", None)
 
+    changes: list[dict] = []
     for key, value in payload.items():
+        old_value = getattr(db_case, key)
+        if old_value != value:
+            changes.append({
+                "field": key,
+                "old": "" if old_value is None else str(old_value),
+                "new": "" if value is None else str(value),
+            })
         setattr(db_case, key, value)
 
     # steps 处理：
@@ -250,7 +398,8 @@ def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
         and any(
             field in case.model_fields_set
             for field in ("method", "path", "headers", "data_type",
-                          "params", "file_path", "sql_query", "wait_time")
+                          "params", "file_path", "sql_query", "wait_time",
+                          "extract_data", "assertion")
         )
     ):
         # 用 db_case 当前的最新字段重建唯一的 http_request step
@@ -264,22 +413,101 @@ def update_case(case_id: int, case: TestCaseCreate, db: DBDep):
             "file_path": db_case.file_path,
             "sql_query": db_case.sql_query,
             "wait_time": db_case.wait_time,
+            "extract_data": db_case.extract_data,
+            "assertion": db_case.assertion,
         }
         synthesized = _synthesize_http_step_from_v1_fields(merged)
         if synthesized:
             _replace_case_steps(db, case_id, [synthesized])
 
     db.session.flush()
+    db_case = _load_case_for_history(db, case_id)
+    if db_case is not None:
+        record_test_case_update(
+            db.session,
+            db_case,
+            before_snapshot=before_snapshot,
+            field_changes=[
+                {"field": ch["field"], "label": ch.get("field", ""), "old": ch["old"], "new": ch["new"]}
+                for ch in changes
+            ],
+            operator_id=user.id if user else None,
+            summary=f"修改用例：{db_case.name}",
+        )
+    if changes:
+        _record_api_edit(
+            db,
+            db_case,
+            "update",
+            _operator_name(user),
+            changes=changes,
+            session_id=session_id,
+        )
     return {"status": "success", "message": "修改成功"}
 
 
 @router.delete("/{case_id}")
-def delete_case(case_id: int, db: DBDep):
-    db_case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
+def delete_case(
+    case_id: int,
+    db: DBDep,
+    user: OptionalUserDep = None,
+    session_id: str | None = Query(None, description="快速编辑会话 id"),
+):
+    db_case = _load_case_for_history(db, case_id)
     if not db_case:
         raise HTTPException(status_code=404, detail="用例不存在")
+
+    # Bug/任务属于研发过程记录，删用例时不能连带丢失；仅解除来源用例关联。
+    # 兼容尚未执行 ON DELETE SET NULL 迁移的数据库，路由层也显式更新一次。
+    db.session.query(Task).filter(Task.related_case_id == case_id).update(
+        {Task.related_case_id: None},
+        synchronize_session=False,
+    )
+    _record_api_edit(
+        db,
+        db_case,
+        "delete",
+        _operator_name(user),
+        session_id=session_id,
+    )
+    event = record_test_case_delete(
+        db.session,
+        db_case,
+        operator_id=user.id if user else None,
+        summary=f"删除用例：{db_case.name}",
+    )
+    db.session.flush()
     db.session.delete(db_case)
-    return {"status": "success", "message": "删除成功"}
+    # 删除必须在返回成功前真正执行。否则约束错误会发生在 DBDep 的收尾 commit，
+    # 客户端却已经收到 200 和“删除成功”。
+    db.session.flush()
+    return {"status": "success", "message": "删除成功", "data": {"batch_id": event.batch_id}}
+
+
+@router.post("/edit-history/batches/{batch_id}/rollback")
+def rollback_test_case_history(batch_id: int, payload: TestCaseRollbackPayload, db: DBDep):
+    """回滚用例编辑历史：支持整次、单条、字段级。"""
+    fields_by_event: dict[int, list[str]] = {}
+    for key, value in (payload.fields or {}).items():
+        fields_by_event[int(key)] = value
+    event_ids = payload.event_ids
+    if payload.mode == "fields":
+        event_ids = [int(k) for k in fields_by_event]
+    try:
+        result = rollback_test_case_events(
+            db.session,
+            batch_id=batch_id,
+            event_ids=event_ids,
+            fields_by_event=fields_by_event,
+            operator_id=payload.operator_id,
+            reason=payload.reason,
+            force=payload.force,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if result.get("conflicts"):
+        raise HTTPException(status_code=409, detail=result)
+    return {"status": "success", "data": result}
 
 
 @router.get("/{case_id}")

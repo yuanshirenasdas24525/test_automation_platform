@@ -2,8 +2,7 @@
 """把一条 step 的详细信息塞进 Allure 报告。
 
 老 dispatcher 跑 step 时，Allure 报告里只能看到 pytest 默认拼出来的"测试方法名"
-那一层；step 里的 `step_name / action / target / input_data / output_data /
-extracted / 截图` 全都丢掉了。这个模块负责：
+那一层；step 里的 `step_name / action / target / 截图` 全都丢掉了。这个模块负责：
 
   - 提供 `with allure_step(name)` 上下文（allure 没装时就 no-op，方便单测）；
   - `attach_step_details(result)` 把 StepResult 里的关键字段以合适的 attachment
@@ -17,11 +16,10 @@ extracted / 截图` 全都丢掉了。这个模块负责：
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import time
-from typing import Any, Iterator
+from typing import Iterator
 
 # 不要在模块顶部直接 import allure —— 离线单测环境可能没装。
 # 全部走 lazy import + 异常吞掉。
@@ -61,26 +59,6 @@ def _attach_text(name: str, content: str) -> None:
         logger.debug("allure.attach text 失败（忽略）：%s", exc)
 
 
-def _attach_json(name: str, payload: Any) -> None:
-    """payload 不是 str 就 json.dumps；任何序列化失败兜底成 repr。"""
-    allure = _try_import_allure()
-    if allure is None or payload is None:
-        return
-    try:
-        if isinstance(payload, (dict, list, tuple)):
-            body = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-        elif isinstance(payload, (str, bytes)):
-            body = payload if isinstance(payload, str) else payload.decode("utf-8", "replace")
-            # 字符串包成 JSON 字符串看起来更整齐，但如果是已序列化 JSON 就直接贴
-            if not (body.startswith("{") or body.startswith("[")):
-                body = json.dumps({"value": body}, ensure_ascii=False, indent=2)
-        else:
-            body = json.dumps({"repr": repr(payload)}, ensure_ascii=False, indent=2)
-        allure.attach(body, name, allure.attachment_type.JSON)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("allure.attach json 失败（忽略）：%s", exc)
-
-
 def _attach_image_file(name: str, path: str) -> None:
     allure = _try_import_allure()
     if allure is None or not path or not os.path.isfile(path):
@@ -109,14 +87,6 @@ def attach_step_details(result) -> None:
         summary_lines.append(f"duration: {result.duration_ms} ms")
     if summary_lines:
         _attach_text("step_summary", "\n".join(summary_lines))
-
-    # 输入 / 输出 / extract：能 JSON 化就 JSON 化
-    if result.input_data not in (None, "", {}, []):
-        _attach_json("input_data", result.input_data)
-    if result.output_data not in (None, "", {}, []):
-        _attach_json("output_data", result.output_data)
-    if result.extracted:
-        _attach_json("extracted_vars", result.extracted)
 
     # 错误：失败 / 异常都把 message + traceback 挂上去
     if result.error_message:

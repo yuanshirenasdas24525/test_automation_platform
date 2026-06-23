@@ -35,6 +35,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PriorityBadge } from "@/components/badges/PriorityBadge";
 import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBadge";
+import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
 import { cn } from "@/lib/utils";
 import { ApiError, type ModulePickerNode, modulesApi, versionsApi, requirementsApi } from "@/lib/api";
 import type { ProjectVersion, Requirement, VersionStatus } from "@/types/domain";
@@ -342,13 +343,14 @@ export function ProjectManagementPage() {
             <TabsList>
               <TabsTrigger value="pool"><Inbox className="h-4 w-4 mr-1" />需求池</TabsTrigger>
               <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
+              <TabsTrigger value="overview"><Sparkles className="h-4 w-4 mr-1" />项目概览</TabsTrigger>
               <TabsTrigger value="config"><Settings className="h-4 w-4 mr-1" />项目配置</TabsTrigger>
             </TabsList>
             {activeTab === "pool" ? (
-              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/requirements`)}>
+              <Button size="sm" onClick={() => navigate(`/projects/${projectId}/requirements`)}>
                 进入需求管理
               </Button>
-            ) : (
+            ) : activeTab === "versions" ? (
               <div className="flex items-center gap-2">
                 <Select value={versionFilterStatus} onValueChange={setVersionFilterStatus}>
                   <SelectTrigger className="h-8 w-24 text-xs">
@@ -370,7 +372,7 @@ export function ProjectManagementPage() {
                   onChange={(e) => setVersionFilterDates((p) => ({ ...p, end: e.target.value }))} placeholder="结束" />
                 <Button size="sm" onClick={() => setCreatingVersion(true)}><Plus className="h-4 w-4" />新建</Button>
               </div>
-            )}
+            ) : null}
           </div>
 
           {/* ---- 需求池 ---- */}
@@ -453,6 +455,11 @@ export function ProjectManagementPage() {
           )}
           {activeTab === "config" && (
             <ProjectConfigTab projectId={projectId} />
+          )}
+          {activeTab === "overview" && (
+            <div className="flex-1 overflow-y-auto p-6">
+              <ProjectAiOverviewView projectId={projectId} />
+            </div>
           )}
         </Tabs>
       </div>

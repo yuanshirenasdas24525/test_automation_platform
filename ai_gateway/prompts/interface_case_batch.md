@@ -12,39 +12,53 @@
 # 已经生成过 / 已存在的用例名（务必不要与这些重复）
 {{DONE_NAMES}}
 
+# 本模块现有用例（按当前执行顺序编号，用于决定每条新用例插在哪里）
+{{EXISTING_ORDERED}}
+
+# 可用变量池（这些变量已在配置中心 default_parameters 里有值，执行时 ${变量名} 会被替换；为空则无）
+{{VARIABLE_POOL}}
+
 # 硬性要求
 
 1. **只覆盖上面列出的本批测试点**，一个测试点通常对应 1 条用例。
-2. **操作步骤要写清一次完整的接口请求**，让人照着就能发：
-   - 请求方法与路径，如 `发送 POST /api/login`
-   - 请求头，如 `Header: Content-Type: application/json`、`Header: Authorization: Bearer <有效token>`（鉴权用例写明 token 状态）
-   - 请求参数 / Body，如 `Body: {"username": "admin", "password": "Test#123"}`（给具体值；异常用例给触发异常的具体值，如缺字段、错类型、超长）
-   - 有依赖的先写前置请求，如 `先调用 POST /api/login 获取 token`
-3. **预期结果具体、可验证**，按条列出：
-   - 响应状态码，如 `状态码 200`
-   - 关键响应字段，如 `响应体含 token 字段且非空`、`role = admin`
-   - 异常用例写明错误码/错误信息，如 `状态码 400`、`msg = "password 不能为空"`
-4. **前置条件**：列出必要前置（如「已存在 admin 账号」「服务已启动」「已获取有效 token」），无则空数组。
-5. **连贯性**：method/path/字段名与接口摘要、已生成用例保持一致；**绝不重复**「已生成/已存在用例名」；有依赖的接口在前置或步骤里写明。
-6. `steps` / `expected` / `preconditions` 都是字符串数组，每个元素一条，**不要自己加序号前缀**（前端会自动编号）。
+1.1. **用例名（name）要简短**，只写测试意图，**不要加方法和路径前缀**（写「创建订单成功并入库」而不是「POST /api/orders 创建订单成功并入库」）。方法和路径放进 steps 里。
+2. **结构化接口字段（必须输出，这些才是可执行用例的核心）**：
+   - `method`：请求方法，如 "POST"。
+   - `path`：请求路径，如 "/api/orders"；可引用变量，如 "/api/orders/${orderId}"。
+   - `headers`：请求头对象，如 {"Content-Type": "application/json", "Authorization": "Bearer ${token}"}；无则 {}。
+   - `body`：请求体对象（JSON），如 {"productId": 1001, "qty": 2}；异常用例给触发异常的值（缺字段/错类型/超长）；无 body 用 {}。
+2.0. **测试数据：优先用变量池，其余写具体值（重要）**：
+   - 如果某个测试数据在**上面的「可用变量池」里有对应变量**，就**直接用 `${变量名}`**（如登录用 `{"username": "${my_account}", "password": "${my_password}"}`、手机号用 `${mobile}`）——执行时会替换成真实值。
+   - 变量池里**没有**对应的字段（如 productId、qty 等），**写具体值**（如 `{"productId": 1001}`）。
+   - **绝不能凭空造变量池里没有的变量**（如随手写个 `${foo}`）——`${变量}` 执行时从变量池/提取结果取值，找不到来源就解析不了、请求发错。
+   - 运行时才有的值（token、新建数据的 id）走 `extract` 提取，再用 `${token}`/`${orderId}` 引用。
+3. **提取参数 `extract`**（对象 {变量名: JSONPath}）：本接口响应里、后续用例要用到的值写在这里。JSONPath 用 `$.` 开头，如 `{"token": "$.data.token"}`、`{"orderId": "$.data.orderId"}`；无则 {}。登录类用例**务必**提取 token。
+4. **断言 `assertion`**（对象 {JSONPath: 期望值}）：**每条用例都必须有断言，不允许空**。至少断言响应状态/业务码（如 `{"$.code": 0}` 或 `{"status_code": 200}`），正常用例再补关键字段（如 `{"$.code": 0, "$.data.role": "admin"}`）；异常用例断言错误码/信息（如 `{"$.code": 400, "$.msg": "password 不能为空"}`）。target 以 `$.` 开头表示取响应体字段，`status_code` 表示 HTTP 状态码。
+5. **SQL 校验 `sql`**（字符串）：接口会改库的（写/改/删/状态流转）**必须**写 SELECT 去库里查数据校验，多条用 `;` 分隔，可引用 `${变量}`，表名/字段按接口语义推断。例：`"SELECT status FROM orders WHERE id = ${orderId}; SELECT qty FROM orders WHERE id = ${orderId}"`。删除类查 `COUNT(*)` 期望 0。不涉及库改动写 ""。
+6. **变量贯通（重要）**：有前置依赖（如先登录拿 token、先建数据拿 id）时——依赖请求在它自己用例的 `extract` 里声明变量，后续用例才能在 `headers`/`body`/`path`/`sql` 里用 `${变量}` 引用。**每个被引用的 `${变量}`，都必须能在前面某条用例的 `extract` 里找到同名定义**；找不到来源的就别用变量、直接写具体值。批量按顺序执行，所以保证「登录用例」排在需要 token 的用例之前。
+7. **描述字段**：`preconditions`/`steps`/`expected` 仍各给字符串数组供人阅读（steps 简述请求、expected 简述校验点），不要加序号前缀。核心仍是上面的结构化字段。
+8. **name 简短**，不带方法/路径前缀。
+8.1. **category**：原样照抄该测试点的类别（正常/响应校验/参数校验/边界/鉴权/越权/其它），**只填类别词本身，不要自己往 name 里加**——系统会自动把它拼成「【类别】用例名」。
+9. **after**（插入位置）：= 现有某条用例的完整名称（原样照抄）排其后；最前写 `"__START__"`；末尾写 `""`。
 
 # 输出格式（严格 JSON，只输出一个 ```json``` 代码块，不要任何额外文字）
 
 ```json
 [
   {
-    "name": "POST /api/login 合法账号密码登录成功返回 token",
-    "preconditions": ["已存在 admin 账号，密码 Test#123", "服务已启动"],
-    "steps": [
-      "发送 POST /api/login",
-      "Header: Content-Type: application/json",
-      "Body: {\"username\": \"admin\", \"password\": \"Test#123\"}"
-    ],
-    "expected": [
-      "状态码 200",
-      "响应体含 token 字段且非空",
-      "响应体 role = admin"
-    ]
+    "name": "创建订单成功并入库",
+    "category": "正常",
+    "after": "",
+    "method": "POST",
+    "path": "/api/orders",
+    "headers": {"Content-Type": "application/json", "Authorization": "Bearer ${token}"},
+    "body": {"productId": 1001, "qty": 2},
+    "extract": {"orderId": "$.data.orderId"},
+    "assertion": {"$.code": 0},
+    "sql": "SELECT status FROM orders WHERE id = ${orderId}; SELECT qty FROM orders WHERE id = ${orderId}",
+    "preconditions": ["已先登录并提取 ${token}", "服务与数据库已启动"],
+    "steps": ["POST /api/orders 带 ${token} 下单", "提取 orderId", "查库校验订单状态与数量"],
+    "expected": ["响应 code=0、orderId 非空", "orders 表中该订单状态正确、qty=2"]
   }
 ]
 ```

@@ -5,11 +5,13 @@ Allure 报告工具集
 提供了一系列便捷函数用于增强 Allure 测试报告的可读性和信息量。
 包括添加测试步骤、附件、标题、描述等功能。
 """
+from __future__ import annotations
+
+import json
+from typing import Any, Optional
 
 import allure
-import json
 import pytest
-from typing import Any, Optional
 
 
 def set_allure_project(project: str) -> None:
@@ -64,19 +66,24 @@ def set_allure_link(url: str) -> None:
     """设置 Allure 展示测试用例链接"""
     allure.dynamic.link(url)
 
-def add_allure_step(step_name: str, content: Optional[Any] = None) -> None:
+def add_allure_step(
+    step_name: str,
+    content: Optional[Any] = None,
+    attachment_name: str | None = None,
+) -> None:
     """
     添加带附件的 Allure 测试步骤
 
     Args:
         step_name: 步骤名称
         content: 要附加的内容 (可选)，如果提供会以 JSON 格式附加
+        attachment_name: 附件显示名，默认与步骤名一致
     """
     with allure.step(step_name):
         if content is not None:
             allure.attach(
                 json.dumps(content, ensure_ascii=False, indent=4),
-                step_name,
+                attachment_name or step_name,
                 allure.attachment_type.JSON
             )
 

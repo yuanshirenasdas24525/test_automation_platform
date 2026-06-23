@@ -63,6 +63,7 @@ import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
 import {
   aiModelsApi,
   ApiError,
+  casesApi,
   contentApi,
   functionalCasesApi,
   modulesApi,
@@ -575,8 +576,25 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
       ctx?.snapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
       handleError(err);
     },
-    onSuccess: () => {
-      toast.success("用例已删除");
+    onSuccess: (data) => {
+      if (data.batch_id) {
+        toast.success("用例已删除", {
+          action: {
+            label: "撤销",
+            onClick: async () => {
+              try {
+                await casesApi.rollbackHistory(data.batch_id!, { mode: "full" });
+                toast.success("已恢复");
+                invalidateAll();
+              } catch (e) {
+                handleError(e);
+              }
+            },
+          },
+        });
+      } else {
+        toast.success("用例已删除");
+      }
     },
     onSettled: () => invalidateAll(),
   });
@@ -647,8 +665,22 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
     const ids = [...selected];
     if (ids.length === 0) return;
     try {
-      await Promise.all(ids.map((id) => functionalCasesApi.remove(id, quickEditSessionId ?? undefined)));
-      toast.success(`已删除 ${ids.length} 条`);
+      const results = await Promise.all(ids.map((id) => functionalCasesApi.remove(id, quickEditSessionId ?? undefined)));
+      const batchIds = results.map((item) => item.batch_id).filter((id): id is number => id != null);
+      toast.success(`已删除 ${ids.length} 条`, batchIds.length > 0 ? {
+        action: {
+          label: "撤销",
+          onClick: async () => {
+            try {
+              await Promise.all(batchIds.map((batchId) => casesApi.rollbackHistory(batchId, { mode: "full" })));
+              toast.success("已恢复");
+              invalidateAll();
+            } catch (e) {
+              handleError(e);
+            }
+          },
+        },
+      } : undefined);
       setSelected(new Set());
       invalidateAll();
     } catch (e) {
@@ -745,7 +777,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
           }
         >
           <FolderPlus className="h-4 w-4" />
-          新建{currentParentId === null ? "顶层模块" : "子模块"}
+          新建{currentParentId === null ? "模块" : "子模块"}
         </Button>
         <Button
           variant="outline"
@@ -849,9 +881,9 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         <div className="space-y-6">
           {/* 模块行：进入模块后若当前层级没有子模块，则不渲染这一块（避免用例列表上方出现空区块） */}
           {currentParentId === null || modules.length > 0 ? (
-            <Section title={`子模块（${modules.length}）`}>
+            <Section title={`${currentParentId === null ? "模块" : "子模块"}（${modules.length}）`}>
               {modules.length === 0 ? (
-                <EmptyHint text="当前层级没有子模块" />
+                <EmptyHint text={currentParentId === null ? "当前项目还没有模块" : "当前层级没有子模块"} />
               ) : (
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {modules.map((m) => (
@@ -1081,6 +1113,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           onJump={jumpToCases}
+          onChanged={invalidateAll}
         />
       ) : (
         <TestRecordsDialog
@@ -1097,8 +1130,9 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         open={aiGenOpen}
         moduleId={currentParentId}
         projectId={projectId}
+        initialMode="functional"
         onClose={() => setAiGenOpen(false)}
-        onInserted={() => { invalidateAll(); setAiGenOpen(false); }}
+        onInserted={() => { invalidateAll(); }}
       />
     </div>
   );
@@ -2143,23 +2177,125 @@ function handleApiError(err: unknown) {
   toast.error(msg);
 }
 
+/** 将 AI 返回的人类可读接口步骤整理成可直接执行的 API 用例字段。 */
+function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
+  // 优先用 AI 给的结构化字段；缺失时再从 steps 文本里兜底解析
+  let method = (generated.method || "").toUpperCase();
+  let path = generated.path || "";
+  const headers: Record<string, unknown> = { ...(generated.headers ?? {}) };
+  let body: Record<string, unknown> | null = generated.body ?? null;
+
+  if (!method || !path) {
+    for (const line of [generated.name, ...generated.steps]) {
+      const m = line.match(/\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s，。；]+)/i);
+      if (m) {
+        method = method || m[1].toUpperCase();
+        path = path || m[2];
+        break;
+      }
+    }
+  }
+  if (!method) method = "GET";
+  if (Object.keys(headers).length === 0 || body === null) {
+    for (const step of generated.steps) {
+      const h = step.match(/^Header\s*:\s*([^:]+)\s*:\s*(.+)$/i);
+      if (h && headers[h[1].trim()] === undefined) headers[h[1].trim()] = h[2].trim();
+      const b = step.match(/^Body\s*:\s*([\s\S]+)$/i);
+      if (b && body === null) {
+        try {
+          body = JSON.parse(b[1].trim());
+        } catch {
+          /* 非 JSON 文本忽略 */
+        }
+      }
+    }
+  }
+
+  const ct =
+    (headers["Content-Type"] as string) ?? (headers["content-type"] as string) ?? "application/json";
+  const has = (o?: Record<string, unknown>) => o && Object.keys(o).length > 0;
+
+  // 统一按操作流程执行：直接产出一条 http_request step（提取/断言进 step，执行不经 v1 桥接）
+  const extractRules = Object.entries(generated.extract ?? {})
+    .filter(([n, jp]) => n && jp)
+    .map(([name, jp]) => ({ name, from: "response.body", jsonpath: String(jp) }));
+  const assertionRules = Object.entries(generated.assertion ?? {})
+    .filter(([t]) => t)
+    .map(([target, expected]) => ({
+      type: target.startsWith("$") ? "jsonpath" : "equal",
+      target,
+      expected,
+    }));
+  const httpStep = {
+    step_order: 0,
+    step_name: generated.name,
+    step_type: "http_request",
+    skip: false,
+    config: {
+      method,
+      path,
+      headers,
+      data_type: ct,
+      params: body ?? {},
+      sql_query: generated.sql || null,
+    },
+    extract: extractRules.length ? extractRules : null,
+    assertion: assertionRules.length ? assertionRules : null,
+    wait_before: 0,
+    timeout: 60,
+    retry: 0,
+    on_failure: "stop" as const,
+  };
+
+  return {
+    module_id: moduleId,
+    name: generated.name,
+    description: [
+      generated.preconditions.length ? `前置条件：${generated.preconditions.join("；")}` : "",
+      generated.expected.length ? `预期结果：${generated.expected.join("；")}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    case_type: "api" as const,
+    priority: 3,
+    // v1 字段保留，供现有编辑表单显示；执行只认下面的 steps
+    method,
+    path,
+    headers: Object.keys(headers).length ? JSON.stringify(headers, null, 2) : null,
+    data_type: ct,
+    params: body ? JSON.stringify(body, null, 2) : null,
+    extract_data: has(generated.extract) ? JSON.stringify(generated.extract, null, 2) : null,
+    assertion: has(generated.assertion) ? JSON.stringify(generated.assertion, null, 2) : null,
+    sql_query: generated.sql ? generated.sql : null,
+    steps: [httpStep],
+  };
+}
+
 /** AI 生成功能用例：需求文本 + 选模型 → 控件级详细用例草稿 → 审阅勾选 → 写入当前模块。 */
-function AiGenerateDialog({
+export function AiGenerateDialog({
   open,
   moduleId,
   projectId,
+  initialMode = "functional",
+  allowModeSwitch = false,
   onClose,
   onInserted,
 }: {
   open: boolean;
   moduleId: number | null;
   projectId: number;
+  initialMode?: "functional" | "interface";
+  allowModeSwitch?: boolean;
   onClose: () => void;
   onInserted: () => void;
 }) {
   const BATCH_SIZE = 6;
   const [text, setText] = useState("");
-  const [mode, setMode] = useState<"functional" | "interface">("functional");
+  const [mode, setMode] = useState<"functional" | "interface">(initialMode);
+  const [coverage, setCoverage] = useState<"standard" | "full" | "exhaustive">("full");
+  const [docUrls, setDocUrls] = useState("");
+  const [smartInsert, setSmartInsert] = useState(true);
+  const [gapFilling, setGapFilling] = useState(false);
   const [modelName, setModelName] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [docs, setDocs] = useState<File[]>([]);
@@ -2172,9 +2308,12 @@ function AiGenerateDialog({
   const [cursor, setCursor] = useState(0);
   const [batchRunning, setBatchRunning] = useState(false);
   const stopRef = useRef(false);
+  const dragCaseRef = useRef<number | null>(null);
+  const insertingRef = useRef(false);
   const [cases, setCases] = useState<AiGeneratedCase[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [inserting, setInserting] = useState(false);
+  const [writtenNames, setWrittenNames] = useState<Set<string>>(new Set()); // 已写入的用例名（防重复、支持分次写）
 
   const modelsQuery = useQuery({
     queryKey: ["ai-models"],
@@ -2195,10 +2334,14 @@ function AiGenerateDialog({
       setPicked(new Set());
       setImages([]);
       setDocs([]);
-      setMode("functional");
+      setMode(initialMode);
+      setCoverage("full");
+      setDocUrls("");
+      setSmartInsert(true);
+      setWrittenNames(new Set());
       stopRef.current = false;
     }
-  }, [open]);
+  }, [open, initialMode]);
 
   useEffect(() => {
     if (open && !modelName && models.length) setModelName(models[0].name);
@@ -2221,6 +2364,8 @@ function AiGenerateDialog({
         text: text.trim(),
         model_name: modelName,
         mode,
+        coverage,
+        doc_urls: docUrls.trim(),
         images,
         docs,
       });
@@ -2283,37 +2428,78 @@ function AiGenerateDialog({
     setCursor(0);
     setCases([]);
     setPicked(new Set());
+    setWrittenNames(new Set());
     setStage("cases");
     void runBatches(q, 0, []);
   };
 
   const insert = async () => {
     if (!moduleId || cases.length === 0) return;
-    const chosen = cases.filter((_, i) => picked.has(i));
+    if (insertingRef.current) return; // 防快速多点
+    // 只写「已勾选且还没写过」的，支持分次写入、绝不重复
+    const chosen = cases.filter((_, i) => picked.has(i) && !writtenNames.has(cases[i].name));
     if (chosen.length === 0) {
-      toast.info("还没勾选用例");
+      toast.info("勾选的用例都已写入");
       return;
     }
+    insertingRef.current = true;
     setInserting(true);
     try {
-      for (const c of chosen) {
-        await functionalCasesApi.create({
-          module_id: moduleId,
-          name: c.name,
-          priority: 3,
-          functional_spec: {
-            preconditions: c.preconditions,
-            steps: c.steps,
-            expected: c.expected.join("\n") || null,
-          },
-        });
+      if (mode === "interface") {
+        for (const c of chosen) await casesApi.create(toInterfaceCase(moduleId, c));
+      } else {
+        // AI 智能插入：先取现有有序用例，创建后按每条 after 合并重排
+        const existing =
+          smartInsert
+            ? (await functionalCasesApi.list({ moduleId, pageSize: 500 })).items
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+            : [];
+        const createdIds: number[] = [];
+        for (const c of chosen) {
+          const res = await functionalCasesApi.create({
+            module_id: moduleId,
+            name: c.name,
+            priority: 3,
+            functional_spec: {
+              preconditions: c.preconditions,
+              steps: c.steps,
+              expected: c.expected.join("\n") || null,
+            },
+          });
+          createdIds.push(res.id);
+        }
+        if (smartInsert && existing.length) {
+          // 合并：把每条新用例插到它 after 指定的现有用例之后（同锚点保持本次顺序）
+          const merged: number[] = [];
+          chosen.forEach((c, k) => {
+            if (c.after === "__START__") merged.push(createdIds[k]);
+          });
+          for (const e of existing) {
+            merged.push(e.id);
+            chosen.forEach((c, k) => {
+              if (c.after && c.after !== "__START__" && c.after === e.name)
+                merged.push(createdIds[k]);
+            });
+          }
+          // 末尾/无归属
+          chosen.forEach((c, k) => {
+            if (c.after !== "__START__" && !existing.some((e) => e.name === c.after))
+              merged.push(createdIds[k]);
+          });
+          await casesApi.reorder(
+            merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
+          );
+        }
       }
-      toast.success(`已写入 ${chosen.length} 条用例`);
+      setWrittenNames((prev) => new Set([...prev, ...chosen.map((c) => c.name)]));
+      toast.success(`已写入 ${chosen.length} 条用例（可继续生成后再写新增的）`);
       onInserted();
     } catch (e) {
       handleApiError(e);
     } finally {
       setInserting(false);
+      insertingRef.current = false;
     }
   };
 
@@ -2333,11 +2519,59 @@ function AiGenerateDialog({
       return n;
     });
 
+  // 查漏补缺：给已有大纲找遗漏的测试点，追加并默认勾选
+  const fillGaps = async () => {
+    if (!moduleId || points.length === 0) return;
+    setGapFilling(true);
+    try {
+      const res = await functionalCasesApi.aiOutlineGaps({
+        module_id: moduleId,
+        model_name: modelName,
+        mode,
+        digest,
+        points,
+      });
+      const have = new Set(points.map((p) => p.title.replace(/\s+/g, "")));
+      const added = res.points.filter((p) => p.title && !have.has(p.title.replace(/\s+/g, "")));
+      if (added.length === 0) {
+        toast.info("没找到遗漏，大纲已比较全面");
+      } else {
+        setPoints((prev) => {
+          const next = [...prev, ...added];
+          setPickedPoints((sel) => {
+            const n = new Set(sel);
+            for (let i = prev.length; i < next.length; i++) n.add(i);
+            return n;
+          });
+          return next;
+        });
+        toast.success(`补充了 ${added.length} 个测试点`);
+      }
+    } catch (e) {
+      handleApiError(e);
+    } finally {
+      setGapFilling(false);
+    }
+  };
+
+  // 审阅时拖拽调整用例顺序（= 写入后的执行顺序）。按对象身份保持勾选不变。
+  const moveCase = (from: number, to: number) => {
+    if (from === to) return;
+    setCases((prev) => {
+      const pickedItems = new Set([...picked].map((i) => prev[i]));
+      const next = prev.slice();
+      const [m] = next.splice(from, 1);
+      next.splice(to, 0, m);
+      setPicked(new Set(next.map((c, i) => (pickedItems.has(c) ? i : -1)).filter((i) => i >= 0)));
+      return next;
+    });
+  };
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>AI 生成功能用例</DialogTitle>
+          <DialogTitle>AI 生成{mode === "interface" ? "接口" : "功能"}用例</DialogTitle>
           <DialogDescription>
             先出测试点大纲 → 你确认 → 逐批生成控件级详细用例（参考其它模块、保持连贯），审阅后写入当前模块
           </DialogDescription>
@@ -2345,20 +2579,22 @@ function AiGenerateDialog({
 
         {stage === "input" ? (
           <div className="space-y-3">
-            <div className="flex items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs w-fit">
-              {(["functional", "interface"] as const).map((mo) => (
-                <button
-                  key={mo}
-                  onClick={() => setMode(mo)}
-                  className={cn(
-                    "rounded px-3 py-1",
-                    mode === mo ? "bg-background font-medium shadow-sm" : "text-muted-foreground",
-                  )}
-                >
-                  {mo === "functional" ? "功能用例" : "接口用例"}
-                </button>
-              ))}
-            </div>
+            {allowModeSwitch ? (
+              <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
+                {(["functional", "interface"] as const).map((mo) => (
+                  <button
+                    key={mo}
+                    onClick={() => setMode(mo)}
+                    className={cn(
+                      "rounded px-3 py-1",
+                      mode === mo ? "bg-background font-medium shadow-sm" : "text-muted-foreground",
+                    )}
+                  >
+                    {mo === "functional" ? "功能用例" : "接口用例"}
+                  </button>
+                ))}
+              </div>
+            ) : null}
             <div className="space-y-1">
               <Label className="text-xs">{mode === "interface" ? "接口说明 / 需求" : "需求 / 描述"}</Label>
               <Textarea
@@ -2367,11 +2603,22 @@ function AiGenerateDialog({
                 onChange={(e) => setText(e.target.value)}
                 placeholder={
                   mode === "interface"
-                    ? "粘贴接口说明：URL、method、请求参数、响应字段等。或在下方上传 Swagger/Postman/接口文档。例如：POST /api/login，body{username,password}，成功返回 200{token,role}……"
+                    ? "粘贴接口说明：URL、method、请求参数、响应字段等。或在下方上传/填链接。例如：POST /api/login，body{username,password}，成功返回 200{token,role}……"
                     : "粘贴需求描述、要测的功能点、页面流程等。例如：登录页，输入用户名密码点登录，成功后跳转到管理员工作台……"
                 }
               />
             </div>
+            {mode === "interface" ? (
+              <div className="space-y-1">
+                <Label className="text-xs">接口文档链接（Swagger UI / OpenAPI / 在线接口文档，多个换行或逗号分隔）</Label>
+                <Textarea
+                  rows={2}
+                  value={docUrls}
+                  onChange={(e) => setDocUrls(e.target.value)}
+                  placeholder="https://example.com/v3/api-docs &#10;https://example.com/swagger-ui/index.html"
+                />
+              </div>
+            ) : null}
             {/* 上传：截图/原型图 + 文档 */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -2463,6 +2710,18 @@ function AiGenerateDialog({
                 ))}
               </select>
             </div>
+            <div className="space-y-1">
+              <Label className="text-xs">覆盖力度</Label>
+              <select
+                value={coverage}
+                onChange={(e) => setCoverage(e.target.value as "standard" | "full" | "exhaustive")}
+                className="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm"
+              >
+                <option value="standard">标准（主流程 + 主要异常/边界）</option>
+                <option value="full">全面（逐功能/逐参数系统覆盖，推荐）</option>
+                <option value="exhaustive">穷尽（每字段每维度都拆，最细最多）</option>
+              </select>
+            </div>
             <details className="rounded-md border bg-muted/20 p-2">
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                 项目概览 · 模块关联（生成时会据此设计跨模块联动用例）
@@ -2494,9 +2753,19 @@ function AiGenerateDialog({
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
               </span>
-              <button className="text-xs text-primary hover:underline" onClick={() => setStage("input")}>
-                ← 改需求
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  className="text-xs text-primary hover:underline disabled:opacity-50"
+                  disabled={gapFilling || points.length === 0}
+                  onClick={fillGaps}
+                  title="让 AI 再查一遍遗漏的测试点并补上，可反复点"
+                >
+                  {gapFilling ? "查漏中…" : "🔍 查漏补缺"}
+                </button>
+                <button className="text-xs text-primary hover:underline" onClick={() => setStage("input")}>
+                  ← 改需求
+                </button>
+              </div>
             </div>
             {digest ? (
               <details className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
@@ -2570,6 +2839,21 @@ function AiGenerateDialog({
                 />
               </div>
             ) : null}
+            {cases.length > 0 && !batchRunning ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>已按执行依赖排序；可拖动左侧手柄调整顺序</span>
+                {mode === "functional" ? (
+                  <label className="flex cursor-pointer items-center gap-1.5 text-foreground/80">
+                    <input
+                      type="checkbox"
+                      checked={smartInsert}
+                      onChange={(e) => setSmartInsert(e.target.checked)}
+                    />
+                    AI 智能插入位置（插到现有用例之间，而非追加末尾）
+                  </label>
+                ) : null}
+              </div>
+            ) : null}
             <div className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">
               {cases.length === 0 && batchRunning ? (
                 <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
@@ -2579,20 +2863,36 @@ function AiGenerateDialog({
               {cases.map((c, i) => (
                 <div
                   key={i}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    if (dragCaseRef.current !== null) moveCase(dragCaseRef.current, i);
+                    dragCaseRef.current = null;
+                  }}
                   className={cn(
                     "rounded-lg border p-2 text-sm",
                     picked.has(i) ? "border-primary/40 bg-primary/5" : "bg-card",
                   )}
                 >
-                  <label className="flex cursor-pointer items-start gap-2">
+                  <div className="flex items-start gap-2">
+                    <span
+                      draggable
+                      onDragStart={() => {
+                        dragCaseRef.current = i;
+                      }}
+                      className="mt-0.5 cursor-grab text-muted-foreground active:cursor-grabbing"
+                      title="拖动调整执行顺序"
+                    >
+                      <GripVertical className="h-4 w-4" />
+                    </span>
                     <input
                       type="checkbox"
                       checked={picked.has(i)}
                       onChange={() => togglePick(i)}
                       className="mt-1"
                     />
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 cursor-pointer" onClick={() => togglePick(i)}>
                       <div className="font-medium">
+                        <span className="mr-1 text-muted-foreground">{i + 1}.</span>
                         {c.name}
                         {c.duplicate ? (
                           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700">
@@ -2600,6 +2900,11 @@ function AiGenerateDialog({
                           </span>
                         ) : null}
                       </div>
+                      {smartInsert && mode === "functional" && c.after ? (
+                        <div className="mt-0.5 text-[11px] text-primary/70">
+                          插入到{c.after === "__START__" ? "最前面" : `「${c.after}」之后`}
+                        </div>
+                      ) : null}
                       {c.preconditions.length ? (
                         <div className="mt-1 text-xs text-muted-foreground">
                           <span className="font-medium text-foreground/70">前置：</span>
@@ -2620,7 +2925,7 @@ function AiGenerateDialog({
                         </div>
                       ) : null}
                     </div>
-                  </label>
+                  </div>
                 </div>
               ))}
             </div>
@@ -2628,10 +2933,19 @@ function AiGenerateDialog({
               <Button variant="outline" onClick={onClose}>
                 关闭
               </Button>
-              <Button onClick={insert} disabled={inserting || batchRunning || picked.size === 0}>
-                {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                写入当前模块（{picked.size}）
-              </Button>
+              {(() => {
+                const pending = cases.filter(
+                  (c, i) => picked.has(i) && !writtenNames.has(c.name),
+                ).length;
+                return (
+                  <Button onClick={insert} disabled={inserting || batchRunning || pending === 0}>
+                    {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    {pending === 0 && writtenNames.size > 0
+                      ? "已全部写入"
+                      : `写入当前模块（${pending}）`}
+                  </Button>
+                );
+              })()}
             </DialogFooter>
           </div>
         )}
@@ -3894,11 +4208,13 @@ function EditRecordsDialog({
   open,
   onClose,
   onJump,
+  onChanged,
 }: {
   moduleId: number | null;
   open: boolean;
   onClose: () => void;
   onJump: (records: FunctionalCaseEditRecord[]) => void;
+  onChanged: () => void;
 }) {
   const query = useQuery({
     queryKey: ["fc-edit-history", moduleId],
@@ -3907,6 +4223,22 @@ function EditRecordsDialog({
     staleTime: 0,
   });
   const records = query.data ?? [];
+
+  const rollbackRecord = async (record: FunctionalCaseEditRecord, fullBatch = false) => {
+    if (!record.batch_id) return;
+    try {
+      await casesApi.rollbackHistory(record.batch_id, {
+        mode: fullBatch ? "full" : "partial",
+        event_ids: fullBatch ? undefined : [record.id],
+      });
+      toast.success("已回滚");
+      query.refetch();
+      onChanged();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "回滚失败";
+      toast.error(msg);
+    }
+  };
 
   // 按会话聚合：同 session_id 的多条改动合成一条记录；无 session 的各自一条
   const groupMap = new Map<string, FunctionalCaseEditRecord[]>();
@@ -3962,12 +4294,10 @@ function EditRecordsDialog({
                 g.counts.delete ? `删除 ${g.counts.delete}` : null,
               ].filter(Boolean).join(" · ");
               const clickable = g.records.length > 0;
+              const canRollbackBatch = g.records.filter((r) => r.rollback_available && r.batch_id).length > 1;
               return (
-                <button
+                <div
                   key={g.key}
-                  type="button"
-                  disabled={!clickable}
-                  onClick={clickable ? () => onJump(g.records) : undefined}
                   className={cn(
                     "w-full rounded-lg border bg-card p-2 text-left text-sm",
                     clickable ? "hover:border-primary/40 hover:bg-accent/30" : "opacity-70",
@@ -3982,9 +4312,36 @@ function EditRecordsDialog({
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
                     涉及用例：{g.caseNames.join("、") || "—"}
-                    {clickable ? <span className="ml-2 text-primary">跳转测试并筛选 →</span> : null}
+                    {clickable ? (
+                      <button type="button" className="ml-2 text-primary hover:underline" onClick={() => onJump(g.records)}>
+                        跳转测试并筛选 →
+                      </button>
+                    ) : null}
                   </div>
-                </button>
+                  <div className="mt-2 space-y-1 border-t pt-2">
+                    {g.records.map((record) => (
+                      <div key={record.id} className="flex items-center gap-2 text-xs">
+                        <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">{record.action}</span>
+                        <span className="min-w-0 flex-1 truncate">{record.case_name || `#${record.case_id}`}</span>
+                        {record.rollback_status && record.rollback_status !== "none" ? (
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">已回滚</span>
+                        ) : record.rollback_available ? (
+                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">可回滚</span>
+                        ) : null}
+                        {record.rollback_available && record.batch_id ? (
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => rollbackRecord(record)}>
+                            回滚
+                          </Button>
+                        ) : null}
+                        {canRollbackBatch && record.rollback_available && record.batch_id ? (
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => rollbackRecord(record, true)}>
+                            整次回滚
+                          </Button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               );
             })
           )}

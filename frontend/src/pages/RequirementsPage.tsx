@@ -179,10 +179,29 @@ export function RequirementsPage() {
     toast.error(msg);
   };
 
+  const rollbackDeleteMutation = useMutation({
+    mutationFn: (batchId: number) =>
+      requirementsApi.rollbackHistory(batchId, { mode: "full" }),
+    onSuccess: () => {
+      toast.success("已恢复");
+      invalidate();
+    },
+    onError: handleError,
+  });
+
   const removeMutation = useMutation({
     mutationFn: (rid: number) => requirementsApi.remove(rid),
-    onSuccess: () => {
-      toast.success("已删除");
+    onSuccess: (data) => {
+      if (data.batch_id) {
+        toast.success("已删除", {
+          action: {
+            label: "撤销",
+            onClick: () => rollbackDeleteMutation.mutate(data.batch_id!),
+          },
+        });
+      } else {
+        toast.success("已删除");
+      }
       invalidate();
     },
     onError: handleError,

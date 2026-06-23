@@ -85,6 +85,17 @@ from .functional_case_edit_history import (
     EDIT_ACTION_DELETE,
     ALL_EDIT_ACTIONS,
 )
+from .api_case_edit_history import ApiCaseEditHistory
+from .edit_operation import (
+    EditOperationBatch,
+    EditOperationEvent,
+    ENTITY_TYPE_REQUIREMENT,
+    ENTITY_TYPE_TEST_CASE,
+    ROLLBACK_STATUS_NONE,
+    ROLLBACK_STATUS_PARTIAL,
+    ROLLBACK_STATUS_FULL,
+    ROLLBACK_STATUS_ROLLED_BACK,
+)
 from .test_step import (
     TestStep,
     # 步骤类型常量，方便业务代码直接引用
@@ -294,7 +305,8 @@ __all__ = [
     # ORM models
     "Project", "Module",
     "TestCase", "TestStep",
-    "FunctionalCaseRun",
+    "FunctionalCaseRun", "ApiCaseEditHistory",
+    "EditOperationBatch", "EditOperationEvent",
     "TestEnvironment", "TestVariable",
     "Device",
     "AppPackage",

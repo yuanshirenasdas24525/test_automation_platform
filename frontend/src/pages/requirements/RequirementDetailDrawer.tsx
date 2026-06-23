@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { X, Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon } from "lucide-react";
-import { useQuery } from "@tanstack/react-query";
+import { X, Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon, RotateCcw } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -8,7 +9,7 @@ import { AttachmentList } from "@/components/attachments/AttachmentList";
 import { PriorityBadge } from "@/components/badges/PriorityBadge";
 import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBadge";
 import { RichTextViewer } from "@/components/editor/RichTextViewer";
-import { requirementsApi, usersApi } from "@/lib/api";
+import { ApiError, requirementsApi, usersApi } from "@/lib/api";
 import type { Requirement, RequirementEditHistory } from "@/types/domain";
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
 
 export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequirement, moduleNames, versionNames }: Props) {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     if (open) {
@@ -254,7 +256,16 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
           <DialogHeader>
             <DialogTitle>编辑历史</DialogTitle>
           </DialogHeader>
-          <HistoryTimeline history={historyQuery.data ?? []} loading={historyQuery.isLoading} />
+          <HistoryTimeline
+            history={historyQuery.data ?? []}
+            loading={historyQuery.isLoading}
+            onChanged={() => {
+              historyQuery.refetch();
+              queryClient.invalidateQueries({ queryKey: ["requirements"] });
+              queryClient.invalidateQueries({ queryKey: ["requirementHistory", req.id] });
+            }}
+            onCurrentDeleted={onClose}
+          />
         </DialogContent>
       </Dialog>
     </div>
@@ -320,11 +331,58 @@ function Hr() {
 function HistoryTimeline({
   history,
   loading,
+  onChanged,
+  onCurrentDeleted,
 }: {
   history: RequirementEditHistory[];
   loading: boolean;
+  onChanged: () => void;
+  onCurrentDeleted: () => void;
 }) {
   const [userNames, setUserNames] = useState<Map<number, string>>(new Map());
+  const [fieldPicker, setFieldPicker] = useState<RequirementEditHistory | null>(null);
+  const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
+
+  const rollbackMutation = useMutation({
+    mutationFn: ({
+      entry,
+      fields,
+      force,
+      fullBatch,
+    }: {
+      entry: RequirementEditHistory;
+      fields?: string[];
+      force?: boolean;
+      fullBatch?: boolean;
+    }) => {
+      if (!entry.batch_id) throw new Error("这条记录不支持回滚");
+      return requirementsApi.rollbackHistory(entry.batch_id, {
+        mode: fullBatch ? "full" : fields && fields.length > 0 ? "fields" : "partial",
+        event_ids: fullBatch ? undefined : [entry.id],
+        fields: fields && fields.length > 0 ? { [entry.id]: fields } : undefined,
+        force,
+      });
+    },
+    onSuccess: (_data, vars) => {
+      toast.success("已回滚");
+      setFieldPicker(null);
+      setSelectedFields(new Set());
+      onChanged();
+      if (vars.entry.action === "create" && !vars.fields?.length) {
+        onCurrentDeleted();
+      }
+    },
+    onError: (err, vars) => {
+      if (err instanceof ApiError && err.status === 409) {
+        const ok = window.confirm("这条记录之后又发生过修改，是否强制回滚？");
+        if (ok) {
+          rollbackMutation.mutate({ ...vars, force: true });
+        }
+        return;
+      }
+      toast.error(err instanceof Error ? err.message : "回滚失败");
+    },
+  });
 
   useEffect(() => {
     const ids = history
@@ -369,6 +427,24 @@ function HistoryTimeline({
             {entry.change_summary && (
               <p className="text-sm font-medium">{entry.change_summary}</p>
             )}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                {actionLabel(entry.action)}
+              </span>
+              {entry.rollback_status && entry.rollback_status !== "none" ? (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  已回滚
+                </span>
+              ) : entry.rollback_available ? (
+                <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">
+                  可回滚
+                </span>
+              ) : (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  仅审计
+                </span>
+              )}
+            </div>
             {entry.changes && entry.changes.length > 0 && (
               <div className="space-y-1">
                 {entry.changes.map((ch, i) => (
@@ -388,11 +464,127 @@ function HistoryTimeline({
                 ))}
               </div>
             )}
+            {entry.rollback_available && entry.batch_id && (
+              <div className="flex items-center gap-2 pt-1">
+                {entry.action === "update" && entry.changes.length > 1 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    onClick={() => {
+                      setFieldPicker(entry);
+                      setSelectedFields(new Set(entry.changes.map((ch) => ch.field)));
+                    }}
+                  >
+                    <RotateCcw className="mr-1 h-3 w-3" />
+                    选择字段回滚
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  disabled={rollbackMutation.isPending}
+                  onClick={() => {
+                    const ok = window.confirm(
+                      entry.action === "create"
+                        ? "回滚新增会删除这条需求，确认继续？"
+                        : "确认回滚这条编辑记录？",
+                    );
+                    if (ok) rollbackMutation.mutate({ entry });
+                  }}
+                >
+                  <RotateCcw className="mr-1 h-3 w-3" />
+                  整条回滚
+                </Button>
+                {history.filter((item) => item.batch_id === entry.batch_id).length > 1 && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 px-2 text-xs"
+                    disabled={rollbackMutation.isPending}
+                    onClick={() => {
+                      const ok = window.confirm("确认回滚这一次批量操作？");
+                      if (ok) rollbackMutation.mutate({ entry, fullBatch: true });
+                    }}
+                  >
+                    <RotateCcw className="mr-1 h-3 w-3" />
+                    整次回滚
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       ))}
+      <Dialog open={!!fieldPicker} onOpenChange={(v) => !v && setFieldPicker(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>选择字段回滚</DialogTitle>
+          </DialogHeader>
+          {fieldPicker && (
+            <div className="space-y-3">
+              <div className="space-y-2">
+                {fieldPicker.changes.map((ch) => {
+                  const checked = selectedFields.has(ch.field);
+                  return (
+                    <label key={ch.field} className="flex gap-2 rounded border p-2 text-xs">
+                      <input
+                        type="checkbox"
+                        className="mt-1"
+                        checked={checked}
+                        onChange={(e) => {
+                          setSelectedFields((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(ch.field);
+                            else next.delete(ch.field);
+                            return next;
+                          });
+                        }}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="block font-medium text-foreground">{ch.label}</span>
+                        <span className="block truncate text-muted-foreground">
+                          当前：{_prettyVal(ch.new, ch.field)}
+                        </span>
+                        <span className="block truncate text-emerald-700">
+                          回滚到：{_prettyVal(ch.old, ch.field)}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setFieldPicker(null)}>
+                  取消
+                </Button>
+                <Button
+                  disabled={selectedFields.size === 0 || rollbackMutation.isPending}
+                  onClick={() => {
+                    rollbackMutation.mutate({
+                      entry: fieldPicker,
+                      fields: [...selectedFields],
+                    });
+                  }}
+                >
+                  确认回滚
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
+}
+
+function actionLabel(action?: string): string {
+  if (action === "create") return "新增";
+  if (action === "update") return "修改";
+  if (action === "delete") return "删除";
+  if (action === "mixed") return "批量";
+  return "修改";
 }
 
 function stripHtml(html: string): string {

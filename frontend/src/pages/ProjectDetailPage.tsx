@@ -6,7 +6,7 @@ import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { FunctionalCasesPage } from "./FunctionalCasesPage";
-import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
+import { ApiCasesPage } from "./ApiCasesPage";
 import {
   Apple,
   ArrowLeft,
@@ -257,7 +257,7 @@ const caseSchema = z.object({
   steps: z.array(z.any()).optional(),
   case_type: z.string().optional(),
 });
-type CaseFormValues = z.infer<typeof caseSchema>;
+export type CaseFormValues = z.infer<typeof caseSchema>;
 
 // ---------------------------------------------------------------------------
 // 主页面
@@ -352,6 +352,7 @@ export function ProjectDetailPage() {
   };
 
   const isFunctionalTab = activeStack === "functional";
+  const isApiTab = activeStack === "api";
 
   const handleError = (err: unknown) => {
     const msg =
@@ -457,7 +458,15 @@ export function ProjectDetailPage() {
 
   const deleteCase = useMutation({
     mutationFn: (cid: number) => casesApi.remove(cid),
-    onSuccess: () => {
+    onSuccess: (_data, deletedCaseId) => {
+      // 先同步移除当前列表缓存，避免仅 invalidate 时旧数据在后台 refetch
+      // 完成前继续留在页面，让用户误以为删除没有生效。
+      queryClient.setQueryData<ContentNode[]>(
+        queryKeys.content(projectId, currentParentId, caseTypeFilter),
+        (current) => current?.filter(
+          (node) => !(node.type === "case" && node.id === deletedCaseId),
+        ),
+      );
       toast.success("用例已删除");
       invalidateContent();
       setPendingDelete(null);
@@ -662,7 +671,7 @@ export function ProjectDetailPage() {
       <div className="flex items-center justify-between gap-2">
         <Breadcrumb project={project?.name ?? "…"} trail={breadcrumb} onJump={handleJumpTo} />
         <div className="flex shrink-0 items-center gap-2">
-        {!isFunctionalTab && (
+        {!isFunctionalTab && !isApiTab && (
         <Button
               variant="outline"
               onClick={handleRunProject}
@@ -681,23 +690,11 @@ export function ProjectDetailPage() {
         </div>
       </div>
 
-      {/* functional Tab：项目概览面板 + 整页内嵌功能用例管理 */}
+      {/* functional Tab：整页内嵌功能用例管理 */}
       {isFunctionalTab ? (
-        <>
-          <Card>
-            <CardContent className="p-4">
-              <details>
-                <summary className="cursor-pointer text-sm font-medium">
-                  项目概览 · 模块关联（AI 生成用例时据此设计跨模块联动用例）
-                </summary>
-                <div className="mt-3">
-                  <ProjectAiOverviewView projectId={projectId} />
-                </div>
-              </details>
-            </CardContent>
-          </Card>
-          <FunctionalCasesPage embedded />
-        </>
+        <FunctionalCasesPage embedded />
+      ) : isApiTab ? (
+        <ApiCasesPage embedded />
       ) : (
         <>
         <div className="flex flex-wrap items-center gap-2">
@@ -738,7 +735,7 @@ export function ProjectDetailPage() {
 
       {/* 主列表：functional Tab 已用内嵌的 FunctionalCasesPage 展示，这里不再渲染，
           否则功能页下面会多出一块「模块/用例」列表卡片（名称/信息/操作）。 */}
-      {!isFunctionalTab && (contentQuery.isLoading ? (
+      {!isFunctionalTab && !isApiTab && (contentQuery.isLoading ? (
         <ListSkeleton />
       ) : contentQuery.isError ? (
         <ErrorBox
@@ -1361,7 +1358,7 @@ function ModuleDialog({
 // ---------------------------------------------------------------------------
 // 用例对话框（新建 / 编辑 / 插入）
 // ---------------------------------------------------------------------------
-function CaseDialog({
+export function CaseDialog({
   state,
   category,
   onClose,
@@ -2222,4 +2219,3 @@ function Code({ children }: { children: React.ReactNode }) {
     </code>
   );
 }
-

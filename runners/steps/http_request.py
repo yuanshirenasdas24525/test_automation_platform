@@ -104,15 +104,19 @@ class HttpRequestStepRunner(BaseStepRunner):
         body = self._resolve_value(params_in, ctx)
         files = self.processor.handler_files(file_path) if file_path else None
 
-        # 2) 记录 Allure: Set up（变量池）+ Test body（请求详情）
+        # 2) 记录 Allure: Set up（变量池）+ Request（请求详情）
         result.action = f"{method} {url}"
         result.target = url
         result.input_data = {"method": method, "url": url, "headers": headers, "body": body}
         set_allure_link(url)
         ctx_vars_display = {k: v for k, v in ctx.vars.items()
                             if not k.startswith("_")}
-        add_allure_step("Set up", {"变量池": ctx_vars_display or "(空)"})
-        add_allure_step("Test body", {
+        add_allure_step(
+            "Set up",
+            ctx_vars_display or "(空)",
+            attachment_name="变量池",
+        )
+        add_allure_step("Request", {
             "请求方法": method,
             "请求地址": url,
             "请求头": headers,
@@ -125,6 +129,10 @@ class HttpRequestStepRunner(BaseStepRunner):
 
         result.output_data = response_body
         ctx.record("status_code", status_code)
+        # 把请求/响应记进 record_property，pytest 钩子会落库到 TestStepReport，
+        # 供「AI 分析执行结果」读真实响应（在断言之前记，断言失败也能拿到响应）。
+        ctx.record("input_data", result.input_data)
+        ctx.record("output_data", response_body)
         add_allure_step(f"Response (HTTP {status_code})", response_body)
 
         # 4) extract：把响应里的值塞进 ctx.vars 和 processor.extra_pool
@@ -135,6 +143,7 @@ class HttpRequestStepRunner(BaseStepRunner):
             ctx=ctx,
         )
         result.extracted = extracted
+        ctx.record("extract_values", extracted)
 
         # 5) assertion
         self._apply_assertions(

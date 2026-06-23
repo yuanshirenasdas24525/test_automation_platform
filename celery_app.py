@@ -57,6 +57,11 @@ celery_app.conf.beat_schedule = {
         "schedule": _probe_interval,
         "options": {"expires": max(_probe_interval - 1, 5)},  # 积压就丢，别堆队列
     },
+    "cleanup_edit_history_snapshots_daily": {
+        "task": "tasks.edit_history_cleanup",
+        "schedule": 24 * 60 * 60,
+        "options": {"expires": 60 * 60},
+    },
 }
 celery_app.conf.timezone = os.getenv("CELERY_TIMEZONE", "Asia/Shanghai")
 
@@ -67,3 +72,4 @@ import tasks.ai_tasks  # noqa: F401
 import tasks.rag_index_task  # noqa: F401
 import tasks.ai_dialogue_task  # noqa: F401
 import tasks.bug_fix_task  # noqa: F401
+import tasks.edit_history_cleanup  # noqa: F401

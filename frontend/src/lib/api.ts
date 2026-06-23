@@ -16,6 +16,10 @@ import type {
   AiModelTestResult,
   AiRun,
   AiRunStatus,
+  ApiCaseEditRecord,
+  ApiCaseListResponse,
+  ApiRunStatus,
+  ApiTestHistoryReport,
   AnalysisDiffResponse,
   AnalysisDocument,
   AnalysisTriggerResponse,
@@ -57,6 +61,8 @@ import type {
   RequirementCreate,
   RequirementEditHistory,
   RequirementListFilters,
+  RequirementRollbackPayload,
+  RequirementRollbackResult,
   RequirementSplitItem,
   RequirementUpdate,
   Role,
@@ -306,21 +312,33 @@ export const contentApi = {
 // Test Cases
 // -------------------------------------------------------------------------
 export const casesApi = {
-  create(body: TestCaseCreate) {
-    return request<{ id: number }>("/api/test_cases", {
+  create(body: TestCaseCreate, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<{ id: number }>(`/api/test_cases${q}`, {
       method: "POST",
       body,
     });
   },
-  update(id: number, body: TestCaseCreate) {
-    return request<void>(`/api/test_cases/${id}`, { method: "PUT", body });
+  update(id: number, body: TestCaseCreate, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<void>(`/api/test_cases/${id}${q}`, { method: "PUT", body });
   },
   /** 拉一个用例的详情（含 steps），给 Web/App 编辑态用。 */
   get(id: number) {
     return request<TestCaseDetail>(`/api/test_cases/${id}`);
   },
-  remove(id: number) {
-    return request<void>(`/api/test_cases/${id}`, { method: "DELETE" });
+  remove(id: number, sessionId?: string) {
+    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
+    return request<{ batch_id?: number | null }>(`/api/test_cases/${id}${q}`, { method: "DELETE" });
+  },
+  rollbackHistory(batchId: number, payload: RequirementRollbackPayload) {
+    return request<RequirementRollbackResult>(
+      `/api/test_cases/edit-history/batches/${batchId}/rollback`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
   },
   /** 批量调整顺序：拖拽 / 插入时用。 */
   reorder(items: ReorderItem[]) {
@@ -399,6 +417,57 @@ export const casesApi = {
 };
 
 // -------------------------------------------------------------------------
+// API Cases 工作台
+// -------------------------------------------------------------------------
+export const apiCasesApi = {
+  list(filters: {
+    moduleId: number;
+    status?: ApiRunStatus | ApiRunStatus[];
+    keyword?: string;
+    page?: number;
+    pageSize?: number;
+  }) {
+    const qs = new URLSearchParams({ module_id: String(filters.moduleId) });
+    if (filters.status) {
+      const values = Array.isArray(filters.status) ? filters.status : [filters.status];
+      qs.set("status", values.join(","));
+    }
+    if (filters.keyword?.trim()) qs.set("keyword", filters.keyword.trim());
+    if (filters.page != null) qs.set("page", String(filters.page));
+    if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
+    return request<ApiCaseListResponse>(`/api/api_cases?${qs}`);
+  },
+  create(body: TestCaseCreate, sessionId?: string) {
+    return casesApi.create({ ...body, case_type: "api" }, sessionId);
+  },
+  update(id: number, body: TestCaseCreate, sessionId?: string) {
+    return casesApi.update(id, { ...body, case_type: "api" }, sessionId);
+  },
+  remove(id: number, sessionId?: string) {
+    return casesApi.remove(id, sessionId);
+  },
+  editHistory(moduleId: number, limit = 200) {
+    return request<ApiCaseEditRecord[]>(
+      `/api/api_cases/edit_history?module_id=${moduleId}&limit=${limit}`,
+    );
+  },
+  testHistory(moduleId: number, limit = 100) {
+    return request<ApiTestHistoryReport[]>(
+      `/api/api_cases/test_history?module_id=${moduleId}&limit=${limit}`,
+    );
+  },
+  runs(caseId: number, limit = 20) {
+    return request<Array<{
+      report_id: number;
+      status: ApiRunStatus;
+      executed_at: string | null;
+      duration: number;
+      error_message: string | null;
+    }>>(`/api/api_cases/${caseId}/runs?limit=${limit}`);
+  },
+};
+
+// -------------------------------------------------------------------------
 // Functional Cases （人工功能用例 + "勾结果"链路）
 // -------------------------------------------------------------------------
 
@@ -456,7 +525,7 @@ export const functionalCasesApi = {
   /** 删除（关联 FunctionalCaseRun 会随 cascade 一起删）。 */
   remove(id: number, sessionId?: string) {
     const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-    return request<void>(`/api/functional_cases/${id}${q}`, { method: "DELETE" });
+    return request<{ batch_id?: number | null }>(`/api/functional_cases/${id}${q}`, { method: "DELETE" });
   },
   /** 单条详情，含 latest_run。 */
   get(id: number) {
@@ -532,6 +601,8 @@ export const functionalCasesApi = {
     text: string;
     model_name: string;
     mode?: "functional" | "interface";
+    coverage?: "standard" | "full" | "exhaustive";
+    doc_urls?: string;
     images?: File[];
     docs?: File[];
   }) {
@@ -540,6 +611,8 @@ export const functionalCasesApi = {
     fd.append("model_name", body.model_name);
     fd.append("text", body.text);
     fd.append("mode", body.mode ?? "functional");
+    fd.append("coverage", body.coverage ?? "standard");
+    fd.append("doc_urls", body.doc_urls ?? "");
     (body.images ?? []).forEach((f) => fd.append("images", f));
     (body.docs ?? []).forEach((f) => fd.append("docs", f));
     return request<{
@@ -562,6 +635,42 @@ export const functionalCasesApi = {
       "/api/functional_cases/ai_generate_batch",
       { method: "POST", body },
     );
+  },
+  /** 分析一条接口用例最近一次执行结果：分类 + 原因 + 建议 + （用例问题时）修正。 */
+  aiDiagnoseRun(body: { case_id: number; model_name: string }) {
+    return request<{
+      classification: string;
+      reason: string;
+      suggestion: string;
+      fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
+    }>("/api/functional_cases/ai_diagnose_run", { method: "POST", body });
+  },
+  /** 对一份测试报告里所有接口用例执行结果做全面分析。 */
+  aiDiagnoseReport(body: { report_id: number; model_name: string }) {
+    return request<{
+      items: {
+        case_id: number;
+        module_id: number | null;
+        name: string;
+        classification: string;
+        findings: string[];
+        fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
+      }[];
+      total: number;
+    }>("/api/functional_cases/ai_diagnose_report", { method: "POST", body });
+  },
+  /** 查漏补缺：给已有大纲找遗漏的测试点。 */
+  aiOutlineGaps(body: {
+    module_id: number;
+    model_name: string;
+    mode: "functional" | "interface";
+    digest: string;
+    points: AiOutlinePoint[];
+  }) {
+    return request<{ points: AiOutlinePoint[] }>("/api/functional_cases/ai_outline_gaps", {
+      method: "POST",
+      body,
+    });
   },
   /** Excel 导入功能用例。 */
   importExcel(moduleId: number, file: File) {
@@ -1019,7 +1128,7 @@ export const requirementsApi = {
     });
   },
   remove(id: number) {
-    return request<{ deleted_ids: number[] }>(`/api/requirements/${id}`, {
+    return request<{ deleted_ids: number[]; batch_id?: number }>(`/api/requirements/${id}`, {
       method: "DELETE",
     });
   },
@@ -1040,6 +1149,15 @@ export const requirementsApi = {
   /** M6：查询需求编辑历史 */
   getHistory(id: number) {
     return request<RequirementEditHistory[]>(`/api/requirements/${id}/history`);
+  },
+  rollbackHistory(batchId: number, payload: RequirementRollbackPayload) {
+    return request<RequirementRollbackResult>(
+      `/api/requirements/history/batches/${batchId}/rollback`,
+      {
+        method: "POST",
+        body: payload,
+      },
+    );
   },
 };
 

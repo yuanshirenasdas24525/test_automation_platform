@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 
 from server.api.deps import DBDep
 from database.models import (
+    EditOperationEvent,
     Module,
     Project,
     ProjectVersion,
@@ -41,6 +42,20 @@ from database.models import (
     REQUIREMENT_BUSINESS_STATUS_ACCEPTED,
     REQUIREMENT_SOURCE_MANUAL,
     ROLE_PM,
+)
+from database.models.edit_operation import (
+    EDIT_ACTION_DELETE,
+    EDIT_ACTION_MIXED,
+    ENTITY_TYPE_REQUIREMENT,
+)
+from server.services.edit_history_service import (
+    create_requirement_batch,
+    record_requirement_create,
+    record_requirement_delete,
+    record_requirement_update,
+    rollback_requirement_events,
+    serialize_requirement_event,
+    snapshot_requirement,
 )
 
 router = APIRouter(prefix="/requirements", tags=["requirements"])
@@ -112,6 +127,15 @@ class RequirementSplitItem(pydantic.BaseModel):
     version_id: Optional[int] = None
     planned_start_at: Optional[datetime] = None
     planned_end_at: Optional[datetime] = None
+
+
+class RequirementRollbackPayload(pydantic.BaseModel):
+    mode: str = "full"
+    event_ids: Optional[List[int]] = None
+    fields: Optional[Dict[str, List[str]]] = None
+    operator_id: Optional[int] = None
+    reason: Optional[str] = None
+    force: bool = False
 
 
 # ---------- 辅助 ----------
@@ -220,6 +244,16 @@ def _collect_subtree_ids(session, root_id: int) -> List[int]:
     return ids
 
 
+def _load_requirement_for_history(session, req_id: int) -> Requirement | None:
+    """加载用于生成编辑快照的需求。"""
+    return (
+        session.query(Requirement)
+        .options(selectinload(Requirement.assignees))
+        .filter(Requirement.id == req_id)
+        .first()
+    )
+
+
 # ---------- 路由 ----------
 
 @router.post("")
@@ -277,6 +311,8 @@ def create_requirement(payload: RequirementCreate, db: DBDep):
         db.session.flush()
 
     db.session.refresh(req)
+    req = _load_requirement_for_history(db.session, req.id)
+    record_requirement_create(db.session, req, summary="新增需求")
     return {"status": "success", "data": _serialize(req)}
 
 
@@ -355,9 +391,15 @@ def get_requirement(req_id: int, db: DBDep):
 
 @router.put("/{req_id}")
 def update_requirement(req_id: int, payload: RequirementUpdate, db: DBDep):
-    req = db.session.query(Requirement).filter(Requirement.id == req_id).first()
+    req = (
+        db.session.query(Requirement)
+        .options(selectinload(Requirement.assignees))
+        .filter(Requirement.id == req_id)
+        .first()
+    )
     if req is None:
         raise HTTPException(status_code=404, detail="需求不存在")
+    before_snapshot = snapshot_requirement(req)
 
     data = payload.model_dump(exclude_unset=True)
     if "status" in data and data["status"] not in ALL_REQUIREMENT_STATUSES:
@@ -432,16 +474,15 @@ def update_requirement(req_id: int, payload: RequirementUpdate, db: DBDep):
         _replace_assignees(db.session, req.id, AssigneesByRole(**assignees_payload))
         db.session.flush()
 
-    # ---- 写入编辑历史 ----
-    if changes or change_summary:
-        history = RequirementEditHistory(
-            requirement_id=req.id,
-            edited_by_id=edited_by_id,
-            changes=changes if changes else [],
-            change_summary=change_summary[:512] if change_summary else None,
-        )
-        db.session.add(history)
-        db.session.flush()
+    req = _load_requirement_for_history(db.session, req.id)
+    record_requirement_update(
+        db.session,
+        req,
+        before_snapshot=before_snapshot,
+        field_changes=changes,
+        operator_id=edited_by_id,
+        summary=change_summary[:512] if change_summary else None,
+    )
 
     db.session.refresh(req)
     return {"status": "success", "data": _serialize(req)}
@@ -497,16 +538,30 @@ def _serialize_val(v) -> str | list | None:
 
 @router.delete("/{req_id}")
 def delete_requirement(req_id: int, db: DBDep):
-    req = db.session.query(Requirement).filter(Requirement.id == req_id).first()
+    req = (
+        db.session.query(Requirement)
+        .options(selectinload(Requirement.assignees))
+        .filter(Requirement.id == req_id)
+        .first()
+    )
     if req is None:
         raise HTTPException(status_code=404, detail="需求不存在")
     deleted_ids = _collect_subtree_ids(db.session, req_id)
+    batch = create_requirement_batch(
+        db.session,
+        action=EDIT_ACTION_DELETE,
+        summary=f"删除需求 REQ-{req_id}",
+    )
+    for rid in reversed(deleted_ids):
+        item = _load_requirement_for_history(db.session, rid)
+        if item is not None:
+            record_requirement_delete(db.session, item, batch=batch)
     db.session.delete(req)
     db.session.flush()
     return {
         "status": "success",
         "message": "已删除",
-        "data": {"deleted_ids": deleted_ids},
+        "data": {"deleted_ids": deleted_ids, "batch_id": batch.id},
     }
 
 
@@ -516,14 +571,51 @@ def get_requirement_history(req_id: int, db: DBDep):
     req = db.session.query(Requirement).filter(Requirement.id == req_id).first()
     if req is None:
         raise HTTPException(status_code=404, detail="需求不存在")
+    event_rows = (
+        db.session.query(EditOperationEvent)
+        .filter(
+            EditOperationEvent.entity_type == ENTITY_TYPE_REQUIREMENT,
+            EditOperationEvent.entity_id == req_id,
+        )
+        .order_by(EditOperationEvent.created_at.desc(), EditOperationEvent.id.desc())
+        .all()
+    )
     rows = (
         db.session.query(RequirementEditHistory)
         .filter(RequirementEditHistory.requirement_id == req_id)
         .order_by(RequirementEditHistory.created_at.desc())
         .all()
     )
-    data = [r.to_dict() for r in rows]
+    data = [serialize_requirement_event(r) for r in event_rows]
+    data.extend(r.to_dict() for r in rows)
+    data.sort(key=lambda item: item.get("created_at") or "", reverse=True)
     return {"status": "success", "data": data}
+
+
+@router.post("/history/batches/{batch_id}/rollback")
+def rollback_requirement_history(batch_id: int, payload: RequirementRollbackPayload, db: DBDep):
+    """回滚需求编辑历史：支持全量、按事件、按字段。"""
+    fields_by_event: dict[int, list[str]] = {}
+    for key, value in (payload.fields or {}).items():
+        fields_by_event[int(key)] = value
+    event_ids = payload.event_ids
+    if payload.mode == "fields":
+        event_ids = [int(k) for k in fields_by_event]
+    try:
+        result = rollback_requirement_events(
+            db.session,
+            batch_id=batch_id,
+            event_ids=event_ids,
+            fields_by_event=fields_by_event,
+            operator_id=payload.operator_id,
+            reason=payload.reason,
+            force=payload.force,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if result.get("conflicts"):
+        raise HTTPException(status_code=409, detail=result)
+    return {"status": "success", "data": result}
 
 
 @router.post("/{req_id}/split")
@@ -575,6 +667,14 @@ def split_requirement(req_id: int, items: List[RequirementSplitItem], db: DBDep)
     db.session.flush()
     for c in created:
         db.session.refresh(c)
+    batch = create_requirement_batch(
+        db.session,
+        action=EDIT_ACTION_MIXED,
+        summary=f"拆分需求 REQ-{parent.id}，新增 {len(created)} 条子需求",
+    )
+    for c in created:
+        item = _load_requirement_for_history(db.session, c.id)
+        record_requirement_create(db.session, item, summary=batch.summary, batch=batch)
     return {
         "status": "success",
         "data": [_serialize(c) for c in created],

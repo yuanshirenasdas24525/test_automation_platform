@@ -184,6 +184,53 @@ export interface TestCaseDetail extends TestCaseCreate {
   steps: TestStepDraft[];
 }
 
+export type ApiRunStatus = "passed" | "failed" | "error" | "skipped" | "pending";
+
+export interface ApiCaseLatestRun {
+  status: ApiRunStatus;
+  report_id: number;
+  executed_at: string | null;
+  duration: number;
+}
+
+export interface ApiCase extends TestCaseCreate {
+  id: number;
+  module_id: number;
+  case_type: "api";
+  tags: string[];
+  skip: boolean;
+  latest_run: ApiCaseLatestRun | null;
+}
+
+export interface ApiCaseListResponse {
+  items: ApiCase[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface ApiCaseRunResult {
+  case_id: number;
+  case_name: string;
+  status: ApiRunStatus;
+  duration: number;
+  error_message: string | null;
+}
+
+export interface ApiTestHistoryReport {
+  report_id: number;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration: number | null;
+  executor: string | null;
+  allure_url: string | null;
+  counts: Record<ApiRunStatus, number>;
+  cases: ApiCaseRunResult[];
+}
+
+export type ApiCaseEditRecord = FunctionalCaseEditRecord;
+
 export interface Module {
   id: number;
   name: string;
@@ -210,6 +257,8 @@ export interface RunTestRequest {
   project: number;
   module?: number | null;
   case?: number | null;
+  /** 批量运行指定用例，后端合并为同一份执行报告。 */
+  case_ids?: number[] | null;
   /** "category" 命名是历史遗留，语义对应 ProjectStack（functional 后端会拒绝）。 */
   category: Exclude<ProjectStack, "functional"> | string;
   /** 只在 app/android/ios 场景下生效：指定某台已 idle 的设备运行，忽略 env 的 device_pool 过滤。 */
@@ -263,6 +312,16 @@ export interface AiGeneratedCase {
   expected: string[];
   /** 与模块现有用例重名（后端标记），前端默认不勾、显示「已存在」。 */
   duplicate?: boolean;
+  /** AI 建议插入位置：排在哪条现有用例之后（其名称）；"__START__" 最前；"" 末尾。 */
+  after?: string;
+  /** 接口模式的结构化字段（映射到 api 用例的 method/path/headers/body/提取/断言/SQL）。 */
+  method?: string;
+  path?: string;
+  headers?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+  extract?: Record<string, unknown>;
+  assertion?: Record<string, unknown>;
+  sql?: string;
 }
 
 /** AI 规划出的一个测试点（来自 /functional_cases/ai_generate_outline）。 */
@@ -295,6 +354,7 @@ export interface FunctionalEditChange {
 /** 功能用例编辑历史（新建/修改/删除）一条记录（来自 /edit_history）。 */
 export interface FunctionalCaseEditRecord {
   id: number;
+  batch_id?: number;
   case_id: number | null;
   module_id: number | null;
   case_name: string | null;
@@ -305,6 +365,9 @@ export interface FunctionalCaseEditRecord {
   operator: string | null;
   /** ISO 字符串 */
   created_at: string;
+  rollback_available?: boolean;
+  rollback_status?: "none" | "partial" | "full" | "rolled_back";
+  snapshot_expires_at?: string | null;
 }
 
 export interface FunctionalCase {
@@ -558,11 +621,41 @@ export interface RequirementEditHistoryChange {
 }
 export interface RequirementEditHistory {
   id: number;
+  batch_id?: number;
   requirement_id: number;
   edited_by_id?: number | null;
+  action?: "create" | "update" | "delete" | "mixed";
+  entity_label?: string | null;
   changes: RequirementEditHistoryChange[];
   change_summary?: string | null;
   created_at?: string | null;
+  rollback_available?: boolean;
+  rollback_status?: "none" | "partial" | "full" | "rolled_back";
+  snapshot_expires_at?: string | null;
+}
+
+export interface RequirementRollbackPayload {
+  mode: "full" | "partial" | "fields";
+  event_ids?: number[];
+  fields?: Record<string, string[]>;
+  operator_id?: number | null;
+  reason?: string | null;
+  force?: boolean;
+}
+
+export interface RequirementRollbackResult {
+  rolled_back: number;
+  rollback_batch_id?: number;
+  rollback_event_ids?: number[];
+  conflicts: Array<{
+    event_id: number;
+    entity_id?: number | null;
+    field: string;
+    before: unknown;
+    after: unknown;
+    current: unknown;
+    message: string;
+  }>;
 }
 
 /** PM 验收 payload（pm_id 可选；不传时后端不强制校验角色）。 */
