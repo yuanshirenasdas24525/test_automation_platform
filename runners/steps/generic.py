@@ -40,7 +40,7 @@ class AssertStepRunner(BaseStepRunner):
         config = step.get("config") or {}
         t = (config.get("type") or "is_not_null").lower()
         target_expr = config.get("target") or ""
-        expected = config.get("expected")
+        expected = self._resolve_target(config.get("expected"), ctx)
 
         actual = self._resolve_target(target_expr, ctx)
         result.action = f"assert {t}({target_expr})"

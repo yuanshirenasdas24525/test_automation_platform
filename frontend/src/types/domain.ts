@@ -193,6 +193,44 @@ export interface ApiCaseLatestRun {
   duration: number;
 }
 
+export interface ApiCaseLatestRunStepDetail {
+  step_report_id: number;
+  step_id: number | null;
+  step_name: string | null;
+  step_type: string | null;
+  status: string | null;
+  status_code: number | null;
+  duration: number | null;
+  request: {
+    method: string | null;
+    url: string | null;
+    headers: unknown;
+    params: unknown;
+  };
+  response: unknown;
+  assertion: {
+    configured: unknown;
+    results: unknown;
+  };
+  extract: {
+    configured: unknown;
+    values: unknown;
+  };
+  error_message: string | null;
+  create_time: string | null;
+}
+
+export interface ApiCaseLatestRunDetail {
+  case_id: number;
+  case_name: string;
+  report_id: number;
+  status: ApiRunStatus;
+  executed_at: string | null;
+  duration: number;
+  variable_pool: Record<string, unknown>;
+  steps: ApiCaseLatestRunStepDetail[];
+}
+
 export interface ApiCase extends TestCaseCreate {
   id: number;
   module_id: number;
@@ -461,6 +499,7 @@ export type AiFeature =
   | "functional_case_review"
   | "api_case_gen"
   | "report_summary"
+  | "test_result_analysis"
   | "functional_to_auto"
   | "load_plan_gen";
 

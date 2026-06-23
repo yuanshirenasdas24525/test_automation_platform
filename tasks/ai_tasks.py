@@ -857,12 +857,37 @@ def _clamp_priority(v) -> int:
     return p
 
 
+def _handle_test_result_analysis(run: "AiRun", session) -> dict:
+    """分析测试报告执行结果，输出结构化体检建议。
+
+    这里的 AI 是增强层：规则诊断先给出稳定证据和建议；如果 input_payload.model_name
+    有值，再调用模型生成中文总结。模型失败不会让任务失败。
+    """
+    from server.services.test_result_analysis_service import analyze_report
+
+    payload = run.input_payload or {}
+    report_id = int(payload.get("report_id") or 0)
+    if report_id <= 0:
+        raise ValueError("report_id 不能为空")
+    model_name = (payload.get("model_name") or "").strip() or None
+    output = analyze_report(session, report_id, model_name=model_name)
+    ai_tokens = output.get("ai_tokens") or {}
+    return {
+        "output": output,
+        "tokens_in": ai_tokens.get("tokens_in"),
+        "tokens_out": ai_tokens.get("tokens_out"),
+        "model": model_name,
+        "prompt_version": output.get("rules_version"),
+    }
+
+
 # Feature → handler 注册表。新增 feature 时在这里加一行。
 _HANDLERS = {
     "requirement_parse": _handle_requirement_parse,
     "requirement_analyze": _handle_requirement_analyze,    # M6 新流程
     "test_plan": _handle_test_plan,
     "functional_case_gen": _handle_functional_case_gen,    # M7
+    "test_result_analysis": _handle_test_result_analysis,
     # ... 后续 feature 在这里挂
 }
 
@@ -926,6 +951,7 @@ _AI_FEATURE_LABELS: dict[str, str] = {
     "functional_case_gen": "AI 生成测试用例",
     "functional_case_review": "AI 用例质量检查",
     "api_case_gen": "AI 生成 API 用例",
+    "test_result_analysis": "AI 执行结果体检",
     "functional_to_auto": "AI 功能转自动化用例",
     "report_summary": "AI 报告摘要",
     "load_plan_gen": "AI 压测脚本生成",
@@ -939,6 +965,7 @@ _AI_FEATURE_ICONS: dict[str, str] = {
     "functional_case_gen": "Sparkles",
     "functional_case_review": "SearchCheck",
     "api_case_gen": "Globe",
+    "test_result_analysis": "SearchCheck",
     "functional_to_auto": "Workflow",
     "report_summary": "FileBarChart",
     "load_plan_gen": "Gauge",

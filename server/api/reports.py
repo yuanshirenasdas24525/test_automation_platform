@@ -14,12 +14,26 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pydantic
 from fastapi import APIRouter, HTTPException, Query
 
+from database.models import (
+    AiRun,
+    AI_FEATURE_TEST_RESULT_ANALYSIS,
+    AI_RUN_STATUS_PENDING,
+    Project,
+    TestReport,
+    TestStepReport,
+)
 from server.api.deps import DBDep
-from database.models import Project, TestReport, TestStepReport
 
 router = APIRouter(prefix="/reports", tags=["reports"])
+
+
+class ReportAiAnalysisRequest(pydantic.BaseModel):
+    """提交执行结果 AI 分析任务。"""
+    model_name: str | None = None
+    operator: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +172,63 @@ def get_report(report_id: int, db: DBDep):
         "data": {
             **_serialize_report(report, project_name),
             "steps": [_serialize_step(s) for s in steps],
+        },
+    }
+
+
+@router.get("/{report_id}/analysis-preview")
+def get_report_analysis_preview(report_id: int, db: DBDep):
+    """快速返回规则诊断结果，不调 AI，让前端先展示可用结论。"""
+    from server.services.test_result_analysis_service import analyze_report
+
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if report.status == "running":
+        raise HTTPException(status_code=400, detail="报告还在运行中，请结束后再分析")
+    try:
+        output = analyze_report(db.session, report_id, model_name=None)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "success", "data": output}
+
+
+@router.post("/{report_id}/ai-analysis")
+def submit_report_ai_analysis(report_id: int, payload: ReportAiAnalysisRequest, db: DBDep):
+    """提交测试报告体检任务：规则诊断优先，AI 只做汇总增强。"""
+    from tasks.ai_tasks import dispatch_ai_task
+
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="报告不存在")
+    if report.status == "running":
+        raise HTTPException(status_code=400, detail="报告还在运行中，请结束后再分析")
+
+    run = AiRun(
+        feature=AI_FEATURE_TEST_RESULT_ANALYSIS,
+        status=AI_RUN_STATUS_PENDING,
+        project_id=report.project_id,
+        input_payload={
+            "report_id": report_id,
+            "model_name": (payload.model_name or "").strip() or None,
+        },
+        operator=payload.operator,
+    )
+    db.session.add(run)
+    db.session.flush()
+    db.session.refresh(run)
+    db.commit()
+
+    async_result = dispatch_ai_task.delay(run.id)
+    run.celery_task_id = async_result.id
+    db.commit()
+
+    return {
+        "status": "success",
+        "data": {
+            "ai_run_id": run.id,
+            "celery_task_id": async_result.id,
+            "feature": run.feature,
         },
     }
 

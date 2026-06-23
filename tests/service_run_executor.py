@@ -17,6 +17,14 @@ from runners.case_executor import CaseExecutor
 from runners.protocol import StepStatus
 
 
+_RUN_SHARED_VARS: dict[str, object] = {}
+
+
+def reset_run_shared_vars() -> None:
+    """清空单轮 pytest 运行内的跨用例变量池。"""
+    _RUN_SHARED_VARS.clear()
+
+
 class TestService:
     # v2 唯一入口：所有 case（API/Web/App/Android/iOS/Mixed）都走 CaseExecutor。
     # 老的 v1 `test_api_runner`（一条 case = 一次 HTTP 请求）已删；
@@ -63,7 +71,12 @@ class TestService:
             pass
 
         ctx = ExecutionContext(record_property)
+        ctx.set_var("_run_shared_vars", dict(_RUN_SHARED_VARS))
         result = CaseExecutor().run(case, ctx)
+        for key, value in ctx.vars.items():
+            if not str(key).startswith("_"):
+                _RUN_SHARED_VARS[str(key)] = value
+        record_property("variable_pool", dict(_RUN_SHARED_VARS))
 
         # 把最终聚合结果也写进 record_property，便于平台 tasks 层消费
         record_property("case_id", result.case_id)

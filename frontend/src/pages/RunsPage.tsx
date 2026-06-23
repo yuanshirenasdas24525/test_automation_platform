@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Sparkles,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -38,15 +39,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ApiError,
+  aiApi,
+  aiModelsApi,
   reportsApi,
   tasksOverviewApi,
+  type ReportAnalysisOutput,
   type TestReportDetail,
   type TestReportSummary,
   type TestStepReportItem,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
+import { cn } from "@/lib/utils";
 import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
-import type { InProgressTask } from "@/types/domain";
+import type { AiRun, InProgressTask } from "@/types/domain";
 
 /**
  * 执行记录页。
@@ -477,11 +482,68 @@ function DetailDialog({
   reportId: number | null;
   onClose: () => void;
 }) {
+  const [analysisRunId, setAnalysisRunId] = useState<number | null>(null);
+  const [analysisPreview, setAnalysisPreview] = useState<ReportAnalysisOutput | null>(null);
+  const [analysisStage, setAnalysisStage] = useState<"idle" | "collecting" | "rules" | "ai" | "done" | "failed">("idle");
+  useEffect(() => {
+    setAnalysisRunId(null);
+    setAnalysisPreview(null);
+    setAnalysisStage("idle");
+  }, [reportId]);
+
   const query = useQuery({
     queryKey: reportId ? queryKeys.report(reportId) : ["report", "none"],
     queryFn: () => reportsApi.get(reportId!),
     enabled: reportId !== null,
   });
+  const modelsQuery = useQuery({
+    queryKey: ["ai-models"],
+    queryFn: () => aiModelsApi.list(),
+    enabled: reportId !== null,
+    staleTime: 60_000,
+  });
+  const analysisQuery = useQuery({
+    queryKey: analysisRunId ? queryKeys.aiRun(analysisRunId) : ["ai-run", "none"],
+    queryFn: () => aiApi.getRun(analysisRunId!),
+    enabled: analysisRunId !== null,
+    refetchInterval: (q) => {
+      const status = (q.state.data as AiRun | undefined)?.status;
+      return status === "success" || status === "failed" || status === "cancelled"
+        ? false
+        : 2_000;
+    },
+  });
+  const submitAnalysis = useMutation({
+    mutationFn: async () => {
+      if (reportId === null) throw new Error("报告不存在");
+      setAnalysisStage("collecting");
+      const preview = await reportsApi.analysisPreview(reportId);
+      setAnalysisPreview(preview);
+      setAnalysisStage("rules");
+      const firstModel = (modelsQuery.data ?? []).find((m) => m.enabled)?.name;
+      if (!firstModel) return null;
+      setAnalysisStage("ai");
+      return reportsApi.analyze(reportId, { model_name: firstModel });
+    },
+    onSuccess: (res) => {
+      if (res) {
+        setAnalysisRunId(res.ai_run_id);
+        toast.success("规则诊断已完成，正在生成 AI 汇总");
+      } else {
+        setAnalysisStage("done");
+        toast.success("规则诊断已完成");
+      }
+    },
+    onError: (err) => {
+      setAnalysisStage("failed");
+      toast.error(err instanceof Error ? err.message : "提交分析失败");
+    },
+  });
+  useEffect(() => {
+    const status = analysisQuery.data?.status;
+    if (status === "success") setAnalysisStage("done");
+    if (status === "failed" || status === "cancelled") setAnalysisStage("failed");
+  }, [analysisQuery.data?.status]);
 
   return (
     <Dialog open={reportId !== null} onOpenChange={(v) => !v && onClose()}>
@@ -505,7 +567,14 @@ function DetailDialog({
             {query.error instanceof Error ? query.error.message : "未知错误"}
           </div>
         ) : query.data ? (
-          <DetailBody detail={query.data} />
+          <DetailBody
+            detail={query.data}
+            analysisRun={analysisQuery.data ?? null}
+            analysisPreview={analysisPreview}
+            analysisStage={analysisStage}
+            analysisLoading={submitAnalysis.isPending || analysisQuery.isLoading}
+            onStartAnalysis={() => submitAnalysis.mutate()}
+          />
         ) : null}
 
         <DialogFooter>
@@ -518,7 +587,21 @@ function DetailDialog({
   );
 }
 
-function DetailBody({ detail }: { detail: TestReportDetail }) {
+function DetailBody({
+  detail,
+  analysisRun,
+  analysisPreview,
+  analysisStage,
+  analysisLoading,
+  onStartAnalysis,
+}: {
+  detail: TestReportDetail;
+  analysisRun: AiRun | null;
+  analysisPreview: ReportAnalysisOutput | null;
+  analysisStage: "idle" | "collecting" | "rules" | "ai" | "done" | "failed";
+  analysisLoading: boolean;
+  onStartAnalysis: () => void;
+}) {
   const meta: [string, string][] = [
     ["项目", detail.project_name ?? `#${detail.project_id ?? "-"}`],
     ["分类", detail.category ?? "—"],
@@ -553,17 +636,34 @@ function DetailBody({ detail }: { detail: TestReportDetail }) {
       </Card>
 
       {/* Allure 报告链接 */}
-      {detail.allure_url ? (
-        <a
-          href={detail.allure_url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+      <div className="flex flex-wrap items-center gap-2">
+        {detail.allure_url ? (
+          <a
+            href={detail.allure_url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            打开 Allure 报告
+          </a>
+        ) : null}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={analysisLoading || detail.status === "running"}
+          onClick={onStartAnalysis}
         >
-          <ExternalLink className="h-3.5 w-3.5" />
-          打开 Allure 报告
-        </a>
-      ) : null}
+          {analysisLoading ? (
+            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+          )}
+          AI 分析
+        </Button>
+      </div>
+
+      <AnalysisPanel run={analysisRun} preview={analysisPreview} stage={analysisStage} />
 
       {/* 错误摘要 */}
       {detail.summary ? (
@@ -577,6 +677,166 @@ function DetailBody({ detail }: { detail: TestReportDetail }) {
       <StepsList steps={detail.steps} />
     </div>
   );
+}
+
+function AnalysisPanel({
+  run,
+  preview,
+  stage,
+}: {
+  run: AiRun | null;
+  preview: ReportAnalysisOutput | null;
+  stage: "idle" | "collecting" | "rules" | "ai" | "done" | "failed";
+}) {
+  if (!run && !preview && stage === "idle") return null;
+  if (!preview && (stage === "collecting" || run?.status === "pending" || run?.status === "running")) {
+    return (
+      <div className="rounded border bg-muted/30 p-3 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
+        正在收集报告并运行规则诊断。
+      </div>
+    );
+  }
+  if (run?.status === "failed") {
+    return (
+      <div className="rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+        分析失败：{run.error || "未知错误"}
+      </div>
+    );
+  }
+
+  const aiOutput = run?.status === "success" ? (run.output_payload as ReportAnalysisOutput | null) : null;
+  const output = aiOutput ?? preview;
+  if (!output) return null;
+  const cases = output.cases ?? [];
+  const suggestions = cases.flatMap((item) =>
+    (item.suggestions ?? []).map((suggestion) => ({ ...suggestion, caseName: item.name, classification: item.classification })),
+  );
+  const high = suggestions.filter((s) => s.apply_mode === "high_confidence");
+  const review = suggestions.filter((s) => s.apply_mode === "need_review");
+  const manual = suggestions.filter((s) => s.apply_mode === "manual_required");
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <AnalysisStageBar stage={stage} hasAiSummary={Boolean(aiOutput?.ai_summary)} />
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="font-medium">执行结果体检</span>
+          <span className="text-xs text-muted-foreground">用例 {output.summary.total_cases}</span>
+          <span className="text-xs text-muted-foreground">建议 {output.summary.total_suggestions}</span>
+          <span className="text-xs text-emerald-700">高置信 {high.length}</span>
+          <span className="text-xs text-amber-700">需审核 {review.length}</span>
+          <span className="text-xs text-red-700">需人工 {manual.length}</span>
+        </div>
+        {aiOutput?.ai_summary ? (
+          <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs leading-relaxed">
+            {aiOutput.ai_summary}
+          </pre>
+        ) : aiOutput?.ai_error ? (
+          <div className="rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
+            AI 汇总不可用，已展示规则分析：{aiOutput.ai_error}
+          </div>
+        ) : stage === "ai" || run?.status === "pending" || run?.status === "running" ? (
+          <div className="rounded border bg-muted/30 p-2 text-xs text-muted-foreground">
+            <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />
+            规则诊断已展示，AI 正在生成中文汇总。
+          </div>
+        ) : null}
+        {suggestions.length === 0 ? (
+          <div className="rounded border border-dashed p-3 text-center text-xs text-muted-foreground">
+            暂未发现明显的提取、断言或参数问题。
+          </div>
+        ) : (
+          <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+            {suggestions.slice(0, 80).map((s, index) => (
+              <div key={`${s.step_report_id ?? index}-${index}`} className="rounded border p-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-muted px-1.5 py-0.5">{categoryLabel(s.category)}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5">{modeLabel(s.apply_mode)}</span>
+                  <span className="min-w-0 flex-1 truncate font-medium">{s.title}</span>
+                  <span className="text-muted-foreground">{Math.round((s.confidence ?? 0) * 100)}%</span>
+                </div>
+                <div className="mt-1 text-muted-foreground">
+                  {s.caseName}
+                  {s.step_name ? ` · ${s.step_name}` : ""}
+                </div>
+                {s.evidence ? <div className="mt-1 break-all">{s.evidence}</div> : null}
+                <pre className="mt-1 max-h-24 overflow-auto rounded bg-muted/40 p-1.5 font-mono">
+                  {JSON.stringify(s.action, null, 2)}
+                </pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AnalysisStageBar({
+  stage,
+  hasAiSummary,
+}: {
+  stage: "idle" | "collecting" | "rules" | "ai" | "done" | "failed";
+  hasAiSummary: boolean;
+}) {
+  const steps = [
+    { key: "collecting", label: "收集报告" },
+    { key: "rules", label: "规则诊断" },
+    { key: "ai", label: "AI 汇总" },
+    { key: "done", label: "完成" },
+  ] as const;
+  const indexMap: Record<typeof stage, number> = {
+    idle: -1,
+    collecting: 0,
+    rules: 1,
+    ai: 2,
+    done: 3,
+    failed: hasAiSummary ? 3 : 1,
+  };
+  const current = indexMap[stage];
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      {steps.map((item, index) => {
+        const active = index <= current;
+        const running = index === current && stage !== "done" && stage !== "failed";
+        return (
+          <span
+            key={item.key}
+            className={cn(
+              "inline-flex items-center gap-1 rounded border px-2 py-0.5",
+              active ? "border-primary/30 bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground",
+            )}
+          >
+            {running ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {item.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function categoryLabel(category: string): string {
+  const map: Record<string, string> = {
+    missing_extraction: "提取",
+    missing_assertion: "断言",
+    parameter_error: "参数",
+    sql_assertion_needed: "SQL",
+    function_needed: "Function",
+    environment_issue: "环境",
+    api_defect: "接口",
+  };
+  return map[category] ?? category;
+}
+
+function modeLabel(mode: string): string {
+  const map: Record<string, string> = {
+    high_confidence: "高置信",
+    need_review: "需审核",
+    manual_required: "需人工",
+  };
+  return map[mode] ?? mode;
 }
 
 function StepsList({ steps }: { steps: TestReportDetail["steps"] }) {

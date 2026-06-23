@@ -119,6 +119,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const [newRows, setNewRows] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [diagnose, setDiagnose] = useState<{ row: ApiCase; loading: boolean; result: DiagnoseResult | null } | null>(null);
+  const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
 
   const aiModelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: () => aiModelsApi.list() });
   const firstModel = (aiModelsQuery.data ?? []).find((m) => m.enabled)?.name ?? "";
@@ -416,6 +417,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
                   onEdit={setEditor}
                   onRun={(row) => runMutation.mutate([row.id])}
                   onDiagnose={handleDiagnose}
+                  onShowRunDetail={setRunDetailCase}
                   onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
                   onReorder={reorder}
                   onSaved={invalidate}
@@ -457,6 +459,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
       <RecordsDialog open={recordsOpen} quickEdit={quickEdit} moduleId={moduleId} firstModel={firstModel} onInvalidate={invalidate} onClose={() => setRecordsOpen(false)} />
       <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
+      <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
     </div>
   );
 }
@@ -557,6 +560,118 @@ function DiagnoseDialog({
   );
 }
 
+function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () => void }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const query = useQuery({
+    queryKey: ["api-case-latest-run-detail", row?.id],
+    queryFn: () => apiCasesApi.latestRunDetail(row!.id),
+    enabled: row != null,
+  });
+
+  useEffect(() => {
+    setExpanded(new Set());
+  }, [row?.id]);
+
+  const detail = query.data;
+  return (
+    <Dialog open={row != null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>最近一次执行详情</DialogTitle>
+          <DialogDescription className="truncate">{row?.name ?? ""}</DialogDescription>
+        </DialogHeader>
+        {query.isLoading ? (
+          <Loading />
+        ) : query.isError ? (
+          <div className="rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+            加载失败：{query.error instanceof Error ? query.error.message : "未知错误"}
+          </div>
+        ) : detail ? (
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap items-center gap-3 rounded border bg-muted/30 p-3 text-xs">
+              <span>报告 #{detail.report_id}</span>
+              <StatusBadge status={detail.status} />
+              <span>执行时间：{formatTime(detail.executed_at)}</span>
+              <span>耗时：{detail.duration.toFixed(2)}s</span>
+            </div>
+            <JsonBlock title="变量池" value={detail.variable_pool} />
+            <div className="space-y-2">
+              {detail.steps.map((step, index) => {
+                const key = step.step_report_id;
+                const open = expanded.has(key);
+                return (
+                  <div key={key} className="rounded border">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left"
+                      onClick={() => {
+                        const next = new Set(expanded);
+                        if (next.has(key)) next.delete(key);
+                        else next.add(key);
+                        setExpanded(next);
+                      }}
+                    >
+                      <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-90")} />
+                      <StatusBadge status={normalizeRunStatus(step.status)} />
+                      <span className="min-w-0 flex-1 truncate">{index + 1}. {step.step_name || step.step_type || `步骤 ${key}`}</span>
+                      <span className="font-mono text-xs text-muted-foreground">{step.request.method || step.step_type || "--"}</span>
+                      <span className="text-xs text-muted-foreground">{step.status_code ?? "--"}</span>
+                    </button>
+                    {open ? (
+                      <div className="grid gap-2 border-t bg-muted/10 p-3 md:grid-cols-2">
+                        <JsonBlock title="请求地址" value={step.request.url} />
+                        <JsonBlock title="请求头" value={step.request.headers} />
+                        <JsonBlock title="请求参数" value={step.request.params} />
+                        <JsonBlock title="响应参数" value={step.response} />
+                        <JsonBlock title="断言" value={step.assertion} />
+                        <JsonBlock title="提取参数" value={step.extract} />
+                        {step.error_message ? <JsonBlock title="错误信息" value={step.error_message} /> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function JsonBlock({ title, value }: { title: string; value: unknown }) {
+  return (
+    <div className="min-w-0 rounded border bg-background p-2">
+      <div className="mb-1 text-xs font-medium text-muted-foreground">{title}</div>
+      <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
+        {formatJsonValue(value)}
+      </pre>
+    </div>
+  );
+}
+
+function formatJsonValue(value: unknown): string {
+  if (value == null || value === "") return "--";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function normalizeRunStatus(status: string | null | undefined): ApiRunStatus {
+  const value = (status ?? "").toLowerCase();
+  if (value === "passed" || value === "pass" || value === "success") return "passed";
+  if (value === "failed" || value === "fail") return "failed";
+  if (value === "error" || value === "broken") return "error";
+  if (value === "skipped") return "skipped";
+  return "pending";
+}
+
 function Breadcrumb({ project, trail, onJump }: { project: string; trail: Array<{ id: number; name: string }>; onJump: (index: number) => void }) {
   return <nav className="flex min-w-0 items-center gap-1 text-sm"><button className="font-medium hover:underline" onClick={() => onJump(-1)}>{project}</button>{trail.map((item, index) => <span key={item.id} className="flex min-w-0 items-center gap-1"><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button className="max-w-48 truncate hover:underline" onClick={() => onJump(index)}>{item.name}</button></span>)}</nav>;
 }
@@ -568,7 +683,7 @@ function ModuleCard({ node, onOpen }: { node: ContentNode; onOpen: () => void })
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onReorder, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onReorder, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
@@ -579,6 +694,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
   onRun: (row: ApiCase) => void;
   onDelete: (row: ApiCase) => void;
   onDiagnose: (row: ApiCase) => void;
+  onShowRunDetail: (row: ApiCase) => void;
   onReorder: (row: ApiCase, direction: "up" | "down") => void;
   onSaved: () => void;
   newRows: string[];
@@ -604,7 +720,11 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
         <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)}><FileText className="h-4 w-4 shrink-0 text-sky-500" /><span className="truncate">{row.name}</span></button>
         <Badge variant="outline" className="w-fit font-mono">{row.method ?? "GET"}</Badge>
         <span className="truncate font-mono text-xs" title={row.path ?? ""}>{row.path || "--"}</span>
-        <StatusBadge status={row.latest_run?.status ?? "pending"} />
+        <StatusBadge
+          status={row.latest_run?.status ?? "pending"}
+          clickable={row.latest_run != null}
+          onClick={() => row.latest_run && onShowRunDetail(row)}
+        />
         <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="运行" onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
       </div>
     ))}
@@ -623,7 +743,16 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
   </div>;
 }
 
-function StatusBadge({ status }: { status: ApiRunStatus }) { const meta = STATUS_META[status]; return <span className={cn("w-fit rounded px-2 py-0.5 text-xs", meta.className)}>{meta.label}</span>; }
+function StatusBadge({ status, clickable = false, onClick }: { status: ApiRunStatus; clickable?: boolean; onClick?: () => void }) {
+  const meta = STATUS_META[status];
+  const className = cn("w-fit rounded px-2 py-0.5 text-xs", meta.className, clickable && "cursor-pointer hover:ring-1 hover:ring-primary/40");
+  if (!clickable) return <span className={className}>{meta.label}</span>;
+  return (
+    <button type="button" className={className} onClick={onClick} title="查看最近一次请求/响应详情">
+      {meta.label}
+    </button>
+  );
+}
 
 function QuickEditRow({ row, sessionId, checked, onChecked, onEdit, onDelete, onUp, onDown, onSaved }: {
   row: ApiCase; sessionId: string | null; checked: boolean; onChecked: () => void; onEdit: () => void; onDelete: () => void; onUp: () => void; onDown: () => void; onSaved: () => void;

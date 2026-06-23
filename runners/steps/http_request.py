@@ -144,12 +144,21 @@ class HttpRequestStepRunner(BaseStepRunner):
         )
         result.extracted = extracted
         ctx.record("extract_values", extracted)
+        if extracted:
+            ctx_vars_display = {k: v for k, v in ctx.vars.items()
+                                if not k.startswith("_")}
+            add_allure_step(
+                "变量池（提取后）",
+                ctx_vars_display or "(空)",
+                attachment_name="变量池（提取后）",
+            )
 
         # 5) assertion
         self._apply_assertions(
             step.get("assertion") or [],
             response_body=response_body,
             status_code=status_code,
+            ctx=ctx,
         )
 
     # ---------------------- 内部工具 ----------------------
@@ -335,6 +344,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         asserts: list[dict],
         response_body: Any,
         status_code: int,
+        ctx: ExecutionContext,
     ) -> None:
         """执行所有断言，收集全部失败后统一报告。"""
         passed: list[str] = []
@@ -344,7 +354,7 @@ class HttpRequestStepRunner(BaseStepRunner):
                 continue
             t = (item.get("type") or "equal").lower()
             target = item.get("target") or ""
-            expected = item.get("expected")
+            expected = self._resolve_value(item.get("expected"), ctx)
 
             actual = self._resolve_assertion_actual(target, response_body, status_code)
 

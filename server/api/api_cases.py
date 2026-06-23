@@ -1,6 +1,8 @@
 """API 用例工作台所需的分页列表、测试记录和编辑记录接口。"""
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import func, or_
 
@@ -9,6 +11,7 @@ from database.models import (
     ApiCaseEditHistory,
     CASE_TYPE_API,
     EditOperationEvent,
+    TestStep,
     TestCase,
     TestReport,
     TestStepReport,
@@ -95,6 +98,53 @@ def _serialize_case(case: TestCase, latest_run: dict | None) -> dict:
         "assertion": case.assertion,
         "wait_time": case.wait_time,
         "latest_run": latest_run,
+    }
+
+
+def _jsonish(value):
+    """尽量把 JSON 字符串还原，失败时返回原文本，便于前端展示。"""
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        return text
+
+
+def _serialize_run_step(step: TestStepReport, step_def: TestStep | None = None) -> dict:
+    input_data = _jsonish(step.input_data)
+    return {
+        "step_report_id": step.id,
+        "step_id": step.step_id,
+        "step_name": step.step_name,
+        "step_type": step.step_type,
+        "status": step.status,
+        "status_code": step.status_code,
+        "duration": step.duration,
+        "request": {
+            "method": step.action,
+            "url": step.target,
+            "headers": input_data.get("headers") if isinstance(input_data, dict) else None,
+            "params": input_data,
+        },
+        "response": _jsonish(step.output_data),
+        "assertion": {
+            "configured": step_def.assertion if step_def is not None else None,
+            "results": _jsonish(step.assertion_results),
+        },
+        "extract": {
+            "configured": step_def.extract if step_def is not None else None,
+            "values": _jsonish(step.extract_values),
+        },
+        "error_message": step.error_message,
+        "create_time": step.create_time.isoformat() if step.create_time else None,
     }
 
 
@@ -243,6 +293,55 @@ def list_test_history(
             "cases": case_results,
         })
     return {"status": "success", "data": data}
+
+
+@router.get("/{case_id}/latest_run_detail")
+def get_latest_run_detail(case_id: int, db: DBDep):
+    """读取 API 用例最近一次执行详情，用于点击状态查看请求/响应/断言/提取。"""
+    case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
+    if case is None or case.case_type != CASE_TYPE_API:
+        raise HTTPException(status_code=404, detail="API 用例不存在")
+
+    latest = (
+        db.session.query(TestStepReport.report_id)
+        .filter(TestStepReport.case_id == case_id)
+        .order_by(TestStepReport.report_id.desc())
+        .first()
+    )
+    if not latest:
+        raise HTTPException(status_code=404, detail="该用例还没有执行记录")
+
+    report_id = latest[0]
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    steps = (
+        db.session.query(TestStepReport)
+        .filter(TestStepReport.case_id == case_id, TestStepReport.report_id == report_id)
+        .order_by(TestStepReport.create_time.asc(), TestStepReport.id.asc())
+        .all()
+    )
+    step_defs = {
+        step.id: step
+        for step in db.session.query(TestStep).filter(TestStep.case_id == case_id).all()
+    }
+    variable_pool = {}
+    for step in steps:
+        values = _jsonish(step.extract_values)
+        if isinstance(values, dict):
+            variable_pool.update(values)
+
+    return {
+        "status": "success",
+        "data": {
+            "case_id": case.id,
+            "case_name": case.name,
+            "report_id": report_id,
+            "status": _aggregate_status([step.status for step in steps]),
+            "executed_at": report.start_time.isoformat() if report and report.start_time else None,
+            "duration": sum(float(step.duration or 0) for step in steps),
+            "variable_pool": variable_pool,
+            "steps": [_serialize_run_step(step, step_defs.get(step.step_id)) for step in steps],
+        },
+    }
 
 
 @router.get("/{case_id}/runs")

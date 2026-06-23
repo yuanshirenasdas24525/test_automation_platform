@@ -319,6 +319,13 @@ class CaseExecutor:
         if isinstance(case_vars, dict):
             for k, v in case_vars.items():
                 ctx.set_var(k, v)
+        # 3) 同一轮执行内由前序 case 提取出的变量，优先级最高。
+        # 这样“登录用例提取 token → 后续接口用例使用 ${token}”这类链式执行可以成立。
+        run_shared_vars = ctx.vars.get("_run_shared_vars") or {}
+        if isinstance(run_shared_vars, dict):
+            for k, v in run_shared_vars.items():
+                if not str(k).startswith("_"):
+                    ctx.set_var(k, v)
 
     @staticmethod
     def _inject_default_parameters(ctx: ExecutionContext) -> None:

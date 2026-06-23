@@ -17,6 +17,7 @@ import type {
   AiRun,
   AiRunStatus,
   ApiCaseEditRecord,
+  ApiCaseLatestRunDetail,
   ApiCaseListResponse,
   ApiRunStatus,
   ApiTestHistoryReport,
@@ -465,6 +466,9 @@ export const apiCasesApi = {
       error_message: string | null;
     }>>(`/api/api_cases/${caseId}/runs?limit=${limit}`);
   },
+  latestRunDetail(caseId: number) {
+    return request<ApiCaseLatestRunDetail>(`/api/api_cases/${caseId}/latest_run_detail`);
+  },
 };
 
 // -------------------------------------------------------------------------
@@ -818,6 +822,50 @@ export interface TestReportDetail extends TestReportSummary {
   steps: TestStepReportItem[];
 }
 
+export interface ReportAnalysisSuggestion {
+  category: string;
+  severity: string;
+  confidence: number;
+  case_id: number | null;
+  step_report_id: number | null;
+  step_id: number | null;
+  step_name: string | null;
+  title: string;
+  evidence: string | null;
+  action: Record<string, unknown>;
+  apply_mode: "high_confidence" | "need_review" | "manual_required" | string;
+}
+
+export interface ReportAnalysisCase {
+  case_id: number;
+  module_id: number | null;
+  name: string;
+  case_type: string | null;
+  status: string;
+  classification: string;
+  suggestions: ReportAnalysisSuggestion[];
+}
+
+export interface ReportAnalysisOutput {
+  report_id: number;
+  project_id: number | null;
+  model_name?: string | null;
+  rules_version: string;
+  summary: {
+    total_cases: number;
+    total_suggestions: number;
+    by_category: Record<string, number>;
+    by_severity: Record<string, number>;
+    high_confidence?: number;
+    need_review?: number;
+    manual_required?: number;
+    message?: string;
+  };
+  cases: ReportAnalysisCase[];
+  ai_summary?: string | null;
+  ai_error?: string | null;
+}
+
 export interface ReportsListResponse {
   data: TestReportSummary[];
   total: number;
@@ -860,6 +908,15 @@ export const reportsApi = {
   list: fetchReports,
   get(id: number) {
     return request<TestReportDetail>(`/api/reports/${id}`);
+  },
+  analysisPreview(id: number) {
+    return request<ReportAnalysisOutput>(`/api/reports/${id}/analysis-preview`);
+  },
+  analyze(id: number, body: { model_name?: string | null; operator?: string | null } = {}) {
+    return request<AiSubmitResponse>(`/api/reports/${id}/ai-analysis`, {
+      method: "POST",
+      body,
+    });
   },
   remove(id: number) {
     return request<void>(`/api/reports/${id}`, { method: "DELETE" });

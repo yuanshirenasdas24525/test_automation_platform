@@ -83,6 +83,11 @@ def pytest_sessionstart(session):  # noqa: ARG001
     except ImportError:
         # session_registry 模块不存在（极端环境）不要让 pytest 起不来
         pass
+    try:
+        from tests.service_run_executor import reset_run_shared_vars
+        reset_run_shared_vars()
+    except ImportError:
+        pass
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001

@@ -4,10 +4,12 @@
 覆盖：
   1. 一条 http_request step：status_code + jsonpath 断言、extract 结果
   2. 多条 step：上一步 extract 的变量在下一步可通过 ${var} 引用
-  3. step 失败 + on_failure=stop：后续 step 不执行
-  4. step 失败 + on_failure=continue：后续 step 继续执行
-  5. 未注册的 step_type：返回 ERROR 但不炸
-  6. v1 兼容：case 没有 steps，靠 method/path 合成一条
+  3. 前序 case 共享变量在下一条 case 可通过 ${var} 引用
+  4. HTTP 断言 expected 支持从变量池取值
+  5. step 失败 + on_failure=stop：后续 step 不执行
+  6. step 失败 + on_failure=continue：后续 step 继续执行
+  7. 未注册的 step_type：返回 ERROR 但不炸
+  8. v1 兼容：case 没有 steps，靠 method/path 合成一条
 
 跑法（需要在项目根目录）：
 
@@ -24,6 +26,7 @@ import requests
 
 from runners.api.request_data_processor import RequestDataProcessor
 from runners.case_executor import CaseExecutor
+from runners.context.execution_context import ExecutionContext
 from runners.dispatcher import StepDispatcher
 from runners.protocol import StepStatus
 from runners.steps.http_request import HttpRequestStepRunner
@@ -173,7 +176,80 @@ def test_variable_propagation_across_steps(monkeypatch):
 
 
 # ===================================================================
-# 3. 失败 + on_failure=stop：后续 step 不执行
+# 3. 跨 case 变量传递：上一条 case extract 的 token 可供下一条 case 使用
+# ===================================================================
+def test_run_shared_variables_propagate_to_next_case(monkeypatch):
+    resp = _FakeResponse(200, {"ok": True})
+    http_runner, calls = _make_runner_with_mocked_http(monkeypatch, [resp])
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+    ctx = ExecutionContext()
+    ctx.set_var("_run_shared_vars", {"token": "from-login-case"})
+
+    case = {
+        "id": 3,
+        "name": "use shared token",
+        "case_type": "api",
+        "steps": [{
+            "id": 301,
+            "step_order": 0,
+            "step_name": "GET /profile",
+            "step_type": "http_request",
+            "config": {
+                "method": "GET",
+                "path": "/profile",
+                "headers": {"Authorization": "Bearer ${token}"},
+                "data_type": "json",
+                "params": {},
+            },
+            "assertion": [{"type": "equal", "target": "status_code", "expected": 200}],
+        }],
+    }
+
+    result = executor.run(case, ctx)
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert calls["recorded"][0]["headers"].get("Authorization") == "Bearer from-login-case"
+
+
+# ===================================================================
+# 4. HTTP 断言 expected 支持从变量池取值
+# ===================================================================
+def test_http_assertion_expected_resolves_variables(monkeypatch):
+    resp = _FakeResponse(200, {"username": "admin"})
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+
+    case = {
+        "id": 4,
+        "name": "assert expected from vars",
+        "case_type": "api",
+        "variables": {"my_account": "admin"},
+        "steps": [{
+            "id": 401,
+            "step_order": 0,
+            "step_name": "GET /me",
+            "step_type": "http_request",
+            "config": {
+                "method": "GET",
+                "path": "/me",
+                "headers": {},
+                "data_type": "json",
+                "params": {},
+            },
+            "assertion": [
+                {"type": "equal", "target": "status_code", "expected": 200},
+                {"type": "jsonpath", "target": "$.username", "expected": "${my_account}"},
+            ],
+        }],
+    }
+
+    result = executor.run(case)
+    assert result.status == StepStatus.PASSED, result.error_message
+
+
+# ===================================================================
+# 5. 失败 + on_failure=stop：后续 step 不执行
 # ===================================================================
 def test_step_failure_stops_subsequent(monkeypatch):
     resp1 = _FakeResponse(500, {"err": "boom"})
