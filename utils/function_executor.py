@@ -227,6 +227,25 @@ def function_name():
         else:
             raise ValueError("不支持的国家代码")
 
+    def unique(prefix="AUTO_TEST", *args, **kwargs):
+        """
+        生成带测试命名空间的唯一字符串，供 AI 接口用例的数据工厂使用。
+        """
+        clean = re.sub(r"[^0-9A-Za-z_]+", "_", str(prefix or "AUTO_TEST")).strip("_")
+        return f"{clean}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}"
+
+    def unique_mobile(*args, **kwargs):
+        """
+        生成唯一测试手机号。国内常见 11 位格式，避免复用真实手机号。
+        """
+        return "199" + "".join(str(random.randint(0, 9)) for _ in range(8))
+
+    def unique_email(*args, **kwargs):
+        """
+        生成带 AUTO_TEST 命名空间的唯一邮箱。
+        """
+        return f"auto_test_{int(time.time() * 1000)}_{random.randint(1000, 9999)}@example.test"
+
     def captcha_solver(*args, **kwargs):
         token = solve_captcha()
         return token

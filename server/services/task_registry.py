@@ -120,7 +120,7 @@ class TaskRegistry:
             return None
 
         project_id = row.get("project_id")
-        detail_url = info.detail_url_tpl
+        detail_url = row.get("detail_url") or info.detail_url_tpl
         if detail_url:
             detail_url = detail_url.replace("{id}", str(task_id))
             detail_url = detail_url.replace(

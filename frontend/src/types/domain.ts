@@ -360,6 +360,15 @@ export interface AiGeneratedCase {
   extract?: Record<string, unknown>;
   assertion?: Record<string, unknown>;
   sql?: string;
+  data_safety?: {
+    namespace?: string;
+    policy?: string;
+    mutating_method?: boolean;
+    rewritten_fields?: string[];
+    readonly_seed_warnings?: string[];
+    function_hints?: string[];
+    cleanup_required?: boolean;
+  };
 }
 
 /** AI 规划出的一个测试点（来自 /functional_cases/ai_generate_outline）。 */
@@ -1146,6 +1155,14 @@ export interface AnalysisTriggerResponse {
     model_label: string;
   }>;
 }
+
+export type RequirementAnalysisType =
+  | "clarify"
+  | "testability"
+  | "delivery"
+  | "full"
+  | "market"
+  | "industry";
 
 export interface AnalysisDiffResponse {
   before: AnalysisVersion;

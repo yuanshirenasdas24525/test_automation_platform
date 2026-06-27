@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Brain,
   Bug,
@@ -25,8 +25,10 @@ import {
   SearchCheck,
   Smartphone,
   Sparkles,
+  StopCircle,
   Workflow,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { tasksOverviewApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
@@ -39,6 +41,9 @@ import type { InProgressTask } from "@/types/domain";
 const CIRCLE = 48;
 const GAP = 12;
 const DRAG_THRESHOLD = 5;
+const LOCAL_TASKS_KEY = "local-in-progress-tasks:v1";
+const LOCAL_TASKS_EVENT = "local-in-progress-tasks-change";
+const LOCAL_TASKS_CANCEL_EVENT = "local-in-progress-task-cancel";
 
 // ---------------------------------------------------------------------------
 // 图标映射
@@ -80,12 +85,46 @@ function formatElapsed(iso: string | null): string | null {
   return `${h}h ${m % 60}m`;
 }
 
+function readLocalTasks(): InProgressTask[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TASKS_KEY);
+    if (!raw) return [];
+    const items = JSON.parse(raw) as InProgressTask[];
+    const staleAt = Date.now() - 4 * 60 * 60 * 1000;
+    return (Array.isArray(items) ? items : []).filter((item) => {
+      if (item.status !== "running" && item.status !== "pending") return false;
+      if (!item.started_at) return true;
+      return new Date(item.started_at).getTime() >= staleAt;
+    });
+  } catch {
+    return [];
+  }
+}
+
+function removeLocalTask(typeKey: string, id: number) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TASKS_KEY);
+    const items = raw ? JSON.parse(raw) as InProgressTask[] : [];
+    const next = (Array.isArray(items) ? items : []).filter(
+      (item) => item.type_key !== typeKey && item.id !== id,
+    );
+    window.localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(next));
+    window.dispatchEvent(new Event(LOCAL_TASKS_EVENT));
+  } catch {
+    // 本地任务只是 UI 辅助，失败不影响主流程。
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 组件
 // ---------------------------------------------------------------------------
 export function FloatingTaskWidget() {
+  const queryClient = useQueryClient();
   const [pos, setPos] = useState({ x: defaultX(), y: defaultY() });
   const [expanded, setExpanded] = useState(false);
+  const [localTasks, setLocalTasks] = useState<InProgressTask[]>(() => readLocalTasks());
   const dragging = useRef(false);
   const moved = useRef(false);
   const offset = useRef({ x: 0, y: 0 });
@@ -99,8 +138,33 @@ export function FloatingTaskWidget() {
     staleTime: 1_500,
   });
 
-  const count = tasks.length;
-  const runningCount = tasks.filter((t) => t.status === "running").length;
+  const cancelMutation = useMutation({
+    mutationFn: (task: InProgressTask) => tasksOverviewApi.cancelTask(task.type_key, task.id),
+    onSuccess: (res) => {
+      toast.success(res.message || "已终止任务");
+      void queryClient.invalidateQueries({ queryKey: queryKeys.tasksInProgress() });
+    },
+    onError: (error) => {
+      const message = error instanceof Error ? error.message : "终止任务失败";
+      toast.error(message);
+    },
+  });
+
+  useEffect(() => {
+    const reload = () => setLocalTasks(readLocalTasks());
+    const timer = window.setInterval(reload, 2_000);
+    window.addEventListener(LOCAL_TASKS_EVENT, reload);
+    window.addEventListener("storage", reload);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener(LOCAL_TASKS_EVENT, reload);
+      window.removeEventListener("storage", reload);
+    };
+  }, []);
+
+  const mergedTasks = [...localTasks, ...tasks];
+  const count = mergedTasks.length;
+  const runningCount = mergedTasks.filter((t) => t.status === "running").length;
   const visible = count > 0;
 
   const circleOnLeft = pos.x + CIRCLE / 2 < window.innerWidth / 2;
@@ -169,6 +233,19 @@ export function FloatingTaskWidget() {
   // ── 鼠标移出整个 widget 区域时收回面板 ──────────────────────────
   const onMouseLeave = useCallback(() => setExpanded(false), []);
 
+  const cancelTask = useCallback((task: InProgressTask) => {
+    if (task.type_key.startsWith("local_")) {
+      removeLocalTask(task.type_key, task.id);
+      window.dispatchEvent(new CustomEvent(LOCAL_TASKS_CANCEL_EVENT, {
+        detail: { type_key: task.type_key, id: task.id },
+      }));
+      setLocalTasks(readLocalTasks());
+      toast.success("已终止任务");
+      return;
+    }
+    cancelMutation.mutate(task);
+  }, [cancelMutation]);
+
   return (
     <div
       ref={elRef}
@@ -226,51 +303,71 @@ export function FloatingTaskWidget() {
         </div>
 
         <div className="overflow-y-auto" style={{ maxHeight: "calc(60vh - 48px)" }}>
-          {tasks.length === 0 ? (
+          {mergedTasks.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-gray-400">
               当前没有进行中的任务
             </div>
           ) : (
             <div className="divide-y divide-gray-100">
-              {tasks.map((t) => {
+              {mergedTasks.map((t) => {
                 const Icon = ICONS[t.icon] ?? Loader2;
                 const elapsed = formatElapsed(t.started_at);
                 return (
-                  <Link
+                  <div
                     key={`${t.type_key}-${t.id}`}
-                    to={t.detail_url || "#"}
-                    onClick={() => setExpanded(false)}
-                    className="flex items-start gap-3 px-4 py-3 text-sm hover:bg-gray-50 transition-colors"
+                    className="flex items-start gap-2 px-4 py-3 text-sm hover:bg-gray-50 transition-colors"
                   >
-                    <Icon className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-gray-800">{t.name}</div>
-                      <div className="mt-0.5 flex items-center gap-2">
-                        {t.status === "running" ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-blue-600">
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                            运行中
-                          </span>
-                        ) : t.status === "pending" ? (
-                          <span className="inline-flex items-center gap-1 text-xs text-amber-600">
-                            <Loader2 className="h-3 w-3" />
-                            等待中
-                          </span>
-                        ) : (
-                          <span className="text-xs text-gray-400">{t.status}</span>
-                        )}
-                        <span className="text-xs text-gray-400">{t.type_label}</span>
-                      </div>
-                      {t.project_name ? (
-                        <div className="mt-0.5 truncate text-xs text-gray-400">
-                          {t.project_name}
+                    <Link
+                      to={t.detail_url || "#"}
+                      onClick={() => setExpanded(false)}
+                      className="flex min-w-0 flex-1 items-start gap-3"
+                    >
+                      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-gray-800">{t.name}</div>
+                        <div className="mt-0.5 flex items-center gap-2">
+                          {t.status === "running" ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                              运行中
+                            </span>
+                          ) : t.status === "pending" ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-amber-600">
+                              <Loader2 className="h-3 w-3" />
+                              等待中
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-400">{t.status}</span>
+                          )}
+                          <span className="text-xs text-gray-400">{t.type_label}</span>
                         </div>
+                        {t.project_name ? (
+                          <div className="mt-0.5 truncate text-xs text-gray-400">
+                            {t.project_name}
+                          </div>
+                        ) : null}
+                      </div>
+                    </Link>
+                    <div className="flex shrink-0 items-start gap-1">
+                      {elapsed ? (
+                        <span className="pt-0.5 text-xs text-gray-400">{elapsed}</span>
                       ) : null}
+                      <button
+                        type="button"
+                        title="终止任务"
+                        aria-label="终止任务"
+                        disabled={cancelMutation.isPending}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          cancelTask(t);
+                        }}
+                        className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <StopCircle className="h-4 w-4" />
+                      </button>
                     </div>
-                    {elapsed ? (
-                      <span className="shrink-0 pt-0.5 text-xs text-gray-400">{elapsed}</span>
-                    ) : null}
-                  </Link>
+                  </div>
                 );
               })}
             </div>

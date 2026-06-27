@@ -41,6 +41,17 @@ class TriggerAnalysisBody(BaseModel):
     model_names: list[str] = Field(default_factory=list)
     user_prompt: Optional[str] = None
     document_title: Optional[str] = None
+    analysis_type: Optional[str] = None
+
+
+ANALYSIS_TYPES = {
+    "clarify",
+    "testability",
+    "delivery",
+    "full",
+    "market",
+    "industry",
+}
 
 
 class UpdateDocumentBody(BaseModel):
@@ -130,6 +141,15 @@ def trigger_analysis(
     req = _require_requirement(db.session, rid)
     if not body.model_names:
         raise HTTPException(status_code=400, detail="model_names 不能为空")
+    analysis_type = (body.analysis_type or "full").strip()
+    if analysis_type not in ANALYSIS_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "analysis_type 必须是 "
+                "clarify / testability / delivery / full / market / industry 之一"
+            ),
+        )
 
     # 校验所有模型都存在且 enabled
     cfgs = []
@@ -152,6 +172,7 @@ def trigger_analysis(
                 "model_name": cfg.name,
                 "user_prompt": body.user_prompt or "",
                 "document_title": body.document_title or "",
+                "analysis_type": analysis_type,
                 "created_by_id": current_user.id,
             },
             operator=current_user.username,

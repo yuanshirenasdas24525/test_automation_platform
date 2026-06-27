@@ -149,6 +149,7 @@ def _query_test_reports(categories: list[str]):
                 "project_id": r.project_id,
                 "project_name": r.project_name,
                 "started_at": r.start_time,
+                "detail_url": f"/runs?report_id={r.id}",
             }
             for r in rows
         ]

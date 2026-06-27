@@ -25,6 +25,8 @@ import { usersApi } from "@/lib/api";
 import { ALL_ROLE_CODES, ROLE_LABELS } from "@/types/domain";
 import type { RoleCode, User } from "@/types/domain";
 
+const PROTECTED_ADMIN_USERNAME = "admin";
+
 export function AdminWorkspace() {
   const queryClient = useQueryClient();
   const usersQuery = useQuery({
@@ -132,6 +134,7 @@ function UserRow({
     },
     onError: (err: Error) => toast.error(err.message),
   });
+  const isProtectedAdmin = user.username === PROTECTED_ADMIN_USERNAME;
 
   return (
     <tr className="text-sm">
@@ -148,22 +151,28 @@ function UserRow({
               .join(" / ")}
       </td>
       <td className="px-4 py-2 text-right">
-        <Button
-          size="sm"
-          variant="outline"
-          className="mr-2"
-          onClick={onEdit}
-        >
-          <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={toggleActive.isPending}
-          onClick={() => toggleActive.mutate()}
-        >
-          停用
-        </Button>
+        {isProtectedAdmin ? (
+          <span className="text-xs text-muted-foreground">系统内置账号</span>
+        ) : (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mr-2"
+              onClick={onEdit}
+            >
+              <Pencil className="mr-1 h-3.5 w-3.5" /> 编辑
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={toggleActive.isPending}
+              onClick={() => toggleActive.mutate()}
+            >
+              停用
+            </Button>
+          </>
+        )}
       </td>
     </tr>
   );
@@ -197,15 +206,12 @@ function EditUserDialog({
       );
     }
   }, [user]);
+  const isProtectedAdmin = user?.username === PROTECTED_ADMIN_USERNAME;
 
   const save = useMutation({
     mutationFn: async () => {
       if (!user) throw new Error("no user");
-      const body: Record<string, unknown> = {
-        full_name: fullName.trim() || null,
-        email: email.trim() || null,
-      };
-      if (password) body.password = password;
+      if (isProtectedAdmin) throw new Error("admin 账号为系统内置账号，禁止编辑");
       await usersApi.update(user.id, {
         full_name: fullName.trim() || null,
         email: email.trim() || null,
@@ -293,7 +299,10 @@ function EditUserDialog({
           <Button variant="outline" onClick={onClose}>
             取消
           </Button>
-          <Button disabled={save.isPending} onClick={() => save.mutate()}>
+          <Button
+            disabled={save.isPending || isProtectedAdmin}
+            onClick={() => save.mutate()}
+          >
             保存
           </Button>
         </DialogFooter>

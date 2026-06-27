@@ -489,6 +489,17 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
     model_name = (payload.get("model_name") or "").strip()
     user_prompt = (payload.get("user_prompt") or "").strip()
     title_override = (payload.get("document_title") or "").strip()
+    analysis_type = (payload.get("analysis_type") or "full").strip()
+    prompt_by_type = {
+        "clarify": "requirement_analysis_clarify",
+        "testability": "requirement_analysis_testability",
+        "delivery": "requirement_analysis_delivery",
+        "full": "requirement_analysis_v2",
+        "market": "requirement_analysis_market",
+        "industry": "requirement_analysis_industry",
+    }
+    if analysis_type not in prompt_by_type:
+        analysis_type = "full"
 
     if not requirement_id:
         raise ValueError("input_payload.requirement_id 必填")
@@ -524,7 +535,7 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
     placeholders["USER_PROMPT"] = user_prompt or "（用户未补充）"
 
     # ── 3. 渲染 prompt ─────────────────────────────────────────────
-    template = _load_prompt("requirement_analysis_v2")
+    template = _load_prompt(prompt_by_type[analysis_type])
     prompt = _render_prompt(template, placeholders)
     prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
@@ -560,10 +571,19 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
 
     # ── 5. 写文档 + v1 ─────────────────────────────────────────────
     model_label = f"{cfg.provider} / {cfg.model}"
+    title_prefix_by_type = {
+        "clarify": "需求澄清",
+        "testability": "可测性分析",
+        "delivery": "研发落地分析",
+        "full": "完整需求分析",
+        "market": "市场分析",
+        "industry": "行业调研",
+    }
     if title_override:
         title = title_override[:200]
     else:
-        title = f"AI 分析 - {model_label} - {_dt.now().strftime('%Y-%m-%d %H:%M')}"[:200]
+        title_prefix = title_prefix_by_type.get(analysis_type, "AI 分析")
+        title = f"{title_prefix} - {model_label} - {_dt.now().strftime('%Y-%m-%d %H:%M')}"[:200]
 
     doc = RequirementAnalysisDocument(
         requirement_id=int(requirement_id),
@@ -597,6 +617,7 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
             "image_strategy": image_strategy,
             "image_count": len(image_paths),
             "model_label": model_label,
+            "analysis_type": analysis_type,
         },
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
@@ -911,6 +932,7 @@ def _query_ai_runs(feature: str):
             AiRun.feature,
             AiRun.status,
             AiRun.project_id,
+            AiRun.input_payload,
             AiRun.started_at,
             Project.name.label("project_name"),
         ).outerjoin(Project, Project.id == AiRun.project_id).filter(
@@ -938,10 +960,29 @@ def _query_ai_runs(feature: str):
                 "project_id": r.project_id,
                 "project_name": r.project_name,
                 "started_at": r.started_at,
+                "detail_url": _ai_run_detail_url(feature, r.project_id, r.input_payload),
             }
             for r in rows
         ]
     return _query
+
+
+def _ai_run_detail_url(
+    feature: str,
+    project_id: int | None,
+    input_payload: dict | None,
+) -> str:
+    """按 AI 任务上下文生成可恢复的前端入口。"""
+    payload = input_payload or {}
+    if feature == "bug_fix" and payload.get("bug_id"):
+        return f"/tasks/{payload['bug_id']}"
+    if feature == "test_result_analysis" and payload.get("report_id"):
+        return f"/runs?report_id={payload['report_id']}"
+    if feature == "functional_case_gen" and project_id:
+        return f"/projects/{project_id}/functional"
+    if project_id:
+        return f"/projects/{project_id}/requirements"
+    return "/runs"
 
 
 _AI_FEATURE_LABELS: dict[str, str] = {
@@ -956,6 +997,8 @@ _AI_FEATURE_LABELS: dict[str, str] = {
     "report_summary": "AI 报告摘要",
     "load_plan_gen": "AI 压测脚本生成",
     "bug_fix": "AI 一键修复 Bug",
+    "ai_studio_dialogue_turn": "AI 需求工作间对话",
+    "ai_studio_finalize": "AI 需求草稿生成",
 }
 
 _AI_FEATURE_ICONS: dict[str, str] = {
@@ -970,6 +1013,8 @@ _AI_FEATURE_ICONS: dict[str, str] = {
     "report_summary": "FileBarChart",
     "load_plan_gen": "Gauge",
     "bug_fix": "Bug",
+    "ai_studio_dialogue_turn": "Brain",
+    "ai_studio_finalize": "FileText",
 }
 
 from server.services.task_registry import task_registry, TaskTypeInfo  # noqa: E402

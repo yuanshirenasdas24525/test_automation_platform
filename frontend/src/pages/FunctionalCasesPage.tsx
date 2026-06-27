@@ -23,6 +23,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  Search,
   ShieldOff,
   Sparkles,
   Trash2,
@@ -62,12 +63,15 @@ import { cn } from "@/lib/utils";
 import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
 import {
   aiModelsApi,
+  analysisDocsApi,
   ApiError,
+  apiCasesApi,
   casesApi,
   contentApi,
   functionalCasesApi,
   modulesApi,
   projectsApi,
+  requirementsApi,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import type {
@@ -80,6 +84,7 @@ import type {
   FunctionalRunStatus,
   FunctionalSpec,
   FunctionalTestHistoryRun,
+  Requirement,
 } from "@/types/domain";
 
 /**
@@ -168,7 +173,8 @@ const STATUS_BTN_CLS: Record<string, string> = {
   na: "",
 };
 
-const PAGE_SIZE = 50;
+const DEFAULT_PAGE_SIZE = 50;
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 500] as const;
 
 /** 编辑记录跳转后，单条用例的差异：动作 + 改了哪些字段 + 字段改前的值（供高亮/悬停用）。 */
 type CaseDiffEntry = { action: string; fields: Set<string>; old: Record<string, string> };
@@ -227,7 +233,9 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
 
   const [searchParams, setSearchParams] = useSearchParams();
   const statusFilter = parseStatusParam(searchParams.get("status"));
-  const page = Number(searchParams.get("page") ?? "1") || 1;
+  const pageSizeParam = Number(searchParams.get("page_size") ?? String(DEFAULT_PAGE_SIZE));
+  const pageSize = Number.isFinite(pageSizeParam) && pageSizeParam >= 0 ? pageSizeParam : DEFAULT_PAGE_SIZE;
+  const page = pageSize === 0 ? 1 : Number(searchParams.get("page") ?? "1") || 1;
 
   // 面包屑 —— 和 ProjectDetailPage 同款。空数组 = 项目根。
   const [breadcrumb, setBreadcrumb] = useState<
@@ -257,14 +265,14 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
       moduleId: currentParentId,
       status: statusFilter ?? null,
       page,
-      pageSize: PAGE_SIZE,
+      pageSize,
     }),
     queryFn: () =>
       functionalCasesApi.list({
         moduleId: currentParentId ?? undefined,
         status: statusFilter,
         page,
-        pageSize: PAGE_SIZE,
+        pageSize,
       }),
     enabled: Number.isFinite(projectId) && currentParentId !== null,
   });
@@ -610,18 +618,6 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
   // ------ 业务动作 ------
   const project = projectQuery.data;
 
-  const handleEnterModule = (node: ContentNode) => {
-    setBreadcrumb((prev) => [...prev, { id: node.id, name: node.name }]);
-    // 切层级时清掉选择，避免跨模块选中混乱
-    setSelected(new Set());
-  };
-
-  const handleJumpTo = (index: number) => {
-    if (index < 0) setBreadcrumb([]);
-    else setBreadcrumb((prev) => prev.slice(0, index + 1));
-    setSelected(new Set());
-  };
-
   const setQS = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams(searchParams);
     for (const [k, v] of Object.entries(patch)) {
@@ -631,8 +627,30 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
     setSearchParams(next, { replace: true });
   };
 
+  const handleEnterModule = (node: ContentNode) => {
+    setBreadcrumb((prev) => [...prev, { id: node.id, name: node.name }]);
+    // 切层级时清掉选择，避免跨模块选中混乱
+    setSelected(new Set());
+    setQS({ page: undefined });
+  };
+
+  const handleJumpTo = (index: number) => {
+    if (index < 0) setBreadcrumb([]);
+    else setBreadcrumb((prev) => prev.slice(0, index + 1));
+    setSelected(new Set());
+    setQS({ page: undefined });
+  };
+
   const handleStatusChange = (raw: string) => {
     setQS({ status: raw === "all" ? undefined : raw, page: undefined });
+  };
+
+  const handlePageSizeChange = (raw: string) => {
+    const nextPageSize = Number(raw);
+    setQS({
+      page_size: nextPageSize === DEFAULT_PAGE_SIZE ? undefined : raw,
+      page: undefined,
+    });
   };
 
   // ------ 渲染 ------
@@ -687,7 +705,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
       handleError(e);
     }
   };
-  const totalPages = Math.max(1, Math.ceil(totalCases / PAGE_SIZE));
+  const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(totalCases / pageSize));
 
   // 页内全选状态：选中数 = 当前页用例数 时勾上"全选"
   const allSelectedOnPage =
@@ -887,10 +905,10 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
               ) : (
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {modules.map((m) => (
-                    <ModuleRow
+                    <ModuleCard
                       key={m.id}
                       node={m}
-                      onEnter={() => handleEnterModule(m)}
+                      onOpen={() => handleEnterModule(m)}
                       onRename={() =>
                         setModuleDialog({
                           mode: "rename",
@@ -969,12 +987,21 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
                   caseDiff={caseDiff}
                 />
               )}
-              {totalCases > PAGE_SIZE ? (
-                <div className="mt-4 flex items-center justify-between text-sm">
-                  <div className="text-muted-foreground">
-                    共 {totalCases} 条 · 第 {page} / {totalPages} 页
-                  </div>
-                  <div className="flex items-center gap-2">
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <span className="text-xs text-muted-foreground">每页</span>
+                <Select value={String(pageSize)} onValueChange={handlePageSizeChange}>
+                  <SelectTrigger className="h-8 w-24">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {PAGE_SIZE_OPTIONS.map((size) => (
+                      <SelectItem key={size} value={String(size)}>{size}</SelectItem>
+                    ))}
+                    <SelectItem value="0">不分页</SelectItem>
+                  </SelectContent>
+                </Select>
+                {pageSize !== 0 && totalPages > 1 ? (
+                  <>
                     <Button
                       variant="outline"
                       size="sm"
@@ -991,9 +1018,9 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
                     >
                       下一页
                     </Button>
-                  </div>
-                </div>
-              ) : null}
+                  </>
+                ) : null}
+              </div>
             </Section>
           ) : null}
         </div>
@@ -1200,40 +1227,54 @@ function Section({
   );
 }
 
-function ModuleRow({
+function ModuleCard({
   node,
-  onEnter,
+  onOpen,
   onRename,
   onDelete,
 }: {
   node: ContentNode;
-  onEnter: () => void;
+  onOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border bg-card p-3 transition-colors hover:border-primary/40">
-      <button
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        onClick={onEnter}
-      >
-        <Folder className="h-4 w-4 shrink-0 text-muted-foreground" />
+    <div
+      role="button"
+      tabIndex={0}
+      className="flex cursor-pointer items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onOpen();
+        }
+      }}
+    >
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <Folder className="h-5 w-5 shrink-0 text-amber-500" />
         <span className="truncate text-sm font-medium">{node.name}</span>
-      </button>
+        <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+      </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={(event) => event.stopPropagation()}
+          >
             <MoreHorizontal className="h-4 w-4" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={onRename}>
+        <DropdownMenuContent align="end" onClick={(event) => event.stopPropagation()}>
+          <DropdownMenuItem onClick={(event) => { event.stopPropagation(); onRename(); }}>
             <Pencil className="mr-2 h-4 w-4" />
             重命名
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
-            onClick={onDelete}
+            onClick={(event) => { event.stopPropagation(); onDelete(); }}
             className="text-destructive focus:text-destructive"
           >
             <Trash2 className="mr-2 h-4 w-4" />
@@ -2173,8 +2214,24 @@ function CaseDetailDialog({
 }
 
 function handleApiError(err: unknown) {
-  const msg = err instanceof ApiError ? err.message : err instanceof Error ? err.message : "操作失败";
-  toast.error(msg);
+  toast.error(errorMessage(err));
+}
+
+function errorMessage(err: unknown) {
+  if (err instanceof DOMException && err.name === "AbortError") {
+    return "已停止生成测试点";
+  }
+  return err instanceof ApiError ? err.message : err instanceof Error ? err.message : "操作失败";
+}
+
+function upsertFailedBatch(items: AiBatchFailure[], next: AiBatchFailure) {
+  const exists = items.find((item) => item.id === next.id);
+  if (!exists) return [...items, next];
+  return items.map((item) =>
+    item.id === next.id
+      ? { ...next, attempts: item.attempts + next.attempts }
+      : item,
+  );
 }
 
 /** 将 AI 返回的人类可读接口步骤整理成可直接执行的 API 用例字段。 */
@@ -2226,6 +2283,14 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
       target,
       expected,
     }));
+  const safety = generated.data_safety;
+  const safetyLines = [
+    safety?.policy ? `数据安全：${safety.policy}` : "",
+    safety?.rewritten_fields?.length ? `已自动加固字段：${safety.rewritten_fields.join("、")}` : "",
+    safety?.readonly_seed_warnings?.length ? `只读种子提醒：${safety.readonly_seed_warnings.join("；")}` : "",
+    safety?.function_hints?.length ? `动态函数建议：${safety.function_hints.join("；")}` : "",
+    safety?.cleanup_required ? "清理建议：执行后清理 AUTO_TEST_ 命名空间下的临时测试数据" : "",
+  ].filter(Boolean);
   const httpStep = {
     step_order: 0,
     step_name: generated.name,
@@ -2251,6 +2316,7 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
     module_id: moduleId,
     name: generated.name,
     description: [
+      safetyLines.length ? safetyLines.join("\n") : "",
       generated.preconditions.length ? `前置条件：${generated.preconditions.join("；")}` : "",
       generated.expected.length ? `预期结果：${generated.expected.join("；")}` : "",
     ]
@@ -2269,6 +2335,238 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
     sql_query: generated.sql ? generated.sql : null,
     steps: [httpStep],
   };
+}
+
+function mergeCreatedCaseOrder(
+  existing: Array<{ id: number; name: string; sort_order?: number | null }>,
+  created: AiGeneratedCase[],
+  createdIds: number[],
+) {
+  const merged: number[] = [];
+  const used = new Set<number>();
+  created.forEach((c, k) => {
+    if (c.after === "__START__") {
+      merged.push(createdIds[k]);
+      used.add(k);
+    }
+  });
+  for (const e of existing) {
+    merged.push(e.id);
+    created.forEach((c, k) => {
+      if (!used.has(k) && c.after && c.after !== "__START__" && c.after === e.name) {
+        merged.push(createdIds[k]);
+        used.add(k);
+      }
+    });
+  }
+  created.forEach((_c, k) => {
+    if (!used.has(k)) merged.push(createdIds[k]);
+  });
+  return merged;
+}
+
+function orderInterfaceCasesForExecution(cases: AiGeneratedCase[]) {
+  const remaining = cases.map((item, index) => ({ item, index }));
+  const ordered: typeof remaining = [];
+  const produced = new Set<string>();
+  const maxPasses = remaining.length + 2;
+
+  for (let pass = 0; pass < maxPasses && remaining.length > 0; pass++) {
+    let moved = false;
+    for (let i = 0; i < remaining.length; i++) {
+      const refs = referencedVariables(remaining[i].item);
+      const missing = [...refs].filter((name) => !produced.has(name) && cases.some((c) => producedVariables(c).has(name)));
+      if (missing.length === 0) {
+        const [next] = remaining.splice(i, 1);
+        ordered.push(next);
+        producedVariables(next.item).forEach((name) => produced.add(name));
+        moved = true;
+        i -= 1;
+      }
+    }
+    if (!moved) break;
+  }
+
+  const rest = remaining
+    .slice()
+    .sort((a, b) => interfaceCaseRank(a.item) - interfaceCaseRank(b.item) || a.index - b.index);
+  const sorted = [...ordered, ...rest].map((entry) => entry.item);
+  return sorted.sort((a, b) => {
+    const dep = dependencyCompare(a, b);
+    return dep || interfaceCaseRank(a) - interfaceCaseRank(b);
+  });
+}
+
+function dependencyCompare(a: AiGeneratedCase, b: AiGeneratedCase) {
+  const aProduces = producedVariables(a);
+  const bProduces = producedVariables(b);
+  const aRefsB = [...referencedVariables(a)].some((name) => bProduces.has(name));
+  const bRefsA = [...referencedVariables(b)].some((name) => aProduces.has(name));
+  if (aRefsB && !bRefsA) return 1;
+  if (bRefsA && !aRefsB) return -1;
+  return 0;
+}
+
+function producedVariables(c: AiGeneratedCase) {
+  return new Set(Object.keys(c.extract ?? {}).filter(Boolean));
+}
+
+function referencedVariables(c: AiGeneratedCase) {
+  const text = JSON.stringify({
+    path: c.path,
+    headers: c.headers,
+    body: c.body,
+    sql: c.sql,
+    steps: c.steps,
+    expected: c.expected,
+  });
+  return new Set([...text.matchAll(/\$\{([A-Za-z_][\w.-]*)\}/g)].map((m) => m[1]));
+}
+
+function interfaceCaseRank(c: AiGeneratedCase) {
+  const text = `${c.name} ${c.method ?? ""} ${c.path ?? ""} ${c.steps.join(" ")} ${c.expected.join(" ")}`.toLowerCase();
+  if (/login|登录|auth|token/.test(text)) return 10;
+  if (/register|signup|create|add|新增|创建|注册|准备/.test(text)) return 20;
+  if (/get|list|query|search|detail|获取|查询|列表|详情/.test(text)) return 30;
+  if (/put|patch|update|modify|修改|更新/.test(text)) return 40;
+  if (/delete|remove|删除|移除/.test(text)) return 50;
+  if (/缺失|为空|null|非法|错误|边界|超长|鉴权|越权|未带|过期|异常/.test(text)) return 80;
+  return 60;
+}
+
+type AiBatchFailure = {
+  id: string;
+  start: number;
+  end: number;
+  points: AiOutlinePoint[];
+  message: string;
+  attempts: number;
+};
+
+type AiGenerateDraft = {
+  version: 1;
+  savedAt: number;
+  text: string;
+  mode: "functional" | "interface";
+  coverage: "standard" | "full" | "exhaustive";
+  docUrls: string;
+  smartInsert: boolean;
+  modelName: string;
+  stage: "input" | "outline" | "cases";
+  digest: string;
+  points: AiOutlinePoint[];
+  pickedPoints: number[];
+  genQueue: AiOutlinePoint[];
+  cursor: number;
+  failedBatches: AiBatchFailure[];
+  cases: AiGeneratedCase[];
+  picked: number[];
+  writtenNames: string[];
+};
+
+const LOCAL_TASKS_KEY = "local-in-progress-tasks:v1";
+const LOCAL_TASKS_EVENT = "local-in-progress-tasks-change";
+const LOCAL_TASKS_CANCEL_EVENT = "local-in-progress-task-cancel";
+
+function aiGenerateDraftKey(projectId: number, moduleId: number, mode: "functional" | "interface") {
+  return `ai-generate-draft:v1:${projectId}:${moduleId}:${mode}`;
+}
+
+function aiGenerateTaskId(projectId: number, moduleId: number, mode: "functional" | "interface") {
+  const raw = `${projectId}${moduleId}${mode === "interface" ? 2 : 1}`;
+  return -Math.abs(Number(raw.slice(0, 9)) || (projectId * 1000 + moduleId));
+}
+
+function updateLocalInProgressTask(task: {
+  id: number;
+  type_key: string;
+  type_label: string;
+  category: string;
+  icon: string;
+  name: string;
+  status: string;
+  project_id: number | null;
+  project_name: string | null;
+  detail_url: string;
+} | null) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TASKS_KEY);
+    const items = raw ? JSON.parse(raw) as Array<Record<string, unknown>> : [];
+    const taskId = task?.id;
+    const next = Array.isArray(items)
+      ? items.filter((item) => item.id !== taskId && item.type_key !== task?.type_key)
+      : [];
+    if (task) {
+      const existing = Array.isArray(items)
+        ? items.find((item) => item.id === task.id || item.type_key === task.type_key)
+        : null;
+      next.unshift({
+        ...task,
+        started_at: existing?.started_at ?? new Date().toISOString(),
+      });
+    }
+    window.localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(next));
+    window.dispatchEvent(new Event(LOCAL_TASKS_EVENT));
+  } catch {
+    /* 本地任务仅用于展示，失败不阻断主流程 */
+  }
+}
+
+function removeLocalInProgressTask(typeKey: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = window.localStorage.getItem(LOCAL_TASKS_KEY);
+    const items = raw ? JSON.parse(raw) as Array<Record<string, unknown>> : [];
+    const next = Array.isArray(items) ? items.filter((item) => item.type_key !== typeKey) : [];
+    window.localStorage.setItem(LOCAL_TASKS_KEY, JSON.stringify(next));
+    window.dispatchEvent(new Event(LOCAL_TASKS_EVENT));
+  } catch {
+    /* 忽略浏览器存储异常 */
+  }
+}
+
+function readAiGenerateDraft(projectId: number, moduleId: number, mode: "functional" | "interface") {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(aiGenerateDraftKey(projectId, moduleId, mode));
+  if (!raw) return null;
+  try {
+    const draft = JSON.parse(raw) as AiGenerateDraft;
+    return draft.version === 1 ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAiGenerateDraft(projectId: number, moduleId: number, mode: "functional" | "interface", draft: AiGenerateDraft) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(aiGenerateDraftKey(projectId, moduleId, mode), JSON.stringify(draft));
+  } catch {
+    /* 本地存储空间不足时不阻断用户操作 */
+  }
+}
+
+function removeAiGenerateDraft(projectId: number, moduleId: number, mode: "functional" | "interface") {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(aiGenerateDraftKey(projectId, moduleId, mode));
+  } catch {
+    /* 忽略浏览器存储异常 */
+  }
+}
+
+function formatDraftTime(ts: number) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString();
+}
+
+/** 把富文本描述转成纯文本（需求 description 走 RichTextEditor，存的是 HTML）。 */
+function htmlToText(html: string): string {
+  if (!html) return "";
+  if (!/[<>]/.test(html)) return html.trim();
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  return (doc.body.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /** AI 生成功能用例：需求文本 + 选模型 → 控件级详细用例草稿 → 审阅勾选 → 写入当前模块。 */
@@ -2300,17 +2598,23 @@ export function AiGenerateDialog({
   const [images, setImages] = useState<File[]>([]);
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
+  const [draftNotice, setDraftNotice] = useState("");
   const [outlining, setOutlining] = useState(false);
+  const [outlineError, setOutlineError] = useState("");
   const [digest, setDigest] = useState("");
   const [points, setPoints] = useState<AiOutlinePoint[]>([]);
   const [pickedPoints, setPickedPoints] = useState<Set<number>>(new Set());
   const [genQueue, setGenQueue] = useState<AiOutlinePoint[]>([]);
   const [cursor, setCursor] = useState(0);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [failedBatches, setFailedBatches] = useState<AiBatchFailure[]>([]);
+  const outlineAbortRef = useRef<AbortController | null>(null);
+  const draftReadyRef = useRef(false);
   const stopRef = useRef(false);
   const dragCaseRef = useRef<number | null>(null);
   const insertingRef = useRef(false);
   const [cases, setCases] = useState<AiGeneratedCase[]>([]);
+  const casesRef = useRef<AiGeneratedCase[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [inserting, setInserting] = useState(false);
   const [writtenNames, setWrittenNames] = useState<Set<string>>(new Set()); // 已写入的用例名（防重复、支持分次写）
@@ -2322,26 +2626,228 @@ export function AiGenerateDialog({
   });
   const models = (modelsQuery.data ?? []).filter((m) => m.enabled);
 
+  // 从需求池导入：选需求 → 选其分析文档 → 填入下方需求文本
+  const [reqPickId, setReqPickId] = useState<number | null>(null);
+  const [docPickId, setDocPickId] = useState<number | null>(null);
+  const [docFilling, setDocFilling] = useState(false);
+  const reqListQuery = useQuery({
+    queryKey: ["aigen-requirements", projectId],
+    queryFn: () => requirementsApi.list(projectId),
+    enabled: open,
+  });
+  const reqOptions = reqListQuery.data ?? [];
+  const analysisDocsQuery = useQuery({
+    queryKey: ["aigen-analysis-docs", reqPickId],
+    queryFn: () => analysisDocsApi.listByRequirement(reqPickId as number),
+    enabled: open && reqPickId != null,
+  });
+  const analysisDocs = analysisDocsQuery.data ?? [];
+
+  const fillFromRequirement = (r: Requirement) => {
+    const parts: string[] = [r.title];
+    const desc = htmlToText(r.description ?? "");
+    if (desc) parts.push(desc);
+    if (r.acceptance_criteria?.length) {
+      parts.push(
+        "验收标准：\n" +
+          r.acceptance_criteria.map((a, i) => `${i + 1}. ${a}`).join("\n"),
+      );
+    }
+    setText(parts.join("\n\n"));
+  };
+
+  const fillFromDoc = async (docId: number) => {
+    setDocFilling(true);
+    try {
+      const doc = await analysisDocsApi.get(docId);
+      const md = (doc.current_markdown ?? "").trim();
+      if (!md) {
+        toast.error("该分析文档暂无内容");
+        return;
+      }
+      setText(md);
+      toast.success("已填入分析文档内容");
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "读取分析文档失败");
+    } finally {
+      setDocFilling(false);
+    }
+  };
+
+  const localTaskTypeKey =
+    moduleId != null ? `local_ai_case_generate_${projectId}_${moduleId}_${mode}` : "";
+
+  useEffect(() => {
+    casesRef.current = cases;
+  }, [cases]);
+
+  useEffect(() => {
+    if (!moduleId || !localTaskTypeKey) return;
+    const running = outlining || gapFilling || batchRunning;
+    if (!running) {
+      removeLocalInProgressTask(localTaskTypeKey);
+      return;
+    }
+    const label = mode === "interface" ? "AI 生成接口用例" : "AI 生成功能用例";
+    const phase = outlining
+      ? "规划测试点"
+      : gapFilling
+        ? "查漏补缺"
+        : `生成详细用例 ${cursor}/${genQueue.length || points.length || 0}`;
+    updateLocalInProgressTask({
+      id: aiGenerateTaskId(projectId, moduleId, mode),
+      type_key: localTaskTypeKey,
+      type_label: label,
+      category: "ai",
+      icon: mode === "interface" ? "Globe" : "Sparkles",
+      name: `${label} · ${phase}`,
+      status: "running",
+      project_id: projectId,
+      project_name: null,
+      detail_url: window.location.pathname + window.location.search,
+    });
+    return () => {
+      removeLocalInProgressTask(localTaskTypeKey);
+    };
+  }, [
+    moduleId,
+    projectId,
+    mode,
+    localTaskTypeKey,
+    outlining,
+    gapFilling,
+    batchRunning,
+    cursor,
+    genQueue.length,
+    points.length,
+  ]);
+
+  useEffect(() => {
+    if (!moduleId || !localTaskTypeKey) return;
+    const onCancel = (event: Event) => {
+      const detail = (event as CustomEvent<{ type_key?: string; id?: number }>).detail;
+      if (detail?.type_key !== localTaskTypeKey) return;
+      stopRef.current = true;
+      outlineAbortRef.current?.abort();
+      outlineAbortRef.current = null;
+      setOutlining(false);
+      setGapFilling(false);
+      setBatchRunning(false);
+      setOutlineError("已从任务列表终止生成");
+      toast.info("已终止 AI 用例生成");
+    };
+    window.addEventListener(LOCAL_TASKS_CANCEL_EVENT, onCancel);
+    return () => window.removeEventListener(LOCAL_TASKS_CANCEL_EVENT, onCancel);
+  }, [moduleId, localTaskTypeKey]);
+
   useEffect(() => {
     if (open) {
-      setStage("input");
-      setDigest("");
-      setPoints([]);
-      setPickedPoints(new Set());
-      setGenQueue([]);
-      setCursor(0);
-      setCases([]);
-      setPicked(new Set());
+      const draft = moduleId ? readAiGenerateDraft(projectId, moduleId, initialMode) : null;
+      if (draft) {
+        setText(draft.text ?? "");
+        setMode(draft.mode ?? initialMode);
+        setCoverage(draft.coverage ?? "full");
+        setDocUrls(draft.docUrls ?? "");
+        setSmartInsert(draft.smartInsert ?? true);
+        setModelName(draft.modelName ?? "");
+        setStage(draft.stage ?? "input");
+        setOutlineError("");
+        setDigest(draft.digest ?? "");
+        setPoints(draft.points ?? []);
+        setPickedPoints(new Set(draft.pickedPoints ?? []));
+        setGenQueue(draft.genQueue ?? []);
+        setCursor(draft.cursor ?? 0);
+        setFailedBatches(draft.failedBatches ?? []);
+        setCases(draft.cases ?? []);
+        casesRef.current = draft.cases ?? [];
+        setPicked(new Set(draft.picked ?? []));
+        setWrittenNames(new Set(draft.writtenNames ?? []));
+        setDraftNotice(`已恢复 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿`);
+      } else {
+        setText("");
+        setMode(initialMode);
+        setCoverage("full");
+        setDocUrls("");
+        setSmartInsert(true);
+        setStage("input");
+        setOutlineError("");
+        setDigest("");
+        setPoints([]);
+        setPickedPoints(new Set());
+        setGenQueue([]);
+        setCursor(0);
+        setFailedBatches([]);
+        setCases([]);
+        casesRef.current = [];
+        setPicked(new Set());
+        setWrittenNames(new Set());
+        setDraftNotice("");
+      }
+      setReqPickId(null);
+      setDocPickId(null);
       setImages([]);
       setDocs([]);
-      setMode(initialMode);
-      setCoverage("full");
-      setDocUrls("");
-      setSmartInsert(true);
-      setWrittenNames(new Set());
       stopRef.current = false;
+      outlineAbortRef.current?.abort();
+      outlineAbortRef.current = null;
+      draftReadyRef.current = true;
+    } else {
+      draftReadyRef.current = false;
     }
-  }, [open, initialMode]);
+  }, [open, initialMode, moduleId, projectId]);
+
+  useEffect(() => {
+    if (!open || !moduleId || !draftReadyRef.current) return;
+    const hasUsefulDraft =
+      text.trim() ||
+      digest ||
+      points.length > 0 ||
+      cases.length > 0 ||
+      genQueue.length > 0 ||
+      failedBatches.length > 0;
+    if (!hasUsefulDraft) return;
+    writeAiGenerateDraft(projectId, moduleId, initialMode, {
+      version: 1,
+      savedAt: Date.now(),
+      text,
+      mode,
+      coverage,
+      docUrls,
+      smartInsert,
+      modelName,
+      stage,
+      digest,
+      points,
+      pickedPoints: [...pickedPoints],
+      genQueue,
+      cursor,
+      failedBatches,
+      cases,
+      picked: [...picked],
+      writtenNames: [...writtenNames],
+    });
+  }, [
+    open,
+    moduleId,
+    projectId,
+    initialMode,
+    text,
+    mode,
+    coverage,
+    docUrls,
+    smartInsert,
+    modelName,
+    stage,
+    digest,
+    points,
+    pickedPoints,
+    genQueue,
+    cursor,
+    failedBatches,
+    cases,
+    picked,
+    writtenNames,
+  ]);
 
   useEffect(() => {
     if (open && !modelName && models.length) setModelName(models[0].name);
@@ -2357,6 +2863,13 @@ export function AiGenerateDialog({
       toast.error("请先选择 AI 模型");
       return;
     }
+    outlineAbortRef.current?.abort();
+    const controller = new AbortController();
+    outlineAbortRef.current = controller;
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+    }, 180_000);
+    setOutlineError("");
     setOutlining(true);
     try {
       const res = await functionalCasesApi.aiGenerateOutline({
@@ -2368,17 +2881,28 @@ export function AiGenerateDialog({
         doc_urls: docUrls.trim(),
         images,
         docs,
-      });
+      }, controller.signal);
       setDigest(res.digest);
       setPoints(res.points);
       setPickedPoints(new Set(res.points.map((_, i) => i)));
       setStage("outline");
       if (res.points.length === 0) toast.info("没识别出测试点，补充需求或换模型再试");
     } catch (e) {
-      handleApiError(e);
+      const msg = controller.signal.aborted ? "生成测试点已停止或超时，请减少输入内容、更换模型后重试" : errorMessage(e);
+      setOutlineError(msg);
+      toast.error(msg);
     } finally {
+      window.clearTimeout(timeout);
+      if (outlineAbortRef.current === controller) outlineAbortRef.current = null;
       setOutlining(false);
     }
+  };
+
+  const stopOutline = () => {
+    outlineAbortRef.current?.abort();
+    outlineAbortRef.current = null;
+    setOutlining(false);
+    setOutlineError("已停止生成测试点");
   };
 
   // 第二步：按大纲分批生成详细用例（每批带已生成用例名 → 不重复、保持连贯）
@@ -2386,16 +2910,21 @@ export function AiGenerateDialog({
     queue: AiOutlinePoint[],
     startCursor: number,
     existing: AiGeneratedCase[],
+    options?: { retryFailureId?: string; displayOffset?: number },
   ) => {
     if (!moduleId) return;
     stopRef.current = false;
     setBatchRunning(true);
     let acc = existing.slice();
     let cur = startCursor;
-    try {
-      while (cur < queue.length) {
-        if (stopRef.current) break;
-        const chunk = queue.slice(cur, cur + BATCH_SIZE);
+    let failedCount = 0;
+    while (cur < queue.length) {
+      if (stopRef.current) break;
+      const chunk = queue.slice(cur, cur + BATCH_SIZE);
+      const displayStart = options?.displayOffset != null ? options.displayOffset + cur : cur;
+      const displayEnd = displayStart + chunk.length;
+      const failureId = `${displayStart}-${displayEnd}-${chunk.map((p) => p.title).join("|")}`;
+      try {
         const res = await functionalCasesApi.aiGenerateBatch({
           module_id: moduleId,
           model_name: modelName,
@@ -2404,17 +2933,47 @@ export function AiGenerateDialog({
           done_names: acc.map((c) => c.name),
           mode,
         });
+        if (stopRef.current) break;
         acc = [...acc, ...res.cases];
-        cur += chunk.length;
+        casesRef.current = acc;
+        if (res.cases.length === 0) {
+          failedCount += 1;
+          setFailedBatches((prev) => upsertFailedBatch(prev, {
+            id: options?.retryFailureId ?? failureId,
+            start: displayStart,
+            end: displayEnd,
+            points: chunk,
+            message: "本批返回 0 条有效用例",
+            attempts: 1,
+          }));
+        } else if (options?.retryFailureId) {
+          setFailedBatches((prev) => prev.filter((item) => item.id !== options.retryFailureId));
+        }
         setCases(acc);
         // 默认全选，但与现有用例重名的（duplicate）不勾
         setPicked(new Set(acc.map((c, i) => (c.duplicate ? -1 : i)).filter((i) => i >= 0)));
-        setCursor(cur);
+      } catch (e) {
+        if (stopRef.current) break;
+        failedCount += 1;
+        const message = errorMessage(e);
+        setFailedBatches((prev) => upsertFailedBatch(prev, {
+          id: options?.retryFailureId ?? failureId,
+          start: displayStart,
+          end: displayEnd,
+          points: chunk,
+          message,
+          attempts: 1,
+        }));
+      } finally {
+        cur += chunk.length;
+        setCursor((prev) => Math.max(prev, cur));
       }
-    } catch (e) {
-      handleApiError(e);
-    } finally {
-      setBatchRunning(false);
+    }
+    setBatchRunning(false);
+    if (stopRef.current) {
+      toast.info("已停止生成后续批次");
+    } else if (failedCount > 0) {
+      toast.warning(`有 ${failedCount} 个批次生成失败，已跳过并继续生成后续测试点`);
     }
   };
 
@@ -2427,10 +2986,58 @@ export function AiGenerateDialog({
     setGenQueue(q);
     setCursor(0);
     setCases([]);
+    casesRef.current = [];
     setPicked(new Set());
     setWrittenNames(new Set());
+    setFailedBatches([]);
     setStage("cases");
     void runBatches(q, 0, []);
+  };
+
+  const retryFailedBatch = (failure: AiBatchFailure) => {
+    void runBatches(failure.points, 0, casesRef.current, {
+      retryFailureId: failure.id,
+      displayOffset: failure.start,
+    });
+  };
+
+  const retryAllFailedBatches = async () => {
+    const failures = failedBatches.slice();
+    for (const failure of failures) {
+      if (stopRef.current) break;
+      await runBatches(failure.points, 0, casesRef.current, {
+        retryFailureId: failure.id,
+        displayOffset: failure.start,
+      });
+    }
+  };
+
+  const clearSavedDraft = () => {
+    if (!moduleId) return;
+    draftReadyRef.current = false;
+    removeAiGenerateDraft(projectId, moduleId, initialMode);
+    setText("");
+    setMode(initialMode);
+    setCoverage("full");
+    setDocUrls("");
+    setSmartInsert(true);
+    setStage("input");
+    setOutlineError("");
+    setDigest("");
+    setPoints([]);
+    setPickedPoints(new Set());
+    setGenQueue([]);
+    setCursor(0);
+    setFailedBatches([]);
+    setCases([]);
+    casesRef.current = [];
+    setPicked(new Set());
+    setWrittenNames(new Set());
+    setDraftNotice("");
+    window.setTimeout(() => {
+      draftReadyRef.current = true;
+    }, 0);
+    toast.success("已清除 AI 生成草稿");
   };
 
   const insert = async () => {
@@ -2446,7 +3053,24 @@ export function AiGenerateDialog({
     setInserting(true);
     try {
       if (mode === "interface") {
-        for (const c of chosen) await casesApi.create(toInterfaceCase(moduleId, c));
+        const ordered = orderInterfaceCasesForExecution(chosen);
+        const existing =
+          smartInsert
+            ? (await apiCasesApi.list({ moduleId, pageSize: 500 })).items
+                .slice()
+                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+            : [];
+        const createdIds: number[] = [];
+        for (const c of ordered) {
+          const res = await casesApi.create(toInterfaceCase(moduleId, c));
+          createdIds.push(res.id);
+        }
+        if (smartInsert && existing.length) {
+          const merged = mergeCreatedCaseOrder(existing, ordered, createdIds);
+          await casesApi.reorder(
+            merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
+          );
+        }
       } else {
         // AI 智能插入：先取现有有序用例，创建后按每条 after 合并重排
         const existing =
@@ -2471,22 +3095,7 @@ export function AiGenerateDialog({
         }
         if (smartInsert && existing.length) {
           // 合并：把每条新用例插到它 after 指定的现有用例之后（同锚点保持本次顺序）
-          const merged: number[] = [];
-          chosen.forEach((c, k) => {
-            if (c.after === "__START__") merged.push(createdIds[k]);
-          });
-          for (const e of existing) {
-            merged.push(e.id);
-            chosen.forEach((c, k) => {
-              if (c.after && c.after !== "__START__" && c.after === e.name)
-                merged.push(createdIds[k]);
-            });
-          }
-          // 末尾/无归属
-          chosen.forEach((c, k) => {
-            if (c.after !== "__START__" && !existing.some((e) => e.name === c.after))
-              merged.push(createdIds[k]);
-          });
+          const merged = mergeCreatedCaseOrder(existing, chosen, createdIds);
           await casesApi.reorder(
             merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
           );
@@ -2522,6 +3131,11 @@ export function AiGenerateDialog({
   // 查漏补缺：给已有大纲找遗漏的测试点，追加并默认勾选
   const fillGaps = async () => {
     if (!moduleId || points.length === 0) return;
+    if (!modelName) {
+      toast.error("请先选择 AI 模型");
+      return;
+    }
+    stopRef.current = false;
     setGapFilling(true);
     try {
       const res = await functionalCasesApi.aiOutlineGaps({
@@ -2531,6 +3145,7 @@ export function AiGenerateDialog({
         digest,
         points,
       });
+      if (stopRef.current) return;
       const have = new Set(points.map((p) => p.title.replace(/\s+/g, "")));
       const added = res.points.filter((p) => p.title && !have.has(p.title.replace(/\s+/g, "")));
       if (added.length === 0) {
@@ -2576,6 +3191,14 @@ export function AiGenerateDialog({
             先出测试点大纲 → 你确认 → 逐批生成控件级详细用例（参考其它模块、保持连贯），审阅后写入当前模块
           </DialogDescription>
         </DialogHeader>
+        {draftNotice ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
+            <span>{draftNotice}</span>
+            <button className="font-medium hover:underline" onClick={clearSavedDraft}>
+              清除草稿
+            </button>
+          </div>
+        ) : null}
 
         {stage === "input" ? (
           <div className="space-y-3">
@@ -2595,6 +3218,73 @@ export function AiGenerateDialog({
                 ))}
               </div>
             ) : null}
+            <div className="space-y-2 rounded-md border bg-muted/20 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                <FileText className="h-3.5 w-3.5" /> 从需求池导入（可选）
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">需求</Label>
+                  <select
+                    value={reqPickId ?? ""}
+                    onChange={(e) => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      setReqPickId(id);
+                      setDocPickId(null);
+                      const r = reqOptions.find((x) => x.id === id);
+                      if (r) fillFromRequirement(r);
+                    }}
+                    disabled={reqListQuery.isLoading}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">
+                      {reqListQuery.isLoading
+                        ? "加载中…"
+                        : reqOptions.length
+                          ? "选择需求…"
+                          : "（暂无需求）"}
+                    </option>
+                    {reqOptions.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        #{r.id} {r.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">分析文档</Label>
+                  <select
+                    value={docPickId ?? ""}
+                    onChange={(e) => {
+                      const id = e.target.value ? Number(e.target.value) : null;
+                      setDocPickId(id);
+                      if (id) fillFromDoc(id);
+                    }}
+                    disabled={reqPickId == null || analysisDocsQuery.isLoading || docFilling}
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm disabled:opacity-60"
+                  >
+                    <option value="">
+                      {reqPickId == null
+                        ? "先选需求"
+                        : analysisDocsQuery.isLoading
+                          ? "加载中…"
+                          : analysisDocs.length
+                            ? "选择分析文档…"
+                            : "（该需求暂无分析文档）"}
+                    </option>
+                    {analysisDocs.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.title}
+                        {d.model_label ? `（${d.model_label}）` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                选需求会填入其描述 + 验收标准；选分析文档会填入 AI 分析后的完整内容到下方需求框，可再手动编辑。
+              </p>
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">{mode === "interface" ? "接口说明 / 需求" : "需求 / 描述"}</Label>
               <Textarea
@@ -2717,11 +3407,19 @@ export function AiGenerateDialog({
                 onChange={(e) => setCoverage(e.target.value as "standard" | "full" | "exhaustive")}
                 className="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm"
               >
-                <option value="standard">标准（主流程 + 主要异常/边界）</option>
-                <option value="full">全面（逐功能/逐参数系统覆盖，推荐）</option>
-                <option value="exhaustive">穷尽（每字段每维度都拆，最细最多）</option>
+                <option value="standard">标准（少量：冒烟主流程 + 关键风险）</option>
+                <option value="full">全面（中等：核心字段/场景系统覆盖，推荐）</option>
+                <option value="exhaustive">穷尽（大量：每字段每维度都拆）</option>
               </select>
+              <p className="text-xs text-muted-foreground">
+                标准会明显减少数量；穷尽会显著增加测试点，适合最后补全覆盖。
+              </p>
             </div>
+            {outlineError ? (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                {outlineError}
+              </div>
+            ) : null}
             <details className="rounded-md border bg-muted/20 p-2">
               <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                 项目概览 · 模块关联（生成时会据此设计跨模块联动用例）
@@ -2731,8 +3429,8 @@ export function AiGenerateDialog({
               </div>
             </details>
             <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
-                取消
+              <Button variant="outline" onClick={outlining ? stopOutline : onClose}>
+                {outlining ? "停止" : "取消"}
               </Button>
               <Button onClick={makeOutline} disabled={outlining || !modelName}>
                 {outlining ? (
@@ -2753,14 +3451,38 @@ export function AiGenerateDialog({
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
               </span>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <select
+                  value={modelName}
+                  onChange={(e) => setModelName(e.target.value)}
+                  disabled={gapFilling || batchRunning}
+                  className="h-8 max-w-[220px] rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                  title="查漏补缺和后续生成使用的 AI 模型"
+                >
+                  {models.length === 0 ? (
+                    <option value="">（无可用模型）</option>
+                  ) : null}
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>
+                      {m.name}（{m.provider}/{m.model}）{m.supports_vision ? " · 视觉" : ""}
+                    </option>
+                  ))}
+                </select>
                 <button
-                  className="text-xs text-primary hover:underline disabled:opacity-50"
-                  disabled={gapFilling || points.length === 0}
+                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
+                  disabled={gapFilling || points.length === 0 || !modelName}
                   onClick={fillGaps}
                   title="让 AI 再查一遍遗漏的测试点并补上，可反复点"
                 >
-                  {gapFilling ? "查漏中…" : "🔍 查漏补缺"}
+                  {gapFilling ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> 查漏中…
+                    </>
+                  ) : (
+                    <>
+                      <Search className="h-3.5 w-3.5" /> 查漏补缺
+                    </>
+                  )}
                 </button>
                 <button className="text-xs text-primary hover:underline" onClick={() => setStage("input")}>
                   ← 改需求
@@ -2804,6 +3526,7 @@ export function AiGenerateDialog({
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 已生成 {cases.length} 条 · 测试点 {cursor}/{genQueue.length}
+                {failedBatches.length > 0 ? ` · 失败批次 ${failedBatches.length}` : ""}
                 {batchRunning ? "（生成中…）" : ""}
               </span>
               <div className="flex items-center gap-3">
@@ -2823,6 +3546,13 @@ export function AiGenerateDialog({
                   >
                     继续生成剩余（{genQueue.length - cursor}）
                   </button>
+                ) : failedBatches.length > 0 ? (
+                  <button
+                    className="text-xs text-primary hover:underline"
+                    onClick={() => void retryAllFailedBatches()}
+                  >
+                    重试失败批次（{failedBatches.length}）
+                  </button>
                 ) : null}
                 {!batchRunning ? (
                   <button className="text-xs text-primary hover:underline" onClick={() => setStage("outline")}>
@@ -2837,6 +3567,36 @@ export function AiGenerateDialog({
                   className="h-full bg-primary transition-all"
                   style={{ width: `${Math.round((cursor / genQueue.length) * 100)}%` }}
                 />
+              </div>
+            ) : null}
+            {failedBatches.length > 0 && !batchRunning ? (
+              <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/60 p-2 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium text-amber-800">
+                    有 {failedBatches.length} 个批次生成失败，已跳过并继续生成其它测试点
+                  </span>
+                  <button className="text-primary hover:underline" onClick={() => void retryAllFailedBatches()}>
+                    重试全部失败批次
+                  </button>
+                </div>
+                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
+                  {failedBatches.map((failure) => (
+                    <div key={failure.id} className="rounded border border-amber-200 bg-background/80 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-amber-800">
+                          测试点 {failure.start + 1}-{failure.end} · 已重试 {Math.max(0, failure.attempts - 1)} 次
+                        </span>
+                        <button className="shrink-0 text-primary hover:underline" onClick={() => retryFailedBatch(failure)}>
+                          重试本批
+                        </button>
+                      </div>
+                      <div className="mt-1 break-all text-red-700">{failure.message}</div>
+                      <div className="mt-1 text-muted-foreground">
+                        {failure.points.map((point) => point.title).join("；")}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
             {cases.length > 0 && !batchRunning ? (

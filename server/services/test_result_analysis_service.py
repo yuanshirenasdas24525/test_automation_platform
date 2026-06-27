@@ -54,6 +54,42 @@ _ENV_PATTERNS = (
     "certificate",
     "proxy",
 )
+TEST_DATA_PREFIX = "AUTO_TEST_"
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_READONLY_SEED_NAMES = {"admin", "administrator", "root", "system"}
+_DATA_FIELD_KEYS = {
+    "username",
+    "user_name",
+    "account",
+    "mobile",
+    "phone",
+    "tel",
+    "email",
+    "name",
+    "nickname",
+    "real_name",
+    "title",
+    "order_no",
+    "orderNo",
+}
+_DATA_FIELD_KEYS_NORMALIZED = {item.lower() for item in _DATA_FIELD_KEYS}
+_NEGATIVE_CASE_KEYWORDS = ("参数校验", "边界", "鉴权", "越权", "响应校验", "安全")
+_SEED_MUTATION_WORDS = (
+    "修改",
+    "更新",
+    "删除",
+    "禁用",
+    "改密",
+    "密码",
+    "权限",
+    "角色",
+    "delete",
+    "update",
+    "disable",
+    "password",
+    "role",
+    "permission",
+)
 
 
 def analyze_report(session, report_id: int, model_name: str | None = None) -> dict[str, Any]:
@@ -96,6 +132,15 @@ def analyze_report(session, report_id: int, model_name: str | None = None) -> di
         item = _analyze_case(case, case_rows)
         case_items.append(item)
         all_suggestions.extend(item["suggestions"])
+
+    order_suggestions = _detect_execution_order_and_setup(session, cases, by_case)
+    by_item = {item["case_id"]: item for item in case_items}
+    for case_id, suggestions in order_suggestions.items():
+        item = by_item.get(case_id)
+        if item is None:
+            continue
+        item["suggestions"].extend(suggestions)
+        all_suggestions.extend(suggestions)
 
     summary = _build_summary(case_items, all_suggestions)
     output = {
@@ -159,8 +204,9 @@ def _analyze_case(case: TestCase, rows: list[TestStepReport]) -> dict[str, Any]:
         step_suggestions.extend(_detect_failed_extracts(row, step, extract_values, body))
         step_suggestions.extend(_detect_missing_assertions(row, step, body))
         step_suggestions.extend(_detect_sql_assertion_needs(row, step, body))
-        step_suggestions.extend(_classify_failure(row, body))
         step_suggestions.extend(_detect_function_needs(row, step, request_data))
+        step_suggestions.extend(_detect_data_safety_issues(row, step, request_data, case.name))
+        step_suggestions.extend(_classify_failure(row, body))
         suggestions.extend(step_suggestions)
 
         step_items.append(
@@ -204,7 +250,7 @@ def _detect_failed_extracts(
     body: Any,
 ) -> list[dict[str, Any]]:
     suggestions = []
-    configured = step.extract if step is not None and isinstance(step.extract, list) else []
+    configured = _normalize_extract_rules(step.extract if step is not None else None)
     extracted = extract_values if isinstance(extract_values, dict) else {}
     for item in configured:
         if not isinstance(item, dict):
@@ -234,6 +280,18 @@ def _detect_failed_extracts(
             )
         )
     return suggestions
+
+
+def _normalize_extract_rules(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [
+            {"name": str(name), "jsonpath": path}
+            for name, path in value.items()
+            if str(name).strip()
+        ]
+    return []
 
 
 def _detect_missing_assertions(row: TestStepReport, step: TestStep | None, body: Any) -> list[dict[str, Any]]:
@@ -404,6 +462,130 @@ def _detect_function_needs(row: TestStepReport, step: TestStep | None, request_d
     ]
 
 
+def _detect_data_safety_issues(
+    row: TestStepReport,
+    step: TestStep | None,
+    request_data: Any,
+    case_name: str,
+) -> list[dict[str, Any]]:
+    """执行后诊断测试数据风险，只给修复建议，不在生成阶段改写用例。"""
+    if row.step_type != "http_request":
+        return []
+    config = step.config if step is not None and isinstance(step.config, dict) else {}
+    method = str(config.get("method") or row.action or "").upper()
+    if method not in _MUTATING_METHODS:
+        return []
+
+    payload = _request_payload(config, request_data)
+    path = str(config.get("path") or row.target or "")
+    text = json.dumps(
+        {"case": case_name, "method": method, "path": path, "payload": payload},
+        ensure_ascii=False,
+        default=str,
+    ).lower()
+    suggestions: list[dict[str, Any]] = []
+    if any(seed in text for seed in _READONLY_SEED_NAMES) and any(word in text for word in _SEED_MUTATION_WORDS):
+        suggestions.append(
+            _suggestion(
+                "data_safety",
+                "high",
+                0.82,
+                row,
+                "写操作疑似会修改固定种子账号或系统数据",
+                "admin/root/system 等账号可以用于登录、查询、断言，但不建议用于修改密码、改权限、删除、禁用等写操作",
+                {
+                    "type": "protect_seed_data",
+                    "method": method,
+                    "path": path,
+                    "recommendation": "AI 修复时应改为先创建 AUTO_TEST 临时数据，再修改/删除该临时数据；固定账号仅保留登录或查询用途",
+                },
+                "manual_required",
+            )
+        )
+
+    if _is_negative_case(case_name):
+        return suggestions
+
+    replacements = _collect_data_safety_replacements(payload)
+    if replacements:
+        suggestions.append(
+            _suggestion(
+                "data_safety",
+                "medium",
+                0.76,
+                row,
+                "写操作使用了非测试命名空间数据",
+                f"建议写入类数据使用 {TEST_DATA_PREFIX} 前缀或 function 动态生成，避免覆盖现有业务数据",
+                {
+                    "type": "rewrite_test_data",
+                    "method": method,
+                    "path": path,
+                    "namespace": TEST_DATA_PREFIX,
+                    "replacements": replacements[:20],
+                    "recommendation": "仅在 AI 修复/人工审核阶段应用，不影响原始生成覆盖点",
+                },
+                "need_review",
+            )
+        )
+    return suggestions
+
+
+def _request_payload(config: dict[str, Any], request_data: Any) -> Any:
+    for key in ("body", "json", "data", "params"):
+        value = config.get(key)
+        if value not in (None, "", {}, []):
+            return value
+    if isinstance(request_data, dict):
+        for key in ("body", "json", "data", "params"):
+            value = request_data.get(key)
+            if value not in (None, "", {}, []):
+                return value
+    return request_data if request_data not in (None, "", {}, []) else config
+
+
+def _is_negative_case(case_name: str) -> bool:
+    return any(keyword in case_name for keyword in _NEGATIVE_CASE_KEYWORDS)
+
+
+def _collect_data_safety_replacements(value: Any, path: str = "$") -> list[dict[str, Any]]:
+    replacements: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if _plain_key(str(key)) else f"{path}['{key}']"
+            replacements.extend(_collect_data_safety_replacements(child, child_path))
+            replacement = _suggest_test_data_value(str(key), child)
+            if replacement:
+                replacements.append(
+                    {
+                        "path": child_path,
+                        "current": _clip(child, 120),
+                        "suggested": replacement,
+                    }
+                )
+    elif isinstance(value, list):
+        for idx, child in enumerate(value[:20]):
+            replacements.extend(_collect_data_safety_replacements(child, f"{path}[{idx}]"))
+    return replacements
+
+
+def _suggest_test_data_value(key: str, value: Any) -> str | None:
+    if key not in _DATA_FIELD_KEYS and key.lower() not in _DATA_FIELD_KEYS_NORMALIZED:
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw or raw.startswith("${") or raw.startswith("function:") or raw.startswith(TEST_DATA_PREFIX):
+        return None
+    lowered = key.lower()
+    if lowered in {"username", "user_name", "account"}:
+        return 'function:unique("AUTO_TEST_user")'
+    if lowered in {"mobile", "phone", "tel"}:
+        return "function:unique_mobile()"
+    if lowered == "email":
+        return "function:unique_email()"
+    return f"{TEST_DATA_PREFIX}{raw}"
+
+
 def _detect_missing_dependencies(response_index: list[dict[str, Any]]) -> list[dict[str, Any]]:
     suggestions = []
     previous_values: list[dict[str, Any]] = []
@@ -443,6 +625,157 @@ def _detect_missing_dependencies(response_index: list[dict[str, Any]]) -> list[d
                 )
         previous_values.extend(_candidate_values(item))
     return suggestions
+
+
+def _detect_execution_order_and_setup(
+    session,
+    cases: dict[int, TestCase],
+    by_case: dict[int, list[TestStepReport]],
+) -> dict[int, list[dict[str, Any]]]:
+    """跨用例检查：找出依赖测试数据但准备用例排在后面/不存在的情况。"""
+    module_ids = sorted({c.module_id for c in cases.values() if c.module_id is not None})
+    if not module_ids:
+        return {}
+    module_cases = (
+        session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.module_id.in_(module_ids), TestCase.case_type == "api")
+        .order_by(TestCase.module_id, TestCase.sort_order, TestCase.id)
+        .all()
+    )
+    by_module: dict[int, list[TestCase]] = defaultdict(list)
+    for case in module_cases:
+        if case.module_id is not None:
+            by_module[case.module_id].append(case)
+
+    result: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for case_id, case in cases.items():
+        first_row = (by_case.get(case_id) or [None])[0]
+        if first_row is None or case.module_id is None:
+            continue
+        if not _case_needs_user_setup(case, by_case.get(case_id) or []):
+            continue
+        candidates = [
+            candidate
+            for candidate in by_module.get(case.module_id, [])
+            if candidate.id != case.id and _case_is_user_setup(candidate)
+        ]
+        before_candidates = [
+            candidate
+            for candidate in candidates
+            if int(candidate.sort_order or 0) < int(case.sort_order or 0)
+        ]
+        if before_candidates:
+            continue
+        after_candidates = [
+            candidate
+            for candidate in candidates
+            if int(candidate.sort_order or 0) >= int(case.sort_order or 0)
+        ]
+        if after_candidates:
+            setup = sorted(after_candidates, key=lambda c: (int(c.sort_order or 0), c.id))[0]
+            result[case_id].append(
+                _suggestion(
+                    "execution_order",
+                    "high",
+                    0.88,
+                    first_row,
+                    "依赖账号数据，但创建/注册账号用例排在后面",
+                    f"当前用例疑似需要测试账号；可将「{setup.name}」移动到本用例之前，先准备账号再执行。",
+                    {
+                        "type": "reorder_case_before",
+                        "case_id": setup.id,
+                        "case_name": setup.name,
+                        "before_case_id": case.id,
+                        "before_case_name": case.name,
+                        "module_id": case.module_id,
+                        "reason": "user_setup_dependency",
+                    },
+                    "high_confidence",
+                )
+            )
+        else:
+            result[case_id].append(
+                _suggestion(
+                    "execution_order",
+                    "high",
+                    0.7,
+                    first_row,
+                    "依赖账号数据，但前面没有账号准备用例",
+                    "当前用例疑似需要测试用户/账号存在；建议在它前面新增“创建/注册测试账号并提取用户标识”的接口用例。",
+                    {
+                        "type": "create_setup_case",
+                        "module_id": case.module_id,
+                        "before_case_id": case.id,
+                        "before_case_name": case.name,
+                        "setup_kind": "user_account",
+                        "required_fields": _case_user_fields(case),
+                        "reason": "missing_user_setup_case",
+                    },
+                    "need_review",
+                )
+            )
+    return result
+
+
+def _case_needs_user_setup(case: TestCase, rows: list[TestStepReport]) -> bool:
+    if _case_is_user_setup(case):
+        return False
+    text = _case_text(case)
+    failure_text = " ".join(str(x or "") for row in rows for x in (row.error_message, row.output_data)).lower()
+    has_user_payload = any(key in text for key in ("username", "user_name", "account", "用户", "账号"))
+    has_password = "password" in text or "密码" in text
+    has_missing_signal = any(
+        word in failure_text
+        for word in ("not found", "not exist", "不存在", "未找到", "no such", "账号不存在", "用户不存在")
+    )
+    name_hints = any(word in (case.name or "") for word in ("详情", "查询", "修改", "更新", "删除", "登录", "校验"))
+    return bool((has_user_payload and (has_password or name_hints)) or (has_user_payload and has_missing_signal))
+
+
+def _case_is_user_setup(case: TestCase) -> bool:
+    text = _case_text(case)
+    has_user = any(key in text for key in ("username", "user_name", "account", "用户", "账号", "user"))
+    has_create = any(word in text for word in ("create", "register", "signup", "add", "新增", "创建", "注册", "准备"))
+    has_delete = any(word in text for word in ("delete", "remove", "删除", "禁用"))
+    method = _first_http_method(case)
+    return bool(has_user and has_create and not has_delete and method in {"POST", "PUT", "PATCH", ""})
+
+
+def _first_http_method(case: TestCase) -> str:
+    for step in case.steps or []:
+        if step.step_type == "http_request" and isinstance(step.config, dict):
+            return str(step.config.get("method") or "").upper()
+    return str(case.method or "").upper()
+
+
+def _case_user_fields(case: TestCase) -> list[str]:
+    text = _case_text(case)
+    fields = []
+    for key in ("username", "user_name", "account", "password", "mobile", "phone", "email"):
+        if key in text:
+            fields.append(key)
+    if "用户" in text and "username" not in fields:
+        fields.append("username")
+    if "密码" in text and "password" not in fields:
+        fields.append("password")
+    return fields or ["username", "password"]
+
+
+def _case_text(case: TestCase) -> str:
+    parts: list[Any] = [
+        case.name,
+        case.description,
+        case.method,
+        case.path,
+        case.headers,
+        case.params,
+        case.extract_data,
+        case.assertion,
+    ]
+    for step in case.steps or []:
+        parts.extend([step.step_name, step.step_type, step.config, step.extract, step.assertion])
+    return json.dumps(parts, ensure_ascii=False, default=str).lower()
 
 
 def _candidate_values(item: dict[str, Any]) -> list[dict[str, Any]]:
@@ -536,7 +869,7 @@ def _attach_ai_summary(session, output: dict[str, Any], model_name: str) -> None
             "你是资深接口自动化测试架构师。请基于下面的规则诊断结果，输出给测试人员看的中文 Markdown 总结。\n"
             "要求：\n"
             "1. 不要编造规则结果之外的字段和值。\n"
-            "2. 按优先级说明：应补变量提取、应补断言、参数错误、SQL 断言、function 补充、环境问题、接口问题。\n"
+            "2. 按优先级说明：执行顺序/前置数据、应补变量提取、应补断言、参数错误、SQL 断言、function 补充、数据安全、环境问题、接口问题。\n"
             "3. 明确哪些建议可高置信一键应用，哪些必须人工审核。\n\n"
             f"规则诊断结果：\n{json.dumps(compact, ensure_ascii=False)[:18000]}"
         )
@@ -598,16 +931,46 @@ def _try_extract(body: Any, path: str) -> Any:
 def _best_path_for_name(body: Any, name: str) -> str | None:
     if not name:
         return None
-    norm = _norm_key(name)
+    aliases = _name_aliases(name)
     best = None
     for item in _leaf_paths(body):
         path = item["path"]
         tail = _norm_key(path.split(".")[-1].strip("[]'"))
-        if tail == norm:
+        if tail in aliases:
             return path
-        if norm and norm in tail:
+        if aliases & _path_aliases(path):
+            best = best or path
+        if _looks_like_token_name(name) and _looks_like_token_value(item["value"]):
             best = best or path
     return best
+
+
+def _name_aliases(name: str) -> set[str]:
+    norm = _norm_key(name)
+    aliases = {norm}
+    if norm in {"accesstoken", "access_token", "token", "jwt", "bearertoken"}:
+        aliases |= {"token", "accesstoken", "accessToken".lower(), "jwt", "bearertoken"}
+    if norm in {"refreshtoken", "refresh_token"}:
+        aliases |= {"refreshtoken", "refreshToken".lower()}
+    if norm.endswith("token"):
+        aliases.add("token")
+    return {_norm_key(item) for item in aliases if item}
+
+
+def _path_aliases(path: str) -> set[str]:
+    parts = re.split(r"[\.\[\]']+", path)
+    return {_norm_key(part) for part in parts if part}
+
+
+def _looks_like_token_name(name: str) -> bool:
+    return "token" in _norm_key(name) or _norm_key(name) in {"jwt", "authorization"}
+
+
+def _looks_like_token_value(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return bool(re.fullmatch(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", text) or len(text) >= 40 and "." in text)
 
 
 def _has_extract_for_path(step: TestStep | None, path: str) -> bool:
@@ -665,7 +1028,7 @@ def _classify_case(suggestions: list[dict[str, Any]], rows: list[TestStepReport]
         return "环境问题"
     if "api_defect" in cats:
         return "接口问题"
-    if cats & {"missing_extraction", "missing_assertion", "parameter_error", "function_needed"}:
+    if cats & {"missing_extraction", "missing_assertion", "parameter_error", "function_needed", "data_safety", "execution_order"}:
         return "用例需优化"
     if _case_status(rows) == "passed":
         return "基本正常"

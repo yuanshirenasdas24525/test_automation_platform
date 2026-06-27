@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Bot, Eye, Loader2, Settings2, Sparkles } from "lucide-react";
+import {
+  Bot,
+  Building2,
+  DatabaseZap,
+  Eye,
+  FlaskConical,
+  Loader2,
+  Search,
+  Settings2,
+  Sparkles,
+  Wrench,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -16,7 +27,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { aiModelsApi, analysisDocsApi, ApiError } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import type { AiModelConfig, Requirement } from "@/types/domain";
+import type {
+  AiModelConfig,
+  Requirement,
+  RequirementAnalysisType,
+} from "@/types/domain";
 
 interface Props {
   open: boolean;
@@ -25,6 +40,47 @@ interface Props {
   /** 触发成功后调用，让父组件刷新分析文档列表/打开列表对话框。 */
   onTriggered?: (runs: { run_id: number; model_name: string }[]) => void;
 }
+
+const CORE_ANALYSIS_TYPES: Array<{
+  value: RequirementAnalysisType;
+  label: string;
+  description: string;
+  icon: typeof Search;
+}> = [
+  {
+    value: "clarify",
+    label: "需求澄清",
+    description: "缺失信息、歧义点、补充问题",
+    icon: Search,
+  },
+  {
+    value: "testability",
+    label: "可测性分析",
+    description: "验收标准、测试点、边界异常",
+    icon: FlaskConical,
+  },
+  {
+    value: "delivery",
+    label: "研发落地",
+    description: "技术影响、工单拆解、交付风险",
+    icon: Wrench,
+  },
+  {
+    value: "full",
+    label: "完整报告",
+    description: "产品、研发、测试、落地全量分析",
+    icon: Sparkles,
+  },
+];
+
+const RESEARCH_ACTIONS: Array<{
+  value: RequirementAnalysisType;
+  label: string;
+  icon: typeof Search;
+}> = [
+  { value: "market", label: "市场分析", icon: Search },
+  { value: "industry", label: "行业调研", icon: Building2 },
+];
 
 export function AiAnalysisLauncherDialog({
   open,
@@ -50,6 +106,8 @@ export function AiAnalysisLauncherDialog({
   const [advanced, setAdvanced] = useState(false);
   const [extraNames, setExtraNames] = useState<string[]>([]);
   const [userPrompt, setUserPrompt] = useState("");
+  const [analysisType, setAnalysisType] =
+    useState<RequirementAnalysisType>("clarify");
 
   useEffect(() => {
     if (open) {
@@ -57,14 +115,19 @@ export function AiAnalysisLauncherDialog({
       setAdvanced(false);
       setExtraNames([]);
       setUserPrompt("");
+      setAnalysisType("clarify");
     }
   }, [open, defaultModel?.name]);
 
   const triggerMutation = useMutation({
-    mutationFn: async (model_names: string[]) => {
+    mutationFn: async (payload: {
+      model_names: string[];
+      analysis_type: RequirementAnalysisType;
+    }) => {
       if (!requirement) throw new Error("缺少需求");
       return analysisDocsApi.trigger(requirement.id, {
-        model_names,
+        model_names: payload.model_names,
+        analysis_type: payload.analysis_type,
         user_prompt: userPrompt.trim() || undefined,
       });
     },
@@ -87,14 +150,25 @@ export function AiAnalysisLauncherDialog({
     },
   });
 
-  const handleSubmit = () => {
+  const selectedNames = () => {
     if (!primaryName) {
       toast.error("请先选一个主模型");
-      return;
+      return null;
     }
     const names = [primaryName, ...(advanced ? extraNames : [])];
-    const unique = Array.from(new Set(names));
-    triggerMutation.mutate(unique);
+    return Array.from(new Set(names));
+  };
+
+  const handleSubmit = () => {
+    const names = selectedNames();
+    if (!names) return;
+    triggerMutation.mutate({ model_names: names, analysis_type: analysisType });
+  };
+
+  const handleResearch = (nextType: RequirementAnalysisType) => {
+    const names = selectedNames();
+    if (!names) return;
+    triggerMutation.mutate({ model_names: names, analysis_type: nextType });
   };
 
   return (
@@ -128,6 +202,34 @@ export function AiAnalysisLauncherDialog({
           </div>
         ) : (
           <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {CORE_ANALYSIS_TYPES.map((item) => {
+                const Icon = item.icon;
+                const active = analysisType === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => setAnalysisType(item.value)}
+                    className={[
+                      "rounded border p-3 text-left transition-colors",
+                      active
+                        ? "border-violet-500 bg-violet-50 text-violet-950"
+                        : "bg-background hover:bg-muted/50",
+                    ].join(" ")}
+                  >
+                    <span className="flex items-center gap-2 text-sm font-medium">
+                      <Icon className="h-4 w-4" />
+                      {item.label}
+                    </span>
+                    <span className="mt-1 block text-xs text-muted-foreground">
+                      {item.description}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
             <ModelPicker
               label="主模型"
               models={enabledModels}
@@ -194,6 +296,38 @@ export function AiAnalysisLauncherDialog({
                 value={userPrompt}
                 onChange={(e) => setUserPrompt(e.target.value)}
               />
+            </div>
+
+            <div className="flex flex-wrap gap-2 border-t pt-3">
+              {RESEARCH_ACTIONS.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <Button
+                    key={item.value}
+                    type="button"
+                    variant="outline"
+                    onClick={() => handleResearch(item.value)}
+                    disabled={
+                      triggerMutation.isPending ||
+                      enabledModels.length === 0 ||
+                      !primaryName
+                    }
+                  >
+                    <Icon className="h-4 w-4" />
+                    {item.label}
+                  </Button>
+                );
+              })}
+            </div>
+
+            <div className="rounded border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
+              <div className="flex items-center gap-2 font-medium text-foreground">
+                <DatabaseZap className="h-4 w-4" />
+                资料源增强（预留）
+              </div>
+              <div className="mt-1">
+                后续可接入 Web Search / RAG 资料库，让市场分析与行业调研先检索公开资料、内部文档和来源证据，再生成报告。
+              </div>
             </div>
           </div>
         )}

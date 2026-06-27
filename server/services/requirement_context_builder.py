@@ -377,12 +377,22 @@ def render_context_as_text(ctx: RequirementContext) -> dict[str, str]:
             parts.append(f"{role_label}: {', '.join(names) if names else '未指派'}")
         return " | ".join(parts)
 
+    def _list_block(items: list[Any], empty: str = "（无）") -> str:
+        if not items:
+            return empty
+        return "\n".join(f"- {item}" for item in items if str(item).strip()) or empty
+
     return {
         "REQUIREMENT_ID": str(req["id"]),
         "REQUIREMENT_TITLE": req["title"],
         "REQUIREMENT_DESCRIPTION": req.get("description", "") or "（无描述）",
         "REQUIREMENT_PRIORITY": str(req.get("priority", 2)),
         "REQUIREMENT_SYSTEM_STATUS": req.get("system_status") or "未派生",
+        "REQUIREMENT_BUSINESS_STATUS": req.get("business_status") or "未设置",
+        "REQUIREMENT_TAGS": ", ".join(req.get("tags") or []) or "（无）",
+        "REQUIREMENT_ACCEPTANCE_CRITERIA": _list_block(
+            req.get("acceptance_criteria") or [], "（无现成验收标准）"
+        ),
         "REQUIREMENT_PLANNED_START": req.get("planned_start_at") or "未设置",
         "REQUIREMENT_PLANNED_END": req.get("planned_end_at") or "未设置",
         "REQUIREMENT_ASSIGNEES": _assignees_block(req.get("assignees", {})),

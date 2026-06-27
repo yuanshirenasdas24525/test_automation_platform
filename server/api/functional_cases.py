@@ -576,10 +576,10 @@ def _variable_pool_block(db, project_id: int) -> str:
     return "\n".join(lines)
 
 
-def _existing_case_names(db, module_id: int, limit: int = 300) -> list[str]:
+def _existing_case_names(db, module_id: int, limit: int = 300, case_type: str = CASE_TYPE_FUNCTIONAL) -> list[str]:
     rows = (
         db.session.query(TestCase.name)
-        .filter(TestCase.module_id == module_id, TestCase.case_type == CASE_TYPE_FUNCTIONAL)
+        .filter(TestCase.module_id == module_id, TestCase.case_type == case_type)
         .order_by(TestCase.sort_order)
         .limit(limit)
         .all()
@@ -618,9 +618,27 @@ def _shape_cases(parsed) -> list[dict]:
 
 
 _COVERAGE_TEXT = {
-    "standard": "标准覆盖：主流程 + 主要的异常/边界/权限场景即可，控制数量、别太碎。",
-    "full": "全面覆盖：按下方维度清单，对每个功能点/每个参数逐项系统出点，适用维度都要覆盖，不要只写主流程。",
-    "exhaustive": "穷尽覆盖：把每个输入字段/参数的每个维度都拆成独立测试点（等价类的每个无效类、每个边界值、每种格式错误都单列），并覆盖组合场景。宁可几十上百条，越细越好。",
+    "standard": """
+标准覆盖（少而关键）：
+- 每个功能/接口只出 1 条主流程成功用例。
+- 只选择最关键的 2-4 类风险补充异常点：必填缺失、核心字段格式错误、鉴权/权限、关键边界。
+- 不要对每个字段穷举缺失/空值/类型/边界；非核心字段只在明显高风险时覆盖。
+- 目标是快速冒烟 + 主要风险验证，数量应明显少于“全面”和“穷尽”。
+""".strip(),
+    "full": """
+全面覆盖（推荐，系统覆盖）：
+- 每个功能/接口都要覆盖主流程、核心异常、权限/鉴权、响应/数据正确性。
+- 对每个必填字段至少覆盖缺失或为空之一；对每个核心字段覆盖格式/类型错误；有明确范围的字段覆盖边界。
+- 写操作要覆盖创建/查询/更新/删除或状态流转链路，并规划查库/数据一致性校验。
+- 不要求把同一字段的每一种非法值都拆开，但不能只写主流程。
+""".strip(),
+    "exhaustive": """
+穷尽覆盖（最细，宁多勿漏）：
+- 对每个功能/接口、每个参数、每个状态、每个角色逐维度展开。
+- 每个必填字段分别生成：缺失、为空、null、类型错误、非法字符；有长度/数值/枚举范围的字段分别生成最小、最大、刚好、超界。
+- 分页/排序/过滤、幂等、重复提交、并发、安全注入、越权、状态流转、数据链路、查库校验都要拆成独立测试点。
+- 可以生成几十到上百条，优先完整性，不要为了简洁合并场景。
+""".strip(),
 }
 
 
@@ -689,7 +707,11 @@ def ai_generate_outline(
             parts.append(f"（另附 {len(image_paths)} 张界面/原型截图，请结合图片内容规划测试点）")
         requirement_text = "\n\n".join(parts) or "（未提供需求文本，请基于模块名与下方跨模块信息合理推断）"
 
-        existing = _existing_case_names(db, module_id)
+        existing = _existing_case_names(
+            db,
+            module_id,
+            case_type=CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL,
+        )
         existing_block = "、".join(existing) if existing else "（本模块暂无已有用例）"
         placeholders = {
             "MODULE_NAME": module.name,
@@ -779,7 +801,11 @@ def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
         if payload.points
         else "（暂无）"
     )
-    existing = _existing_case_names(db, payload.module_id)
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
     placeholders = {
         "DIGEST": payload.digest.strip() or "（无摘要，请按已规划测试点合理推断）",
         "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
@@ -846,7 +872,11 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         f"- [{p.category or '未分类'}] {p.title}" for p in payload.points
     )
     session_done = [n.strip() for n in (payload.done_names or []) if n.strip()]
-    existing = _existing_case_names(db, payload.module_id)
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
     # 喂给模型的「不要重复」清单：模块现有用例 + 本次已生成（截断防 prompt 过长）
     avoid = (existing[:200] + session_done)[-300:]
     done_names = "、".join(avoid) if avoid else "（暂无，这是第一批）"
@@ -1474,7 +1504,7 @@ def list_functional_cases(
         ),
     ),
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=500),
+    page_size: int = Query(50, ge=0, le=500),
 ):
     """列功能用例，附带最近一次执行结果。
 
@@ -1514,12 +1544,16 @@ def list_functional_cases(
         items.append(_serialize_case(c, latest_run=latest))
 
     total = len(items)
-    start = (page - 1) * page_size
-    end = start + page_size
+    if page_size == 0:
+        paged_items = items
+    else:
+        start = (page - 1) * page_size
+        end = start + page_size
+        paged_items = items[start:end]
     return {
         "status": "success",
         "data": {
-            "items": items[start:end],
+            "items": paged_items,
             "total": total,
             "page": page,
             "page_size": page_size,

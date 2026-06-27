@@ -110,11 +110,27 @@ fi
 
 # ---- 4. 后端 API ----
 if [[ "$START_API" == "1" ]]; then
-  reload_flag=""
-  [[ "$API_RELOAD" == "1" ]] && reload_flag="--reload"
+  reload_args=()
+  if [[ "$API_RELOAD" == "1" ]]; then
+    reload_args=(
+      --reload
+      --reload-dir server
+      --reload-dir database
+      --reload-dir runners
+      --reload-dir tasks
+      --reload-dir ai_gateway
+      --reload-dir coding_agent
+      --reload-dir utils
+      --reload-dir config
+      --reload-exclude "data/*"
+      --reload-exclude "frontend/node_modules/*"
+      --reload-exclude "frontend/dist/*"
+      --reload-exclude "__pycache__/*"
+      --reload-exclude "*.pyc"
+    )
+  fi
   log "API (uvicorn) → http://$API_HOST:$API_PORT   日志 $LOG_DIR/api.log"
-  # shellcheck disable=SC2086
-  "$PYBIN" -m uvicorn server.main:app --host "$API_HOST" --port "$API_PORT" $reload_flag \
+  "$PYBIN" -m uvicorn server.main:app --host "$API_HOST" --port "$API_PORT" "${reload_args[@]}" \
     > "$LOG_DIR/api.log" 2>&1 &
   PIDS+=($!)
 fi

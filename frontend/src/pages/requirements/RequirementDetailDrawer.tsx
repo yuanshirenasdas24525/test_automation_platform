@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X, Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon, RotateCcw } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -44,6 +44,31 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
     staleTime: 10_000,
   });
 
+  // 编号 → 名称 映射：依赖需求 / 协作成员 / 编辑历史 都用它把编号换成名称
+  const reqNamesQuery = useQuery({
+    queryKey: ["requirementNames", req?.project_id],
+    queryFn: () => requirementsApi.list(req!.project_id),
+    enabled: open && !!req,
+    staleTime: 30_000,
+  });
+  const reqNames = useMemo(() => {
+    const m = new Map<number, string>();
+    (reqNamesQuery.data ?? []).forEach((r) => m.set(r.id, r.title));
+    return m;
+  }, [reqNamesQuery.data]);
+
+  const usersQuery = useQuery({
+    queryKey: ["allUsers"],
+    queryFn: () => usersApi.list(),
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const userNames = useMemo(() => {
+    const m = new Map<number, string>();
+    (usersQuery.data ?? []).forEach((u) => m.set(u.id, u.full_name || u.username));
+    return m;
+  }, [usersQuery.data]);
+
   if (!req || !open) return null;
 
   return (
@@ -53,7 +78,7 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
         onClick={onClose}
         aria-hidden
       />
-      <div className="relative w-full max-w-[720px] bg-background shadow-2xl animate-slide-in-right overflow-y-auto">
+      <div className="relative w-full max-w-[1000px] bg-background shadow-2xl animate-slide-in-right overflow-y-auto">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-6 py-4">
           <div className="flex min-w-0 items-center gap-2">
             <span className="text-xs font-mono text-muted-foreground shrink-0">
@@ -197,9 +222,10 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
                       key={did}
                       type="button"
                       onClick={() => onViewRequirement(did)}
-                      className="rounded border px-1.5 py-0.5 text-xs font-mono text-blue-600 hover:bg-blue-50 hover:underline cursor-pointer"
+                      title={`REQ-${did}`}
+                      className="rounded border px-1.5 py-0.5 text-xs text-blue-600 hover:bg-blue-50 hover:underline cursor-pointer"
                     >
-                      REQ-{did}
+                      {reqNames.get(did) ?? `REQ-${did}`}
                     </button>
                   ))}
                 </div>
@@ -228,9 +254,10 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
                           {ids.map((uid) => (
                             <span
                               key={uid}
+                              title={`#${uid}`}
                               className="block text-xs rounded bg-secondary px-1.5 py-0.5"
                             >
-                              #{uid}
+                              {userNames.get(uid) ?? `#${uid}`}
                             </span>
                           ))}
                         </div>
@@ -259,6 +286,8 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
           <HistoryTimeline
             history={historyQuery.data ?? []}
             loading={historyQuery.isLoading}
+            userNames={userNames}
+            reqNames={reqNames}
             onChanged={() => {
               historyQuery.refetch();
               queryClient.invalidateQueries({ queryKey: ["requirements"] });
@@ -331,15 +360,18 @@ function Hr() {
 function HistoryTimeline({
   history,
   loading,
+  userNames,
+  reqNames,
   onChanged,
   onCurrentDeleted,
 }: {
   history: RequirementEditHistory[];
   loading: boolean;
+  userNames: Map<number, string>;
+  reqNames: Map<number, string>;
   onChanged: () => void;
   onCurrentDeleted: () => void;
 }) {
-  const [userNames, setUserNames] = useState<Map<number, string>>(new Map());
   const [fieldPicker, setFieldPicker] = useState<RequirementEditHistory | null>(null);
   const [selectedFields, setSelectedFields] = useState<Set<string>>(new Set());
 
@@ -383,24 +415,6 @@ function HistoryTimeline({
       toast.error(err instanceof Error ? err.message : "回滚失败");
     },
   });
-
-  useEffect(() => {
-    const ids = history
-      .map((e) => e.edited_by_id)
-      .filter((id): id is number => id != null);
-    const uniqueIds = [...new Set(ids)];
-    if (uniqueIds.length === 0) return;
-    Promise.all(uniqueIds.map((id) => usersApi.get(id).catch(() => null)))
-      .then((users) => {
-        setUserNames((prev) => {
-          const next = new Map(prev);
-          users.forEach((u, i) => {
-            if (u) next.set(uniqueIds[i], u.full_name || u.username);
-          });
-          return next;
-        });
-      });
-  }, [history]);
 
   if (loading) {
     return <Skeleton className="h-20 w-full" />;
@@ -454,11 +468,11 @@ function HistoryTimeline({
                     </span>
                     ：{" "}
                     <span className="line-through text-red-500">
-                      {_prettyVal(ch.old, ch.field)}
+                      {_prettyVal(ch.old, ch.field, userNames, reqNames)}
                     </span>
                     {" → "}
                     <span className="text-green-600">
-                      {_prettyVal(ch.new, ch.field)}
+                      {_prettyVal(ch.new, ch.field, userNames, reqNames)}
                     </span>
                   </div>
                 ))}
@@ -589,18 +603,58 @@ function actionLabel(action?: string): string {
 
 function stripHtml(html: string): string {
   if (!html) return "";
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+  // 描述可能是正常 HTML，也可能是被转义存储的 HTML（&lt;p&gt;…）。
+  // 反复「解码实体 + 去标签」直到稳定，确保两种情况都还原成纯文本。
+  let text = html;
+  for (let i = 0; i < 3; i++) {
+    const doc = new DOMParser().parseFromString(text, "text/html");
+    const stripped = (doc.body.textContent || "").replace(/<[^>]+>/g, "");
+    if (stripped === text) break;
+    text = stripped;
+  }
+  return text.replace(/\s+/g, " ").trim();
 }
 
-function _prettyVal(v: unknown, field: string): string {
+function _prettyVal(
+  v: unknown,
+  field: string,
+  userNames?: Map<number, string>,
+  reqNames?: Map<number, string>,
+): string {
   if (v === null || v === undefined) return "（无）";
+  const userName = (id: unknown) =>
+    userNames?.get(Number(id)) ?? `#${id}`;
+  const reqName = (id: unknown) =>
+    reqNames?.get(Number(id)) ?? `REQ-${id}`;
+
   if (field === "description") {
     const text = stripHtml(String(v));
     return text.length > 80 ? text.slice(0, 80) + "…" : text;
   }
+  // 协作成员：{dev:[],test:[],pm:[],ui:[]} → 角色:姓名
   if (field === "assignees") {
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const obj = v as Record<string, unknown>;
+      const parts: string[] = [];
+      for (const role of ["dev", "test", "pm", "ui"] as const) {
+        const ids = obj[role];
+        if (Array.isArray(ids) && ids.length > 0) {
+          parts.push(`${ROLE_LABEL[role]}: ${ids.map(userName).join("、")}`);
+        }
+      }
+      return parts.length ? parts.join("；") : "（无）";
+    }
+    if (Array.isArray(v)) return v.length ? v.map(userName).join("、") : "（空）";
     return String(v);
+  }
+  // 产品负责人等单个用户 id 字段
+  if (field === "assignee_pm_id" || field.endsWith("_user_id")) {
+    return userName(v);
+  }
+  // 依赖需求：需求 id 数组 → 需求名称
+  if (field === "depends_on") {
+    if (Array.isArray(v)) return v.length ? v.map(reqName).join("、") : "（空）";
+    return reqName(v);
   }
   if (Array.isArray(v)) {
     if (v.length === 0) return "（空）";

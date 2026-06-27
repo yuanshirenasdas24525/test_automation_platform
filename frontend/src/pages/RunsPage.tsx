@@ -83,6 +83,10 @@ export function RunsPage() {
   const projectIdStr = searchParams.get("project_id") ?? "";
   const projectId = projectIdStr ? Number(projectIdStr) : undefined;
   const page = Number(searchParams.get("page") ?? "1") || 1;
+  const reportIdParam = Number(searchParams.get("report_id") ?? "");
+  const urlDetailId = Number.isFinite(reportIdParam) && reportIdParam > 0
+    ? reportIdParam
+    : null;
 
   const setQS = (patch: Record<string, string | undefined>) => {
     const next = new URLSearchParams(searchParams);
@@ -148,6 +152,20 @@ export function RunsPage() {
   const [pendingDelete, setPendingDelete] = useState<TestReportSummary | null>(
     null,
   );
+
+  useEffect(() => {
+    setDetailId(urlDetailId);
+  }, [urlDetailId]);
+
+  const openDetail = (id: number) => {
+    setDetailId(id);
+    setQS({ report_id: String(id) });
+  };
+
+  const closeDetail = () => {
+    setDetailId(null);
+    setQS({ report_id: undefined });
+  };
 
   const reports = listQuery.data?.data ?? [];
   const total = listQuery.data?.total ?? 0;
@@ -297,7 +315,7 @@ export function RunsPage() {
                 <ReportRow
                   key={r.id}
                   report={r}
-                  onOpen={() => setDetailId(r.id)}
+                  onOpen={() => openDetail(r.id)}
                   onDelete={() => setPendingDelete(r)}
                 />
               ))}
@@ -336,7 +354,7 @@ export function RunsPage() {
       {/* Dialogs */}
       <DetailDialog
         reportId={detailId}
-        onClose={() => setDetailId(null)}
+        onClose={closeDetail}
       />
 
       <Dialog
@@ -824,6 +842,7 @@ function categoryLabel(category: string): string {
     parameter_error: "参数",
     sql_assertion_needed: "SQL",
     function_needed: "Function",
+    data_safety: "数据安全",
     environment_issue: "环境",
     api_defect: "接口",
   };

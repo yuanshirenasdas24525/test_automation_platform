@@ -41,11 +41,15 @@ import {
   aiModelsApi,
   apiCasesApi,
   ApiError,
+  aiApi,
   casesApi,
   contentApi,
   functionalCasesApi,
   projectsApi,
+  reportsApi,
   runsApi,
+  type ReportAnalysisOutput,
+  type ReportAnalysisSuggestion,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
@@ -55,6 +59,7 @@ import type {
   ApiTestHistoryReport,
   ContentNode,
   TestCaseCreate,
+  TestStepDraft,
 } from "@/types/domain";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { CaseDialog, type CaseFormValues } from "./ProjectDetailPage";
@@ -84,6 +89,90 @@ function messageOf(error: unknown): string {
 
 function sessionId(): string {
   return `api-edit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function appendAssertionRule(
+  steps: TestStepDraft[],
+  stepId: number | null,
+  target: string,
+  expected: unknown,
+) {
+  const nextSteps = steps.map((step) => ({ ...step, assertion: [...(step.assertion ?? [])] }));
+  const indexById = stepId == null ? -1 : nextSteps.findIndex((step) => step.id === stepId);
+  const index = indexById >= 0
+    ? indexById
+    : nextSteps.findIndex((step) => step.step_type === "http_request");
+  if (index < 0) {
+    throw new Error("该用例没有可更新的 HTTP 步骤，请进入用例编辑器手动处理");
+  }
+  const type = expected === "not_empty"
+    ? "not_null"
+    : target.startsWith("$")
+      ? "jsonpath"
+      : "equal";
+  const rule = {
+    type,
+    target,
+    expected: expected === "not_empty" ? null : expected,
+    description: `AI 全面分析补充：${target}`,
+  };
+  const old = nextSteps[index].assertion ?? [];
+  const exists = old.some((item) => {
+    const raw = item as Record<string, unknown>;
+    return String(raw.target ?? "") === target;
+  });
+  nextSteps[index].assertion = exists
+    ? old.map((item) => String((item as Record<string, unknown>).target ?? "") === target ? rule : item)
+    : [...old, rule];
+  return { steps: nextSteps };
+}
+
+function assertionRulesToLegacyMap(steps: TestStepDraft[]) {
+  const out: Record<string, unknown> = {};
+  for (const step of steps) {
+    for (const item of step.assertion ?? []) {
+      const raw = item as Record<string, unknown>;
+      const target = String(raw.target ?? "").trim();
+      if (target) out[target] = raw.type === "not_null" ? "not_empty" : raw.expected;
+    }
+  }
+  return out;
+}
+
+function appendExtractRule(
+  steps: TestStepDraft[],
+  stepId: number | null,
+  variable: string,
+  jsonpath: string,
+) {
+  const nextSteps = steps.map((step) => ({ ...step, extract: [...(step.extract ?? [])] }));
+  const indexById = stepId == null ? -1 : nextSteps.findIndex((step) => step.id === stepId);
+  const index = indexById >= 0
+    ? indexById
+    : nextSteps.findIndex((step) => step.step_type === "http_request");
+  if (index < 0) {
+    throw new Error("该用例没有可更新的 HTTP 步骤，请进入用例编辑器手动处理");
+  }
+  const rule = { name: variable, from: "response.body", jsonpath };
+  const old = nextSteps[index].extract ?? [];
+  const exists = old.some((item) => String((item as Record<string, unknown>).name ?? "") === variable);
+  nextSteps[index].extract = exists
+    ? old.map((item) => String((item as Record<string, unknown>).name ?? "") === variable ? rule : item)
+    : [...old, rule];
+  return { steps: nextSteps };
+}
+
+function extractRulesToLegacyMap(steps: TestStepDraft[]) {
+  const out: Record<string, unknown> = {};
+  for (const step of steps) {
+    for (const item of step.extract ?? []) {
+      const raw = item as Record<string, unknown>;
+      const name = String(raw.name ?? "").trim();
+      const jsonpath = raw.jsonpath ?? raw.path ?? raw.expr;
+      if (name && jsonpath) out[name] = jsonpath;
+    }
+  }
+  return out;
 }
 
 function formatTime(value: string | null | undefined): string {
@@ -456,7 +545,18 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
       )}
 
       <CaseDialog state={originalDialogState} category="api" onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
-      <RecordsDialog open={recordsOpen} quickEdit={quickEdit} moduleId={moduleId} firstModel={firstModel} onInvalidate={invalidate} onClose={() => setRecordsOpen(false)} />
+      <RecordsDialog
+        open={recordsOpen}
+        quickEdit={quickEdit}
+        moduleId={moduleId}
+        firstModel={firstModel}
+        onInvalidate={invalidate}
+        onEditCase={(row) => {
+          setRecordsOpen(false);
+          setEditor(row);
+        }}
+        onClose={() => setRecordsOpen(false)}
+      />
       <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
       <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
@@ -837,16 +937,34 @@ function QuickCreateRow({ moduleId, sessionId, isTrailing, onFirstInput, onCreat
   </div>;
 }
 
-type ReportAnalysisItem = {
-  case_id: number;
-  module_id: number | null;
-  name: string;
-  classification: string;
-  findings: string[];
-  fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
+type ReportAnalysisStage = "collecting" | "rules" | "ai" | "done" | "failed";
+
+type ReportAnalysisState = {
+  reportId: number;
+  stage: ReportAnalysisStage;
+  preview: ReportAnalysisOutput | null;
+  runId?: number;
+  error?: string;
 };
 
-function RecordsDialog({ open, quickEdit, moduleId, firstModel, onInvalidate, onClose }: { open: boolean; quickEdit: boolean; moduleId: number | null; firstModel: string; onInvalidate: () => void; onClose: () => void }) {
+function RecordsDialog({
+  open,
+  quickEdit,
+  moduleId,
+  firstModel,
+  onInvalidate,
+  onEditCase,
+  onClose,
+}: {
+  open: boolean;
+  quickEdit: boolean;
+  moduleId: number | null;
+  firstModel: string;
+  onInvalidate: () => void;
+  onEditCase: (row: ApiCase) => void;
+  onClose: () => void;
+}) {
+  const analysisAbortRef = useRef<AbortController | null>(null);
   const editQuery = useQuery({
     queryKey: ["api-edit-history", moduleId],
     queryFn: () => apiCasesApi.editHistory(moduleId!),
@@ -860,7 +978,16 @@ function RecordsDialog({ open, quickEdit, moduleId, firstModel, onInvalidate, on
     staleTime: 0,
   });
   const loading = quickEdit ? editQuery.isLoading : testQuery.isLoading;
-  const [analysis, setAnalysis] = useState<{ reportId: number; loading: boolean; items: ReportAnalysisItem[] | null } | null>(null);
+  const [analysis, setAnalysis] = useState<ReportAnalysisState | null>(null);
+  const aiRunQuery = useQuery({
+    queryKey: ["api-report-analysis-run", analysis?.runId],
+    queryFn: () => aiApi.getRun(analysis!.runId!),
+    enabled: analysis?.runId != null,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "success" || status === "failed" || status === "cancelled" ? false : 2_000;
+    },
+  });
 
   const rollbackRecord = async (record: ApiCaseEditRecord, fullBatch = false) => {
     if (!record.batch_id) return;
@@ -878,24 +1005,220 @@ function RecordsDialog({ open, quickEdit, moduleId, firstModel, onInvalidate, on
   };
 
   const analyzeReport = async (reportId: number) => {
-    if (!firstModel) {
-      toast.error("请先在配置中心添加可用 AI 模型");
+    analysisAbortRef.current?.abort();
+    const controller = new AbortController();
+    analysisAbortRef.current = controller;
+    setAnalysis({ reportId, stage: "collecting", preview: null });
+    try {
+      const preview = await reportsApi.analysisPreview(reportId, controller.signal);
+      setAnalysis({ reportId, stage: firstModel ? "rules" : "done", preview });
+      if (!firstModel) {
+        toast.success("规则诊断已完成");
+        return;
+      }
+      const res = await reportsApi.analyze(reportId, { model_name: firstModel });
+      setAnalysis({ reportId, stage: "ai", preview, runId: res.ai_run_id });
+      toast.success("规则诊断已展示，正在生成 AI 汇总");
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setAnalysis((current) => current?.reportId === reportId ? { ...current, stage: "failed", error: "已中断分析" } : current);
+        return;
+      }
+      toast.error(messageOf(e));
+      setAnalysis({ reportId, stage: "failed", preview: null, error: messageOf(e) });
+    } finally {
+      if (analysisAbortRef.current === controller) analysisAbortRef.current = null;
+    }
+  };
+
+  const cancelAnalysis = async () => {
+    analysisAbortRef.current?.abort();
+    const runId = analysis?.runId;
+    setAnalysis((current) => current ? { ...current, stage: "failed", error: "已中断分析" } : current);
+    if (runId) {
+      try {
+        await aiApi.cancelRun(runId);
+        toast.success("已中断 AI 全面分析");
+      } catch (error) {
+        toast.error(messageOf(error));
+      }
+    }
+  };
+
+  const openSuggestedCase = async (caseId: number | null) => {
+    if (caseId == null) {
+      toast.error("建议里缺少用例 ID，无法打开编辑器");
       return;
     }
-    setAnalysis({ reportId, loading: true, items: null });
     try {
-      const res = await functionalCasesApi.aiDiagnoseReport({ report_id: reportId, model_name: firstModel });
-      setAnalysis({ reportId, loading: false, items: res.items });
-    } catch (e) {
-      toast.error(messageOf(e));
-      setAnalysis(null);
+      const detail = await casesApi.get(caseId);
+      onEditCase({
+        ...detail,
+        case_type: "api",
+        tags: detail.tags ?? [],
+        skip: Boolean(detail.skip),
+        latest_run: null,
+      });
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const applyAssertionSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+    if (suggestion.case_id == null) {
+      toast.error("建议里缺少用例 ID，无法应用");
+      return;
+    }
+    const action = suggestion.action ?? {};
+    if (action.type !== "add_assertion") {
+      toast.error("这条建议需要人工确认，请进入用例编辑");
+      return;
+    }
+    const target = String(action.target ?? "").trim();
+    if (!target) {
+      toast.error("建议里缺少断言目标，无法应用");
+      return;
+    }
+    try {
+      const detail = await casesApi.get(suggestion.case_id);
+      const nextAssertion = appendAssertionRule(
+        detail.steps ?? [],
+        Number(suggestion.step_id ?? 0) || null,
+        target,
+        action.expected ?? "",
+      );
+      await apiCasesApi.update(detail.id, {
+        module_id: detail.module_id,
+        name: detail.name,
+        assertion: JSON.stringify(assertionRulesToLegacyMap(nextAssertion.steps), null, 2),
+        steps: nextAssertion.steps,
+        case_type: "api",
+      });
+      toast.success("已应用断言，重新运行后可验证效果");
+      onInvalidate();
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const applyExtractSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+    if (suggestion.case_id == null) {
+      toast.error("建议里缺少用例 ID，无法应用");
+      return;
+    }
+    const action = suggestion.action ?? {};
+    if (action.type !== "update_extract") {
+      toast.error("这条建议不是提取参数修复");
+      return;
+    }
+    const variable = String(action.variable ?? "").trim();
+    const jsonpath = String(action.suggested_jsonpath ?? "").trim();
+    if (!variable || !jsonpath) {
+      toast.error("建议里缺少变量名或 JSONPath");
+      return;
+    }
+    try {
+      const detail = await casesApi.get(suggestion.case_id);
+      const nextExtract = appendExtractRule(
+        detail.steps ?? [],
+        Number(suggestion.step_id ?? 0) || null,
+        variable,
+        jsonpath,
+      );
+      await apiCasesApi.update(detail.id, {
+        module_id: detail.module_id,
+        name: detail.name,
+        extract_data: JSON.stringify(extractRulesToLegacyMap(nextExtract.steps), null, 2),
+        steps: nextExtract.steps,
+        case_type: "api",
+      });
+      toast.success(`已更新提取参数 ${variable} → ${jsonpath}`);
+      onInvalidate();
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const applyAssertionSuggestions = async (items: ReportAnalysisSuggestion[]) => {
+    const applicable = items.filter((item) => item.action?.type === "add_assertion" && item.case_id != null);
+    if (applicable.length === 0) {
+      toast.info("没有可一键应用的高置信断言");
+      return;
+    }
+    let ok = 0;
+    for (const item of applicable) {
+      await applyAssertionSuggestion(item);
+      ok += 1;
+    }
+    toast.success(`已应用 ${ok} 条断言建议`);
+  };
+
+  const applyExtractSuggestions = async (items: ReportAnalysisSuggestion[]) => {
+    const applicable = items.filter((item) => item.action?.type === "update_extract" && item.case_id != null);
+    if (applicable.length === 0) {
+      toast.info("没有可一键应用的提取修复");
+      return;
+    }
+    let ok = 0;
+    for (const item of applicable) {
+      await applyExtractSuggestion(item);
+      ok += 1;
+    }
+    toast.success(`已应用 ${ok} 条提取修复`);
+  };
+
+  const applyOrderSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+    const action = suggestion.action ?? {};
+    if (action.type !== "reorder_case_before") {
+      toast.info("这条建议需要新增准备用例，请先用 AI 生成或手工新建后再运行");
+      return;
+    }
+    const movingId = Number(action.case_id);
+    const beforeId = Number(action.before_case_id);
+    const moduleIdForAction = Number(action.module_id);
+    if (!movingId || !beforeId || !moduleIdForAction) {
+      toast.error("顺序调整建议缺少用例或模块信息");
+      return;
+    }
+    try {
+      const list = await apiCasesApi.list({ moduleId: moduleIdForAction, pageSize: 0 });
+      const ordered = list.items.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+      const moving = ordered.find((item) => item.id === movingId);
+      const before = ordered.find((item) => item.id === beforeId);
+      if (!moving || !before) {
+        toast.error("没有找到要调整顺序的用例");
+        return;
+      }
+      const withoutMoving = ordered.filter((item) => item.id !== movingId);
+      const beforeIndex = withoutMoving.findIndex((item) => item.id === beforeId);
+      if (beforeIndex < 0) {
+        toast.error("没有找到目标位置");
+        return;
+      }
+      withoutMoving.splice(beforeIndex, 0, moving);
+      await casesApi.reorder(withoutMoving.map((item, order) => ({ id: item.id, type: "case", new_order: order })));
+      toast.success(`已将「${moving.name}」移动到「${before.name}」之前`);
+      onInvalidate();
+    } catch (error) {
+      toast.error(messageOf(error));
     }
   };
 
   return (
     <>
       <Dialog open={open} onOpenChange={(value) => !value && onClose()}><DialogContent className="max-w-4xl"><DialogHeader><DialogTitle>{quickEdit ? "编辑记录" : "测试记录"}</DialogTitle><DialogDescription>{quickEdit ? "同一次快速编辑中的改动按会话聚合。" : "API 自动执行结果按报告聚合。点报告右侧「AI 全面分析」可批量诊断所有用例。"}</DialogDescription></DialogHeader><div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">{loading ? <Loading /> : quickEdit ? <EditRecords records={editQuery.data ?? []} onRollback={rollbackRecord} /> : <TestRecords reports={testQuery.data ?? []} onAnalyze={analyzeReport} />}</div><DialogFooter><Button variant="outline" onClick={onClose}>关闭</Button></DialogFooter></DialogContent></Dialog>
-      <ReportAnalysisDialog state={analysis} onClose={() => setAnalysis(null)} onInvalidate={onInvalidate} />
+      <ReportAnalysisDialog
+        state={analysis}
+        run={aiRunQuery.data ?? null}
+        onApplyAssertion={applyAssertionSuggestion}
+        onApplyAssertions={applyAssertionSuggestions}
+        onApplyExtract={applyExtractSuggestion}
+        onApplyExtracts={applyExtractSuggestions}
+        onApplyOrder={applyOrderSuggestion}
+        onEditCase={openSuggestedCase}
+        onCancel={cancelAnalysis}
+        onClose={() => setAnalysis(null)}
+      />
     </>
   );
 }
@@ -930,75 +1253,328 @@ const CLS_COLOR: Record<string, string> = {
   正常: "bg-emerald-100 text-emerald-700",
 };
 
-function ReportAnalysisDialog({ state, onClose, onInvalidate }: { state: { reportId: number; loading: boolean; items: ReportAnalysisItem[] | null } | null; onClose: () => void; onInvalidate: () => void }) {
-  const [fixing, setFixing] = useState(false);
+function ReportAnalysisDialog({
+  state,
+  run,
+  onApplyAssertion,
+  onApplyAssertions,
+  onApplyExtract,
+  onApplyExtracts,
+  onApplyOrder,
+  onEditCase,
+  onCancel,
+  onClose,
+}: {
+  state: ReportAnalysisState | null;
+  run: { status: string; output_payload?: Record<string, unknown> | null; error?: string | null } | null;
+  onApplyAssertion: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onApplyAssertions: (suggestions: ReportAnalysisSuggestion[]) => Promise<void>;
+  onApplyExtract: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onApplyExtracts: (suggestions: ReportAnalysisSuggestion[]) => Promise<void>;
+  onApplyOrder: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onEditCase: (caseId: number | null) => Promise<void>;
+  onCancel: () => void;
+  onClose: () => void;
+}) {
   if (!state) return null;
-  const items = state.items ?? [];
-  const fixable = items.filter(
-    (it) => it.classification === "用例问题" && (Object.keys(it.fix.extract || {}).length > 0 || Object.keys(it.fix.assertion || {}).length > 0),
+  const aiOutput = run?.status === "success" ? (run.output_payload as ReportAnalysisOutput | null) : null;
+  const output = aiOutput ?? state.preview;
+  const stage: ReportAnalysisStage =
+    run?.status === "success" ? "done"
+      : run?.status === "failed" || run?.status === "cancelled" || state.stage === "failed" ? "failed"
+        : state.stage;
+  const suggestions = (output?.cases ?? []).flatMap((item) =>
+    (item.suggestions ?? []).map((suggestion) => ({
+      ...suggestion,
+      caseName: item.name,
+      classification: item.classification,
+    })),
   );
-
-  const fixAll = async () => {
-    setFixing(true);
-    let ok = 0;
-    try {
-      for (const it of fixable) {
-        if (it.module_id == null) continue;
-        try {
-          const body: TestCaseCreate = { module_id: it.module_id, name: it.name, case_type: "api" };
-          if (Object.keys(it.fix.extract || {}).length > 0) body.extract_data = JSON.stringify(it.fix.extract, null, 2);
-          if (Object.keys(it.fix.assertion || {}).length > 0) body.assertion = JSON.stringify(it.fix.assertion, null, 2);
-          await apiCasesApi.update(it.case_id, body);
-          ok += 1;
-        } catch {
-          /* 跳过单条失败 */
-        }
-      }
-      toast.success(`已修复 ${ok}/${fixable.length} 条用例问题，可重新运行验证`);
-      onInvalidate();
-    } finally {
-      setFixing(false);
-    }
-  };
+  const high = suggestions.filter((item) => item.apply_mode === "high_confidence").length;
+  const review = suggestions.filter((item) => item.apply_mode === "need_review").length;
+  const manual = suggestions.filter((item) => item.apply_mode === "manual_required").length;
+  const autoApplicable = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "add_assertion");
+  const autoExtract = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "update_extract");
+  const autoOrder = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "reorder_case_before");
+  const groupedSuggestions = groupAnalysisSuggestions(suggestions);
+  const cancellable =
+    state.stage !== "failed" &&
+    state.stage !== "done" &&
+    (stage === "collecting" ||
+      stage === "rules" ||
+      stage === "ai" ||
+      run?.status === "pending" ||
+      run?.status === "running");
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-4xl">
         <DialogHeader>
           <DialogTitle>AI 全面分析</DialogTitle>
-          <DialogDescription>逐条分析本次报告所有用例：提取/断言/SQL/参数/分类</DialogDescription>
+          <DialogDescription>先展示规则诊断，AI 汇总在后台继续生成。</DialogDescription>
         </DialogHeader>
-        {state.loading ? (
-          <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> 正在分析所有用例（可能需要 1-2 分钟）…</div>
+        {!output && stage !== "failed" ? (
+          <div className="space-y-3 p-4 text-sm text-muted-foreground">
+            <AnalysisStageBar stage={stage} />
+            <div><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />正在收集报告并运行规则诊断…</div>
+          </div>
+        ) : stage === "failed" && !output ? (
+          <div className="rounded border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+            分析失败：{state.error || run?.error || "未知错误"}
+          </div>
         ) : (
-          <div className="max-h-[55vh] space-y-2 overflow-y-auto pr-1">
-            {items.length === 0 ? <Empty text="没有可分析的执行结果" /> : items.map((it, i) => (
-              <div key={i} className="rounded-lg border p-2 text-sm">
-                <div className="flex items-center gap-2">
-                  <span className={cn("shrink-0 rounded px-2 py-0.5 text-xs", CLS_COLOR[it.classification] ?? "bg-slate-100 text-slate-600")}>{it.classification || "未判定"}</span>
-                  <span className="min-w-0 flex-1 truncate font-medium">{it.name}</span>
-                </div>
-                {it.findings.length ? (
-                  <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">
-                    {it.findings.map((f, k) => <li key={k}>{f}</li>)}
-                  </ul>
-                ) : null}
+          <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+            <AnalysisStageBar stage={stage} />
+            <div className="flex flex-wrap items-center gap-3 text-sm">
+              <span className="font-medium">规则诊断已输出</span>
+              <span className="text-xs text-muted-foreground">用例 {output?.summary.total_cases ?? 0}</span>
+              <span className="text-xs text-muted-foreground">建议 {output?.summary.total_suggestions ?? 0}</span>
+              <span className="text-xs text-emerald-700">高置信 {high}</span>
+              <span className="text-xs text-amber-700">需审核 {review}</span>
+              <span className="text-xs text-red-700">需人工 {manual}</span>
+              {autoOrder.length > 0 ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-7 px-2 text-xs"
+                  onClick={async () => {
+                    for (const item of autoOrder) await onApplyOrder(item);
+                  }}
+                >
+                  <ArrowUp className="h-3.5 w-3.5" /> 应用全部顺序调整（{autoOrder.length}）
+                </Button>
+              ) : null}
+              {autoExtract.length > 0 ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className={autoOrder.length === 0 ? "ml-auto h-7 px-2 text-xs" : "h-7 px-2 text-xs"}
+                  onClick={() => void onApplyExtracts(autoExtract)}
+                >
+                  <Save className="h-3.5 w-3.5" /> 应用全部提取修复（{autoExtract.length}）
+                </Button>
+              ) : null}
+              {autoApplicable.length > 0 ? (
+                <Button
+                  size="sm"
+                  className={autoOrder.length === 0 && autoExtract.length === 0 ? "ml-auto h-7 px-2 text-xs" : "h-7 px-2 text-xs"}
+                  onClick={() => void onApplyAssertions(autoApplicable)}
+                >
+                  <Save className="h-3.5 w-3.5" /> 应用全部高置信断言（{autoApplicable.length}）
+                </Button>
+              ) : null}
+            </div>
+            {aiOutput?.ai_summary ? (
+              <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs leading-relaxed">{aiOutput.ai_summary}</pre>
+            ) : state.runId && run?.status !== "failed" ? (
+              <div className="rounded border bg-muted/30 p-2 text-xs text-muted-foreground">
+                <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />
+                AI 正在生成中文汇总，下面的规则诊断结果已经可以先看。
               </div>
+            ) : null}
+            {groupedSuggestions.length === 0 ? <Empty text="没有可分析的执行结果" /> : groupedSuggestions.slice(0, 100).map((group) => (
+              <AnalysisSuggestionGroupCard
+                key={`${group.caseId ?? "case"}-${group.caseName}`}
+                group={group}
+                onApplyAssertion={onApplyAssertion}
+                onApplyExtract={onApplyExtract}
+                onApplyOrder={onApplyOrder}
+                onEditCase={onEditCase}
+              />
             ))}
           </div>
         )}
         <DialogFooter>
+          {cancellable ? <Button variant="destructive" onClick={onCancel}>中断分析</Button> : null}
           <Button variant="outline" onClick={onClose}>关闭</Button>
-          {fixable.length > 0 ? (
-            <Button onClick={fixAll} disabled={fixing}>
-              {fixing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              一键修复全部用例问题（{fixable.length}）
-            </Button>
-          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
+}
+
+type AnalysisSuggestionWithMeta = ReportAnalysisSuggestion & { caseName: string; classification: string };
+
+function groupAnalysisSuggestions(items: AnalysisSuggestionWithMeta[]) {
+  const map = new Map<string, {
+    caseId: number | null;
+    caseName: string;
+    classification: string;
+    confidence: number;
+    suggestions: AnalysisSuggestionWithMeta[];
+  }>();
+  for (const item of items) {
+    const key = `${item.case_id ?? "unknown"}:${item.caseName}`;
+    const group = map.get(key) ?? {
+      caseId: item.case_id,
+      caseName: item.caseName,
+      classification: item.classification,
+      confidence: item.confidence ?? 0,
+      suggestions: [],
+    };
+    group.confidence = Math.max(group.confidence, item.confidence ?? 0);
+    group.suggestions.push(item);
+    map.set(key, group);
+  }
+  return [...map.values()];
+}
+
+function AnalysisSuggestionGroupCard({
+  group,
+  onApplyAssertion,
+  onApplyExtract,
+  onApplyOrder,
+  onEditCase,
+}: {
+  group: ReturnType<typeof groupAnalysisSuggestions>[number];
+  onApplyAssertion: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onApplyExtract: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onApplyOrder: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onEditCase: (caseId: number | null) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState<"apply" | "extract" | "order" | "edit" | null>(null);
+  const runAction = async (kind: "apply" | "extract" | "order" | "edit", item?: ReportAnalysisSuggestion) => {
+    setBusy(kind);
+    try {
+      if (kind === "apply" && item) await onApplyAssertion(item);
+      else if (kind === "extract" && item) await onApplyExtract(item);
+      else if (kind === "order" && item) await onApplyOrder(item);
+      else await onEditCase(group.caseId);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border p-2 text-sm">
+      <div className="flex items-center gap-2">
+        <span className={cn("shrink-0 rounded px-2 py-0.5 text-xs", CLS_COLOR[group.classification] ?? "bg-slate-100 text-slate-600")}>{group.classification || "未判定"}</span>
+        <span className="min-w-0 flex-1 truncate font-medium">{group.caseName}</span>
+        <span className="text-xs text-muted-foreground">{group.suggestions.length} 条建议</span>
+        <span className="text-xs text-muted-foreground">{Math.round((group.confidence ?? 0) * 100)}%</span>
+      </div>
+      <div className="mt-2 space-y-2">
+        {group.suggestions.map((item, index) => {
+          const canApplyAssertion = item.action?.type === "add_assertion";
+          const canApplyExtract = item.action?.type === "update_extract" && item.action?.suggested_jsonpath;
+          const canApplyOrder = item.action?.type === "reorder_case_before";
+          const needsSetupCase = item.action?.type === "create_setup_case";
+          return (
+            <div key={`${item.step_report_id ?? index}-${index}`} className="rounded-md bg-muted/20 p-2">
+              <div className="flex items-center gap-2">
+                <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-xs">{index + 1}</span>
+                <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-xs">{analysisCategoryLabel(item.category)}</span>
+                <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-xs">{analysisModeLabel(item.apply_mode)}</span>
+                <span className="min-w-0 flex-1 text-xs font-medium">{item.title}</span>
+              </div>
+              {item.evidence ? <div className="mt-1 break-all text-xs text-muted-foreground">{item.evidence}</div> : null}
+              <pre className="mt-1 max-h-24 overflow-auto rounded bg-background/80 p-1.5 font-mono text-xs">{JSON.stringify(item.action, null, 2)}</pre>
+              <div className="mt-2 flex justify-end gap-2">
+                {needsSetupCase ? (
+                  <span className="mr-auto rounded bg-amber-100 px-2 py-1 text-xs text-amber-700">
+                    需新增准备用例
+                  </span>
+                ) : null}
+                {canApplyOrder ? (
+                  <Button
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={busy !== null}
+                    onClick={() => void runAction("order", item)}
+                  >
+                    {busy === "order" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
+                    调整顺序
+                  </Button>
+                ) : null}
+                {canApplyExtract ? (
+                  <Button
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={busy !== null}
+                    onClick={() => void runAction("extract", item)}
+                  >
+                    {busy === "extract" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    应用提取
+                  </Button>
+                ) : null}
+                {canApplyAssertion ? (
+                  <Button
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={busy !== null}
+                    onClick={() => void runAction("apply", item)}
+                  >
+                    {busy === "apply" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                    应用断言
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 flex justify-end gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 text-xs"
+          disabled={busy !== null}
+          onClick={() => void runAction("edit")}
+        >
+          {busy === "edit" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Pencil className="h-3.5 w-3.5" />}
+          编辑用例
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AnalysisStageBar({ stage }: { stage: ReportAnalysisStage }) {
+  const steps = [
+    { key: "collecting", label: "收集报告" },
+    { key: "rules", label: "规则诊断" },
+    { key: "ai", label: "AI 汇总" },
+    { key: "done", label: "完成" },
+  ] as const;
+  const current = stage === "collecting" ? 0 : stage === "rules" ? 1 : stage === "ai" ? 2 : stage === "done" ? 3 : 1;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      {steps.map((item, index) => {
+        const active = index <= current;
+        const running = index === current && stage !== "done" && stage !== "failed";
+        return (
+          <span key={item.key} className={cn("inline-flex items-center gap-1 rounded border px-2 py-0.5", active ? "border-primary/30 bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground")}>
+            {running ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+            {item.label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function analysisCategoryLabel(category: string): string {
+  const map: Record<string, string> = {
+    missing_extraction: "提取",
+    missing_assertion: "断言",
+    parameter_error: "参数",
+    sql_assertion_needed: "SQL",
+    function_needed: "Function",
+    data_safety: "数据安全",
+    execution_order: "顺序",
+    environment_issue: "环境",
+    api_defect: "接口",
+  };
+  return map[category] ?? category;
+}
+
+function analysisModeLabel(mode: string): string {
+  const map: Record<string, string> = {
+    high_confidence: "高置信",
+    need_review: "需审核",
+    manual_required: "需人工",
+  };
+  return map[mode] ?? mode;
 }
 
 function EditRecords({ records, onRollback }: { records: ApiCaseEditRecord[]; onRollback: (record: ApiCaseEditRecord, fullBatch?: boolean) => void }) {

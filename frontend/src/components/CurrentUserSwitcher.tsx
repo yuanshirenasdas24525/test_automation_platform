@@ -18,11 +18,14 @@ import { useCurrentUser } from "@/lib/current-user";
 import { ROLE_LABELS } from "@/types/domain";
 import type { RoleCode } from "@/types/domain";
 
+const PROTECTED_ADMIN_USERNAME = "admin";
+
 export function CurrentUserSwitcher() {
   const navigate = useNavigate();
   const { user, activeRole, setUser } = useCurrentUser();
 
   const label = user ? user.full_name || user.username : "未登录";
+  const isProtectedAdmin = user?.username === PROTECTED_ADMIN_USERNAME;
 
   return (
     <DropdownMenu>
@@ -52,12 +55,12 @@ export function CurrentUserSwitcher() {
           </div>
         ) : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          onSelect={() => navigate("/change-password")}
-        >
-          <KeyRound className="mr-2 h-3.5 w-3.5" />
-          修改密码
-        </DropdownMenuItem>
+        {isProtectedAdmin ? null : (
+          <DropdownMenuItem onSelect={() => navigate("/change-password")}>
+            <KeyRound className="mr-2 h-3.5 w-3.5" />
+            修改密码
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           onSelect={() => {
             setUser(null);

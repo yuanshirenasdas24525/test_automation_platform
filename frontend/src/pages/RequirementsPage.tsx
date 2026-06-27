@@ -10,13 +10,14 @@ import {
   ChevronRight,
   FileText,
   GitFork,
-  ListPlus,
+  Link2,
   Loader2,
   Pencil,
   Plus,
   Search,
   Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -47,14 +48,13 @@ import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { AssigneePicker } from "@/components/pickers/AssigneePicker";
 import { AiAnalysisLauncherDialog } from "./requirements/dialogs/AiAnalysisLauncherDialog";
 import { AnalysisDocumentListDialog } from "./requirements/dialogs/AnalysisDocumentListDialog";
-import { CaseGenerationLauncherDialog } from "./requirements/dialogs/CaseGenerationLauncherDialog";
-import { CaseDraftReviewDialog } from "./requirements/dialogs/CaseDraftReviewDialog";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { cn } from "@/lib/utils";
 import { useUserId } from "@/lib/current-user";
 import {
   ApiError,
   aiApi,
+  attachmentsApi,
   modulesApi,
   projectsApi,
   requirementsApi,
@@ -63,7 +63,6 @@ import {
 import { queryKeys } from "@/lib/query";
 import type {
   AiRun,
-  CaseGenerationBatch,
   Requirement,
   RequirementSystemStatus,
 } from "@/types/domain";
@@ -125,10 +124,6 @@ export function RequirementsPage() {
   const [aiLauncherFor, setAiLauncherFor] = useState<Requirement | null>(null);
   const [docsListFor, setDocsListFor] = useState<Requirement | null>(null);
   const [detailReq, setDetailReq] = useState<Requirement | null>(null);
-  // M7：用例生成 Launcher / Review
-  const [caseGenFor, setCaseGenFor] = useState<Requirement[] | null>(null);
-  const [caseReviewBatches, setCaseReviewBatches] = useState<CaseGenerationBatch[]>([]);
-  const [caseReviewOpen, setCaseReviewOpen] = useState(false);
 
   const projectQuery = useQuery({
     queryKey: queryKeys.project(projectId),
@@ -284,27 +279,6 @@ export function RequirementsPage() {
             <Plus className="h-4 w-4" />
             新建需求
           </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              const flat: Requirement[] = [];
-              for (const r of visibleRoots) {
-                flat.push(r);
-                for (const c of r.children ?? []) flat.push(c);
-              }
-              if (flat.length === 0) {
-                toast.error("没有可用的需求");
-                return;
-              }
-              setCaseGenFor(flat);
-            }}
-            disabled={visibleRoots.length === 0}
-            title="对当前过滤结果下的所有需求批量生成用例草稿"
-          >
-            <ListPlus className="h-4 w-4" />
-            批量 AI 生成用例
-          </Button>
           <Button size="sm" onClick={() => setAiOpen(true)}>
             <Sparkles className="h-4 w-4" />
             AI 解析需求
@@ -409,7 +383,6 @@ export function RequirementsPage() {
                   onSplit={(r) => setSplittingParent(r)}
                   onAiAnalyze={(r) => setAiLauncherFor(r)}
                   onOpenDocs={(r) => setDocsListFor(r)}
-                  onGenerateCases={(r) => setCaseGenFor([r])}
                   onViewDetail={(r) => setDetailReq(r)}
                 />
               ))}
@@ -426,9 +399,9 @@ export function RequirementsPage() {
           invalidate();
           setEditing(null);
         }}
-        onCreated={(req) => {
+        onCreated={() => {
           invalidate();
-          setEditing({ mode: "edit", req });
+          setEditing(null);
         }}
         onError={handleError}
       />
@@ -488,22 +461,6 @@ export function RequirementsPage() {
         versionNames={versionNames}
       />
 
-      <CaseGenerationLauncherDialog
-        open={!!caseGenFor}
-        onClose={() => setCaseGenFor(null)}
-        requirements={caseGenFor ?? []}
-        onTriggered={(batches) => {
-          setCaseReviewBatches(batches);
-          setCaseReviewOpen(true);
-          setCaseGenFor(null);
-        }}
-      />
-      <CaseDraftReviewDialog
-        open={caseReviewOpen}
-        onClose={() => setCaseReviewOpen(false)}
-        batches={caseReviewBatches}
-        onCommitted={() => invalidate()}
-      />
     </div>
   );
 }
@@ -556,7 +513,6 @@ function RequirementTreeRows({
   onSplit,
   onAiAnalyze,
   onOpenDocs,
-  onGenerateCases,
   onViewDetail,
 }: {
   req: Requirement;
@@ -568,7 +524,6 @@ function RequirementTreeRows({
   onSplit: (r: Requirement) => void;
   onAiAnalyze: (r: Requirement) => void;
   onOpenDocs: (r: Requirement) => void;
-  onGenerateCases: (r: Requirement) => void;
   onViewDetail: (r: Requirement) => void;
 }) {
   const children = req.children ?? [];
@@ -588,7 +543,6 @@ function RequirementTreeRows({
         onSplit={() => onSplit(req)}
         onAiAnalyze={() => onAiAnalyze(req)}
         onOpenDocs={() => onOpenDocs(req)}
-        onGenerateCases={() => onGenerateCases(req)}
         onViewDetail={() => onViewDetail(req)}
       />
       {isOpen
@@ -606,7 +560,6 @@ function RequirementTreeRows({
               onSplit={null}
               onAiAnalyze={() => onAiAnalyze(c)}
               onOpenDocs={() => onOpenDocs(c)}
-              onGenerateCases={() => onGenerateCases(c)}
               onViewDetail={() => onViewDetail(c)}
             />
           ))
@@ -627,7 +580,6 @@ function RequirementTableRow({
   onSplit,
   onAiAnalyze,
   onOpenDocs,
-  onGenerateCases,
   onViewDetail,
 }: {
   req: Requirement;
@@ -641,7 +593,6 @@ function RequirementTableRow({
   onSplit: (() => void) | null;
   onAiAnalyze: () => void;
   onOpenDocs: () => void;
-  onGenerateCases: () => void;
   onViewDetail: () => void;
 }) {
   const version = versions.find((v) => v.id === req.version_id);
@@ -693,14 +644,6 @@ function RequirementTableRow({
                     AI
                   </span>
                 ) : null}
-                {req.tags?.slice(0, 3).map((t) => (
-                  <span
-                    key={t}
-                    className="rounded bg-secondary px-1 py-0.5 text-[10px] text-secondary-foreground"
-                  >
-                    {t}
-                  </span>
-                ))}
               </div>
               {req.description ? (
                 <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
@@ -746,15 +689,6 @@ function RequirementTableRow({
             title="查看 AI 分析文档"
           >
             <FileText className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-violet-600 hover:text-violet-700"
-            onClick={onGenerateCases}
-            title="AI 一键生成测试用例"
-          >
-            <ListPlus className="h-3.5 w-3.5" />
           </Button>
           {onSplit ? (
             <Button
@@ -810,8 +744,16 @@ function dateToIso(d: string): string | null {
 
 function stripHtml(html: string): string {
   if (!html) return "";
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return (doc.body.textContent || "").replace(/\s+/g, " ").trim();
+  // 描述可能是正常 HTML，也可能是被转义存储的 HTML（&lt;p&gt;…）。
+  // 反复「解码实体 + 去标签」直到稳定，确保两种情况都还原成纯文本。
+  let text = html;
+  for (let i = 0; i < 3; i++) {
+    const doc = new DOMParser().parseFromString(text, "text/html");
+    const stripped = (doc.body.textContent || "").replace(/<[^>]+>/g, "");
+    if (stripped === text) break;
+    text = stripped;
+  }
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function RequirementDialog({
@@ -844,6 +786,9 @@ function RequirementDialog({
   const [plannedEnd, setPlannedEnd] = useState<string>("");
   const [dependsOnText, setDependsOnText] = useState<string>("");
   const [assignees, setAssignees] = useState(emptyAssignees());
+  // 新建模式：附件先暂存在本地，创建成功拿到需求 id 后再上传
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [pendingLinks, setPendingLinks] = useState<{ name: string; url: string }[]>([]);
   const userId = useUserId();
 
   const modulesQuery = useQuery({
@@ -861,6 +806,8 @@ function RequirementDialog({
 
   useEffect(() => {
     if (!state) return;
+    setPendingFiles([]);
+    setPendingLinks([]);
     if (initial) {
       setTitle(initial.title);
       setDescription(initial.description || "");
@@ -925,14 +872,39 @@ function RequirementDialog({
   };
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      requirementsApi.create({
+    mutationFn: async () => {
+      const created = await requirementsApi.create({
         project_id: projectId,
         ...buildPayload(),
-      }),
-    onSuccess: (data: Requirement) => {
-      toast.success("需求已创建，可编辑完整信息和附件");
-      onCreated(data);
+      });
+      // 需求建好后，把暂存的附件 / 链接逐个传到该需求下
+      const uploads = [
+        ...pendingFiles.map((f) =>
+          attachmentsApi.uploadFile(created.id, f, {
+            uploaded_by_id: userId ?? undefined,
+          }),
+        ),
+        ...pendingLinks.map((l) =>
+          attachmentsApi.createLink(created.id, {
+            name: l.name,
+            url: l.url,
+            uploaded_by_id: userId ?? undefined,
+          }),
+        ),
+      ];
+      const results = await Promise.allSettled(uploads);
+      const failed = results.filter((r) => r.status === "rejected").length;
+      return { created, total: uploads.length, failed };
+    },
+    onSuccess: ({ created, total, failed }) => {
+      if (total === 0) {
+        toast.success("需求已创建");
+      } else if (failed === 0) {
+        toast.success(`需求已创建，已上传 ${total} 个附件`);
+      } else {
+        toast.warning(`需求已创建，但有 ${failed}/${total} 个附件上传失败，可在编辑里重试`);
+      }
+      onCreated(created);
     },
     onError,
   });
@@ -1168,20 +1140,27 @@ function RequirementDialog({
             />
           </FormSection>
 
-          {/* 6. 附件（仅 edit 模式） */}
-          {isEdit && initial ? (
-            <FormSection title="附件" cols={1}>
-              <div className="md:col-span-2">
+          {/* 6. 附件 */}
+          <FormSection title="附件" cols={1}>
+            <div className="md:col-span-2">
+              {isEdit && initial ? (
                 <AttachmentList requirementId={initial.id} />
-              </div>
-            </FormSection>
-          ) : (
-            <FormSection title="附件" cols={1}>
-              <div className="md:col-span-2 rounded border border-dashed bg-muted/30 p-3 text-xs text-muted-foreground">
-                保存后即可在编辑视图里上传附件。
-              </div>
-            </FormSection>
-          )}
+              ) : (
+                <PendingAttachments
+                  files={pendingFiles}
+                  links={pendingLinks}
+                  onAddFiles={(fs) => setPendingFiles((p) => [...p, ...fs])}
+                  onRemoveFile={(i) =>
+                    setPendingFiles((p) => p.filter((_, k) => k !== i))
+                  }
+                  onAddLink={(l) => setPendingLinks((p) => [...p, l])}
+                  onRemoveLink={(i) =>
+                    setPendingLinks((p) => p.filter((_, k) => k !== i))
+                  }
+                />
+              )}
+            </div>
+          </FormSection>
         </div>
 
         <DialogFooter>
@@ -1195,6 +1174,123 @@ function RequirementDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// 新建需求时的附件暂存区：本地挑选文件 / 链接，创建成功后由父组件统一上传。
+function PendingAttachments({
+  files,
+  links,
+  onAddFiles,
+  onRemoveFile,
+  onAddLink,
+  onRemoveLink,
+}: {
+  files: File[];
+  links: { name: string; url: string }[];
+  onAddFiles: (files: File[]) => void;
+  onRemoveFile: (index: number) => void;
+  onAddLink: (link: { name: string; url: string }) => void;
+  onRemoveLink: (index: number) => void;
+}) {
+  const [linkName, setLinkName] = useState("");
+  const [linkUrl, setLinkUrl] = useState("");
+
+  const addLink = () => {
+    const url = linkUrl.trim();
+    if (!url) {
+      toast.error("请填写链接地址");
+      return;
+    }
+    onAddLink({ name: linkName.trim() || url, url });
+    setLinkName("");
+    setLinkUrl("");
+  };
+
+  const total = files.length + links.length;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex h-9 cursor-pointer items-center gap-2 rounded-md border border-dashed px-3 text-xs text-muted-foreground hover:bg-muted/50">
+          <Upload className="h-3.5 w-3.5" /> 选择文件
+          <input
+            type="file"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              onAddFiles(Array.from(e.target.files ?? []));
+              e.target.value = "";
+            }}
+          />
+        </label>
+        <Input
+          value={linkName}
+          onChange={(e) => setLinkName(e.target.value)}
+          placeholder="链接名称（可选）"
+          className="h-9 w-36 text-xs"
+        />
+        <Input
+          value={linkUrl}
+          onChange={(e) => setLinkUrl(e.target.value)}
+          placeholder="https://…"
+          className="h-9 w-52 text-xs"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addLink();
+            }
+          }}
+        />
+        <Button type="button" variant="outline" size="sm" onClick={addLink}>
+          <Link2 className="mr-1 h-3.5 w-3.5" /> 添加链接
+        </Button>
+      </div>
+
+      {total > 0 ? (
+        <div className="space-y-1 rounded border bg-muted/20 p-2">
+          {files.map((f, i) => (
+            <div key={`f-${i}`} className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{f.name}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {f.size < 1024 * 1024
+                    ? `${(f.size / 1024).toFixed(0)} KB`
+                    : `${(f.size / 1024 / 1024).toFixed(1)} MB`}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemoveFile(i)}
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+          {links.map((l, i) => (
+            <div key={`l-${i}`} className="flex items-center justify-between gap-2 text-xs">
+              <span className="flex min-w-0 items-center gap-1.5">
+                <Link2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">{l.name}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => onRemoveLink(i)}
+                className="shrink-0 text-muted-foreground hover:text-destructive"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          可选：先选好文件或链接，点「创建」后会自动上传到这条需求。
+        </p>
+      )}
+    </div>
   );
 }
 

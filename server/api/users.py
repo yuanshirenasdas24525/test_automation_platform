@@ -6,9 +6,9 @@
 """
 from __future__ import annotations
 
-from typing import List, Optional
 import random
 import string
+from typing import List, Optional
 
 import bcrypt
 import pydantic
@@ -19,6 +19,18 @@ from server.api.deps import DBDep
 from database.models import User, Role, ALL_ROLE_CODES
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+PROTECTED_ADMIN_USERNAME = "admin"
+
+
+def _is_protected_admin(user: User) -> bool:
+    """内置 admin 账号是平台兜底入口，不允许通过用户管理改动。"""
+    return user.username == PROTECTED_ADMIN_USERNAME
+
+
+def _assert_not_protected_admin(user: User) -> None:
+    if _is_protected_admin(user):
+        raise HTTPException(status_code=403, detail="admin 账号为系统内置账号，禁止编辑、停用或修改密码")
 
 
 class UserCreate(pydantic.BaseModel):
@@ -106,6 +118,7 @@ def update_user(user_id: int, payload: UserUpdate, db: DBDep):
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_not_protected_admin(user)
 
     data = payload.model_dump(exclude_unset=True)
 
@@ -134,6 +147,7 @@ def delete_user(user_id: int, db: DBDep):
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_not_protected_admin(user)
     user.is_active = False
     db.session.flush()
     return {"status": "success", "message": "已软删（is_active=False）"}
@@ -146,6 +160,7 @@ def set_user_roles(user_id: int, payload: RoleAssign, db: DBDep):
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_not_protected_admin(user)
     if not set(payload.role_codes) <= ALL_ROLE_CODES:
         raise HTTPException(status_code=400, detail=f"非法 role_code，可选: {sorted(ALL_ROLE_CODES)}")
 
@@ -162,6 +177,7 @@ def remove_user_role(user_id: int, role_code: str, db: DBDep):
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    _assert_not_protected_admin(user)
 
     role = db.session.query(Role).filter(Role.code == role_code).first()
     if role is None or role not in user.roles:

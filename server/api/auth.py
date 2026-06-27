@@ -44,6 +44,7 @@ def _get_secret_key() -> str:
 
 SECRET_KEY = _get_secret_key()
 TOKEN_EXPIRE_DAYS = 7
+PROTECTED_ADMIN_USERNAME = "admin"
 
 
 def _create_token(user_id: int) -> str:
@@ -152,6 +153,9 @@ def change_password(
     db: DBDep,
     current_user: User = Depends(get_current_user),
 ):
+    if current_user.username == PROTECTED_ADMIN_USERNAME:
+        raise HTTPException(status_code=403, detail="admin 账号为系统内置账号，禁止修改密码")
+
     if not current_user.password_hash:
         raise HTTPException(status_code=400, detail="当前用户未设置密码")
 

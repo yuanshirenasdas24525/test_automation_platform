@@ -609,7 +609,7 @@ export const functionalCasesApi = {
     doc_urls?: string;
     images?: File[];
     docs?: File[];
-  }) {
+  }, signal?: AbortSignal) {
     const fd = new FormData();
     fd.append("module_id", String(body.module_id));
     fd.append("model_name", body.model_name);
@@ -624,7 +624,7 @@ export const functionalCasesApi = {
       points: AiOutlinePoint[];
       model: string;
       image_strategy: string;
-    }>("/api/functional_cases/ai_generate_outline", { method: "POST", body: fd });
+    }>("/api/functional_cases/ai_generate_outline", { method: "POST", body: fd, signal });
   },
   /** AI 生成 第二步：基于 digest + 本批测试点 + 已生成用例名 → 本批控件级详细用例。 */
   aiGenerateBatch(body: {
@@ -909,8 +909,8 @@ export const reportsApi = {
   get(id: number) {
     return request<TestReportDetail>(`/api/reports/${id}`);
   },
-  analysisPreview(id: number) {
-    return request<ReportAnalysisOutput>(`/api/reports/${id}/analysis-preview`);
+  analysisPreview(id: number, signal?: AbortSignal) {
+    return request<ReportAnalysisOutput>(`/api/reports/${id}/analysis-preview`, { signal });
   },
   analyze(id: number, body: { model_name?: string | null; operator?: string | null } = {}) {
     return request<AiSubmitResponse>(`/api/reports/${id}/ai-analysis`, {
@@ -1517,7 +1517,12 @@ export const analysisDocsApi = {
   },
   trigger(
     rid: number,
-    body: { model_names: string[]; user_prompt?: string; document_title?: string },
+    body: {
+      model_names: string[];
+      user_prompt?: string;
+      document_title?: string;
+      analysis_type?: string;
+    },
   ) {
     return request<AnalysisTriggerResponse>(
       `/api/requirements/${rid}/analysis-documents`,
@@ -1663,6 +1668,13 @@ export const tasksOverviewApi = {
     const q = qs.toString();
     return request<import("@/types/domain").InProgressTask[]>(
       `/api/tasks-overview/in-progress${q ? `?${q}` : ""}`,
+    );
+  },
+  /** 从任务看板终止进行中的任务。 */
+  cancelTask(typeKey: string, id: number) {
+    return request<{ message?: string }>(
+      `/api/tasks-overview/${encodeURIComponent(typeKey)}/${id}/cancel`,
+      { method: "POST" },
     );
   },
 };
