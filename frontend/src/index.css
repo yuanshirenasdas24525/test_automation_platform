@@ -177,6 +177,21 @@
   line-height: 1.6;
 }
 
+.rich-editor-code-only .ProseMirror {
+  min-height: inherit;
+}
+
+.rich-editor-code-only .ProseMirror > *:not(pre) {
+  display: none;
+}
+
+.rich-editor-code-only .ProseMirror pre {
+  min-height: inherit;
+  margin: 0;
+  border-radius: 0.5rem;
+  padding: 1rem 1.25rem;
+}
+
 /* ---- Lowlight code highlighting (Tokyo Night theme) ---- */
 .rich-editor-content .hljs-comment,
 .rich-editor-content .hljs-quote { color: #636d83; font-style: italic; }
@@ -248,6 +263,50 @@
 
 .rich-editor-content .ProseMirror .selectedCell {
   background: hsl(var(--accent));
+}
+
+/* ---- Markdown editor / preview styles ---- */
+.wmde-markdown {
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+.wmde-markdown table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.375rem;
+}
+
+.wmde-markdown th,
+.wmde-markdown td {
+  border: 1px solid hsl(var(--border));
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.wmde-markdown th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+}
+
+.wmde-markdown tr:nth-child(even) td {
+  background: hsl(var(--muted) / 0.35);
+}
+
+.wmde-markdown pre {
+  border-radius: 0.5rem;
+}
+
+.wmde-text,
+.w-md-editor-text-input,
+.w-md-editor-text-pre > code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace !important;
 }
 
 /* ---- Highlight ---- */

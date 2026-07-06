@@ -496,18 +496,19 @@ function AiModelFormDialog({
                 <option value="anthropic">Anthropic</option>
                 <option value="ollama">Ollama</option>
                 <option value="deepseek">DeepSeek</option>
+                <option value="zai">Z.AI（智谱）</option>
                 <option value="azure">Azure OpenAI</option>
                 <option value="custom">Custom</option>
               </select>
             </div>
             <div>
               <Label>Model</Label>
-              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
+              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o / deepseek-chat / glm-5.2" />
             </div>
           </div>
           <div>
             <Label>Base URL（可选）</Label>
-            <Input value={base_url} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com" />
+            <Input value={base_url} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.z.ai/api/paas/v4" />
           </div>
           <div>
             <Label>API Key</Label>

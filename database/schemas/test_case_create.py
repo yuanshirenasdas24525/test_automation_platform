@@ -74,3 +74,6 @@ class TestCaseCreate(pydantic.BaseModel):
     sql_query: Optional[str] = None
     assertion: Optional[str] = None
     wait_time: Optional[int] = 0
+
+    # ------- 单用例重复执行次数（默认 1，不重复）-------
+    repeat_count: Optional[int] = 1

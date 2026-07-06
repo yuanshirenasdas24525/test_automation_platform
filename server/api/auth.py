@@ -5,6 +5,7 @@ JWT token 7 天有效，密码用 bcrypt 哈希。
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -53,6 +54,10 @@ def _create_token(user_id: int) -> str:
         "sub": str(user_id),
         "exp": expire,
         "iat": datetime.now(timezone.utc),
+        # 每次签发一个随机唯一标识（JWT ID）。iat 只精确到秒，若无此项，
+        # 同一账号在同一秒内多次登录会签出逐字节相同的 token；加上 jti 后
+        # 每次登录的 token 必定不同（也便于将来按 jti 做单会话吊销 / 审计）。
+        "jti": uuid.uuid4().hex,
         "type": "access",
     }
     return jwt.encode(payload, SECRET_KEY, algorithm="HS256")

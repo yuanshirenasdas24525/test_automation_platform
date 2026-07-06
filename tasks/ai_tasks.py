@@ -878,6 +878,49 @@ def _clamp_priority(v) -> int:
     return p
 
 
+def _handle_api_report_fix(run: "AiRun", session) -> dict:
+    """API 报告 AI 全面诊断 + 参数修复（异步版）。
+
+    读 report 执行结果 → 分块调 AI → 把每条用例的分类/发现/修复建议落到
+    output_payload.items。真正把修复写回用例由前端在轮询到 success 后应用（沿用原交互），
+    这里只负责生成诊断结果，因此本任务可在全局看板里查看进度、被终止。
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = str(_Path(__file__).resolve().parent.parent)
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+
+    from server.services.ai_model_service import get_ai_model
+    from server.api.functional_cases import diagnose_report_items
+
+    payload = run.input_payload or {}
+    report_id = int(payload.get("report_id") or 0)
+    model_name = (payload.get("model_name") or "").strip()
+    if report_id <= 0:
+        raise ValueError("input_payload.report_id 必填")
+    if not model_name:
+        raise ValueError("input_payload.model_name 必填")
+
+    cfg = get_ai_model(session, model_name)
+    if cfg is None:
+        raise ValueError(f"AI 模型 {model_name!r} 未配置")
+    if not cfg.enabled:
+        raise ValueError(f"AI 模型 {model_name!r} 未启用")
+
+    result = diagnose_report_items(session, report_id, cfg)
+    LOGGER.info(
+        "[ai_task] api_report_fix report=%s model=%s items=%d",
+        report_id, model_name, result.get("total") or 0,
+    )
+    return {
+        "output": result,
+        "model": cfg.model,
+        "provider": cfg.provider,
+        "prompt_version": "v1",
+    }
+
+
 def _handle_test_result_analysis(run: "AiRun", session) -> dict:
     """分析测试报告执行结果，输出结构化体检建议。
 
@@ -909,6 +952,7 @@ _HANDLERS = {
     "test_plan": _handle_test_plan,
     "functional_case_gen": _handle_functional_case_gen,    # M7
     "test_result_analysis": _handle_test_result_analysis,
+    "api_report_fix": _handle_api_report_fix,              # 报告级 AI 诊断 + 参数修复
     # ... 后续 feature 在这里挂
 }
 
@@ -976,7 +1020,7 @@ def _ai_run_detail_url(
     payload = input_payload or {}
     if feature == "bug_fix" and payload.get("bug_id"):
         return f"/tasks/{payload['bug_id']}"
-    if feature == "test_result_analysis" and payload.get("report_id"):
+    if feature in ("test_result_analysis", "api_report_fix") and payload.get("report_id"):
         return f"/runs?report_id={payload['report_id']}"
     if feature == "functional_case_gen" and project_id:
         return f"/projects/{project_id}/functional"
@@ -997,6 +1041,7 @@ _AI_FEATURE_LABELS: dict[str, str] = {
     "report_summary": "AI 报告摘要",
     "load_plan_gen": "AI 压测脚本生成",
     "bug_fix": "AI 一键修复 Bug",
+    "api_report_fix": "AI 修复参数并应用",
     "ai_studio_dialogue_turn": "AI 需求工作间对话",
     "ai_studio_finalize": "AI 需求草稿生成",
 }
@@ -1013,6 +1058,7 @@ _AI_FEATURE_ICONS: dict[str, str] = {
     "report_summary": "FileBarChart",
     "load_plan_gen": "Gauge",
     "bug_fix": "Bug",
+    "api_report_fix": "Wrench",
     "ai_studio_dialogue_turn": "Brain",
     "ai_studio_finalize": "FileText",
 }

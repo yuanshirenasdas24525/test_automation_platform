@@ -74,6 +74,20 @@ def get_folder_content(
             case_q = case_q.filter(TestCase.case_type.in_(type_filter))
         cases = case_q.all()
 
+    # 每条用例的步骤数（前端据此给"多步骤用例"换图标）。一次 group by 查回，避免 N+1。
+    step_counts: dict[int, int] = {}
+    case_ids = [c.id for c in cases]
+    if case_ids:
+        from database.models.test_step import TestStep
+        from sqlalchemy import func
+        rows = (
+            db.session.query(TestStep.case_id, func.count(TestStep.id))
+            .filter(TestStep.case_id.in_(case_ids))
+            .group_by(TestStep.case_id)
+            .all()
+        )
+        step_counts = {cid: int(n) for cid, n in rows}
+
     result: list[dict[str, Any]] = []
     for m in modules:
         result.append(
@@ -107,6 +121,8 @@ def get_folder_content(
                 "assertion": c.assertion,
                 "wait_time": c.wait_time,
                 "sort_order": c.sort_order,
+                # 步骤数：>1 视为"多步骤用例"，前端换图标
+                "step_count": step_counts.get(c.id, 0),
             }
         )
 

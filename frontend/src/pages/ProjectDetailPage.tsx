@@ -20,6 +20,7 @@ import {
   FolderKanban,
   Globe,
   Info,
+  ListChecks,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -58,7 +59,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { HighlightedTextarea } from "@/components/ui/highlighted-textarea";
+import { Textarea } from "@/components/ui/textarea";
+import { HighlightedInput, HighlightedTextarea } from "@/components/ui/highlighted-textarea";
 import { StepEditor } from "@/components/case/step-editor";
 import { DevicePickerDialog } from "@/components/device-picker-dialog";
 import { ProjectManagementPage } from "@/pages/ProjectManagementPage";
@@ -109,12 +111,55 @@ const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 // 替换之后变成 `{ "x": "Bearer "__placeholder__"" }`，JSON.parse 直接挂。
 // 用户因此被迫把 ${var} 改成 $.{var} / $.var 才能保存，丢失了真正的变量替换语义。
 //
-// 改用 `0`（合法 JSON number 字面量），它在两种位置都成立：
-//   - `"Bearer ${token}"` → `"Bearer 0"`     字符串里嵌字符 0，仍合法
-//   - `${var}` 裸用作值   → `0`              成为数字 0，仍合法
-// JSON.parse 都能过，前端校验（仅判断对象/键合法性）就不会再误判 ${var}。
-function substitutePlaceholdersForParse(text: string): string {
-  return text.replace(/\$\{[^}\n]*\}/g, "0");
+// 现在改用临时 token：字符串内嵌占位符直接替换 token，裸值占位符替换成
+// 带引号的 token。这样 JSON.parse 和 JSON.stringify 都能跑，格式化后再恢复原文。
+type PlaceholderToken = {
+  token: string;
+  original: string;
+  inString: boolean;
+};
+
+function isInsideJsonString(text: string, index: number): boolean {
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < index; i += 1) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+    }
+  }
+  return inString;
+}
+
+function maskPlaceholdersForParse(text: string): {
+  candidate: string;
+  placeholders: PlaceholderToken[];
+} {
+  const placeholders: PlaceholderToken[] = [];
+  const candidate = text.replace(/\$\{[^}\n]*\}/g, (original, offset: number) => {
+    const inString = isInsideJsonString(text, offset);
+    const token = `__JSON_PLACEHOLDER_${placeholders.length}__`;
+    placeholders.push({ token, original, inString });
+    return inString ? token : `"${token}"`;
+  });
+  return { candidate, placeholders };
+}
+
+function restorePlaceholders(text: string, placeholders: PlaceholderToken[]): string {
+  return placeholders.reduce((next, item) => {
+    if (!item.inString) {
+      return next.replaceAll(`"${item.token}"`, item.original);
+    }
+    return next.replaceAll(item.token, item.original);
+  }, text);
 }
 
 type JsonCheck =
@@ -125,19 +170,16 @@ type JsonCheck =
 function checkJson(text: string | undefined | null): JsonCheck {
   const s = (text ?? "").trim();
   if (!s) return { state: "empty" };
-  const candidate = substitutePlaceholdersForParse(s);
+  const { candidate, placeholders } = maskPlaceholdersForParse(s);
   try {
     const parsed = JSON.parse(candidate);
-    // pretty：默认用 JSON.stringify 重排，但如果原文里有 ${var}，重排后会被
-    // 替换成 0（substitutePlaceholdersForParse 的副作用），用户的变量名就丢了。
-    // 保险起见，原文带 ${var} 时直接返回原文，不再格式化。
+    // pretty：先格式化临时 token，再把 `${var}` 恢复回去。裸占位符仍保持裸值，
+    // 字符串内嵌占位符仍保持字符串的一部分，避免格式化改变运行时替换语义。
     let pretty = s;
-    if (!/\$\{[^}\n]*\}/.test(s)) {
-      try {
-        pretty = JSON.stringify(JSON.parse(candidate), null, 2);
-      } catch {
-        pretty = s;
-      }
+    try {
+      pretty = restorePlaceholders(JSON.stringify(parsed, null, 2), placeholders);
+    } catch {
+      pretty = s;
     }
     return { state: "ok", pretty, parsed };
   } catch (e) {
@@ -145,28 +187,22 @@ function checkJson(text: string | undefined | null): JsonCheck {
   }
 }
 
-/** 提取参数的左值 key 合法；右值必须是 `$.path` / `$[..]` 起始的 JSONPath，或者 `function:xxx`。 */
+/** 提取参数：只要求整体是 JSON 对象；值可以是 JSONPath / function，也可以是常量兜底值。 */
 function checkExtract(text: string | undefined | null): JsonCheck {
   const base = checkJson(text);
   if (base.state !== "ok") return base;
   if (typeof base.parsed !== "object" || base.parsed === null || Array.isArray(base.parsed)) {
     return { state: "error", message: "提取参数必须是一个 JSON 对象" };
   }
-  for (const [k, v] of Object.entries(base.parsed as Record<string, unknown>)) {
-    if (typeof v !== "string") {
-      return { state: "error", message: `"${k}" 的值必须是字符串（$.xxx 或 function:xxx）` };
-    }
-    if (!v.startsWith("$") && !v.startsWith("function:") && !v.startsWith("${")) {
-      return {
-        state: "error",
-        message: `"${k}" 的值应以 $. / $[ / function: 开头，实际：${v.slice(0, 20)}`,
-      };
+  for (const k of Object.keys(base.parsed as Record<string, unknown>)) {
+    if (!k.trim()) {
+      return { state: "error", message: "提取参数的 key 不能为空" };
     }
   }
   return base;
 }
 
-/** 断言的 key 允许 `$.xxx` 或 `sql:select ...`，value 可以是任意标量或 `function:xxx`。 */
+/** 断言：只要求整体是 JSON 对象；key 可用 JSONPath / sql，也可用 status_code 等响应字段名。 */
 function checkAssertion(text: string | undefined | null): JsonCheck {
   const base = checkJson(text);
   if (base.state !== "ok") return base;
@@ -174,11 +210,8 @@ function checkAssertion(text: string | undefined | null): JsonCheck {
     return { state: "error", message: "断言必须是一个 JSON 对象" };
   }
   for (const k of Object.keys(base.parsed as Record<string, unknown>)) {
-    if (!k.startsWith("$") && !k.startsWith("sql:") && !k.startsWith("${")) {
-      return {
-        state: "error",
-        message: `"${k}" 应以 $. / sql: 开头`,
-      };
+    if (!k.trim()) {
+      return { state: "error", message: "断言的 key 不能为空" };
     }
   }
   return base;
@@ -242,7 +275,7 @@ type ModuleFormValues = z.infer<typeof moduleSchema>;
 
 const caseSchema = z.object({
   name: z.string().trim().min(1, "请输入用例名").max(100, "最多 100 字"),
-  description: z.string().max(200).optional(),
+  description: z.string().max(10000, "最多 10000 字").optional(),
   method: z.string().optional(),
   path: z.string().optional(),
   headers: z.string().optional(),
@@ -252,6 +285,7 @@ const caseSchema = z.object({
   assertion: z.string().optional(),
   sql_query: z.string().optional(),
   wait_time: z.coerce.number().int().min(0).max(3600).optional(),
+  repeat_count: z.coerce.number().int().min(1).max(100).optional(),
   skip: z.boolean().optional(),
   /** web / app 用例的步骤。zod 只做通过校验，细粒度校验交给 StepEditor 自己。 */
   steps: z.array(z.any()).optional(),
@@ -414,12 +448,33 @@ export function ProjectDetailPage() {
 
   const deleteModule = useMutation({
     mutationFn: (mid: number) => modulesApi.remove(mid),
+    onMutate: async (mid: number) => {
+      await queryClient.cancelQueries({ queryKey: ["content", projectId] });
+      const contentSnapshots = queryClient.getQueriesData<ContentNode[]>({
+        queryKey: ["content", projectId],
+      });
+      for (const [key, data] of contentSnapshots) {
+        if (Array.isArray(data)) {
+          queryClient.setQueryData(
+            key,
+            data.filter((node) => !(node.type === "module" && node.id === mid)),
+          );
+        }
+      }
+      setPendingDelete(null);
+      return { contentSnapshots };
+    },
+    onError: (err, _mid, ctx) => {
+      ctx?.contentSnapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
+      handleError(err);
+    },
     onSuccess: () => {
       toast.success("模块已删除");
-      invalidateContent();
-      setPendingDelete(null);
     },
-    onError: handleError,
+    onSettled: () => {
+      invalidateContent();
+      queryClient.invalidateQueries({ queryKey: ["modules", projectId] });
+    },
   });
 
   const moveModule = useMutation({
@@ -851,9 +906,12 @@ export function ProjectDetailPage() {
             assertion: values.assertion,
             sql_query: values.sql_query,
             wait_time: values.wait_time,
+            repeat_count: values.repeat_count ?? 1,
             skip: values.skip,
             case_type: (values.case_type as CaseType | undefined) ?? category,
-            steps: isApi ? null : steps ?? [],
+            // API：单请求模式 values.steps 已被清成 null（走后端 v1 合成）；
+            // 多步骤模式 steps 非空 → 整体下发。非 API 照旧整体替换。
+            steps: isApi ? (steps && steps.length ? steps : null) : steps ?? [],
           };
           if (caseDialog.mode === "create") {
             createCase.mutate({
@@ -1139,9 +1197,13 @@ function NodeTable({
                   <button
                     className="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 text-left hover:underline"
                     onClick={() => onEditCase(node)}
-                    title="点击编辑"
+                    title={(node.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}
                   >
-                    <FileText className="h-4 w-4 shrink-0 text-sky-500" />
+                    {(node.step_count ?? 0) > 1 ? (
+                      <ListChecks className="h-4 w-4 shrink-0 text-violet-500" />
+                    ) : (
+                      <FileText className="h-4 w-4 shrink-0 text-sky-500" />
+                    )}
                     <span className="truncate">{node.name}</span>
                   </button>
                 )}
@@ -1355,6 +1417,135 @@ function ModuleDialog({
   );
 }
 
+// API 单请求模式：把表单里的 v1 字段合成为「一条 http_request 步骤」。
+// 这样 API 用例统一以 steps 为唯一执行来源（单请求 = 1 步，多步骤 = N 步），
+// 后端不再走"按 v1 字段重新合成并覆盖 steps"的老逻辑，两种模式彻底隔离、互不冲突。
+// config.extract_data / config.assertion 走 http_request runner 的 v1-JSON 兜底转换。
+function buildSingleHttpStep(values: CaseFormValues): TestStepDraft {
+  return {
+    step_order: 0,
+    step_name: values.name || "API 请求",
+    step_type: "http_request",
+    skip: false,
+    config: {
+      method: (values.method || "GET").toUpperCase(),
+      path: values.path || "",
+      headers: values.headers || "",
+      data_type: values.data_type || "application/json",
+      params: values.params || "",
+      extract_data: values.extract_data || "",
+      assertion: values.assertion || "",
+      sql_query: values.sql_query || "",
+    },
+    wait_before: Number(values.wait_time || 0),
+    timeout: 60,
+    retry: 0,
+    on_failure: "stop",
+  };
+}
+
+function parseJsonMap(raw: unknown): Record<string, unknown> | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function extractRulesToConfigText(rules: TestStepDraft["extract"]): string {
+  if (!Array.isArray(rules) || rules.length === 0) return "";
+  const map: Record<string, unknown> = {};
+  for (const rule of rules) {
+    const name = String(rule?.name ?? "").trim();
+    const jsonpath = String(rule?.jsonpath ?? rule?.path ?? "").trim();
+    if (name && jsonpath) map[name] = jsonpath;
+  }
+  return Object.keys(map).length ? JSON.stringify(map, null, 2) : "";
+}
+
+function assertionRulesToConfigText(rules: TestStepDraft["assertion"]): string {
+  if (!Array.isArray(rules) || rules.length === 0) return "";
+  const map: Record<string, unknown> = {};
+  for (const rule of rules) {
+    const target = String(rule?.target ?? "").trim();
+    if (!target) continue;
+    const type = String(rule?.type ?? "").toLowerCase();
+    if (type === "is_not_null" || type === "not_empty" || type === "not_null") {
+      map[target] = "not_empty";
+    } else if (type === "is_null" || type === "null") {
+      map[target] = "is_null";
+    } else {
+      map[target] = rule?.expected;
+    }
+  }
+  return Object.keys(map).length ? JSON.stringify(map, null, 2) : "";
+}
+
+function extractConfigToRules(raw: unknown): TestStepDraft["extract"] {
+  const map = parseJsonMap(raw);
+  if (!map) return [];
+  return Object.entries(map)
+    .map(([name, jsonpath]) => ({
+      name,
+      from: "response.body",
+      jsonpath: String(jsonpath ?? ""),
+    }))
+    .filter((rule) => rule.name.trim() && rule.jsonpath.trim());
+}
+
+function assertionConfigToRules(raw: unknown): TestStepDraft["assertion"] {
+  const map = parseJsonMap(raw);
+  if (!map) return [];
+  const rules: Record<string, unknown>[] = [];
+  for (const [target, expected] of Object.entries(map)) {
+    const key = target.trim();
+    const marker = typeof expected === "string" ? expected.trim().toLowerCase() : "";
+    if (!key) continue;
+    if (["not_empty", "not_null", "notempty", "notnull", "@notempty", "@notnull", "非空"].includes(marker)) {
+      rules.push({ type: "is_not_null", target: key, expected: null });
+    } else if (["is_null", "null", "@null", "为空", "空"].includes(marker)) {
+      rules.push({ type: "is_null", target: key, expected: null });
+    } else {
+      rules.push({
+        type: key.startsWith("$") ? "jsonpath" : "equal",
+        target: key,
+        expected,
+      });
+    }
+  }
+  return rules;
+}
+
+function hydrateHttpStepConfig(step: TestStepDraft): TestStepDraft {
+  if (step.step_type !== "http_request") return step;
+  const config = { ...(step.config || {}) };
+  const extractText = extractRulesToConfigText(step.extract);
+  const assertionText = assertionRulesToConfigText(step.assertion);
+  if (extractText) config.extract_data = extractText;
+  if (assertionText) config.assertion = assertionText;
+  return { ...step, config };
+}
+
+function normalizeHttpStepForSubmit(step: TestStepDraft): TestStepDraft {
+  if (step.step_type !== "http_request") return step;
+  const config = { ...(step.config || {}) };
+  return {
+    ...step,
+    config,
+    extract: extractConfigToRules(config.extract_data),
+    assertion: assertionConfigToRules(config.assertion),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // 用例对话框（新建 / 编辑 / 插入）
 // ---------------------------------------------------------------------------
@@ -1383,6 +1574,7 @@ export function CaseDialog({
     enabled: !!existing && state?.mode === "edit",
     // 对话框每次打开都重新拿，避免改过步骤后缓存不新鲜
     staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const detail = caseDetailQuery.data;
@@ -1391,7 +1583,7 @@ export function CaseDialog({
     if (existing) {
       // 优先使用详情接口返回的字段；详情没回来之前先兜用树节点数据（少了 steps）
       const src = detail ?? (existing as unknown as Record<string, unknown>);
-      const steps = (detail?.steps as TestStepDraft[] | undefined) ?? [];
+      const steps = ((detail?.steps as TestStepDraft[] | undefined) ?? []).map(hydrateHttpStepConfig);
       return {
         name: (src.name as string) ?? "",
         description: (src.description as string) ?? "",
@@ -1404,6 +1596,7 @@ export function CaseDialog({
         assertion: (src.assertion as string) ?? "",
         sql_query: (src.sql_query as string) ?? "",
         wait_time: (src.wait_time as number) ?? 0,
+        repeat_count: (src.repeat_count as number) ?? 1,
         skip: (src.skip as boolean) ?? false,
         steps,
         case_type:
@@ -1423,6 +1616,7 @@ export function CaseDialog({
       assertion: "",
       sql_query: "",
       wait_time: 0,
+      repeat_count: 1,
       skip: false,
       steps: [],
       case_type: category,
@@ -1444,6 +1638,14 @@ export function CaseDialog({
     category === "ios";
   // 用 form.watch 订阅 steps，StepEditor 作为受控组件消费
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
+  // API 用例的「单请求 / 多步骤」切换。多步骤走 StepEditor（http_request + assert）。
+  const [apiMode, setApiMode] = useState<"single" | "multi">("single");
+  // 编辑已有 API 用例时：若它已经是多步骤（>1 个 step），默认进多步骤模式。
+  const detailStepCount =
+    (detail?.steps as TestStepDraft[] | undefined)?.length ?? 0;
+  useEffect(() => {
+    if (isApi && detailStepCount > 1) setApiMode("multi");
+  }, [isApi, detailStepCount]);
   // 编辑态 + 正在加载详情：禁用表单，避免用户在空白 steps 上乱改
   const loadingDetail = !!existing && caseDetailQuery.isLoading;
   const title =
@@ -1464,7 +1666,21 @@ export function CaseDialog({
         </DialogHeader>
         <form
           className="space-y-4"
-          onSubmit={form.handleSubmit((values) => onSubmit(values))}
+          onSubmit={form.handleSubmit((values) => {
+            // 非 API：原样提交（steps 来自 StepEditor / 后端按 case_type 处理）。
+            if (!isApi) {
+              onSubmit(values);
+              return;
+            }
+            // API：统一以 steps 为唯一执行来源，避免单请求/多步骤互相覆盖。
+            //  - 多步骤：用 StepEditor 编出来的步骤；
+            //  - 单请求：把 v1 字段合成为一条 http_request 步骤。
+            const editorSteps = (values.steps as TestStepDraft[] | undefined) ?? [];
+            const normalized = editorSteps.map(normalizeHttpStepForSubmit);
+            const finalSteps =
+              apiMode === "multi" ? normalized : [buildSingleHttpStep(values)];
+            onSubmit({ ...values, steps: finalSteps as unknown as CaseFormValues["steps"] });
+          })}
         >
           <div className="space-y-1.5">
             <Label htmlFor="case-name">名称</Label>
@@ -1483,14 +1699,98 @@ export function CaseDialog({
 
           <div className="space-y-1.5">
             <Label htmlFor="case-desc">描述</Label>
-            <Input
+            <Textarea
               id="case-desc"
-              maxLength={200}
+              rows={4}
+              className="max-h-48 resize-y"
               {...form.register("description")}
             />
+            <div className="text-right text-[11px] text-muted-foreground">
+              {(form.watch("description") ?? "").length}/10000
+            </div>
+            {form.formState.errors.description ? (
+              <p className="text-xs text-destructive">
+                {form.formState.errors.description.message}
+              </p>
+            ) : null}
           </div>
 
+          {/* 单请求 / 多步骤切换：居中的二选一分段开关。放在重复次数上方。
+              多步骤走 StepEditor（http_request + assert），用于"多个请求 + 跨请求对比"
+              这类场景（如三次登录 token 互不相同）。 */}
           {isApi ? (
+            <div className="flex justify-center">
+              <div className="inline-flex rounded-full bg-muted p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setApiMode("single")}
+                  aria-pressed={apiMode === "single"}
+                  className={cn(
+                    "rounded-full px-6 py-1.5 text-sm transition-colors",
+                    apiMode === "single"
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  单请求
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiMode("multi")}
+                  aria-pressed={apiMode === "multi"}
+                  className={cn(
+                    "rounded-full px-6 py-1.5 text-sm transition-colors",
+                    apiMode === "multi"
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  多步骤
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {/* 重复次数：web/app 用例、以及 API 多步骤模式没有“等待秒数”行，单独给一块；
+              API 单请求模式的重复次数放在下面“等待秒数”旁边（见 isApi 分支）。 */}
+          {isWebOrApp || (isApi && apiMode === "multi") ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="case-repeat-standalone">重复次数</Label>
+              <Input
+                id="case-repeat-standalone"
+                type="number"
+                min={1}
+                max={100}
+                className="w-32"
+                {...form.register("repeat_count")}
+              />
+              <p className="text-xs text-muted-foreground">
+                填 N 则整条用例独立重复执行 N 次，每次在报告里各成一条（默认 1，不重复）。
+                各次相互独立、不做跨次对比；需要对比多次请求的结果（如多次 token 互不相同），请用多步骤用例。
+              </p>
+            </div>
+          ) : null}
+
+          {isApi && apiMode === "multi" ? (
+            loadingDetail ? (
+              <div className="flex items-center gap-2 rounded border border-dashed p-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                正在加载步骤…
+              </div>
+            ) : (
+              <StepEditor
+                category={"api" as CaseType}
+                value={currentSteps}
+                onChange={(next) =>
+                  form.setValue(
+                    "steps",
+                    next as unknown as CaseFormValues["steps"],
+                    { shouldDirty: true },
+                  )
+                }
+              />
+            )
+          ) : isApi ? (
             <>
               <div className="grid grid-cols-[140px_1fr] gap-3">
                 <div className="space-y-1.5">
@@ -1515,10 +1815,14 @@ export function CaseDialog({
                 </div>
                 <div className="space-y-1.5">
                   <Label htmlFor="case-path">路径</Label>
-                  <Input
+                  <HighlightedInput
                     id="case-path"
                     placeholder="/api/login"
                     {...form.register("path")}
+                    value={form.watch("path") ?? ""}
+                    onChange={(e) =>
+                      form.setValue("path", e.target.value, { shouldDirty: true })
+                    }
                   />
                 </div>
               </div>
@@ -1532,14 +1836,26 @@ export function CaseDialog({
                     {...form.register("data_type")}
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="case-wait">等待秒数</Label>
-                  <Input
-                    id="case-wait"
-                    type="number"
-                    min={0}
-                    {...form.register("wait_time")}
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="case-wait">等待秒数</Label>
+                    <Input
+                      id="case-wait"
+                      type="number"
+                      min={0}
+                      {...form.register("wait_time")}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="case-repeat">重复次数</Label>
+                    <Input
+                      id="case-repeat"
+                      type="number"
+                      min={1}
+                      max={100}
+                      {...form.register("repeat_count")}
+                    />
+                  </div>
                 </div>
               </div>
 

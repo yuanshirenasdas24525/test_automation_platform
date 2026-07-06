@@ -44,6 +44,9 @@ flowchart TD
 ## UI自动化项目介绍
 [UI_TestAutomation_README.md](UI_TestAutomation_README.md)
 
+## API 加解密配置操作文档
+[API 请求/响应加解密配置使用指南](docs/api_crypto_usage.md)
+
 # 本地开发
 
 一键拉起整套开发环境（依赖 + 后端 + 异步任务 + 前端热更新）：
@@ -104,5 +107,4 @@ STOP_INFRA=1 make stop          # 顺带 docker compose stop redis postgres
 ```
 
 `stop-dev.sh` 按端口精准杀前端(5173)/后端(54351)、按 `celery_app` 特征杀 worker/beat，默认不动数据服务，避免误删数据。
-
 

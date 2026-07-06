@@ -41,6 +41,7 @@ AI_FEATURE_TEST_RESULT_ANALYSIS = "test_result_analysis"  # 执行结果 → 用
 AI_FEATURE_FUNCTIONAL_TO_AUTO = "functional_to_auto"  # functional → web/app step
 AI_FEATURE_LOAD_PLAN_GEN = "load_plan_gen"           # OpenAPI → locust 压测脚本
 AI_FEATURE_BUG_FIX = "bug_fix"                         # AI 一键修复 Bug
+AI_FEATURE_API_REPORT_FIX = "api_report_fix"          # 报告级 AI 全面诊断 + 参数修复（异步）
 
 
 class AiRun(Base):

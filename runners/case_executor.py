@@ -120,14 +120,16 @@ class CaseExecutor:
                     cr.status = sr.status
                     cr.error_message = sr.error_message
                     break
-
-            self._run_hooks(case_dict.get("post_hook"), ctx, label="post_hook")
         except Exception as exc:  # noqa: BLE001
             import traceback as tb
             cr.status = StepStatus.ERROR
             cr.error_message = f"{type(exc).__name__}: {exc}"
             logger.error("case=%s 执行被中断：%s\n%s", cr.case_name, exc, tb.format_exc())
         finally:
+            # teardown（数据治理#2）：无论用例通过/失败/抛异常，都执行 post_hook 清理
+            # 刚建的测试数据，避免脏数据堆积。post_hook 失败只 warn、不影响用例结论。
+            # 放在会话关闭之前，确保 sql:/http DELETE 清理仍能用到 ctx 里已提取的变量。
+            self._run_hooks(case_dict.get("post_hook"), ctx, label="post_hook")
             if app_session is not None:
                 if app_session_owned:
                     try:
@@ -306,6 +308,9 @@ class CaseExecutor:
         """
         # 0a) 全局：default_parameters（兜底层）
         self._inject_default_parameters(ctx)
+        project_id = case_dict.get("project_id")
+        if project_id is not None:
+            ctx.set_var("_project_id", project_id)
         # 0b) sql: 前缀需要的 target DB 连接，从配置中心拿；拿不到不阻塞
         self._inject_target_db(ctx)
         # 1) env.variables
@@ -427,6 +432,9 @@ class CaseExecutor:
             if step.get("step_order") is None:
                 step["step_order"] = idx
 
+            transient_record_keys = ("status_code", "assertion_results", "extract_values", "page_info")
+            for key in transient_record_keys:
+                getattr(ctx, "records", {}).pop(key, None)
             result = self.dispatcher.dispatch(step, ctx)
             results.append(result)
 
@@ -438,14 +446,35 @@ class CaseExecutor:
             for k, v in (result.extracted or {}).items():
                 ctx.set_var(k, v)
 
+            input_data = result.input_data
+            if isinstance(input_data, dict):
+                input_data = dict(input_data)
+                input_data["variable_pool"] = {
+                    k: v for k, v in (ctx.vars or {}).items()
+                    if not str(k).startswith("_")
+                }
+
             # 记录到 record_property，平台 tasks 层会读
-            ctx.record(f"step_{result.step_order}", {
+            records_after = getattr(ctx, "records", {})
+            step_record = {
+                "step_id": result.step_id,
+                "step_order": result.step_order,
+                "step_name": result.step_name,
+                "step_type": result.step_type,
                 "status": result.status.value,
                 "action": result.action,
                 "target": result.target,
                 "duration_ms": result.duration_ms,
                 "error": result.error_message,
-            })
+                "input_data": input_data,
+                "output_data": result.output_data,
+                "extract_values": result.extracted,
+                "attachments": result.attachments,
+            }
+            for key in transient_record_keys:
+                if key in records_after:
+                    step_record[key] = records_after.get(key)
+            ctx.record(f"step_{result.step_order}", step_record)
 
             # 失败策略：stop 就中断；continue 就跳过；其他（包括 retry，dispatcher 内部已处理）继续下一条
             if result.status in (StepStatus.FAILED, StepStatus.ERROR):

@@ -342,7 +342,7 @@ function CreateUserDialog({
         username: username.trim(),
         full_name: fullName.trim() || null,
         email: email.trim() || null,
-        password: password || null,
+        password,
         is_active: true,
         role_codes: Array.from(selected),
       }),
@@ -388,13 +388,13 @@ function CreateUserDialog({
             />
           </div>
           <div>
-            <Label htmlFor="password">密码（可选）</Label>
+            <Label htmlFor="password">密码（必填，至少 6 位）</Label>
             <Input
               id="password"
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="不填写则无法登录"
+              placeholder="至少 6 位"
             />
           </div>
           <div>
@@ -428,7 +428,7 @@ function CreateUserDialog({
             取消
           </Button>
           <Button
-            disabled={save.isPending || !username.trim()}
+            disabled={save.isPending || !username.trim() || password.length < 6}
             onClick={() => save.mutate()}
           >
             创建

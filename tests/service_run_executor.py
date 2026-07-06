@@ -53,6 +53,15 @@ class TestService:
             module_name = (case.get("module_name") if isinstance(case, dict) else None) or ""
             case_name = (case.get("name") if isinstance(case, dict) else None) or ""
 
+            # 单用例重复执行：pytest_generate_tests 展开时打的 _iteration 标记。
+            # 给报告标题加“(第 i/N 次)”后缀，让 N 次各成可区分的条目。
+            if isinstance(case, dict) and case.get("_iteration"):
+                _it = case.get("_iteration")
+                _total = case.get("_iteration_total") or _it
+                _suffix = f"(第 {_it}/{_total} 次)"
+                if case_name:
+                    case_name = f"{case_name} {_suffix}"
+
             if project_name:
                 set_allure_project(project_name)
             if module_name:

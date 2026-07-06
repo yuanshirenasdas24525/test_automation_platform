@@ -8,6 +8,7 @@ import {
   ArrowUp,
   ChevronDown,
   ChevronRight,
+  Code2,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -41,6 +42,7 @@ import { ApiError, type ModulePickerNode, modulesApi, versionsApi, requirementsA
 import type { ProjectVersion, Requirement, VersionStatus } from "@/types/domain";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { ProjectConfigTab } from "./config/ProjectConfigTab";
+import { ScriptLibraryPanel } from "./ScriptLibraryPage";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -97,8 +99,46 @@ export function ProjectManagementPage() {
 
   const removeModule = useMutation({
     mutationFn: (mid: number) => modulesApi.remove(mid),
-    onSuccess: () => { toast.success("已删除"); invalidateModules(); },
-    onError: (e) => toast.error((e as ApiError).message),
+    onMutate: async (mid: number) => {
+      await queryClient.cancelQueries({ queryKey: ["modules", projectId] });
+      const previousModules = queryClient.getQueryData<ModulePickerNode[]>(["modules", projectId]);
+      const collectRemovedIds = (seedId: number, rows: ModulePickerNode[] = []) => {
+        const removed = new Set<number>([seedId]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const row of rows) {
+            if (row.parent_id != null && removed.has(row.parent_id) && !removed.has(row.id)) {
+              removed.add(row.id);
+              changed = true;
+            }
+          }
+        }
+        return removed;
+      };
+      const removedIds = collectRemovedIds(mid, previousModules ?? []);
+      if (previousModules) {
+        queryClient.setQueryData(
+          ["modules", projectId],
+          previousModules.filter((module) => !removedIds.has(module.id)),
+        );
+      }
+      if (selectedModuleId != null && removedIds.has(selectedModuleId)) {
+        setSelectedModuleId(null);
+      }
+      return { previousModules };
+    },
+    onError: (e, _mid, ctx) => {
+      if (ctx?.previousModules) {
+        queryClient.setQueryData(["modules", projectId], ctx.previousModules);
+      }
+      toast.error((e as ApiError).message);
+    },
+    onSuccess: () => { toast.success("已删除"); },
+    onSettled: () => {
+      invalidateModules();
+      queryClient.invalidateQueries({ queryKey: ["content", projectId] });
+    },
   });
 
   const moveModule = useMutation({
@@ -345,6 +385,7 @@ export function ProjectManagementPage() {
               <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
               <TabsTrigger value="overview"><Sparkles className="h-4 w-4 mr-1" />项目概览</TabsTrigger>
               <TabsTrigger value="config"><Settings className="h-4 w-4 mr-1" />项目配置</TabsTrigger>
+              <TabsTrigger value="scripts"><Code2 className="h-4 w-4 mr-1" />脚本库</TabsTrigger>
             </TabsList>
             {activeTab === "pool" ? (
               <Button size="sm" onClick={() => navigate(`/projects/${projectId}/requirements`)}>
@@ -455,6 +496,11 @@ export function ProjectManagementPage() {
           )}
           {activeTab === "config" && (
             <ProjectConfigTab projectId={projectId} />
+          )}
+          {activeTab === "scripts" && (
+            <div className="flex-1 overflow-hidden">
+              <ScriptLibraryPanel projectId={projectId} />
+            </div>
           )}
           {activeTab === "overview" && (
             <div className="flex-1 overflow-y-auto p-6">

@@ -1,5 +1,6 @@
 import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
+  Code2,
   FolderKanban,
   LayoutDashboard,
   Package,
@@ -29,6 +30,7 @@ const NAV: NavItem[] = [
   { to: "/devices", label: "设备池", icon: Smartphone },
   { to: "/app-packages", label: "App 包管理", icon: Package },
   { to: "/config", label: "全局模板", icon: Settings },
+  { to: "/scripts", label: "脚本库", icon: Code2 },
 ];
 
 export function AppLayout() {

@@ -1,0 +1,1012 @@
+"""AI 报告参数修复：预检（sanitize）→ 应用（快照）→ 闭环验证（重跑对比 + 自动回滚）。
+
+背景：模型产出的 fix 直接整体写进用例，会把"本来通过的用例改坏"（修复率为负）。
+这里把模型输出当**候选**，分三道防线：
+
+  1. preflight_report_fixes —— 应用前用报告里存的真实响应做程序化预检：
+       - classification != 用例问题 → 整条丢弃；
+       - 本次已通过的用例 → 只允许纯增量的 extract/assertion（治"假通过"），
+         不允许动 params/headers/steps；
+       - fix.extract 的 JSONPath 直接对真实响应跑一遍，取不到值就拦；
+       - fix.assertion 对真实响应验证；expected 像动态值（token/时间戳）强制转 not_empty；
+       - fix 里新引用的 ${var} 必须能在报告的变量产出表里找到、且产出方排在本用例之前；
+       - params 与原值**合并**而不是整体替换（fix 里显式 null 表示删除该键），
+         防止模型给残缺对象清掉正确字段。
+     注意：fix 同时改了请求（params/headers/steps）时，响应会变，此时 extract/assertion
+     不做响应预检（deferred），交给第 3 道防线裁决。
+
+  2. apply_report_fixes —— 服务端应用；每条用例一个 EditOperationEvent，全部
+     挂同一个 EditOperationBatch，天然支持按用例精准回滚。
+
+  3. compare_and_rollback —— 重跑后按用例对比新旧报告：
+       green→red 自动按事件回滚（快照恢复），red→green 记为修复成功，
+       red→red 记为无效（保留改动，人工判断）。修复率在机制上不再可能为负。
+"""
+from __future__ import annotations
+
+import json
+import re
+from typing import Any, Optional
+
+from sqlalchemy.orm import Session, selectinload
+
+from database.models import TestCase, TestStepReport
+from database.models.edit_operation import EDIT_ACTION_UPDATE
+from server.services.edit_history_service import (
+    create_test_case_batch,
+    record_test_case_update,
+    rollback_test_case_events,
+    snapshot_test_case,
+)
+from utils.logger import LOGGER
+from utils.platform_utils import extractor
+
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][\w.-]*)\}")
+
+# 断言 expected 像"每次执行都会变的动态值"→ 等值断言下次必挂，强制转 not_empty
+_DYNAMIC_VALUE_RE = re.compile(
+    r"^(?:"
+    r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"  # JWT
+    r"|[0-9a-fA-F]{16,}"                                        # 长 hex（token/签名）
+    r"|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # UUID
+    r"|\d{10,}"                                                 # 时间戳/长数字
+    r")$"
+)
+_DYNAMIC_TARGET_HINTS = ("token", "sign", "session", "ticket", "nonce", "timestamp")
+
+_NOT_EMPTY_SENTINELS = {"not_empty", "notempty", "not_null", "notnull", "非空"}
+
+_RED_STATUSES = {"failed", "broken", "error"}
+
+
+# ---------------------------------------------------------------------------
+# 报告数据装载
+# ---------------------------------------------------------------------------
+def _load_report_rows(session: Session, report_id: int) -> dict[int, list[TestStepReport]]:
+    """report → {case_id: [按 id 升序的步骤行]}。"""
+    rows = (
+        session.query(TestStepReport)
+        .filter(TestStepReport.report_id == report_id)
+        .order_by(TestStepReport.case_id, TestStepReport.id)
+        .all()
+    )
+    by_case: dict[int, list[TestStepReport]] = {}
+    for r in rows:
+        if r.case_id is None:
+            continue
+        by_case.setdefault(r.case_id, []).append(r)
+    return by_case
+
+
+def case_status_of(rows: list[TestStepReport]) -> str:
+    """聚合一条用例的执行状态：any red → failed；全 passed/skipped 且有 passed → passed。"""
+    if not rows:
+        return "unknown"
+    statuses = [(r.status or "").lower() for r in rows]
+    if any(s in _RED_STATUSES for s in statuses):
+        return "failed"
+    if any(s == "passed" for s in statuses):
+        return "passed"
+    return "unknown"  # 全 skipped / 无状态
+
+
+def _first_http_response(rows: list[TestStepReport]) -> tuple[Optional[Any], Optional[int]]:
+    """第一条 http 步骤的 (响应 JSON, status_code)；响应非 JSON 返回 (None, code)。
+
+    与前端应用语义对齐：顶层 fix.extract / fix.assertion 落到第一条 http_request 步骤。
+    """
+    target = None
+    for r in rows:
+        if (r.step_type or "") == "http_request" or r.status_code is not None:
+            target = r
+            break
+    if target is None and rows:
+        target = rows[0]
+    if target is None:
+        return None, None
+    body = None
+    raw = target.output_data or ""
+    if raw.strip():
+        try:
+            body = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            body = None
+    return body, target.status_code
+
+
+# ---------------------------------------------------------------------------
+# 变量产出表（var → 最早产出它的用例在执行顺序里的位置）
+# ---------------------------------------------------------------------------
+def _step_extract_vars(step_extract: Any) -> list[str]:
+    out: list[str] = []
+    if isinstance(step_extract, dict):
+        out.extend(str(k) for k in step_extract.keys())
+    elif isinstance(step_extract, list):
+        for rule in step_extract:
+            if isinstance(rule, dict) and rule.get("name"):
+                out.append(str(rule.get("name")))
+    return out
+
+
+def _build_producer_positions(
+    ordered_cases: list[TestCase],
+    rows_by_case: dict[int, list[TestStepReport]],
+) -> tuple[dict[str, int], dict[int, int]]:
+    """返回 (var → 最早产出位置, case_id → 位置)。位置 = 执行顺序下标。"""
+    producers: dict[str, int] = {}
+    case_pos: dict[int, int] = {}
+    for pos, case in enumerate(ordered_cases):
+        case_pos[case.id] = pos
+        for step in case.steps or []:
+            for var in _step_extract_vars(step.extract):
+                producers.setdefault(var, pos)
+            cfg = step.config if isinstance(step.config, dict) else {}
+            for var in _step_extract_vars(_parse_json_loose(cfg.get("extract_data"))):
+                producers.setdefault(var, pos)
+        # 实际执行提取到的变量也算（比定义更真实）
+        for r in rows_by_case.get(case.id, []):
+            for var in _parse_json_loose(r.extract_values).keys():
+                producers.setdefault(str(var), pos)
+    return producers, case_pos
+
+
+def _parse_json_loose(text: Any) -> dict:
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _referenced_vars(obj: Any) -> set[str]:
+    try:
+        blob = json.dumps(obj, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        blob = str(obj)
+    return set(_VAR_REF_RE.findall(blob))
+
+
+# ---------------------------------------------------------------------------
+# 程序化候选线索（喂给诊断 prompt，把"猜"变成"选"）
+# ---------------------------------------------------------------------------
+def find_jsonpath_candidates(body: Any, var_name: str, max_results: int = 3) -> list[tuple[str, Any]]:
+    """在响应 JSON 树里按 key 名搜索与 var_name 精确/近似匹配的路径。
+
+    extract 取不到值多半是路径写错而值其实在响应里——正确路径可以直接算出来，
+    不需要模型猜。返回 [(jsonpath, 示例值)]，按匹配度/深度排序。
+    """
+    vn = str(var_name or "").strip().strip("_").lower()
+    if not vn or body is None:
+        return []
+    hits: list[tuple[int, int, str, Any]] = []   # (score, depth, path, value)
+    queue: list[tuple[str, Any, int]] = [("$", body, 0)]
+    while queue:
+        path, node, depth = queue.pop(0)
+        if depth > 8 or len(hits) > 40:
+            break
+        if isinstance(node, dict):
+            for k, v in node.items():
+                kp = f"{path}.{k}"
+                kl = str(k).lower()
+                score = None
+                if kl == vn:
+                    score = 0
+                elif kl.endswith(f"_{vn}") or kl.startswith(f"{vn}_"):
+                    score = 1
+                elif len(vn) >= 3 and (vn in kl or kl in vn):
+                    score = 2
+                if score is not None and not isinstance(v, (dict, list)):
+                    hits.append((score, depth, kp, v))
+                if isinstance(v, (dict, list)):
+                    queue.append((kp, v, depth + 1))
+        elif isinstance(node, list):
+            for i, v in enumerate(node[:3]):
+                if isinstance(v, (dict, list)):
+                    queue.append((f"{path}[{i}]", v, depth + 1))
+    hits.sort(key=lambda h: (h[0], h[1], len(h[2])))
+    out: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for _s, _d, p, v in hits:
+        if p in seen:
+            continue
+        seen.add(p)
+        out.append((p, v))
+        if len(out) >= max_results:
+            break
+    return out
+
+
+def _sample(v: Any, limit: int = 60) -> str:
+    s = json.dumps(v, ensure_ascii=False, default=str) if not isinstance(v, str) else v
+    return s[:limit] + ("…" if len(s) > limit else "")
+
+
+def _iter_pydantic_errors(body: Any):
+    """FastAPI/pydantic 风格错误：{"detail":[{"loc":[...,"field"],"msg":...,"type":...}]}。"""
+    detail = body.get("detail") if isinstance(body, dict) else None
+    if isinstance(detail, list):
+        for e in detail:
+            if isinstance(e, dict) and e.get("loc"):
+                loc = e["loc"]
+                field = str(loc[-1]) if isinstance(loc, list) and loc else ""
+                yield field, str(e.get("msg") or ""), str(e.get("type") or "")
+
+
+def build_case_hints(case_def: dict, rows: list, producers: dict[str, str]) -> list[str]:
+    """对一条用例做确定性预分析，产出高置信线索（注入诊断 prompt 的 hints 字段）。
+
+    case_def: _serialize_api_case_definition 的产物；rows: 该用例的 TestStepReport 行。
+    producers: 变量 → 最早产出方描述（"登录成功 (extract $.data.token)"）。
+    """
+    hints: list[str] = []
+
+    # 逐行解析响应 JSON（用未截断的原始 output_data）
+    bodies: list[tuple[Any, Any]] = []   # (body, status_code)
+    for r in rows:
+        raw = getattr(r, "output_data", None) or ""
+        body = None
+        if isinstance(raw, str) and raw.strip():
+            try:
+                body = json.loads(raw)
+            except Exception:  # noqa: BLE001
+                body = None
+        bodies.append((body, getattr(r, "status_code", None)))
+
+    # 1) extract 规则失效 → 在真实响应里算出候选路径
+    extract_rules: dict[str, str] = {}
+    ed = case_def.get("extract_data")
+    if isinstance(ed, dict):
+        extract_rules.update({str(k): str(v) for k, v in ed.items()})
+    for st in case_def.get("steps") or []:
+        ex = st.get("extract") if isinstance(st, dict) else None
+        if isinstance(ex, dict):
+            for k, v in ex.items():
+                extract_rules.setdefault(str(k), str(v))
+        elif isinstance(ex, list):
+            for rule in ex:
+                if isinstance(rule, dict) and rule.get("name"):
+                    extract_rules.setdefault(
+                        str(rule["name"]), str(rule.get("jsonpath") or rule.get("path") or ""),
+                    )
+    for var, jp in list(extract_rules.items())[:8]:
+        if not jp.startswith("$"):
+            continue
+        resolved = any(extractor(b, jp) is not None for b, _ in bodies if b is not None)
+        if resolved:
+            continue
+        for b, _ in bodies:
+            if b is None:
+                continue
+            cands = find_jsonpath_candidates(b, var)
+            if cands:
+                cand_txt = "；".join(f"{p}（示例 {_sample(v)}）" for p, v in cands[:2])
+                hints.append(
+                    f"extract「{var}」路径 {jp} 在真实响应取不到，但响应里存在近似键：{cand_txt}。"
+                    f"fix.extract 应改用其中正确的路径"
+                )
+                break
+
+    # 2) 已发送请求里出现字面 ${var} = 变量未解析
+    unresolved: set[str] = set()
+    for r in rows:
+        req_raw = getattr(r, "input_data", None) or ""
+        if isinstance(req_raw, str):
+            unresolved |= set(_VAR_REF_RE.findall(req_raw))
+    for var in sorted(unresolved)[:4]:
+        root = var.split(".")[0]
+        prod = producers.get(root)
+        if prod:
+            hints.append(
+                f"请求发送时变量 ${{{var}}} 未被解析（原样发出）。产出方是「{prod}」——"
+                f"检查其是否排在本用例之前且执行成功；若是顺序问题给 fix.reorder"
+            )
+        else:
+            hints.append(
+                f"请求发送时变量 ${{{var}}} 未被解析，且报告内没有任何用例产出它——"
+                f"改用变量产出表里已有的变量，或先给上游用例补 extract"
+            )
+
+    # 3) 401 且缺 Authorization → 直接给出可用 token 变量
+    has_401 = any(sc == 401 for _, sc in bodies)
+    if has_401:
+        headers = {}
+        for st in case_def.get("steps") or []:
+            if isinstance(st, dict) and st.get("headers"):
+                headers = st["headers"] if isinstance(st["headers"], dict) else {}
+                break
+        auth = str(headers.get("Authorization") or headers.get("authorization") or "")
+        if (not auth) or ("TODO" in auth.upper()) or ("<" in auth):
+            token_vars = [v for v in producers if "token" in v.lower()]
+            if token_vars:
+                tv = sorted(token_vars)[0]
+                hints.append(
+                    f"响应 401 且 Authorization 头缺失/含占位（当前值 {auth!r}）。"
+                    f"变量产出表已有 ${{{tv}}}（产出方：{producers[tv]}）→ "
+                    f'fix.headers 建议 {{"Authorization": "Bearer ${{{tv}}}"}}'
+                )
+
+    # 4) 断言失败的 actual 值就在结果里
+    shown = 0
+    for r in rows:
+        ar_raw = getattr(r, "assertion_results", None) or ""
+        try:
+            ar = json.loads(ar_raw) if isinstance(ar_raw, str) and ar_raw.strip() else []
+        except Exception:  # noqa: BLE001
+            ar = []
+        for item in ar if isinstance(ar, list) else []:
+            if not isinstance(item, dict) or item.get("status") != "failed" or shown >= 3:
+                continue
+            hints.append(
+                f"断言失败 {item.get('target')}: expected={_sample(item.get('expected'))} "
+                f"actual={_sample(item.get('actual'))}。若 actual 才是正确业务结果，"
+                f"fix.assertion 把 expected 改成 actual（动态值用 not_empty）"
+            )
+            shown += 1
+
+    # 5) 4xx 错误响应里明确指出的字段问题（FastAPI/pydantic detail）
+    params_keys: set[str] = set()
+    for st in case_def.get("steps") or []:
+        if isinstance(st, dict) and isinstance(st.get("params"), dict):
+            params_keys |= {str(k) for k in st["params"].keys()}
+    for b, sc in bodies:
+        if sc not in (400, 422) or b is None:
+            continue
+        for field, msg, typ in list(_iter_pydantic_errors(b))[:3]:
+            if field and field not in params_keys:
+                hints.append(
+                    f"错误响应指出字段「{field}」有问题（{typ or msg}），但当前 params 键为 "
+                    f"{sorted(params_keys) or '（空）'}——疑似字段名写错/缺失，fix.params 按响应要求修正"
+                )
+        break
+
+    return hints[:6]
+
+
+# ---------------------------------------------------------------------------
+# 预检
+# ---------------------------------------------------------------------------
+def _looks_dynamic(target: str, expected: Any) -> bool:
+    if isinstance(expected, str) and _DYNAMIC_VALUE_RE.match(expected.strip()):
+        return True
+    tail = (target or "").rsplit(".", 1)[-1].lower()
+    return any(h in tail for h in _DYNAMIC_TARGET_HINTS)
+
+
+def _merge_params(orig: dict, fix: dict) -> dict:
+    """浅合并：fix 覆盖 orig；fix 里显式 null 的键删除（字段改名后清旧键用）。"""
+    merged = {**(orig or {}), **(fix or {})}
+    return {k: v for k, v in merged.items() if not (k in fix and fix[k] is None)}
+
+
+def preflight_report_fixes(session: Session, report_id: int, items: list[dict]) -> list[dict]:
+    """对诊断结果做应用前预检。
+
+    返回与 items 等长的列表，每项：
+      {case_id, name, eligible, fix: {sanitized...}, request_changed: bool,
+       dropped: [{part, reason}], deferred: [part...]}
+    """
+    rows_by_case = _load_report_rows(session, report_id)
+    case_ids = list(rows_by_case.keys())
+    cases = (
+        session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.id.in_(case_ids))
+        .all()
+    ) if case_ids else []
+    case_map = {c.id: c for c in cases}
+    ordered = sorted(cases, key=lambda c: (c.sort_order if c.sort_order is not None else 1 << 30, c.id))
+    producers, case_pos = _build_producer_positions(ordered, rows_by_case)
+
+    # 用户反馈硬约束：标过「无需处理」或更正为「正常」的用例，无论模型这次怎么判，
+    # 自动修复一律跳过（提示模型是软约束，这里是程序保险）。
+    try:
+        from server.services.ai_flag_service import get_no_touch_case_ids
+        no_touch = get_no_touch_case_ids(session, case_ids)
+    except Exception:  # noqa: BLE001
+        no_touch = set()
+
+    out: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        result = _preflight_one(item, case_map, rows_by_case, producers, case_pos)
+        if result.get("eligible") and result.get("case_id") in no_touch:
+            result["eligible"] = False
+            result["request_changed"] = False
+            result["fix"] = {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": []}
+            result["dropped"].append({
+                "part": "all",
+                "reason": "用户曾将该用例标记为『无需处理/正常』，跳过自动修复",
+            })
+        out.append(result)
+    return out
+
+
+def _preflight_one(
+    item: dict,
+    case_map: dict[int, TestCase],
+    rows_by_case: dict[int, list[TestStepReport]],
+    producers: dict[str, int],
+    case_pos: dict[int, int],
+) -> dict:
+    dropped: list[dict] = []
+    deferred: list[str] = []
+
+    def _drop(part: str, reason: str) -> None:
+        dropped.append({"part": part, "reason": reason})
+
+    cid = item.get("case_id")
+    try:
+        cid = int(cid)
+    except (TypeError, ValueError):
+        cid = None
+    name = str(item.get("name") or "")
+    base = {
+        "case_id": cid, "name": name, "eligible": False, "request_changed": False,
+        "fix": {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": []},
+        "dropped": dropped, "deferred": deferred,
+    }
+
+    fix = item.get("fix") if isinstance(item.get("fix"), dict) else {}
+    has_any_fix = any(
+        fix.get(k) for k in ("extract", "assertion", "params", "headers", "steps")
+    )
+    if cid is None or cid not in case_map:
+        if has_any_fix:
+            _drop("all", "case_id 无效或用例已不存在")
+        return base
+    if not has_any_fix:
+        return base
+
+    classification = str(item.get("classification") or "").strip()
+    if classification != "用例问题":
+        _drop("all", f"classification={classification or '空'}，仅「用例问题」允许自动修复")
+        return base
+
+    case = case_map[cid]
+    rows = rows_by_case.get(cid) or []
+    status = case_status_of(rows)
+    response_body, status_code = _first_http_response(rows)
+
+    fe = fix.get("extract") if isinstance(fix.get("extract"), dict) else {}
+    fa = fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {}
+    fp = fix.get("params") if isinstance(fix.get("params"), dict) else {}
+    fh = fix.get("headers") if isinstance(fix.get("headers"), dict) else {}
+    step_fixes_in = [sf for sf in (fix.get("steps") or []) if isinstance(sf, dict)]
+
+    # ── 已通过的用例：只允许纯增量 extract/assertion（治假通过），不许动请求 ──
+    if status == "passed" and (fp or fh or step_fixes_in):
+        _drop("params/headers/steps", "用例本次已通过，不自动改请求参数/请求头（防绿变红）")
+        fp, fh, step_fixes_in = {}, {}, []
+
+    # ── 请求侧 fix：变量校验 + 合并 ────────────────────────────────
+    my_pos = case_pos.get(cid, 1 << 30)
+    original_refs = _referenced_vars(
+        [{"config": s.config, "extract": s.extract, "assertion": s.assertion} for s in (case.steps or [])]
+    )
+
+    def _vars_ok(obj: Any, part: str) -> bool:
+        new_vars = _referenced_vars(obj) - original_refs
+        bad = [
+            v for v in new_vars
+            if producers.get(v.split(".")[0], 1 << 31) > my_pos
+        ]
+        if bad:
+            _drop(part, f"引用的变量 {sorted(bad)} 没有排在本用例之前的产出方，运行时无法解析")
+            return False
+        return True
+
+    http_steps = [s for s in sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id or 0))
+                  if s.step_type == "http_request"]
+    first_http = http_steps[0] if http_steps else None
+    step_by_id = {s.id: s for s in http_steps}
+
+    sanitized_params: dict = {}
+    sanitized_headers: dict = {}
+    if fp:
+        if first_http is None:
+            _drop("params", "用例没有 http_request 步骤")
+        elif _vars_ok(fp, "params"):
+            cfg = first_http.config if isinstance(first_http.config, dict) else {}
+            merged = _merge_params(cfg.get("params") or {}, fp)
+            if merged == (cfg.get("params") or {}):
+                _drop("params", "与原参数一致（no-op）")
+            else:
+                sanitized_params = merged
+    if fh:
+        if first_http is None:
+            _drop("headers", "用例没有 http_request 步骤")
+        elif _vars_ok(fh, "headers"):
+            cfg = first_http.config if isinstance(first_http.config, dict) else {}
+            merged = _merge_params(cfg.get("headers") or {}, fh)
+            if merged == (cfg.get("headers") or {}):
+                _drop("headers", "与原请求头一致（no-op）")
+            else:
+                sanitized_headers = merged
+
+    sanitized_steps: list[dict] = []
+    for sf in step_fixes_in:
+        try:
+            sid = int(sf.get("step_id"))
+        except (TypeError, ValueError):
+            _drop("steps", f"step_id={sf.get('step_id')!r} 无效")
+            continue
+        step = step_by_id.get(sid)
+        if step is None:
+            _drop("steps", f"step_id={sid} 不是本用例的 http 步骤")
+            continue
+        cfg = step.config if isinstance(step.config, dict) else {}
+        entry: dict = {"step_id": sid}
+        sp = sf.get("params") if isinstance(sf.get("params"), dict) else {}
+        sh = sf.get("headers") if isinstance(sf.get("headers"), dict) else {}
+        if sp and _vars_ok(sp, f"steps[{sid}].params"):
+            merged = _merge_params(cfg.get("params") or {}, sp)
+            if merged != (cfg.get("params") or {}):
+                entry["params"] = merged
+        if sh and _vars_ok(sh, f"steps[{sid}].headers"):
+            merged = _merge_params(cfg.get("headers") or {}, sh)
+            if merged != (cfg.get("headers") or {}):
+                entry["headers"] = merged
+        if len(entry) > 1:
+            sanitized_steps.append(entry)
+
+    request_changed = bool(sanitized_params or sanitized_headers or sanitized_steps)
+
+    # ── extract / assertion：请求没变才能对真实响应预检，否则 deferred ──
+    sanitized_extract: dict = {}
+    existing_extract = {}
+    if first_http is not None:
+        for rule in first_http.extract or []:
+            if isinstance(rule, dict) and rule.get("name"):
+                existing_extract[str(rule["name"])] = str(rule.get("jsonpath") or rule.get("path") or "")
+    for var, jp in (fe or {}).items():
+        var, jp = str(var), str(jp)
+        if first_http is None:
+            _drop("extract", "用例没有 http_request 步骤")
+            break
+        if existing_extract.get(var) == jp:
+            _drop("extract", f"{var} 已是 {jp}（no-op）")
+            continue
+        if request_changed:
+            deferred.append(f"extract.{var}")
+            sanitized_extract[var] = jp
+            continue
+        if response_body is None:
+            _drop("extract", f"{var}: 响应不是 JSON，无法预检 JSONPath，跳过")
+            continue
+        if extractor(response_body, jp) is None:
+            _drop("extract", f"{var}: JSONPath {jp} 在真实响应里取不到值")
+            continue
+        sanitized_extract[var] = jp
+
+    sanitized_assertion: dict = {}
+    for target, expected in (fa or {}).items():
+        target = str(target)
+        if first_http is None:
+            _drop("assertion", "用例没有 http_request 步骤")
+            break
+        if target.startswith("sql:") or str(expected).startswith("sql:"):
+            _drop("assertion", f"{target}: SQL 断言无法预检，请人工确认后手动添加")
+            continue
+        # 动态值 → 强制 not_empty
+        if not (isinstance(expected, str) and expected.strip().lower() in _NOT_EMPTY_SENTINELS) \
+                and _looks_dynamic(target, expected):
+            expected = "not_empty"
+        if request_changed:
+            deferred.append(f"assertion.{target}")
+            sanitized_assertion[target] = expected
+            continue
+        if target == "status_code":
+            if status_code is None or str(expected) != str(status_code):
+                _drop("assertion", f"status_code 期望 {expected!r}，真实响应是 {status_code!r}")
+                continue
+        elif target.startswith("$"):
+            if response_body is None:
+                _drop("assertion", f"{target}: 响应不是 JSON，无法预检，跳过")
+                continue
+            actual = extractor(response_body, target)
+            if isinstance(expected, str) and expected.strip().lower() in _NOT_EMPTY_SENTINELS:
+                if actual in (None, "", [], {}):
+                    _drop("assertion", f"{target}: 真实响应里该值为空，not_empty 断言会失败")
+                    continue
+            elif actual != expected and str(actual) != str(expected):
+                _drop("assertion", f"{target}: 期望 {expected!r}，真实响应是 {actual!r}")
+                continue
+        # 其它 target（header 之类）无法预检 → 保守丢弃
+        elif not request_changed:
+            _drop("assertion", f"{target}: 无法对真实响应预检的断言目标，跳过")
+            continue
+        sanitized_assertion[target] = expected
+
+    base["fix"] = {
+        "extract": sanitized_extract,
+        "assertion": sanitized_assertion,
+        "params": sanitized_params,
+        "headers": sanitized_headers,
+        "steps": sanitized_steps,
+    }
+    base["request_changed"] = request_changed
+    base["eligible"] = bool(
+        sanitized_extract or sanitized_assertion or request_changed
+    )
+    return base
+
+
+# ---------------------------------------------------------------------------
+# 应用（每用例一个事件，同一个 batch）
+# ---------------------------------------------------------------------------
+def _upsert_extract_rule(rules: Any, name: str, jsonpath: str) -> list:
+    new = [dict(r) for r in (rules or []) if isinstance(r, dict)]
+    for r in new:
+        if str(r.get("name") or "") == name:
+            r["from"] = r.get("from") or "response.body"
+            r["jsonpath"] = jsonpath
+            return new
+    new.append({"name": name, "from": "response.body", "jsonpath": jsonpath})
+    return new
+
+
+def _upsert_assertion_rule(rules: Any, target: str, expected: Any) -> list:
+    if isinstance(expected, str) and expected.strip().lower() in _NOT_EMPTY_SENTINELS:
+        rule = {"type": "is_not_null", "target": target, "expected": None,
+                "description": f"AI 修复补充：{target}"}
+    else:
+        rule = {"type": "jsonpath" if target.startswith("$") else "equal",
+                "target": target, "expected": expected,
+                "description": f"AI 修复补充：{target}"}
+    new = [dict(r) for r in (rules or []) if isinstance(r, dict)]
+    for i, r in enumerate(new):
+        if str(r.get("target") or "") == target:
+            new[i] = rule
+            return new
+    new.append(rule)
+    return new
+
+
+def _legacy_extract_map(steps) -> dict:
+    out: dict[str, Any] = {}
+    for s in steps:
+        for r in s.extract or []:
+            if isinstance(r, dict) and r.get("name") and (r.get("jsonpath") or r.get("path")):
+                out[str(r["name"])] = r.get("jsonpath") or r.get("path")
+    return out
+
+
+def _legacy_assertion_map(steps) -> dict:
+    out: dict[str, Any] = {}
+    for s in steps:
+        for r in s.assertion or []:
+            if not isinstance(r, dict):
+                continue
+            target = str(r.get("target") or "").strip()
+            if not target:
+                continue
+            out[target] = "not_empty" if r.get("type") in ("not_null", "is_not_null") else r.get("expected")
+    return out
+
+
+def apply_report_fixes(
+    session: Session,
+    report_id: int,
+    items: list[dict],
+    *,
+    operator_id: int | None = None,
+) -> dict:
+    """预检 + 应用。返回 {batch_id, applied:[{case_id,name,event_id,parts}], skipped:[...]}."""
+    checked = preflight_report_fixes(session, report_id, items)
+    eligible = [c for c in checked if c["eligible"]]
+    skipped = [
+        {"case_id": c["case_id"], "name": c["name"], "reasons": [d["reason"] for d in c["dropped"]]}
+        for c in checked if not c["eligible"] and (c["dropped"] or c["case_id"] is None)
+    ]
+    if not eligible:
+        return {"batch_id": None, "applied": [], "skipped": skipped}
+
+    batch = create_test_case_batch(
+        session,
+        action=EDIT_ACTION_UPDATE,
+        operator_id=operator_id,
+        summary=f"AI 参数修复（报告 #{report_id}，预检通过 {len(eligible)} 条）",
+    )
+
+    applied: list[dict] = []
+    for c in eligible:
+        case = (
+            session.query(TestCase)
+            .options(selectinload(TestCase.steps))
+            .filter(TestCase.id == c["case_id"])
+            .first()
+        )
+        if case is None:
+            skipped.append({"case_id": c["case_id"], "name": c["name"], "reasons": ["用例已被删除"]})
+            continue
+        before = snapshot_test_case(case)
+        parts = _apply_fix_to_case(case, c["fix"])
+        if not parts:
+            skipped.append({"case_id": c["case_id"], "name": c["name"], "reasons": ["无实际改动"]})
+            continue
+        session.flush()
+        event = record_test_case_update(
+            session,
+            case,
+            before_snapshot=before,
+            field_changes=[],
+            operator_id=operator_id,
+            summary=f"AI 参数修复：{case.name}",
+            batch=batch,
+        )
+        applied.append({
+            "case_id": case.id,
+            "name": case.name,
+            "event_id": event.id if event else None,
+            "parts": parts,
+            "dropped": c["dropped"],
+            "deferred": c["deferred"],
+        })
+    session.flush()
+    return {"batch_id": batch.id if applied else None, "applied": applied, "skipped": skipped}
+
+
+def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
+    """把 sanitize 过的 fix 落到 ORM（steps + v1 镜像列）。返回实际改动的部分。"""
+    parts: list[str] = []
+    steps_sorted = sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id or 0))
+    http_steps = [s for s in steps_sorted if s.step_type == "http_request"]
+    if not http_steps:
+        return parts
+    first_http = http_steps[0]
+    step_by_id = {s.id: s for s in http_steps}
+
+    for var, jp in (fix.get("extract") or {}).items():
+        first_http.extract = _upsert_extract_rule(first_http.extract, str(var), str(jp))
+        if "extract" not in parts:
+            parts.append("extract")
+    for target, expected in (fix.get("assertion") or {}).items():
+        first_http.assertion = _upsert_assertion_rule(first_http.assertion, str(target), expected)
+        if "assertion" not in parts:
+            parts.append("assertion")
+
+    if fix.get("params"):
+        cfg = dict(first_http.config or {})
+        cfg["params"] = fix["params"]          # 预检阶段已合并完成
+        first_http.config = cfg
+        case.params = json.dumps(fix["params"], ensure_ascii=False, indent=2)
+        parts.append("params")
+    if fix.get("headers"):
+        cfg = dict(first_http.config or {})
+        cfg["headers"] = fix["headers"]        # 预检阶段已合并完成
+        first_http.config = cfg
+        case.headers = json.dumps(fix["headers"], ensure_ascii=False, indent=2)
+        parts.append("headers")
+
+    for sf in fix.get("steps") or []:
+        step = step_by_id.get(sf.get("step_id"))
+        if step is None:
+            continue
+        cfg = dict(step.config or {})
+        if sf.get("params"):
+            cfg["params"] = sf["params"]
+        if sf.get("headers"):
+            cfg["headers"] = sf["headers"]
+        step.config = cfg
+        if "steps" not in parts:
+            parts.append("steps")
+
+    if "extract" in parts:
+        case.extract_data = json.dumps(_legacy_extract_map(steps_sorted), ensure_ascii=False, indent=2)
+    if "assertion" in parts:
+        case.assertion = json.dumps(_legacy_assertion_map(steps_sorted), ensure_ascii=False, indent=2)
+    return parts
+
+
+# ---------------------------------------------------------------------------
+# 验证执行装配（端点首轮 + 循环后续轮共用）
+# ---------------------------------------------------------------------------
+def prepare_verification_run(session: Session, *, project_id: int, category: str,
+                             base_report_id: int) -> Optional[dict]:
+    """装配一次验证执行：重跑 base_report 涉及的全部用例（按执行顺序）。
+
+    重跑全量而不是只跑被修用例：保证 ${var} 依赖链完整，且能发现跨用例连带回归。
+    返回 {"report_id", "task_id", "cases_to_run"}；调用方 commit 后自行 dispatch
+    run_test_task（保证 worker 能看到 report 行）。无可跑用例返回 None。
+    """
+    import uuid
+    from datetime import datetime
+
+    from database.models import AUTOMATED_CASE_TYPES, TestReport
+    from utils.read_test_cases import get_cases_v2_from_db
+
+    rows_by_case = _load_report_rows(session, base_report_id)
+    if not rows_by_case:
+        return None
+    case_rows = (
+        session.query(TestCase.id, TestCase.sort_order)
+        .filter(TestCase.id.in_(list(rows_by_case.keys())))
+        .all()
+    )
+    ordered_ids = [r.id for r in sorted(
+        case_rows, key=lambda r: (r.sort_order if r.sort_order is not None else 1 << 30, r.id),
+    )]
+    cases_to_run: list = []
+    for case_id in ordered_ids:
+        try:
+            cases_to_run.extend(get_cases_v2_from_db(
+                {"project": project_id, "module": None, "category": category, "case": case_id},
+                session,
+            ))
+        except Exception as exc:  # noqa: BLE001 —— 单条用例被删/损坏不阻塞整体验证
+            LOGGER.warning("[ai_fix] 验证装载用例 %s 失败：%s", case_id, exc)
+    cases_to_run = [
+        c for c in cases_to_run
+        if (c.get("case_type") if isinstance(c, dict) else None) in AUTOMATED_CASE_TYPES
+    ]
+    if not cases_to_run:
+        return None
+
+    now = datetime.now()
+    report = TestReport(
+        project_id=project_id,
+        category=category,
+        status="running",
+        start_time=now,
+        executor="AI修复验证",
+        total_count=len(cases_to_run),
+    )
+    session.add(report)
+    session.flush()
+    session.refresh(report)
+    return {
+        "report_id": report.id,
+        "task_id": f"{now.strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}",
+        "cases_to_run": cases_to_run,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 闭环：对比 + 回滚
+# ---------------------------------------------------------------------------
+def compare_and_rollback(
+    session: Session,
+    *,
+    orig_report_id: int,
+    verify_report_id: int,
+    batch_id: int | None,
+    applied: list[dict],
+) -> dict:
+    """按用例对比新旧报告；green→red 自动回滚。返回三桶统计。"""
+    old_rows = _load_report_rows(session, orig_report_id)
+    new_rows = _load_report_rows(session, verify_report_id)
+
+    fixed: list[dict] = []          # red → green
+    regressed: list[dict] = []      # green → red（已回滚）
+    still_red: list[dict] = []      # red → red
+    kept_green: list[dict] = []     # green → green
+    unknown: list[dict] = []
+    collateral: list[dict] = []     # 未被修改的用例绿变红（被别的修复连带打挂，无法自动回滚）
+
+    applied_ids = {a.get("case_id") for a in applied}
+    rollback_event_ids: list[int] = []
+    for a in applied:
+        cid = a.get("case_id")
+        old_s = case_status_of(old_rows.get(cid) or [])
+        new_s = case_status_of(new_rows.get(cid) or [])
+        entry = {"case_id": cid, "name": a.get("name"), "before": old_s, "after": new_s}
+        if old_s == "failed" and new_s == "passed":
+            fixed.append(entry)
+        elif old_s == "passed" and new_s == "failed":
+            regressed.append(entry)
+            if a.get("event_id"):
+                rollback_event_ids.append(int(a["event_id"]))
+        elif old_s == "failed" and new_s == "failed":
+            still_red.append(entry)
+        elif old_s == "passed" and new_s == "passed":
+            kept_green.append(entry)
+        else:
+            unknown.append(entry)
+
+    # 跨用例连带回归：本轮没改过它，但它从绿变红（典型：某修复改了共享状态）。
+    # 没有对应编辑事件可回滚，单独列出来给人工/下一轮判断。
+    for cid in old_rows.keys() & new_rows.keys():
+        if cid in applied_ids:
+            continue
+        if case_status_of(old_rows[cid]) == "passed" and case_status_of(new_rows[cid]) == "failed":
+            collateral.append({"case_id": cid, "before": "passed", "after": "failed"})
+
+    rollback_result: dict = {"rolled_back": 0, "conflicts": []}
+    if rollback_event_ids and batch_id:
+        try:
+            rollback_result = rollback_test_case_events(
+                session,
+                batch_id=batch_id,
+                event_ids=rollback_event_ids,
+                reason=f"AI 修复验证：{len(rollback_event_ids)} 条用例绿变红，自动回滚",
+                force=False,
+            )
+            if rollback_result.get("conflicts"):
+                # 用户在验证期间改过这些用例 → 不强行覆盖，保留冲突信息给人工
+                LOGGER.warning(
+                    "[ai_fix] 回滚存在冲突（验证期间用例被修改），放弃自动回滚: %s",
+                    rollback_result["conflicts"],
+                )
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.error("[ai_fix] 自动回滚失败：%s", exc)
+            rollback_result = {"rolled_back": 0, "conflicts": [], "error": str(exc)}
+
+    return {
+        "fixed": fixed,
+        "regressed": regressed,
+        "still_red": still_red,
+        "kept_green": kept_green,
+        "unknown": unknown,
+        "collateral_regressed": collateral,
+        "rolled_back_count": rollback_result.get("rolled_back", 0),
+        "rollback_conflicts": rollback_result.get("conflicts") or [],
+        "rollback_error": rollback_result.get("error"),
+    }
+
+
+def compute_final_summary(
+    session: Session,
+    *,
+    orig_report_id: int,
+    final_report_id: int,
+    rounds: list[dict],
+) -> dict:
+    """多轮结束后按**最初报告**为基线做总账。
+
+    fixed = 最初红、最终绿、且任一轮改过它的用例；
+    still_red = 最初红、最终仍红、且改过它的用例；
+    regressed/rolled_back/collateral 按轮累计。
+    """
+    orig_rows = _load_report_rows(session, orig_report_id)
+    final_rows = _load_report_rows(session, final_report_id)
+
+    ever_applied: dict[int, str] = {}
+    regressed_total = 0
+    rolled_back_total = 0
+    collateral_ids: set[int] = set()
+    for rd in rounds:
+        for a in rd.get("applied") or []:
+            if a.get("case_id") is not None:
+                ever_applied[int(a["case_id"])] = str(a.get("name") or "")
+        v = rd.get("verify") or {}
+        regressed_total += int(v.get("regressed_count") or 0)
+        rolled_back_total += int(v.get("rolled_back_count") or 0)
+        for c in v.get("collateral_regressed") or []:
+            if c.get("case_id") is not None:
+                collateral_ids.add(int(c["case_id"]))
+
+    fixed: list[dict] = []
+    still_red: list[dict] = []
+    for cid, cname in ever_applied.items():
+        old_s = case_status_of(orig_rows.get(cid) or [])
+        new_s = case_status_of(final_rows.get(cid) or [])
+        if old_s != "failed":
+            continue
+        entry = {"case_id": cid, "name": cname, "before": old_s, "after": new_s}
+        if new_s == "passed":
+            fixed.append(entry)
+        elif new_s == "failed":
+            still_red.append(entry)
+
+    # 最初就红、但模型从头到尾没给出可应用修复的
+    untouched_red = [
+        {"case_id": cid}
+        for cid, rows in orig_rows.items()
+        if cid not in ever_applied and case_status_of(rows) == "failed"
+    ]
+
+    return {
+        "fixed_count": len(fixed),
+        "still_red_count": len(still_red),
+        "regressed_count": regressed_total,
+        "rolled_back_count": rolled_back_total,
+        "collateral_regressed_count": len(collateral_ids),
+        "untouched_red_count": len(untouched_red),
+        "rounds_used": len(rounds),
+        "details": {"fixed": fixed, "still_red": still_red, "untouched_red": untouched_red},
+    }

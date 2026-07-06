@@ -52,12 +52,14 @@ class DB:
     def commit(self):
         self.session.commit()
 
+    def fetchone(self, sql: str, params: dict | None = None):
+        return self.sql.fetchone(sql, params)
+
     def rollback(self):
         self.session.rollback()
 
     def close(self):
         self.session.close()
-
 
 
 

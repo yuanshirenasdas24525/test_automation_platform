@@ -46,7 +46,7 @@ class TestCase(Base):
     id = Column(Integer, primary_key=True, index=True)
     module_id = Column(Integer, ForeignKey("modules.id"))
     name = Column(String, nullable=False)
-    description = Column(String)
+    description = Column(Text)
     sort_order = Column(Integer, default=0)
 
     # ============ 通用用例元信息 ============
@@ -65,6 +65,9 @@ class TestCase(Base):
     variables = Column(JSONType)      # 用例级变量
     timeout = Column(Integer, default=60)
     retry = Column(Integer, default=0)
+    # 单用例重复执行次数：填 N 则该用例连续执行 N 次（每次独立成报告条目）。
+    # 默认 1（不重复）。展开发生在 pytest_generate_tests，不改执行链路。
+    repeat_count = Column(Integer, default=1, server_default="1", nullable=False)
 
     # ============ v1 历史列（保留 nullable=True 占位）=========
     # 这些列在 v2 数据迁移 v2_cases_to_steps 之后已经全部转成 TestStep.config，

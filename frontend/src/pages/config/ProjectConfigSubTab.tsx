@@ -54,6 +54,7 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
   });
 
   const [editing, setEditing] = useState<ConfigItem | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [creating, setCreating] = useState<ConfigItem | null>(null); // null=全新, ConfigItem=预填推荐值
   const [addToGroup, setAddToGroup] = useState<string | null>(null); // 快捷添加到指定组
 
@@ -71,6 +72,7 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
     onSuccess: () => {
       toast.success("已保存");
       queryClient.invalidateQueries({ queryKey: ["project-config", projectId, category] });
+      setCreateOpen(false);
       setCreating(null);
       setEditing(null);
       setAddToGroup(null);
@@ -95,7 +97,10 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
     <div className="space-y-4 p-4">
       {/* 工具栏 */}
       <div className="flex items-center gap-2">
-        <Button size="sm" variant="outline" onClick={() => setCreating(null)}>
+        <Button size="sm" variant="outline" onClick={() => {
+          setCreating(null);
+          setCreateOpen(true);
+        }}>
           <Plus className="mr-1 h-3.5 w-3.5" />
           添加配置
         </Button>
@@ -111,6 +116,7 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
               id: 0, config_group: schemaItem.config_group, config_key: schemaItem.key,
               config_value: schemaItem.example || schemaItem.default || "", category, project_id: projectId,
             });
+            setCreateOpen(true);
           }}
         />
       ) : null}
@@ -173,9 +179,9 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
 
       {/* 编辑 / 新增弹窗 */}
       <ConfigFormDialog
-        open={!!creating || !!editing || addToGroup != null}
+        open={createOpen || !!editing || addToGroup != null}
         onOpenChange={(v) => {
-          if (!v) { setCreating(null); setEditing(null); setAddToGroup(null); }
+          if (!v) { setCreateOpen(false); setCreating(null); setEditing(null); setAddToGroup(null); }
         }}
         initial={editing ?? creating}
         prefillGroup={addToGroup}

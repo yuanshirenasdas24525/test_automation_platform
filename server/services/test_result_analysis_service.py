@@ -142,6 +142,14 @@ def analyze_report(session, report_id: int, model_name: str | None = None) -> di
         item["suggestions"].extend(suggestions)
         all_suggestions.extend(suggestions)
 
+    duplicate_suggestions = _detect_duplicate_cases(cases, by_case)
+    for case_id, suggestions in duplicate_suggestions.items():
+        item = by_item.get(case_id)
+        if item is None:
+            continue
+        item["suggestions"].extend(suggestions)
+        all_suggestions.extend(suggestions)
+
     summary = _build_summary(case_items, all_suggestions)
     output = {
         "report_id": report.id,
@@ -206,7 +214,10 @@ def _analyze_case(case: TestCase, rows: list[TestStepReport]) -> dict[str, Any]:
         step_suggestions.extend(_detect_sql_assertion_needs(row, step, body))
         step_suggestions.extend(_detect_function_needs(row, step, request_data))
         step_suggestions.extend(_detect_data_safety_issues(row, step, request_data, case.name))
-        step_suggestions.extend(_classify_failure(row, body))
+        if "前置链" not in (case.name or ""):
+            # 前置链用例职责就是准备账号/token，断言只校验 200 即可，不提示"断言偏弱/假通过"
+            step_suggestions.extend(_detect_false_pass(row, step, body))
+        step_suggestions.extend(_classify_failure(row, body, case.name))
         suggestions.extend(step_suggestions)
 
         step_items.append(
@@ -339,10 +350,86 @@ def _detect_missing_assertions(row: TestStepReport, step: TestStep | None, body:
     return suggestions
 
 
-def _classify_failure(row: TestStepReport, body: Any) -> list[dict[str, Any]]:
+_SUCCESS_CODE_FIELDS = ("$.code", "$.errcode", "$.errCode", "$.status", "$.success", "$.ok")
+_SUCCESS_VALUES = {0, 200, "0", "200", "success", "ok", "true", True}
+
+
+def _business_code_failure(body: Any) -> tuple[str, Any] | None:
+    """响应体里业务结果字段是否表示失败（用于检测 HTTP 200 但业务失败的"假通过"）。"""
+    if not isinstance(body, dict):
+        return None
+    for path in _SUCCESS_CODE_FIELDS:
+        val = _try_extract(body, path)
+        if val is None:
+            continue
+        norm = val.lower() if isinstance(val, str) else val
+        if norm in _SUCCESS_VALUES:
+            return None  # 明确成功
+        # 字段存在但不是成功值 → 业务失败
+        return path, val
+    return None
+
+
+def _detect_false_pass(row: TestStepReport, step: TestStep | None, body: Any) -> list[dict[str, Any]]:
+    """假通过检测（问题14）：用例被判 passed，但其实没真正通过。
+      - HTTP 2xx 但响应体业务码表示失败；
+      - 整条用例只断言了 status_code，没有任何业务字段断言（断言形同虚设）。
+    """
+    status = (row.status or "").lower()
+    if status not in ("passed", "pass", "success"):
+        return []
+    if row.step_type != "http_request":
+        return []
+    suggestions: list[dict[str, Any]] = []
+
+    biz = _business_code_failure(body)
+    if biz is not None:
+        path, val = biz
+        suggestions.append(
+            _suggestion(
+                "false_pass",
+                "high",
+                0.84,
+                row,
+                "疑似假通过：HTTP 通过但业务码表示失败",
+                f"响应 {path}={val!r} 不是成功值，但用例被判通过——多半是断言只校验了状态码、漏了业务码",
+                {"type": "add_assertion", "target": path, "operator": "equal", "expected": val},
+                "need_review",
+            )
+        )
+
+    assertions = step.assertion if step is not None and isinstance(step.assertion, list) else []
+    only_status = assertions and all(
+        str(a.get("target") or a.get("jsonpath") or "").lower() == "status_code"
+        for a in assertions
+        if isinstance(a, dict)
+    )
+    if (only_status or not assertions) and biz is None and isinstance(body, dict):
+        # 断言太弱：建议补一条业务字段断言
+        for path in ("$.code", "$.status", "$.success", "$.data"):
+            if _try_extract(body, path) is not None:
+                suggestions.append(
+                    _suggestion(
+                        "false_pass",
+                        "medium",
+                        0.6,
+                        row,
+                        "断言偏弱：仅校验状态码，未校验业务字段",
+                        f"建议补充对 {path} 的断言，避免接口返回业务失败时仍判通过",
+                        {"type": "review_assertion_strength", "candidate": path},
+                        "manual_required",
+                    )
+                )
+                break
+    return suggestions
+
+
+def _classify_failure(row: TestStepReport, body: Any, case_name: str = "") -> list[dict[str, Any]]:
     status = (row.status or "").lower()
     if status in ("passed", "pass", "success", "skipped"):
         return []
+    # 负向用例（参数校验/边界/鉴权/越权/安全）本就期望 4xx：若断言已通过则不算参数错误
+    negative = _is_negative_case(case_name)
     text = " ".join(
         str(x or "")
         for x in (row.error_message, row.output_data, row.target)
@@ -361,6 +448,20 @@ def _classify_failure(row: TestStepReport, body: Any) -> list[dict[str, Any]]:
             )
         ]
     if row.status_code in (401, 403):
+        if negative:
+            return [
+                _suggestion(
+                    "expected_negative",
+                    "low",
+                    0.7,
+                    row,
+                    "负向用例返回鉴权/权限错误，可能正是预期",
+                    f"HTTP {row.status_code}：这是鉴权/越权类负向用例，4xx 多半是预期结果。"
+                    "若用例仍被判失败，请核对断言是否按预期错误码/错误信息编写。",
+                    {"type": "review_assertion_vs_expected", "status_code": row.status_code},
+                    "need_review",
+                )
+            ]
         return [
             _suggestion(
                 "parameter_error",
@@ -374,6 +475,20 @@ def _classify_failure(row: TestStepReport, body: Any) -> list[dict[str, Any]]:
             )
         ]
     if row.status_code == 400 or row.status_code == 422:
+        if negative:
+            return [
+                _suggestion(
+                    "expected_negative",
+                    "low",
+                    0.7,
+                    row,
+                    "负向用例返回参数错误，可能正是预期",
+                    f"HTTP {row.status_code}：这是参数校验/边界/安全类负向用例，4xx 通常是预期结果，"
+                    "不要当成被测接口的参数 Bug。请核对断言是否按预期错误码/错误信息编写。",
+                    {"type": "review_assertion_vs_expected", "status_code": row.status_code},
+                    "need_review",
+                )
+            ]
         return [
             _suggestion(
                 "parameter_error",
@@ -578,7 +693,7 @@ def _suggest_test_data_value(key: str, value: Any) -> str | None:
         return None
     lowered = key.lower()
     if lowered in {"username", "user_name", "account"}:
-        return 'function:unique("AUTO_TEST_user")'
+        return "function:unique(AUTO_TEST_user)"
     if lowered in {"mobile", "phone", "tel"}:
         return "function:unique_mobile()"
     if lowered == "email":
@@ -716,6 +831,232 @@ def _detect_execution_order_and_setup(
                 )
             )
     return result
+
+
+def _detect_duplicate_cases(
+    cases: dict[int, TestCase],
+    by_case: dict[int, list[TestStepReport]],
+) -> dict[int, list[dict[str, Any]]]:
+    """跨用例检查：同一报告内请求步骤完全相同的用例，提示保留一条、删除重复项。"""
+    groups: dict[str, list[TestCase]] = defaultdict(list)
+    signatures: dict[int, list[dict[str, Any]]] = {}
+    for case in cases.values():
+        signature = _case_duplicate_signature(case)
+        if not signature:
+            continue
+        key = json.dumps(signature, ensure_ascii=False, sort_keys=True, default=str)
+        groups[key].append(case)
+        signatures[case.id] = signature
+
+    result: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for duplicates in groups.values():
+        if len(duplicates) < 2:
+            continue
+        ordered = sorted(duplicates, key=_duplicate_keep_rank)
+        keep = ordered[0]
+        for duplicate in ordered[1:]:
+            first_row = (by_case.get(duplicate.id) or [None])[0]
+            if first_row is None:
+                continue
+            signature = signatures.get(duplicate.id) or []
+            request_summary = _duplicate_signature_summary(signature)
+            result[duplicate.id].append(
+                _suggestion(
+                    "重复用例",
+                    "medium",
+                    0.95,
+                    first_row,
+                    f"疑似重复用例：与「{keep.name}」请求相同",
+                    (
+                        f"{request_summary} 的请求签名一致；建议保留 #{keep.id}「{keep.name}」，"
+                        f"删除当前重复用例 #{duplicate.id}「{duplicate.name}」。"
+                    ),
+                    {
+                        "type": "delete_duplicate_case",
+                        "case_id": duplicate.id,
+                        "case_name": duplicate.name,
+                        "duplicate_case_id": duplicate.id,
+                        "duplicate_case_name": duplicate.name,
+                        "keep_case_id": keep.id,
+                        "keep_case_name": keep.name,
+                        "signature": signature,
+                    },
+                    "need_review",
+                )
+            )
+    return result
+
+
+def _duplicate_keep_rank(case: TestCase) -> tuple[int, int, int]:
+    """选择保留项：优先保留正常主流程，其次保留排序靠前、ID 更早的用例。"""
+    name = case.name or ""
+    response_check_penalty = 2 if "响应校验" in name else 0
+    normal_bonus = -1 if "正常" in name else 0
+    return (response_check_penalty + normal_bonus, int(case.sort_order or 0), case.id)
+
+
+def _case_duplicate_signature(case: TestCase) -> list[dict[str, Any]]:
+    http_steps = _case_http_request_steps(case)
+    if not http_steps:
+        return []
+    return [
+        {
+            "intent": _case_intent_category(case.name),
+            "method": str(item.get("method") or "").upper(),
+            "path": _normalize_request_path(item.get("path")),
+            "headers": _canonical_request_value(item.get("headers")),
+            "params": _canonical_request_value(item.get("params")),
+            "body": _canonical_request_value(
+                item.get("json")
+                if "json" in item
+                else item.get("body")
+                if "body" in item
+                else item.get("data")
+            ),
+            "data_type": str(item.get("data_type") or item.get("content_type") or "").lower(),
+            "assertions": _case_assertion_signature(case, item.get("step_id")),
+            "extracts": _case_extract_signature(case, item.get("step_id")),
+        }
+        for item in http_steps
+    ]
+
+
+def _case_http_request_steps(case: TestCase) -> list[dict[str, Any]]:
+    steps = []
+    for step in sorted(case.steps or [], key=lambda item: (int(item.step_order or 0), item.id)):
+        if step.step_type != "http_request" or not isinstance(step.config, dict):
+            continue
+        config = dict(step.config)
+        config["step_id"] = step.id
+        steps.append(config)
+    if steps:
+        return steps
+    if case.method or case.path:
+        return [
+            {
+                "method": case.method,
+                "path": case.path,
+                "headers": case.headers,
+                "params": case.params,
+                "data_type": case.data_type,
+            }
+        ]
+    return []
+
+
+def _case_intent_category(name: str | None) -> str:
+    text = str(name or "")
+    m = re.match(r"^\s*【([^】]+)】", text)
+    if m:
+        return m.group(1).strip()
+    for word in ("前置链", "正常", "参数校验", "边界", "鉴权", "越权", "响应校验", "安全", "场景", "关联"):
+        if word in text[:20]:
+            return word
+    return ""
+
+
+def _case_assertion_signature(case: TestCase, step_id: Any = None) -> list[dict[str, Any]]:
+    """重复检测必须考虑断言目标；同请求但校验不同字段，不直接判重复。"""
+    raw_assertions: list[Any] = []
+    for step in case.steps or []:
+        if step_id is not None and step.id != step_id:
+            continue
+        if step.step_type != "http_request":
+            continue
+        if isinstance(step.assertion, list):
+            raw_assertions.extend(step.assertion)
+        elif isinstance(step.assertion, dict):
+            raw_assertions.append(step.assertion)
+        config = step.config if isinstance(step.config, dict) else {}
+        config_assertion = _load_jsonish(config.get("assertion"))
+        if isinstance(config_assertion, dict):
+            raw_assertions.extend(
+                {"target": target, "expected": expected}
+                for target, expected in config_assertion.items()
+            )
+        elif isinstance(config_assertion, list):
+            raw_assertions.extend(config_assertion)
+    if not raw_assertions and case.assertion:
+        legacy = _load_jsonish(case.assertion)
+        if isinstance(legacy, dict):
+            raw_assertions.extend({"target": target, "expected": expected} for target, expected in legacy.items())
+        elif isinstance(legacy, list):
+            raw_assertions.extend(legacy)
+
+    shaped = []
+    for item in raw_assertions:
+        if not isinstance(item, dict):
+            continue
+        target = str(item.get("target") or item.get("jsonpath") or item.get("path") or "").strip()
+        operator = str(item.get("type") or item.get("operator") or "").strip()
+        expected = _canonical_request_value(item.get("expected"))
+        if target:
+            shaped.append({"target": target, "operator": operator, "expected": expected})
+    return sorted(shaped, key=lambda x: (x["target"], x["operator"], str(x["expected"])))
+
+
+def _case_extract_signature(case: TestCase, step_id: Any = None) -> list[str]:
+    """重复检测必须考虑提取产出：同请求但一条 extract 出 ${token} 供下游用、
+    另一条不 extract——删掉产出方会把整条依赖链弄断，不能互判重复。"""
+    names: set[str] = set()
+    for step in case.steps or []:
+        if step_id is not None and step.id != step_id:
+            continue
+        if step.step_type != "http_request":
+            continue
+        extract = step.extract
+        if isinstance(extract, list):
+            for rule in extract:
+                if isinstance(rule, dict) and rule.get("name"):
+                    names.add(str(rule.get("name")))
+        elif isinstance(extract, dict):
+            names.update(str(k) for k in extract.keys())
+        config = step.config if isinstance(step.config, dict) else {}
+        config_extract = _load_jsonish(config.get("extract_data"))
+        if isinstance(config_extract, dict):
+            names.update(str(k) for k in config_extract.keys())
+    if not names and case.extract_data:
+        legacy = _load_jsonish(case.extract_data)
+        if isinstance(legacy, dict):
+            names.update(str(k) for k in legacy.keys())
+    return sorted(names)
+
+
+def _normalize_request_path(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"/+", "/", text).rstrip("/") or "/"
+
+
+# function:unique(order_20260705)、function:unique_mobile() 之类动态函数：
+# 参数往往是随机/带时间戳的前缀，两条用例只差这个前缀时语义上是同一条——归一化参数再比较。
+_FUNC_CALL_RE = re.compile(r"function:([A-Za-z_][\w]*)\s*\([^)]*\)")
+
+
+def _canonical_request_value(value: Any) -> Any:
+    loaded = _load_jsonish(value)
+    if isinstance(loaded, str):
+        stripped = loaded.strip()
+        if not stripped:
+            return None
+        return _FUNC_CALL_RE.sub(r"function:\1(<ARG>)", stripped)
+    if isinstance(loaded, dict):
+        return {str(key): _canonical_request_value(loaded[key]) for key in sorted(loaded)}
+    if isinstance(loaded, list):
+        return [_canonical_request_value(item) for item in loaded]
+    return loaded
+
+
+def _duplicate_signature_summary(signature: list[dict[str, Any]]) -> str:
+    if not signature:
+        return "HTTP 请求"
+    parts = [
+        f"{item.get('method') or 'HTTP'} {item.get('path') or ''}".strip()
+        for item in signature[:3]
+    ]
+    suffix = f" 等 {len(signature)} 个步骤" if len(signature) > 3 else ""
+    return "、".join(parts) + suffix
 
 
 def _case_needs_user_setup(case: TestCase, rows: list[TestStepReport]) -> bool:
@@ -869,7 +1210,7 @@ def _attach_ai_summary(session, output: dict[str, Any], model_name: str) -> None
             "你是资深接口自动化测试架构师。请基于下面的规则诊断结果，输出给测试人员看的中文 Markdown 总结。\n"
             "要求：\n"
             "1. 不要编造规则结果之外的字段和值。\n"
-            "2. 按优先级说明：执行顺序/前置数据、应补变量提取、应补断言、参数错误、SQL 断言、function 补充、数据安全、环境问题、接口问题。\n"
+            "2. 按优先级说明：假通过(HTTP通过但业务失败/断言偏弱)、重复用例、执行顺序/前置数据、应补变量提取、应补断言、参数错误、SQL 断言、function 补充、数据安全、负向用例(确认断言)、环境问题、接口问题。\n"
             "3. 明确哪些建议可高置信一键应用，哪些必须人工审核。\n\n"
             f"规则诊断结果：\n{json.dumps(compact, ensure_ascii=False)[:18000]}"
         )
@@ -1024,12 +1365,16 @@ def _case_status(rows: list[TestStepReport]) -> str:
 
 def _classify_case(suggestions: list[dict[str, Any]], rows: list[TestStepReport]) -> str:
     cats = {s["category"] for s in suggestions}
+    if "false_pass" in cats:
+        return "假通过(需复核)"
     if "environment_issue" in cats:
         return "环境问题"
     if "api_defect" in cats:
         return "接口问题"
-    if cats & {"missing_extraction", "missing_assertion", "parameter_error", "function_needed", "data_safety", "execution_order"}:
+    if cats & {"missing_extraction", "missing_assertion", "parameter_error", "function_needed", "data_safety", "execution_order", "重复用例"}:
         return "用例需优化"
+    if "expected_negative" in cats:
+        return "负向用例(确认断言)"
     if _case_status(rows) == "passed":
         return "基本正常"
     return "待复核"

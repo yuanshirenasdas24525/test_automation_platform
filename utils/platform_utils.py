@@ -274,9 +274,11 @@ def extractor(json_obj: Union[Dict, List], json_path: str) -> Any:
         return results
 
     except Exception as e:
-        # 这里的错误通常是 json_path 语法错误
+        # 这里的错误通常是 json_path 语法错误。返回 None（提取失败），
+        # 不要返回 json_path 字符串本身——否则提取变量会被污染成 "$.data.token"
+        # 这种字面量，下游 ${token} 引用拿到的是路径字符串而非 null，更难排查。
         LOGGER.error(f"提取器错误: {e}| json_path: {json_path}")
-        return json_path
+        return None
 
 
 def extract_code(text: str, pattern: str) -> Union[str, None]:

@@ -1,4 +1,6 @@
 # -*- coding:utf-8 -*-
+from __future__ import annotations
+
 import inspect
 
 from database.redis import clear_cache
@@ -42,10 +44,29 @@ def exec_func(value, *args, **kwargs):
 
     raw = value.split("function:", 1)[1].strip()
     has_parens, f_name, parsed_args = _parse_func_call(raw)
+
+    vars_pool = _vars_from_args(args)
+    project_id = _project_id_from_pool(vars_pool)
+    try:
+        from utils.script_runtime import run_named_script
+        found, result = run_named_script(
+            f_name,
+            kind="function",
+            project_id=project_id,
+            args=parsed_args if has_parens else [],
+            vars=vars_pool,
+        )
+        if found:
+            return result
+    except Exception as e:
+        raise Exception(f"执行页面脚本函数 '{f_name}' 时发生错误: {e}")
+
     functions = function_name()
 
     if f_name not in functions:
-        available = ", ".join(functions.keys())
+        dynamic_names = _dynamic_function_names(project_id)
+        available_names = [*dynamic_names, *functions.keys()]
+        available = ", ".join(dict.fromkeys(available_names))
         raise ValueError(
             f"未找到指定的函数 '{f_name}'（原始：{raw!r}），可用函数: {available}"
         )
@@ -141,6 +162,40 @@ def _parse_func_call(raw: str):
     return True, name.strip(), parsed_args
 
 
+def _vars_from_args(args) -> dict:
+    """从 exec_func 的兼容参数里找到变量池。
+
+    v2 value_resolver 会把 ctx.vars 放在 args[0]；老 RequestDataProcessor
+    会按 (sql_results, parent_data, extra_pool) 传参，变量池在 args[2]。
+    """
+    for item in args:
+        if isinstance(item, dict) and (
+            "_project_id" in item
+            or "project_id" in item
+            or "_run_shared_vars" in item
+        ):
+            return item
+    return args[0] if args and isinstance(args[0], dict) else {}
+
+
+def _project_id_from_pool(pool: dict) -> int | None:
+    """从变量池里取项目 ID，用于优先匹配项目脚本。"""
+    raw = pool.get("_project_id") or pool.get("project_id")
+    try:
+        return int(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _dynamic_function_names(project_id: int | None) -> list[str]:
+    """读取页面脚本函数名，仅用于错误提示。"""
+    try:
+        from utils.script_runtime import list_script_names
+        return list_script_names("function", project_id=project_id)
+    except Exception:
+        return []
+
+
 def function_name():
     """
     注册所有可用的函数，作为 exec_func 的函数库
@@ -184,13 +239,13 @@ def function_name():
         """
         return ("AU" + str(random.randint(3, 9)) +
                 ''.join(random.choice('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
-                        for _ in range(7)))
+                        for _ in range(5)))
 
     def generate_num(*args, **kwargs):
         """
         生成19位随机数字字符串
         """
-        return ''.join(str(random.randint(0, 9)) for _ in range(19))
+        return ''.join(str(random.randint(0, 9)) for _ in range(6))
 
     def generate_email(*args, **kwargs):
         """

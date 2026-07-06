@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 
 import pytest
@@ -45,6 +46,34 @@ def _coerce_int(value):
         return value
     try:
         return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _step_records_from_props(props: dict) -> list[dict]:
+    """从 pytest user_properties 里取出 CaseExecutor 写入的 step_N 明细。"""
+    records: list[dict] = []
+    pattern = re.compile(r"^step_(\-?\d+)$")
+    for key, value in props.items():
+        match = pattern.match(str(key))
+        if not match or not isinstance(value, dict):
+            continue
+        item = dict(value)
+        item["_order_key"] = int(match.group(1))
+        records.append(item)
+    return sorted(
+        records,
+        key=lambda item: (
+            _coerce_int(item.get("step_order")) if _coerce_int(item.get("step_order")) is not None else item["_order_key"],
+            _coerce_int(item.get("step_id")) or 0,
+        ),
+    )
+
+
+def _duration_seconds(value) -> float | None:
+    """StepResult 里是毫秒，数据库 duration 存秒。"""
+    try:
+        return float(value) / 1000
     except (TypeError, ValueError):
         return None
 
@@ -112,10 +141,38 @@ def pytest_generate_tests(metafunc):
         except Exception:
             cases = []
 
-        # 2. 关键点：即便 cases 为空，也要注入一个 [None] 占位，
+        # 2. 单用例重复执行：按 case.repeat_count 把每条 case 展开成 N 份。
+        # 每份带 _iteration / _iteration_total，让 service_run_executor 给
+        # Allure 标题加“(第 i/N 次)”后缀，N 次各成独立报告条目。
+        # 展开只发生在这里，不动 CaseExecutor / Dispatcher / Runner。
+        expanded = []
+        ids = []
+        for c in cases:
+            if not isinstance(c, dict):
+                expanded.append(c)
+                ids.append("case")
+                continue
+            try:
+                n = int(c.get("repeat_count") or 1)
+            except (TypeError, ValueError):
+                n = 1
+            n = max(1, min(n, 100))  # 兜底：至少 1，上限 100 防误填
+            cid = c.get("id")
+            if n <= 1:
+                expanded.append(c)
+                ids.append(f"case{cid}")
+                continue
+            for i in range(n):
+                c2 = dict(c)
+                c2["_iteration"] = i + 1
+                c2["_iteration_total"] = n
+                expanded.append(c2)
+                ids.append(f"case{cid}#{i + 1}")
+
+        # 3. 关键点：即便 cases 为空，也要注入一个 [None] 占位，
         # 否则 pytest 发现函数有参数但没数据，会直接报错 "not found"
-        if cases:
-            metafunc.parametrize("case", cases)
+        if expanded:
+            metafunc.parametrize("case", expanded, ids=ids)
         else:
             metafunc.parametrize("case", [None], ids=["no_cases_found"])
 
@@ -143,34 +200,61 @@ def pytest_runtest_makereport(item, call):
 
     case_name = report.nodeid.split("::")[-1]
     props = dict(report.user_properties)
-
-    step_data = TestStepReport(
-        report_id=report_id,
-        case_id=_coerce_int(props.get("case_id")),
-        step_name=case_name,
-        status=report.outcome,          # passed / failed / skipped
-        duration=float(report.duration) if report.duration is not None else None,
-        action=safe_json_dumps(props.get("action")),
-        target=safe_json_dumps(props.get("target")),
-        input_data=safe_json_dumps(props.get("input_data")),
-        output_data=safe_json_dumps(props.get("output_data")),
-        status_code=_coerce_int(props.get("status_code")),
-        extract_values=safe_json_dumps(props.get("extract_values")),
-        assertion_results=safe_json_dumps(props.get("assertion_results")),
-        page_info=safe_json_dumps(props.get("page_info")),
-        create_time=datetime.now(),
-    )
-    if report.failed:
-        step_data.error_message = str(report.longrepr)[:2000]
+    step_records = _step_records_from_props(props)
+    if step_records:
+        rows = []
+        for item in step_records:
+            error_message = item.get("error")
+            if not error_message and item.get("status") in {"failed", "error"} and report.failed:
+                error_message = str(report.longrepr)[:2000]
+            rows.append(TestStepReport(
+                report_id=report_id,
+                case_id=_coerce_int(props.get("case_id")),
+                step_id=_coerce_int(item.get("step_id")),
+                step_name=item.get("step_name") or case_name,
+                step_type=item.get("step_type"),
+                status=item.get("status") or report.outcome,
+                duration=_duration_seconds(item.get("duration_ms")),
+                action=safe_json_dumps(item.get("action")),
+                target=safe_json_dumps(item.get("target")),
+                input_data=safe_json_dumps(item.get("input_data")),
+                output_data=safe_json_dumps(item.get("output_data")),
+                status_code=_coerce_int(item.get("status_code")),
+                extract_values=safe_json_dumps(item.get("extract_values")),
+                assertion_results=safe_json_dumps(item.get("assertion_results")),
+                page_info=safe_json_dumps(item.get("page_info")),
+                attachments=item.get("attachments"),
+                error_message=error_message,
+                create_time=datetime.now(),
+            ))
+    else:
+        rows = [TestStepReport(
+            report_id=report_id,
+            case_id=_coerce_int(props.get("case_id")),
+            step_name=case_name,
+            status=report.outcome,          # passed / failed / skipped
+            duration=float(report.duration) if report.duration is not None else None,
+            action=safe_json_dumps(props.get("action")),
+            target=safe_json_dumps(props.get("target")),
+            input_data=safe_json_dumps(props.get("input_data")),
+            output_data=safe_json_dumps(props.get("output_data")),
+            status_code=_coerce_int(props.get("status_code")),
+            extract_values=safe_json_dumps(props.get("extract_values")),
+            assertion_results=safe_json_dumps(props.get("assertion_results")),
+            page_info=safe_json_dumps(props.get("page_info")),
+            create_time=datetime.now(),
+        )]
+        if report.failed:
+            rows[0].error_message = str(report.longrepr)[:2000]
 
     # 每条用例一把独立 session —— 出错不污染别的用例
     db = DB()
     try:
-        db.session.add(step_data)
+        db.session.add_all(rows)
         db.session.commit()
         print(
             f"[pytest_hook] 已写入 step_report report_id={report_id} "
-            f"case={case_name} status={report.outcome}"
+            f"case={case_name} rows={len(rows)} status={report.outcome}"
         )
     except Exception as exc:
         try:

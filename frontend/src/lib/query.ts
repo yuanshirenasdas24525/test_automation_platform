@@ -54,6 +54,10 @@ export const queryKeys = {
     ["functional_cases", "batches", projectId] as const,
   config: (category?: string) => ["config", category ?? "all"] as const,
   configSchema: (category: string) => ["config", "schema", category] as const,
+  scripts: (filters?: Record<string, unknown>) =>
+    filters && Object.keys(filters).length > 0
+      ? (["scripts", filters] as const)
+      : (["scripts"] as const),
   reports: (params: Record<string, unknown>) => ["reports", params] as const,
   report: (id: number) => ["report", id] as const,
   systemServices: () => ["system", "services"] as const,

@@ -14,6 +14,7 @@ import { ProjectVersionDetailPage } from "@/pages/ProjectVersionDetailPage";
 import { ProjectsPage } from "@/pages/ProjectsPage";
 import { RequirementsPage } from "@/pages/RequirementsPage";
 import { RunsPage } from "@/pages/RunsPage";
+import { ScriptLibraryPage } from "@/pages/ScriptLibraryPage";
 import { TaskDetailPage } from "@/pages/tasks/TaskDetailPage";
 import { TaskListPage } from "@/pages/tasks/TaskListPage";
 import { VersionBoardPage } from "@/pages/versions/VersionBoardPage";
@@ -29,6 +30,7 @@ import {
  * - /runs 执行记录
  * - /devices 设备池（App 自动化）
  * - /config 配置中心
+ * - /scripts 全局脚本库
  */
 export const router = createBrowserRouter([
   // /login 不挂在 AppLayout 下：登录页是无侧栏 / 无 header 的全屏页。
@@ -55,6 +57,8 @@ export const router = createBrowserRouter([
       { path: "devices", element: <DevicesPage /> },
       { path: "app-packages", element: <AppPackagesPage /> },
       { path: "config", element: <ConfigPage /> },
+      { path: "scripts", element: <ScriptLibraryPage /> },
+      { path: "projects/:id/scripts", element: <ScriptLibraryPage /> },
       { path: "change-password", element: <ChangePasswordPage /> },
       { path: "*", element: <NotFound /> },
     ],

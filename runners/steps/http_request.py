@@ -9,7 +9,7 @@
         "data_type": "application/json",        # json / form / multipart / x-www-form-urlencoded
         "params": {"username": "${USERNAME}"},  # dict / list，支持 ${var} 占位符
         "file_path": null,                      # multipart 用
-        "sql_query": null,                      # 可选：步骤执行前先跑 SQL 再注入到变量池
+        "sql_query": null,                      # 可选：默认请求后跑 SQL 校验；sql_query_phase='before' 可改为请求前
     }
 
     step.extract = [
@@ -26,7 +26,7 @@
 Runner 职责：
   1. 解析变量（${var}）
   2. 发请求
-  3. 执行 extract，把新变量塞进 ctx.vars 和 processor.extra_pool（便于后续 step 引用）
+  3. 执行 extract，把有效新变量塞进 ctx.vars 和 processor.extra_pool（便于后续 step 引用）
   4. 执行 assertion，失败 raise AssertionError 让 BaseStepRunner 走 FAILED 分支
 
 实现上尽量复用 v1 的 `ApiClient._send_api` 内的 requests 细节，但走新的 step 字典，
@@ -35,6 +35,7 @@ Runner 职责：
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -44,8 +45,9 @@ from requests.exceptions import JSONDecodeError
 from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
 from utils.allure_utils import add_allure_step, set_allure_link
+from utils.encrypt import RequestCryptoProcessor
 from utils.logger import LOGGER
-from utils.platform_utils import extractor
+from utils.platform_utils import extractor, rep_expr
 from utils.value_resolver import resolve_value
 
 
@@ -58,6 +60,65 @@ _DATA_TYPE_ALIASES = {
     "application/x-www-form-urlencoded": "application/x-www-form-urlencoded",
     "multipart/form-data": "multipart/form-data",
 }
+
+# "非空 / 为空"断言哨兵：expected 写成这些词时按操作符语义判断，而不是字面量相等。
+_NOT_EMPTY_SENTINELS = {"not_empty", "not_null", "notnull", "notempty", "非空", "@notnull", "@notempty"}
+_IS_EMPTY_SENTINELS = {"is_null", "为空", "空", "@null"}
+
+
+def _v1_json_extract_to_rules(raw: Any) -> list[dict]:
+    """把 v1 风格的提取 JSON（{"token1": "$.data.token"}）转成 extract 规则列表。
+
+    多步骤 API 用例在 StepEditor 里把"提取"以这种 JSON 存进 config.extract_data，
+    runner 在顶层 step.extract 为空时用它兜底。与 server/api/cases.py 的
+    _v1_extract_to_step 行为保持一致（同步维护）。
+    """
+    if not raw:
+        return []
+    obj = raw
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return []
+    out: list[dict] = []
+    if isinstance(obj, dict):
+        for name, jp in obj.items():
+            if str(name).strip() and str(jp).strip():
+                out.append({"name": str(name), "from": "response.body", "jsonpath": str(jp)})
+    return out
+
+
+def _v1_json_assertion_to_rules(raw: Any) -> list[dict]:
+    """把 v1 风格的断言 JSON（{"status_code": 200, "$.code": 0}）转成断言规则列表。
+
+    与 server/api/cases.py 的 _v1_assertion_to_step 行为保持一致（同步维护）。
+    """
+    if not raw:
+        return []
+    obj = raw
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return []
+    _NOT_NULL = {"not_empty", "not_null", "非空", "@notnull", "@notempty", "notnull", "notempty"}
+    _IS_NULL = {"is_null", "null", "为空", "空", "@null"}
+    out: list[dict] = []
+    if isinstance(obj, dict):
+        for target, expected in obj.items():
+            t = str(target).strip()
+            if not t:
+                continue
+            ev = expected.strip().lower() if isinstance(expected, str) else expected
+            if isinstance(expected, str) and ev in _NOT_NULL:
+                out.append({"type": "is_not_null", "target": t, "expected": None})
+            elif isinstance(expected, str) and ev in _IS_NULL:
+                out.append({"type": "is_null", "target": t, "expected": None})
+            else:
+                atype = "jsonpath" if t.startswith("$") else "equal"
+                out.append({"type": atype, "target": t, "expected": expected})
+    return out
 
 
 class HttpRequestStepRunner(BaseStepRunner):
@@ -101,13 +162,32 @@ class HttpRequestStepRunner(BaseStepRunner):
         headers = self._resolve_dict(headers_in, ctx)
         # base_header 合并（保持跟 v1 行为一致）
         headers = {**self._base_headers(), **headers}
-        body = self._resolve_value(params_in, ctx)
+        # 头值安全编码：requests 用 latin-1 编码请求头，含中文/非 latin-1（如"过期token"
+        # 占位、未解析变量）会直接抛 UnicodeEncodeError 把整步搞崩。这里转成可发送的形式，
+        # 服务端会当成无效 token 返回 401，正好符合"过期/无效 token"类负向用例预期。
+        headers = self._latin1_safe_headers(headers)
+        params_template = self._decode_jsonish_value(params_in)
+        body = self._resolve_value(params_template, ctx)
+        if str(config.get("sql_query_phase") or "").lower() == "before":
+            self._apply_sql_query(config.get("sql_query"), ctx)
         files = self.processor.handler_files(file_path) if file_path else None
+
+        crypto = RequestCryptoProcessor(self._encryption_config(), vars=self._merged_pool(ctx))
+        headers, body, crypto_request_meta = crypto.apply_request(headers, body)
 
         # 2) 记录 Allure: Set up（变量池）+ Request（请求详情）
         result.action = f"{method} {url}"
         result.target = url
-        result.input_data = {"method": method, "url": url, "headers": headers, "body": body}
+        result.input_data = {
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "params": params_template,
+            "body_template": params_template,
+            "body": body,
+        }
+        if crypto_request_meta:
+            result.input_data["crypto"] = crypto_request_meta
         set_allure_link(url)
         ctx_vars_display = {k: v for k, v in ctx.vars.items()
                             if not k.startswith("_")}
@@ -120,12 +200,15 @@ class HttpRequestStepRunner(BaseStepRunner):
             "请求方法": method,
             "请求地址": url,
             "请求头": headers,
-            "请求参数": body,
+            "实际填写的": params_template,
+            "请求填写的": body,
+            "加解密": crypto_request_meta or "未启用",
         })
 
         # 3) 发请求
         timeout = float(step.get("timeout") or 30)
         response_body, status_code = self._send(method, url, headers, body, files, data_type, timeout)
+        response_body, crypto_response_meta = crypto.apply_response(response_body)
 
         result.output_data = response_body
         ctx.record("status_code", status_code)
@@ -133,11 +216,24 @@ class HttpRequestStepRunner(BaseStepRunner):
         # 供「AI 分析执行结果」读真实响应（在断言之前记，断言失败也能拿到响应）。
         ctx.record("input_data", result.input_data)
         ctx.record("output_data", response_body)
-        add_allure_step(f"Response (HTTP {status_code})", response_body)
+        if crypto_response_meta:
+            ctx.record("crypto_response", crypto_response_meta)
+        add_allure_step(f"Response (HTTP {status_code})", {
+            "响应体": response_body,
+            "加解密": crypto_response_meta or "未启用",
+        })
 
         # 4) extract：把响应里的值塞进 ctx.vars 和 processor.extra_pool
+        # 多步骤 API 用例从 StepEditor 存的是 config.extract_data（v1 JSON），它是编辑器的
+        # 唯一来源，优先级最高；顶层 step.extract 仅作为老数据 / AI 结构化步骤的兜底。
+        # （历史坑：某些步骤同时残留了旧的顶层 extract，若顶层优先会覆盖用户在 config 里
+        #  改的提取变量名，导致"改了没生效"。）
+        if config.get("extract_data"):
+            extract_rules = _v1_json_extract_to_rules(config.get("extract_data"))
+        else:
+            extract_rules = step.get("extract") or []
         extracted = self._apply_extract(
-            step.get("extract") or [],
+            extract_rules,
             response_body=response_body,
             status_code=status_code,
             ctx=ctx,
@@ -153,19 +249,53 @@ class HttpRequestStepRunner(BaseStepRunner):
                 attachment_name="变量池（提取后）",
             )
 
-        # 5) assertion
+        if str(config.get("sql_query_phase") or "after").lower() != "before":
+            self._apply_sql_query(config.get("sql_query"), ctx)
+
+        # 5) assertion（同 extract：config.assertion 有值时以它为准，顶层仅兜底）
+        if config.get("assertion"):
+            assertion_rules = _v1_json_assertion_to_rules(config.get("assertion"))
+        else:
+            assertion_rules = step.get("assertion") or []
         self._apply_assertions(
-            step.get("assertion") or [],
+            assertion_rules,
             response_body=response_body,
             status_code=status_code,
             ctx=ctx,
         )
+
+    @staticmethod
+    def _latin1_safe_headers(headers: dict) -> dict:
+        """把请求头的 key/value 转成 latin-1 可编码，避免 requests 编码头时崩。
+
+        非 latin-1（中文等）→ 用 UTF-8 字节再按 latin-1 解码（mojibake 但可发送），
+        服务端收到的就是无效 token，返回 401/403——不会让用例以 ERROR 形式崩掉。
+        """
+        def _safe(v: Any) -> Any:
+            if not isinstance(v, str):
+                return v
+            try:
+                v.encode("latin-1")
+                return v
+            except UnicodeEncodeError:
+                return v.encode("utf-8").decode("latin-1")
+
+        out = {}
+        for k, val in (headers or {}).items():
+            out[_safe(k) if isinstance(k, str) else k] = _safe(val)
+        return out
 
     # ---------------------- 内部工具 ----------------------
     def _base_headers(self) -> dict:
         try:
             return dict(self.processor.base_header or {})
         except Exception:  # 离线单测时 processor 构造失败不阻断
+            return {}
+
+    def _encryption_config(self) -> dict:
+        try:
+            return dict(self.processor.encryption_decryption or {})
+        except Exception:  # 离线单测时 fake processor 可能没有配置
             return {}
 
     def _resolve_url(self, path: str, ctx: ExecutionContext) -> str:
@@ -196,14 +326,23 @@ class HttpRequestStepRunner(BaseStepRunner):
     def _resolve_dict(self, d: Any, ctx: ExecutionContext) -> dict:
         if not d:
             return {}
-        if isinstance(d, str):
-            try:
-                d = json.loads(d)
-            except Exception:  # noqa: BLE001
-                return {}
+        d = self._decode_jsonish_value(d)
         if not isinstance(d, dict):
             return {}
         return {k: self._resolve_value(v, ctx) for k, v in d.items()}
+
+    @staticmethod
+    def _decode_jsonish_value(value: Any) -> Any:
+        """快速编辑里常把 JSON 对象存成字符串；先还原，后续才能递归解析字段。"""
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text or text[0] not in "{[":
+            return value
+        try:
+            return json.loads(text)
+        except Exception:  # noqa: BLE001
+            return value
 
     def _resolve_value(self, value: Any, ctx: ExecutionContext) -> Any:
         """递归解析三种语法：${var} / function:foo(...) / sql:select ...。
@@ -222,6 +361,10 @@ class HttpRequestStepRunner(BaseStepRunner):
         想让 sql: 工作记得在 ctx.vars['_db'] 注入连接（CaseExecutor 会从
         config_center.target_db 自动注入；没配就走 actionable error 提示）。
         """
+        decoded = self._decode_jsonish_value(value)
+        if decoded is not value:
+            return self._resolve_value(decoded, ctx)
+
         if isinstance(value, str):
             # 把 processor.extra_pool 临时合进 ctx.vars，让 ${var} 也能取到 pool 里的值
             pool = self._merged_pool(ctx)
@@ -314,8 +457,12 @@ class HttpRequestStepRunner(BaseStepRunner):
             default = rule.get("default")
 
             if src == "response.body":
-                expr = rule.get("jsonpath") or rule.get("path")
-                val = extractor(response_body, expr) if expr else response_body
+                expr_raw = rule.get("jsonpath") or rule.get("path")
+                expr = self._resolve_extract_expr(expr_raw, ctx)
+                if self._is_value_expression(expr_raw):
+                    val = expr
+                else:
+                    val = extractor(response_body, expr) if expr else response_body
             elif src == "response.status_code":
                 val = status_code
             elif src == "response.text":
@@ -324,7 +471,20 @@ class HttpRequestStepRunner(BaseStepRunner):
                 val = None
 
             if val is None and default is not None:
-                val = default
+                val = self._resolve_value(default, ctx)
+
+            # 提取失败时不要用 None 覆盖已有变量。
+            # 典型场景：登录失败返回 {"detail": "..."}，$.data.token 取不到；
+            # 如果把 token 写成 None，后续依赖旧 token 的步骤会被连带污染。
+            # 如确实需要显式清空变量，可在提取规则中配置 overwrite_empty=true。
+            if val is None and not bool(rule.get("overwrite_empty")):
+                LOGGER.warning(
+                    "HTTP extract skipped empty value: name=%s source=%s status=%s",
+                    name,
+                    rule.get("jsonpath") or rule.get("path") or src,
+                    status_code,
+                )
+                continue
 
             extracted[name] = val
             ctx.set_var(name, val)
@@ -349,6 +509,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         """执行所有断言，收集全部失败后统一报告。"""
         passed: list[str] = []
         failures: list[str] = []
+        results: list[dict[str, Any]] = []
         for item in asserts or []:
             if not isinstance(item, dict):
                 continue
@@ -356,7 +517,17 @@ class HttpRequestStepRunner(BaseStepRunner):
             target = item.get("target") or ""
             expected = self._resolve_value(item.get("expected"), ctx)
 
-            actual = self._resolve_assertion_actual(target, response_body, status_code)
+            # 归一化"非空/为空"哨兵：AI / 历史用例常生成 {"$.x": "not_empty"}，
+            # 被映射成 type=jsonpath/equal + expected="not_empty" 字面量，导致非空值
+            # 反而判不相等而失败。这里把哨兵转成对应操作符，按语义判断。
+            if isinstance(expected, str):
+                _ev = expected.strip().lower()
+                if _ev in _NOT_EMPTY_SENTINELS:
+                    t, expected = "is_not_null", None
+                elif _ev in _IS_EMPTY_SENTINELS:
+                    t, expected = "is_null", None
+
+            actual = self._resolve_assertion_actual(target, response_body, status_code, ctx)
 
             try:
                 if t == "equal":
@@ -382,30 +553,52 @@ class HttpRequestStepRunner(BaseStepRunner):
                 elif t == "is_null":
                     assert actual is None, f"[is_null] {target}: {actual!r} is not None"
                 elif t == "is_not_null":
-                    assert actual is not None, f"[is_not_null] {target}: None"
+                    assert actual not in (None, "", [], {}), f"[is_not_null] {target}: 空值 {actual!r}"
                 elif t == "raw":
                     assert actual == expected, f"[raw] {target}: {actual!r} != {expected!r}"
                 else:
                     failures.append(f"不支持的断言类型: {t!r}")
+                    results.append({
+                        "type": t,
+                        "target": target,
+                        "expected": expected,
+                        "actual": actual,
+                        "status": "failed",
+                        "error": f"不支持的断言类型: {t!r}",
+                    })
                     continue
 
                 passed.append(f"[{t}] {target} OK")
-                add_allure_step("Assertion", {"type": t, "target": target,
-                                              "expected": expected, "actual": actual,
-                                              "status": "passed"})
+                item_result = {
+                    "type": t,
+                    "target": target,
+                    "expected": expected,
+                    "actual": actual,
+                    "status": "passed",
+                }
+                results.append(item_result)
+                add_allure_step("Assertion", item_result)
 
             except AssertionError as e:
                 msg = str(e)
                 failures.append(msg)
-                add_allure_step("Assertion", {"type": t, "target": target,
-                                              "expected": expected, "actual": actual,
-                                              "status": "failed", "error": msg})
+                item_result = {
+                    "type": t,
+                    "target": target,
+                    "expected": expected,
+                    "actual": actual,
+                    "status": "failed",
+                    "error": msg,
+                }
+                results.append(item_result)
+                add_allure_step("Assertion", item_result)
 
         if failures:
+            ctx.record("assertion_results", results)
             add_allure_step("断言结果", {
                 "通过": f"{len(passed)} 条",
                 "失败": f"{len(failures)} 条",
-                "详情": failures,
+                "详情": results,
             })
             raise AssertionError(
                 f"断言失败 {len(failures)}/{len(passed) + len(failures)} 条:\n"
@@ -413,17 +606,29 @@ class HttpRequestStepRunner(BaseStepRunner):
             )
 
         if passed:
+            ctx.record("assertion_results", results)
             LOGGER.info("断言全部通过 %s 条", len(passed))
-            add_allure_step("断言结果", {"通过": f"{len(passed)} 条", "状态": "全部通过"})
+            add_allure_step("断言结果", {"通过": f"{len(passed)} 条", "状态": "全部通过", "详情": results})
 
-    @staticmethod
-    def _resolve_assertion_actual(target: str, body: Any, status_code: int) -> Any:
+    def _resolve_assertion_actual(
+        self,
+        target: Any,
+        body: Any,
+        status_code: int,
+        ctx: ExecutionContext,
+    ) -> Any:
         """把 target 字段解析成"实际值"。约定：
             - 'status_code' → HTTP status
             - 'body_text' → 响应体字符串
+            - 以 'sql:' 开头 → 查 target_db，返回第一行/单值
             - 以 '$' 开头 → 把 target 当 jsonpath
             - 其他 → 直接当 body 的顶层键取（body.get(target)）
         """
+        if isinstance(target, str):
+            if target.startswith("sql:"):
+                return self._resolve_value(target, ctx)
+            target = self._resolve_value(target, ctx)
+
         if target == "status_code":
             return status_code
         if target == "body_text":
@@ -433,3 +638,77 @@ class HttpRequestStepRunner(BaseStepRunner):
         if isinstance(body, dict):
             return body.get(target)
         return None
+
+    def _resolve_extract_expr(self, expr: Any, ctx: ExecutionContext) -> Any:
+        if not isinstance(expr, str):
+            return expr
+        if self._is_value_expression(expr):
+            return self._resolve_value(expr, ctx)
+        return self._resolve_value(expr, ctx)
+
+    @staticmethod
+    def _is_value_expression(expr: Any) -> bool:
+        return isinstance(expr, str) and expr.strip().startswith(("function:", "sql:"))
+
+    def _apply_sql_query(self, raw_sql: Any, ctx: ExecutionContext) -> None:
+        if raw_sql is None or str(raw_sql).strip() == "":
+            return
+
+        sql_text = self._resolve_sql_text(raw_sql, ctx)
+        statements = [s.strip() for s in sql_text.split(";") if s.strip()]
+        if not statements:
+            return
+
+        conn = ctx.vars.get("_db")
+        if conn is None:
+            LOGGER.warning("HTTP sql_query 未执行：未注入 target DB（ctx._db 为空）")
+            return
+
+        results = []
+        for index, stmt in enumerate(statements, start=1):
+            rows = self._query_sql(conn, stmt)
+            first = rows[0] if rows else None
+            results.append(first)
+            ctx.set_var(f"sql_query_results_{index}", first)
+            try:
+                self.processor.extra_pool[f"sql_query_results_{index}"] = first
+            except Exception:  # noqa: BLE001
+                pass
+
+        ctx.set_var("sql_query_results", results)
+        try:
+            self.processor.extra_pool["sql_query_results"] = results
+        except Exception:  # noqa: BLE001
+            pass
+        add_allure_step("SQL Query", {"sql": sql_text, "results": results})
+
+    def _resolve_sql_text(self, raw_sql: Any, ctx: ExecutionContext) -> str:
+        if isinstance(raw_sql, str) and raw_sql.strip().startswith("function:"):
+            return str(self._resolve_value(raw_sql, ctx) or "")
+
+        pool = self._merged_pool(ctx)
+        sql_text = rep_expr(str(raw_sql), pool)
+        leftovers = re.findall(r"\$\{[^}\n]+\}", sql_text)
+        if leftovers:
+            raise ValueError(
+                "SQL 校验存在未解析变量："
+                f"{', '.join(leftovers)}。请确认变量已在环境变量、用例变量或前序提取中写入。"
+            )
+        if sql_text.strip().startswith("sql:"):
+            sql_text = sql_text.strip()[4:].strip()
+        return sql_text
+
+    @staticmethod
+    def _query_sql(conn: Any, stmt: str) -> list[Any]:
+        sql_handler = getattr(conn, "sql", None)
+        if sql_handler is not None and hasattr(sql_handler, "query"):
+            return sql_handler.query(stmt)
+        if hasattr(conn, "query"):
+            return conn.query(stmt)
+        if sql_handler is not None and hasattr(sql_handler, "fetchone"):
+            value = sql_handler.fetchone(stmt)
+            return [] if value is None else [value]
+        if hasattr(conn, "fetchone"):
+            value = conn.fetchone(stmt)
+            return [] if value is None else [value]
+        raise RuntimeError(f"注入的 DB 连接不支持 query/fetchone：{type(conn).__name__}")

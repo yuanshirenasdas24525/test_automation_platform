@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -73,6 +74,7 @@ from server.services.edit_history_service import (
 
 # 可选当前用户：带了有效 token 就解出 User，否则 None（不强制登录，记录 operator 用）
 OptionalUserDep = Annotated[Optional[User], Depends(_get_optional_user)]
+logger = logging.getLogger(__name__)
 
 
 def _operator_name(user: Optional[User]) -> Optional[str]:
@@ -272,9 +274,29 @@ _API_SPEC_EXTS = {".json", ".yaml", ".yml"}
 _DOC_EXTS = {".pdf", ".docx", ".doc", ".md", ".markdown", ".txt", ".text"} | _API_SPEC_EXTS
 
 
-def _summarize_openapi(data: dict) -> str:
+def _operation_ids_from_doc_url(url: str) -> set[str]:
+    """从 Swagger UI 锚点链接里提取 operationId。
+
+    例如 /docs#/users/create_user_api_users_post 中真正有用的是最后一段
+    create_user_api_users_post；浏览器不会把 # 后内容发给服务端，所以这里必须
+    在后端请求前先从原始输入里留住它。
+    """
+    from urllib.parse import unquote, urlsplit
+
+    fragment = unquote(urlsplit(url or "").fragment or "").strip("/")
+    if not fragment:
+        return set()
+    parts = [p for p in fragment.split("/") if p]
+    if not parts:
+        return set()
+    op_id = parts[-1].strip()
+    return {op_id} if op_id else set()
+
+
+def _summarize_openapi(data: dict, operation_ids: set[str] | None = None) -> str:
     """OpenAPI/Swagger → 人读接口清单。"""
     lines = ["# OpenAPI/Swagger 接口清单"]
+    wanted = {x for x in (operation_ids or set()) if x}
     paths = data.get("paths") or {}
     for path, methods in list(paths.items())[:200]:
         if not isinstance(methods, dict):
@@ -283,6 +305,8 @@ def _summarize_openapi(data: dict) -> str:
             if method.lower() not in ("get", "post", "put", "delete", "patch", "head", "options"):
                 continue
             op = op if isinstance(op, dict) else {}
+            if wanted and str(op.get("operationId") or "") not in wanted:
+                continue
             summary = op.get("summary") or op.get("operationId") or ""
             pdesc = []
             for p in op.get("parameters") or []:
@@ -301,6 +325,8 @@ def _summarize_openapi(data: dict) -> str:
             if resps:
                 line += f"；响应码: {resps}"
             lines.append(line)
+    if wanted and len(lines) == 1:
+        lines.append(f"（未在 OpenAPI paths 中找到 operationId：{', '.join(sorted(wanted))}）")
     return "\n".join(lines[:400])
 
 
@@ -332,12 +358,12 @@ def _summarize_postman(data: dict) -> str:
     return "\n".join(lines[:400])
 
 
-def _api_text_from_obj(data) -> str:
+def _api_text_from_obj(data, operation_ids: set[str] | None = None) -> str:
     """已解析的 OpenAPI/Postman/任意结构 → 人读接口清单文本。"""
     if not isinstance(data, dict):
         return json.dumps(data, ensure_ascii=False)[:8000] if data is not None else ""
     if "openapi" in data or "swagger" in data or "paths" in data:
-        return _summarize_openapi(data)
+        return _summarize_openapi(data, operation_ids=operation_ids)
     if "item" in data:
         return _summarize_postman(data)
     return json.dumps(data, ensure_ascii=False)[:8000]
@@ -385,11 +411,12 @@ def _discover_spec_url(html: str, base: str) -> Optional[str]:
     return None
 
 
-def _fetch_doc_url(url: str, _depth: int = 0) -> str:
+def _fetch_doc_url(url: str, _depth: int = 0, operation_ids: set[str] | None = None) -> str:
     """拉取接口文档链接 → 接口清单/正文文字。支持规范文件直链、Swagger UI、普通文档页。"""
     import requests  # 已在 requirements
 
     url = (url or "").strip()
+    operation_ids = set(operation_ids or set()) | _operation_ids_from_doc_url(url)
     if not url.lower().startswith(("http://", "https://")):
         return f"（不是合法链接：{url}）"
     try:
@@ -404,49 +431,167 @@ def _fetch_doc_url(url: str, _depth: int = 0) -> str:
 
     if "json" in ctype or text.lstrip().startswith(("{", "[")):
         try:
-            return _api_text_from_obj(json.loads(text))
+            return _api_text_from_obj(json.loads(text), operation_ids=operation_ids)
         except Exception:
             pass
     if "yaml" in ctype or bare.endswith((".yaml", ".yml")):
         try:
             import yaml
 
-            return _api_text_from_obj(yaml.safe_load(text))
+            return _api_text_from_obj(yaml.safe_load(text), operation_ids=operation_ids)
         except Exception:
             pass
     # HTML：先找规范地址，找到就拉它（最多再下钻一层）
     if _depth < 1:
         spec_url = _discover_spec_url(text, url)
         if spec_url and spec_url != url:
-            return _fetch_doc_url(spec_url, _depth + 1)
+            return _fetch_doc_url(spec_url, _depth + 1, operation_ids=operation_ids)
     return _html_to_text(text)[:8000]
 
 
+def _salvage_json_objects(text: str) -> list | None:
+    """从可能被**截断**的文本里抢救出数组内所有「完整的」对象。
+
+    LLM 输出超过 max_tokens 被截断时，整段 JSON 缺尾 `]`、最后一个对象残缺，
+    直接 json.loads 必失败。这里逐字符扫描，把每个配平的顶层 `{...}` 单独解析出来，
+    丢掉末尾残缺的那个——能把"本来要 502 重试"的批次救回大部分用例。
+    """
+    i = text.find("[")
+    if i < 0:
+        return None
+    objs: list = []
+    depth = 0
+    in_str = False
+    esc = False
+    start = None
+    for k in range(i + 1, len(text)):
+        ch = text[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = k
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    try:
+                        objs.append(json.loads(text[start : k + 1]))
+                    except Exception:
+                        pass
+                    start = None
+    return objs or None
+
+
 def _extract_json_list(raw: str):
-    """从 LLM 输出里抽 JSON 数组：```json``` 围栏 / 第一个 [...] / 整段直接 loads。"""
+    """从 LLM 输出里抽 JSON 数组：```json``` 围栏 / 第一个 [...] / 整段直接 loads；
+    全失败时按"截断容错"抢救已完整的对象。"""
     if not raw:
         return None
+
+    def as_list(obj: Any):
+        if isinstance(obj, list):
+            return obj
+        if isinstance(obj, dict):
+            for key in ("cases", "test_cases", "items", "data"):
+                val = obj.get(key)
+                if isinstance(val, list):
+                    return val
+            if obj.get("name"):
+                return [obj]
+        return None
+
     m = re.search(r"```json\s*(.+?)\s*```", raw, re.S)
     if m:
         try:
-            return json.loads(m.group(1))
+            parsed = as_list(json.loads(m.group(1)))
+            if parsed is not None:
+                return parsed
         except Exception:
             pass
     start, end = raw.find("["), raw.rfind("]")
     if 0 <= start < end:
         try:
-            return json.loads(raw[start : end + 1])
+            parsed = as_list(json.loads(raw[start : end + 1]))
+            if parsed is not None:
+                return parsed
         except Exception:
             pass
     try:
-        return json.loads(raw)
+        parsed = as_list(json.loads(raw))
+        if parsed is not None:
+            return parsed
     except Exception:
-        return None
+        pass
+    # 兜底：输出被截断 / 含少量噪声时，抢救已完整的用例对象
+    salvaged = _salvage_json_objects(raw)
+    if salvaged:
+        logger.warning(
+            "ai_generate_batch 输出疑似被截断，已抢救 %d 条完整用例（原文 %d 字符）",
+            len(salvaged), len(raw),
+        )
+    return salvaged
+
+
+_ACCOUNT_PATH_HINTS = ("user", "register", "signup", "sign_up", "account", "member", "regist")
+_ACCOUNT_NAME_HINTS = ("注册", "创建用户", "新建用户", "建账号", "创建账号", "添加用户", "register", "signup")
+
+
+def _account_setup_endpoints(db, project_id: int) -> str:
+    """挖掘本项目里"建账号/注册"类接口（POST），供「前置链」跨模块建一次性测试账号用。
+
+    来源：项目下已有 api 用例的 http_request 步骤里，path 像 /users /register 之类、
+    或用例名含"注册/创建用户"的 POST 接口。没有就返回空串。
+    """
+    cases = (
+        db.session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .join(Module, Module.id == TestCase.module_id)
+        .filter(Module.project_id == project_id, TestCase.case_type == CASE_TYPE_API)
+        .all()
+    )
+    found: dict[tuple[str, str], list[str]] = {}
+    for c in cases:
+        cname = (c.name or "").lower()
+        for s in (c.steps or []):
+            if s.step_type != "http_request" or not isinstance(s.config, dict):
+                continue
+            method = str(s.config.get("method") or "").upper()
+            path = str(s.config.get("path") or "")
+            if method != "POST" or not path:
+                continue
+            lp = path.lower()
+            if not (any(h in lp for h in _ACCOUNT_PATH_HINTS) or any(h in cname for h in _ACCOUNT_NAME_HINTS)):
+                continue
+            params = s.config.get("params")
+            keys = sorted(params.keys()) if isinstance(params, dict) else []
+            found.setdefault((method, path), keys)
+    if not found:
+        return ""
+    lines = [
+        f"- {m} {p}（请求字段：{', '.join(ks) if ks else '见文档'}）"
+        for (m, p), ks in list(found.items())[:6]
+    ]
+    return (
+        "【可用的『建账号/注册』接口】（**仅『前置链』用例可跨模块使用**，用它建一个 "
+        "function:unique 的一次性测试账号、密码写固定字面量，再登录该账号拿 token）：\n"
+        + "\n".join(lines)
+    )
 
 
 def _build_cross_module_context(db, module: "Module") -> str:
     """跨模块上下文：① 项目概览 + 与本模块相关的模块关联关系（来自 project.ai_overview，
-    若已生成）；② 同项目其它模块 + 各自最多 8 个功能用例名。给 AI 做跨模块联动设计。"""
+    若已生成）；② 同项目其它模块 + 各自最多 8 个功能用例名；③ 建账号接口（供前置链跨模块）。
+    给 AI 做跨模块联动设计。"""
     parts: list[str] = []
 
     project = db.session.query(Project).filter(Project.id == module.project_id).first()
@@ -486,6 +631,10 @@ def _build_cross_module_context(db, module: "Module") -> str:
             names_str = "、".join(n[0] for n in names) if names else "（暂无用例）"
             lines.append(f"- 模块「{m.name}」：{names_str}")
         parts.append("【其它模块现有用例】（参考，避免重复、便于联动）：\n" + "\n".join(lines))
+
+    account_block = _account_setup_endpoints(db, module.project_id)
+    if account_block:
+        parts.append(account_block)
 
     return "\n\n".join(parts) if parts else "（项目下暂无其它模块）"
 
@@ -587,8 +736,35 @@ def _existing_case_names(db, module_id: int, limit: int = 300, case_type: str = 
     return [r[0] for r in rows if r[0]]
 
 
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][\w.-]*)\}")
+_DATA_NS_PREFIX = "AUTO_TEST_"
+# 正向写入用例里、应走动态唯一函数的"会留库"字段
+_WRITE_DATA_KEYS = {
+    "username", "user_name", "account", "mobile", "phone", "tel",
+    "email", "nickname", "real_name", "name", "title", "order_no", "orderno",
+}
+# 逆向/异常类别：这些用例的数据就是要畸形，不做命名空间改写
+_NEGATIVE_CATS = ("参数校验", "边界", "鉴权", "越权", "安全", "响应校验")
+
+
+def _normalize_jsonpath(expr: Any) -> Any:
+    """提取/断言里 jsonpath 语法兜底：状态码关键字保持，其余确保 $ 开头。"""
+    if not isinstance(expr, str):
+        return expr
+    s = expr.strip()
+    if not s or s.lower() == "status_code":
+        return s
+    if s.startswith("$"):
+        return s
+    # 写成 data.token / .data.token 之类的，补成 $.data.token
+    return "$." + s.lstrip(".")
+
+
 def _shape_cases(parsed) -> list[dict]:
-    """把 LLM 解析出的 list 规整成 {name, preconditions[], steps[], expected[]}。"""
+    """把 LLM 解析出的 list 规整成 {name, preconditions[], steps[], expected[], ...}。
+
+    透传接口模式结构化字段（含场景多步 requests、清理 teardown、data_safety）。
+    """
     out: list[dict] = []
     if not isinstance(parsed, list):
         return out
@@ -613,8 +789,286 @@ def _shape_cases(parsed) -> list[dict]:
         for key in ("method", "path", "headers", "body", "extract", "assertion", "sql"):
             if key in it and it[key] not in (None, "", [], {}):
                 item[key] = it[key]
+        # 场景多步：requests 数组（每项一次接口调用）
+        if isinstance(it.get("requests"), list) and it["requests"]:
+            reqs = []
+            for r in it["requests"]:
+                if not isinstance(r, dict) or not r.get("path"):
+                    continue
+                rr = {
+                    k: r[k]
+                    for k in ("name", "method", "path", "headers", "body", "extract", "assertion", "sql")
+                    if r.get(k) not in (None, "", [], {})
+                }
+                if isinstance(rr.get("extract"), dict):
+                    rr["extract"] = {k: _normalize_jsonpath(v) for k, v in rr["extract"].items()}
+                if isinstance(rr.get("assertion"), dict):
+                    rr["assertion"] = {_normalize_jsonpath(k): v for k, v in rr["assertion"].items()}
+                reqs.append(rr)
+            if reqs:
+                item["requests"] = reqs
+        # 清理闭环：teardown_api（DELETE 调用数组）/ teardown_sql（删库兜底）
+        if isinstance(it.get("teardown_api"), list) and it["teardown_api"]:
+            item["teardown_api"] = [t for t in it["teardown_api"] if isinstance(t, dict) and t.get("path")]
+        if isinstance(it.get("teardown_sql"), str) and it["teardown_sql"].strip():
+            item["teardown_sql"] = it["teardown_sql"].strip()
+        # 数据安全说明
+        if isinstance(it.get("data_safety"), dict) and it["data_safety"]:
+            item["data_safety"] = it["data_safety"]
+        # jsonpath 兜底归一化
+        if isinstance(item.get("extract"), dict):
+            item["extract"] = {k: _normalize_jsonpath(v) for k, v in item["extract"].items()}
+        if isinstance(item.get("assertion"), dict):
+            item["assertion"] = {_normalize_jsonpath(k): v for k, v in item["assertion"].items()}
         out.append(item)
     return out
+
+
+def _case_requests(case: dict) -> list[dict]:
+    """统一取一条用例的所有请求：场景用例取 requests，单接口用例把顶层字段当一个请求。"""
+    if isinstance(case.get("requests"), list) and case["requests"]:
+        return case["requests"]
+    if case.get("path") or case.get("method"):
+        return [case]
+    return []
+
+
+def _produced_vars(case: dict) -> set[str]:
+    out: set[str] = set()
+    for req in _case_requests(case):
+        ex = req.get("extract")
+        if isinstance(ex, dict):
+            out |= {str(k) for k in ex if str(k).strip()}
+    return out
+
+
+def _referenced_vars(obj: Any) -> set[str]:
+    return set(_VAR_REF_RE.findall(json.dumps(obj, ensure_ascii=False, default=str)))
+
+
+def _is_negative_case(name: str) -> bool:
+    head = name[:10]
+    return any(cat in head for cat in _NEGATIVE_CATS)
+
+
+def _namespace_write_data(body: Any, path: str = "$") -> list[str]:
+    """把正向写入用例 body 里留库字段的写死字面量改成 function:unique。返回被改写的字段说明。"""
+    changed: list[str] = []
+    if isinstance(body, dict):
+        for key, val in list(body.items()):
+            if isinstance(val, (dict, list)):
+                changed.extend(_namespace_write_data(val, f"{path}.{key}"))
+                continue
+            if not isinstance(val, str):
+                continue
+            raw = val.strip()
+            if (
+                not raw
+                or raw.startswith("${")
+                or raw.startswith("function:")
+                or raw.startswith(_DATA_NS_PREFIX)
+                or raw.startswith("<TODO")
+            ):
+                continue
+            lk = key.lower()
+            if lk not in _WRITE_DATA_KEYS:
+                continue
+            if lk in {"username", "user_name", "account"}:
+                body[key] = "function:unique(AUTO_TEST_user)"
+            elif lk in {"mobile", "phone", "tel"}:
+                body[key] = "function:unique_mobile()"
+            elif lk == "email":
+                body[key] = "function:unique_email()"
+            else:
+                body[key] = f"function:unique(AUTO_TEST_{lk})"
+            changed.append(f"{key}->{body[key]}")
+    elif isinstance(body, list):
+        for i, child in enumerate(body):
+            changed.extend(_namespace_write_data(child, f"{path}[{i}]"))
+    return changed
+
+
+_FUNC_REF_RE = re.compile(r"function:([A-Za-z_]\w*)")
+_KNOWN_FUNCS_CACHE: set[str] | None = None
+
+
+def _known_function_names() -> set[str]:
+    global _KNOWN_FUNCS_CACHE
+    if _KNOWN_FUNCS_CACHE is None:
+        try:
+            import inspect
+            from utils.function_executor import function_name
+            _KNOWN_FUNCS_CACHE = {
+                n for n, f in function_name().items()
+                if inspect.isfunction(f) and not n.startswith("_")
+            }
+        except Exception:
+            _KNOWN_FUNCS_CACHE = set()
+    return _KNOWN_FUNCS_CACHE
+
+
+def _unknown_functions(case: dict) -> set[str]:
+    """找出用例里引用了但平台没注册的 function 名（AI 瞎编的）。"""
+    known = _known_function_names()
+    if not known:
+        return set()
+    text = json.dumps(_case_requests(case), ensure_ascii=False, default=str)
+    used = set(_FUNC_REF_RE.findall(text))
+    return {n for n in used if n not in known}
+
+
+def _is_login_path(path: str) -> bool:
+    lp = (path or "").lower()
+    return ("login" in lp or "signin" in lp or "sign_in" in lp or lp.endswith("/auth/token") or "/token" in lp) and "register" not in lp
+
+
+def _login_with_uncreated_unique(case: dict) -> bool:
+    """检测：用一个 function:unique 用户名直接登录（该账号没被创建过 → 必然 401）。"""
+    for req in _case_requests(case):
+        if not _is_login_path(str(req.get("path") or "")):
+            continue
+        body = req.get("body")
+        if not isinstance(body, dict):
+            continue
+        for key in ("username", "user_name", "account"):
+            val = body.get(key)
+            if isinstance(val, str) and val.strip().startswith("function:unique"):
+                return True
+    return False
+
+
+def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_vars: set[str]) -> list[dict]:
+    """生成后校验 + 加固（问题5/6/7 + 数据治理#1）：
+      - 未解析 ${var}（无变量池来源、无前置用例 extract 产出）→ 记 warnings 引导用户/下一轮 AI。
+      - 缺断言 → 记 warnings。
+      - 正向写入用例的留库字段是写死字面量 → 自动改成 function:unique 命名空间。
+    `carried_vars`：跨批次带过来的、前面批次已产出的变量名。
+    """
+    produced_so_far = set(var_pool_keys) | set(carried_vars)
+    for case in cases:
+        warnings: list[str] = []
+        negative = _is_negative_case(case.get("name") or "")
+        reqs = _case_requests(case)
+
+        # 0) 空壳用例兜底：没有任何可执行请求（常见于并发/性能/压测类——平台顺序执行
+        #    引擎无法表达，AI 往往只给了名字、结构化字段全空）。打警告，不让它静默空白。
+        if not reqs:
+            warnings.append(
+                "该用例没有可执行的请求（method/path 为空）。若是并发/性能/压测类需求，"
+                "本平台顺序执行无法表达——建议改成「连续多次重复提交」的顺序多步用例，或用专门的压测工具；"
+                "否则请手工补全请求或删除本用例。"
+            )
+            case["warnings"] = warnings
+            continue
+
+        # 1) 命名空间加固（仅正向写入用例）
+        if not negative:
+            for req in reqs:
+                if str(req.get("method") or "").upper() not in ("POST", "PUT", "PATCH"):
+                    continue
+                # 登录/认证接口绝不改写用户名：登录是"认证已存在账号"，把用户名换成
+                # function:unique 随机值会变成"登录一个不存在的账号"→ 必然 401。
+                if _is_login_path(str(req.get("path") or "")):
+                    continue
+                rewritten = _namespace_write_data(req.get("body"))
+                if rewritten:
+                    ds = case.setdefault("data_safety", {})
+                    ds.setdefault("rewritten_fields", []).extend(rewritten)
+                    ds["cleanup_required"] = True
+
+        # 1.4) 引用了不存在的动态函数（AI 瞎编函数名）→ 执行必报错
+        bad_funcs = _unknown_functions(case)
+        if bad_funcs:
+            warnings.append(
+                f"用到了平台不存在的动态函数：{', '.join(sorted('function:' + n for n in bad_funcs))}。"
+                "动态值只能用已注册的函数（如 function:unique / unique_mobile / unique_email），不要自己造名字。"
+            )
+
+        # 1.5) 用没创建过的 function:unique 账号登录 → 必然 401
+        if _login_with_uncreated_unique(case):
+            warnings.append(
+                "登录步骤用了 function:unique 用户名，但该账号没有先被创建——登录会 401。"
+                "请改成：先调创建账号接口建号、提取真实用户名再登录；或直接用变量池账号 ${my_account} 登录。"
+            )
+
+        # 2) 断言完整性
+        if reqs and not any(isinstance(r.get("assertion"), dict) and r["assertion"] for r in reqs):
+            warnings.append("缺少断言：至少补一条状态码或业务码断言")
+
+        # 3) 变量解析校验（按用例数组顺序累积）
+        refs = _referenced_vars({"reqs": reqs})
+        producible = produced_so_far | _produced_vars(case)
+        for var in sorted(refs):
+            base = var.split(".")[0]
+            if base not in producible:
+                warnings.append(
+                    f"变量 ${{{var}}} 找不到来源：请补充能 extract 出它的前置用例，或确认变量池里是否有该变量"
+                )
+
+        produced_so_far |= _produced_vars(case)
+        if warnings:
+            case["warnings"] = warnings
+    return cases
+
+
+def _request_signature(req: dict) -> str:
+    """请求签名：用于识别“同一个请求只拆了响应字段断言”的重复用例。"""
+    method = str(req.get("method") or "").upper()
+    path = str(req.get("path") or "")
+    headers = req.get("headers") or {}
+    body = req.get("body") or {}
+    return json.dumps(
+        {"method": method, "path": path, "headers": headers, "body": body},
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+
+
+def _is_response_check_case(case: dict) -> bool:
+    name = str(case.get("name") or "")
+    return "【响应校验】" in name or name.startswith("响应校验")
+
+
+def _merge_response_check_cases(cases: list[dict]) -> list[dict]:
+    """把同请求的响应校验用例合并进主流程用例，避免生成重复 API 用例。
+
+    典型重复：
+      - 【正常】登录成功（已断言 200/token/user）
+      - 【响应校验】登录成功返回 token 字段非空
+      - 【响应校验】登录成功返回用户角色信息
+
+    后两条应成为第一条的 assertion/extract，而不是独立用例。
+    """
+    merged: list[dict] = []
+    by_sig: dict[str, dict] = {}
+
+    for case in cases:
+        reqs = _case_requests(case)
+        sig = _request_signature(reqs[0]) if len(reqs) == 1 else ""
+        target = by_sig.get(sig) if sig else None
+        if sig and target is not None and _is_response_check_case(case):
+            if isinstance(case.get("assertion"), dict):
+                base_assertion = target.setdefault("assertion", {})
+                if isinstance(base_assertion, dict):
+                    base_assertion.update(case["assertion"])
+            if isinstance(case.get("extract"), dict):
+                base_extract = target.setdefault("extract", {})
+                if isinstance(base_extract, dict):
+                    base_extract.update(case["extract"])
+            extras = [x for x in (case.get("expected") or []) if x not in (target.get("expected") or [])]
+            if extras:
+                target["expected"] = [*(target.get("expected") or []), *extras]
+            warnings = target.setdefault("warnings", [])
+            if isinstance(warnings, list):
+                warnings.append(f"已合并重复响应校验用例：{case.get('name')}")
+            continue
+
+        merged.append(case)
+        if sig and not _is_response_check_case(case):
+            by_sig.setdefault(sig, case)
+
+    return merged
 
 
 _COVERAGE_TEXT = {
@@ -636,14 +1090,86 @@ _COVERAGE_TEXT = {
 穷尽覆盖（最细，宁多勿漏）：
 - 对每个功能/接口、每个参数、每个状态、每个角色逐维度展开。
 - 每个必填字段分别生成：缺失、为空、null、类型错误、非法字符；有长度/数值/枚举范围的字段分别生成最小、最大、刚好、超界。
-- 分页/排序/过滤、幂等、重复提交、并发、安全注入、越权、状态流转、数据链路、查库校验都要拆成独立测试点。
-- 可以生成几十到上百条，优先完整性，不要为了简洁合并场景。
+- 分页/排序/过滤、幂等、重复提交、安全注入、越权、状态流转、数据链路、查库校验都要拆成独立测试点。
+- 响应状态码、关键响应字段、错误响应结构、列表/分页结构、敏感字段脱敏可拆成独立响应校验点。
+- 端到端场景要保留，同时允许把关键中间状态、失败分支、回滚/清理链路拆成多个场景点。
+- 文档缺少明确边界时，可以补充探索性边界/鲁棒性测试点，但不要虚构不存在的业务规则。
+- 数量由「接口 × 参数 × 维度」的覆盖矩阵决定：先建矩阵再逐项输出，同样的输入重复生成时数量必须基本一致，不要为了简洁合并场景，也不要凭感觉多写或少写。
 """.strip(),
 }
 
 
 def _coverage_text(c: str) -> str:
     return _COVERAGE_TEXT.get((c or "standard").strip().lower(), _COVERAGE_TEXT["standard"])
+
+
+_ALL_DIMENSIONS = ("正常", "参数校验", "边界", "鉴权", "越权", "响应校验", "安全", "场景", "关联")
+
+
+def _dimensions_block(raw: str) -> str:
+    """把用户勾选的维度清单渲染成 prompt 文本；留空=不限制（按覆盖力度自动取舍）。"""
+    picked = [d.strip() for d in re.split(r"[\s,，;；]+", raw or "") if d.strip() and d.strip() in _ALL_DIMENSIONS]
+    if not picked:
+        return "（未指定，按覆盖力度自动取舍全部维度）"
+    return "只规划以下维度的测试点，其它维度不要生成：" + "、".join(picked)
+
+
+def _interface_outline_contract(requirement_text: str, coverage: str, dimensions: str = "") -> tuple[str, int, int]:
+    """给接口大纲一个可复算的数量预算，避免穷尽模式完全交给模型自由发挥。
+
+    注意：数量预算只有在**确实从文档里识别出接口**时才下发。识别失败时（人写的
+    非结构化文档、正则没匹配到），如果仍按 endpoint_count=1 给出 9~13 条这种小预算，
+    会把大文档的输出错误封顶——比不给预算更糟。此时退化为"按矩阵展开"的定性合同。
+    """
+    # 兼容两种形态：`- GET /api/users`（OpenAPI 摘要）和 `- POST https://host/api/login`（Postman raw url）
+    endpoints = re.findall(
+        r"(?im)^\s*[-*]?\s*(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?:https?://[^\s/；,，]+)?(/[^\s；,，?#]*)",
+        requirement_text or "",
+    )
+    unique_endpoints = {(m.upper(), p.rstrip("/") or "/") for m, p in endpoints}
+    if not unique_endpoints:
+        # 没识别出接口 → 不下发数字预算，只强调"矩阵展开、不许偷懒合并"。
+        text = (
+            "\n\n# 稳定覆盖要求（必须遵守）\n"
+            "- 先从文档里列出全部接口和参数，建立「接口 × 维度」覆盖矩阵，再逐项输出 points。\n"
+            "- 同样的输入重复生成时，测试点数量必须基本一致（由矩阵决定，而不是随机取舍）。\n"
+            "- 不得因为输出太长而提前停在主流程；不得把不同字段/不同维度的点合并成一条。"
+        )
+        return text, 0, 0
+    endpoint_count = len(unique_endpoints)
+
+    param_names: set[str] = set()
+    for line in (requirement_text or "").splitlines():
+        if not re.search(r"(?i)\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\b", line):
+            continue
+        tail = line.split("参数", 1)[-1] if "参数" in line else line
+        for name in re.findall(r"([A-Za-z_][\w.-]*)\s*\(", tail):
+            if name.lower() not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+                param_names.add(name)
+    param_count = len(param_names)
+
+    picked = [d.strip() for d in re.split(r"[\s,，;；]+", dimensions or "") if d.strip() in _ALL_DIMENSIONS]
+    dim_count = len(picked) if picked else len(_ALL_DIMENSIONS)
+    level = (coverage or "standard").strip().lower()
+    if level == "exhaustive":
+        target_min = endpoint_count * min(dim_count, 9) + param_count * 4
+        target_max = endpoint_count * min(dim_count + 4, 13) + param_count * 6
+    elif level == "full":
+        target_min = endpoint_count * min(dim_count, 6) + param_count * 2
+        target_max = endpoint_count * min(dim_count + 2, 8) + param_count * 3
+    else:
+        target_min = endpoint_count + max(2, min(endpoint_count * 3, param_count + endpoint_count * 2))
+        target_max = target_min + max(2, endpoint_count * 2)
+    target_min = max(3, min(target_min, 180))
+    target_max = max(target_min, min(target_max, 240))
+    text = (
+        "\n\n# 稳定覆盖预算（必须遵守）\n"
+        f"- 识别到接口数约 {endpoint_count} 个、参数数约 {param_count} 个。\n"
+        f"- 本次应输出 {target_min}~{target_max} 个测试点；同一输入重复生成时数量必须落在这个区间，"
+        "不要一次 10 条、一次 100 多条这种失控波动。\n"
+        "- 先按接口和参数建立覆盖矩阵，再逐项输出 points；不得因为输出太长而提前停在主流程。"
+    )
+    return text, target_min, target_max
 
 
 def _resolve_model(db, model_name: str):
@@ -666,6 +1192,8 @@ def ai_generate_outline(
     mode: str = Form("functional"),
     coverage: str = Form("standard"),
     doc_urls: str = Form(""),
+    dimensions: str = Form(""),
+    setup_doc: str = Form(""),
     images: list[UploadFile] = File(default=[]),
     docs: list[UploadFile] = File(default=[]),
 ):
@@ -679,6 +1207,7 @@ def ai_generate_outline(
         _render_prompt,
         chat_markdown,
         chat_markdown_with_images,
+        model_task_options,
     )
 
     cfg = _resolve_model(db, model_name)
@@ -705,7 +1234,17 @@ def ai_generate_outline(
                 parts.append(f"## 接口文档（链接）：{u}\n{fetched}")
         if use_vision and image_paths:
             parts.append(f"（另附 {len(image_paths)} 张界面/原型截图，请结合图片内容规划测试点）")
+        if setup_doc.strip():
+            parts.append(
+                "## 账号准备/注册接口（供前置链跨模块建一次性测试账号用，请写进 digest）：\n"
+                + setup_doc.strip()[:2000]
+            )
         requirement_text = "\n\n".join(parts) or "（未提供需求文本，请基于模块名与下方跨模块信息合理推断）"
+        coverage_contract, target_min, target_max = (
+            _interface_outline_contract(requirement_text, coverage, dimensions)
+            if mode == "interface"
+            else ("", 0, 0)
+        )
 
         existing = _existing_case_names(
             db,
@@ -719,18 +1258,35 @@ def ai_generate_outline(
             "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
             "EXISTING_CASES": existing_block,
             "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if mode == "interface" else "",
-            "COVERAGE_LEVEL": _coverage_text(coverage),
+            "COVERAGE_LEVEL": _coverage_text(coverage) + coverage_contract,
+            "DIMENSIONS": _dimensions_block(dimensions),
         }
         template = _load_prompt(
             "interface_case_outline" if mode == "interface" else "functional_case_outline"
         )
         prompt = _render_prompt(template, placeholders)
+        call_options = model_task_options(cfg, "api_outline" if mode == "interface" else "functional_outline")
+        outline_system_prompt = (
+            "你是结构化 JSON 生成器。必须只输出一个合法 JSON 对象，"
+            "对象必须包含 digest 字符串和 points 数组。"
+            "不要输出 Markdown、解释、思考过程或代码块外文字。"
+        )
 
         try:
             if use_vision and image_paths:
                 raw, _tin, _tout = chat_markdown_with_images(prompt, image_paths, cfg, timeout=240)
             else:
-                raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+                raw, _tin, _tout = chat_markdown(
+                    prompt,
+                    cfg,
+                    timeout=call_options["timeout"],
+                    system_prompt=outline_system_prompt,
+                    enable_thinking=call_options["enable_thinking"],
+                    json_mode=call_options["json_mode"],
+                    max_tokens=call_options["max_tokens"],
+                    temperature=call_options["temperature"],
+                    reasoning_effort=call_options.get("reasoning_effort"),
+                )
         except Exception as e:  # noqa: BLE001
             raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
 
@@ -752,6 +1308,13 @@ def ai_generate_outline(
             except Exception:
                 obj = None
     if not isinstance(obj, dict):
+        logger.warning(
+            "ai_generate_outline parse failed module_id=%s mode=%s model=%s raw_prefix=%r",
+            module_id,
+            mode,
+            model_name,
+            (raw or "")[:1000],
+        )
         raise HTTPException(status_code=502, detail="大纲解析失败，请重试或更换模型")
 
     digest = str(obj.get("digest") or "").strip()
@@ -766,6 +1329,29 @@ def ai_generate_outline(
     if not points:
         raise HTTPException(status_code=502, detail="未规划出测试点，请补充需求或更换模型")
 
+    if mode == "interface" and target_min and len(points) < target_min:
+        gap_points = _run_outline_gap_ai(
+            db,
+            cfg,
+            module,
+            digest=digest,
+            existing_points=points,
+            mode=mode,
+            contract=f"当前只有 {len(points)} 个测试点，低于稳定覆盖预算下限 {target_min}。请只补缺口，补到 {target_min}~{target_max} 区间。",
+            requirement_text=requirement_text,
+        ) or []  # 自动补齐失败不阻断首轮大纲
+        have = {_norm_name(p["title"]) for p in points}
+        for p in gap_points:
+            key = _norm_name(p.get("title") or "")
+            if key and key not in have:
+                have.add(key)
+                points.append(p)
+            if len(points) >= target_min:
+                break
+
+    # 注意：这里**不再**自动把规划出的测试点落库 —— 否则每点一次“生成大纲”
+    # 都会往大纲里灌一批还没有对应用例的 gap 点，积累成垃圾。大纲只保留“同步过的”
+    # 数据：由「刷新对齐」按真实用例建立/更新，或用户在生成用例后由关联落库。
     image_strategy = "vision" if use_vision else ("ocr" if has_images else "none")
     return {
         "status": "success",
@@ -778,46 +1364,95 @@ class BatchPoint(pydantic.BaseModel):
     category: str = ""
 
 
-class OutlineGapRequest(pydantic.BaseModel):
+# ---------------------------------------------------------------------------
+# 模块大纲：长期保存 + 刷新对齐（大纲 ↔ 当前用例）。设计见 docs/module_outline_design.md
+# ---------------------------------------------------------------------------
+@router.get("/module_outline")
+def get_module_outline(db: DBDep, module_id: int = Query(...)):
+    """读某模块的大纲（digest + 测试点 + 覆盖统计）。没有则返回 null。"""
+    from server.services.module_outline_service import get_outline
+
+    outline = get_outline(db.session, module_id)
+    return {"status": "success", "data": outline.to_dict() if outline else None}
+
+
+class OutlineAlignRequest(pydantic.BaseModel):
+    module_id: int
+    mode: str = "functional"
+
+
+@router.post("/module_outline/align_preview")
+def module_outline_align_preview(payload: OutlineAlignRequest, db: DBDep):
+    """算大纲 ↔ 当前用例的 diff（不落库），给前端预览。"""
+    from server.services.module_outline_service import compute_align_changes
+
+    data = compute_align_changes(db.session, payload.module_id, payload.mode)
+    return {"status": "success", "data": data}
+
+
+@router.post("/module_outline/apply")
+def module_outline_apply(payload: OutlineAlignRequest, db: DBDep):
+    """按最新用例重算并应用对齐（幂等，服务端重算不信任陈旧 diff）。"""
+    from server.services.module_outline_service import apply_align
+
+    data = apply_align(db.session, payload.module_id, payload.mode)
+    return {"status": "success", "data": data, "message": "大纲已对齐"}
+
+
+@router.post("/module_outline/purge_gaps")
+def module_outline_purge_gaps(payload: OutlineAlignRequest, db: DBDep):
+    """清理没有关联用例的测试点（缺口垃圾），只保留同步自真实用例的点。"""
+    from server.services.module_outline_service import purge_unlinked_points
+
+    data = purge_unlinked_points(db.session, payload.module_id)
+    return {"status": "success", "data": data, "message": f"已清理 {data['removed']} 个未覆盖测试点"}
+
+
+class OutlineReplanRequest(pydantic.BaseModel):
     module_id: int
     model_name: str
-    mode: str = "functional"
-    digest: str = ""
-    points: list[BatchPoint] = []
+    mode: str = "interface"
+    change_text: str = ""          # 本次新增 / 变更的需求（增量模式只填 delta）
+    incremental: bool = True       # True=在现有大纲上增量；False=按 change_text 全量重规划
 
 
-@router.post("/ai_outline_gaps")
-def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
-    """查漏补缺：给已有大纲找遗漏的测试点，返回补充点（已去重已有点/已有用例）。"""
-    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+def _run_outline_ai(db, module, mode: str, requirement_text: str, model_name: str, coverage: str = "full"):
+    """复用 outline prompt 跑一次 AI，返回 (digest, points)。供增量重规划用。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
 
-    cfg = _resolve_model(db, payload.model_name)
-    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
-    if module is None:
-        raise HTTPException(status_code=404, detail="模块不存在")
-
-    existing_points = (
-        "\n".join(f"- [{p.category or '未分类'}] {p.title}" for p in payload.points)
-        if payload.points
-        else "（暂无）"
-    )
-    existing = _existing_case_names(
-        db,
-        payload.module_id,
-        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
-    )
+    cfg = _resolve_model(db, model_name)
+    call_options = model_task_options(cfg, "api_outline" if mode == "interface" else "functional_outline")
     placeholders = {
-        "DIGEST": payload.digest.strip() or "（无摘要，请按已规划测试点合理推断）",
+        "MODULE_NAME": module.name,
+        "REQUIREMENT_TEXT": requirement_text,
         "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
-        "EXISTING_POINTS": existing_points,
-        "EXISTING_CASES": "、".join(existing) if existing else "（无）",
+        "EXISTING_CASES": "、".join(
+            _existing_case_names(
+                db, module.id,
+                case_type=CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL,
+            )
+        ) or "（本模块暂无已有用例）",
+        "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if mode == "interface" else "",
+        "COVERAGE_LEVEL": _coverage_text(coverage),
+        "DIMENSIONS": "",
     }
-    template = _load_prompt("outline_gaps")
+    template = _load_prompt("interface_case_outline" if mode == "interface" else "functional_case_outline")
     prompt = _render_prompt(template, placeholders)
-    try:
-        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+    raw, _tin, _tout = chat_markdown(
+        prompt,
+        cfg,
+        timeout=call_options["timeout"],
+        system_prompt=(
+            "你是结构化 JSON 生成器。必须只输出一个合法 JSON 对象，"
+            "对象必须包含 digest 字符串和 points 数组。"
+            "不要输出 Markdown、解释、思考过程或代码块外文字。"
+        ),
+        enable_thinking=call_options["enable_thinking"],
+        json_mode=call_options["json_mode"],
+        max_tokens=call_options["max_tokens"],
+        temperature=call_options["temperature"],
+        reasoning_effort=call_options.get("reasoning_effort"),
+    )
 
     obj = None
     m = re.search(r"```json\s*(.+?)\s*```", raw, re.S)
@@ -831,17 +1466,234 @@ def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
         s, e = raw.find("{"), raw.rfind("}")
         if 0 <= s < e:
             try:
-                obj = json.loads(raw[s : e + 1])
+                obj = json.loads(raw[s:e + 1])
             except Exception:
                 obj = None
-    have = {_norm_name(p.title) for p in payload.points} | {_norm_name(n) for n in existing}
+    if not isinstance(obj, dict):
+        logger.warning(
+            "module_outline replan parse failed module_id=%s mode=%s model=%s raw_prefix=%r",
+            module.id,
+            mode,
+            model_name,
+            (raw or "")[:1000],
+        )
+        raise HTTPException(status_code=502, detail="大纲解析失败，请重试或更换模型")
+    digest = str(obj.get("digest") or "").strip()
     points = []
-    for p in (obj or {}).get("points") or []:
+    for p in obj.get("points") or []:
+        if isinstance(p, dict) and str(p.get("title") or "").strip():
+            points.append({"title": str(p["title"]).strip()[:200], "category": str(p.get("category") or "").strip()})
+        elif isinstance(p, str) and p.strip():
+            points.append({"title": p.strip()[:200], "category": ""})
+    return digest, points
+
+
+@router.post("/module_outline/replan_preview")
+def module_outline_replan_preview(payload: OutlineReplanRequest, db: DBDep):
+    """AI 增量重规划预览：在现有大纲上，针对本次变更产出新测试点的 diff（不落库）。"""
+    from server.services.module_outline_service import get_outline, diff_ai_points
+
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    # 增量模式：把现有测试点作为上下文，让 AI 只针对变更补新点、不重复已有。
+    outline = get_outline(db.session, payload.module_id)
+    parts = []
+    if payload.change_text.strip():
+        parts.append("## 本次新增 / 变更的需求\n" + payload.change_text.strip())
+    if payload.incremental and outline and outline.points:
+        existing_block = "\n".join(
+            f"- {p.title}" + (f"（{p.category}）" if p.category else "")
+            for p in outline.points
+        )
+        parts.append(
+            "## 该模块已有测试点（请勿重复；只针对上面的变更补充新测试点）：\n" + existing_block
+        )
+        if outline.digest:
+            parts.append("## 已有需求摘要 digest（供参考，保持连贯）：\n" + outline.digest)
+    requirement_text = "\n\n".join(parts) or "（未提供变更说明，请基于模块名与跨模块信息推断需要补充的测试点）"
+
+    digest, points = _run_outline_ai(db, module, payload.mode, requirement_text, payload.model_name)
+    diff = diff_ai_points(db.session, payload.module_id, points)
+    diff["digest"] = digest
+    diff["points"] = points  # 回传给 apply（避免再跑一次 AI）
+    return {"status": "success", "data": diff}
+
+
+class OutlineReplanApplyRequest(pydantic.BaseModel):
+    module_id: int
+    mode: str = "interface"
+    digest: str = ""
+    points: list[BatchPoint] = []
+
+
+@router.post("/module_outline/replan_apply")
+def module_outline_replan_apply(payload: OutlineReplanApplyRequest, db: DBDep):
+    """应用 AI 增量重规划：把预览产出的新测试点写入大纲（按标题去重，不清空已有）。"""
+    from server.services.module_outline_service import upsert_outline_from_ai
+
+    outline = upsert_outline_from_ai(
+        db.session,
+        module_id=payload.module_id,
+        mode=payload.mode,
+        digest=payload.digest,
+        points=[{"title": p.title, "category": p.category} for p in payload.points],
+    )
+    return {"status": "success", "data": outline.to_dict(), "message": "大纲已更新"}
+
+
+class OutlineGapRequest(pydantic.BaseModel):
+    module_id: int
+    model_name: str
+    mode: str = "functional"
+    digest: str = ""
+    points: list[BatchPoint] = []
+    # 原始需求/接口文档（生成大纲时用户填的 text）。查漏只靠 digest 会信息不对称：
+    # digest 是压缩摘要，字段级约束经常丢失，模型拿不到新材料自然"找不到漏"。
+    text: str = ""
+    # 接口文档链接，服务端按大纲同款逻辑拉取解析后注入
+    doc_urls: str = ""
+
+
+def _parse_outline_gap_response(raw: str) -> list[dict[str, str]]:
+    obj = None
+    m = re.search(r"```json\s*(.+?)\s*```", raw or "", re.S)
+    for cand in ([m.group(1)] if m else []) + [raw]:
+        try:
+            obj = json.loads(cand)
+            break
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        s, e = (raw or "").find("{"), (raw or "").rfind("}")
+        if 0 <= s < e:
+            try:
+                obj = json.loads((raw or "")[s : e + 1])
+            except Exception:
+                obj = None
+    if not isinstance(obj, dict) or not isinstance(obj.get("points"), list):
+        # None = 解析失败（与"模型确认没有遗漏、返回空数组"是两回事）。
+        # 以前这里静默返回 []，前端 toast"没找到遗漏，大纲已比较全面"，把故障伪装成结论。
+        return None
+    points = []
+    for p in obj.get("points") or []:
         if isinstance(p, dict):
             title = str(p.get("title") or "").strip()
-            if title and _norm_name(title) not in have:
-                have.add(_norm_name(title))
+            if title:
                 points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
+    return points
+
+
+def _run_outline_gap_ai(
+    db,
+    cfg,
+    module: "Module",
+    *,
+    digest: str,
+    existing_points: list[dict[str, Any]],
+    mode: str,
+    contract: str = "",
+    requirement_text: str = "",
+) -> list[dict[str, str]] | None:
+    """查漏补缺共用调用；让首次大纲过少时也能自动补齐一轮。
+
+    返回 None 表示模型输出解析失败（调用方应报错/忽略，而不是当成"没有遗漏"）。
+    requirement_text: 原始需求/接口文档。查漏必须拿到和生成大纲时同级的材料，
+    只靠 digest 找不出字段级遗漏。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+
+    call_options = model_task_options(cfg, "api_outline_gap")
+    existing_block = (
+        "\n".join(f"- [{p.get('category') or '未分类'}] {p.get('title')}" for p in existing_points)
+        if existing_points
+        else "（暂无）"
+    )
+    existing = _existing_case_names(
+        db,
+        module.id,
+        case_type=CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    placeholders = {
+        "REQUIREMENT_TEXT": (requirement_text or "").strip() or "（未提供原始文档，只能依据下方摘要排查）",
+        "DIGEST": (digest.strip() or "（无摘要，请按已规划测试点合理推断）") + (f"\n\n{contract}" if contract else ""),
+        "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
+        "EXISTING_POINTS": existing_block,
+        "EXISTING_CASES": "、".join(existing) if existing else "（无）",
+    }
+    template = _load_prompt("outline_gaps")
+    prompt = _render_prompt(template, placeholders)
+    raw, _tin, _tout = chat_markdown(
+        prompt,
+        cfg,
+        timeout=call_options["timeout"],
+        system_prompt="你是结构化 JSON 生成器。必须只输出一个合法 JSON 对象，包含 points 数组。",
+        enable_thinking=call_options["enable_thinking"],
+        json_mode=call_options["json_mode"],
+        max_tokens=call_options["max_tokens"],
+        temperature=call_options["temperature"],
+        reasoning_effort=call_options.get("reasoning_effort"),
+    )
+    points = _parse_outline_gap_response(raw)
+    if points is None:
+        logger.warning(
+            "outline_gaps parse failed module_id=%s mode=%s raw_prefix=%r",
+            module.id, mode, (raw or "")[:500],
+        )
+    return points
+
+
+@router.post("/ai_outline_gaps")
+def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
+    """查漏补缺：给已有大纲找遗漏的测试点，返回补充点（已去重已有点/已有用例）。"""
+    cfg = _resolve_model(db, payload.model_name)
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    existing_points = [{"title": p.title, "category": p.category} for p in payload.points]
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    # 重建与生成大纲同级的原始材料：用户文本 + 接口文档链接（服务端拉取解析）
+    req_parts: list[str] = []
+    if (payload.text or "").strip():
+        req_parts.append(payload.text.strip())
+    for u in re.split(r"[\s,，;；]+", payload.doc_urls or ""):
+        u = u.strip()
+        if not u:
+            continue
+        try:
+            fetched = _fetch_doc_url(u)
+        except Exception:  # noqa: BLE001 — 查漏时文档拉取失败不阻断，退化为 digest
+            fetched = ""
+        if fetched:
+            req_parts.append(f"## 接口文档（链接）：{u}\n{fetched}")
+    try:
+        points_raw = _run_outline_gap_ai(
+            db,
+            cfg,
+            module,
+            digest=payload.digest,
+            existing_points=existing_points,
+            mode=payload.mode,
+            contract="请按接口/参数/鉴权/越权/响应校验/数据链路/安全/场景逐项核对，只输出真正缺失的点。",
+            requirement_text="\n\n".join(req_parts),
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+    if points_raw is None:
+        raise HTTPException(status_code=502, detail="查漏结果解析失败，请重试或更换模型（不代表没有遗漏）")
+
+    have = {_norm_name(p.title) for p in payload.points} | {_norm_name(n) for n in existing}
+    points = []
+    for p in points_raw:
+        title = str(p.get("title") or "").strip()
+        if title and _norm_name(title) not in have:
+            have.add(_norm_name(title))
+            points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
     return {"status": "success", "data": {"points": points}}
 
 
@@ -852,13 +1704,86 @@ class AiBatchRequest(pydantic.BaseModel):
     points: list[BatchPoint]
     done_names: list[str] = []
     mode: str = "functional"
+    # 跨批次已产出的变量名（前端把前面批次 extract 出的变量累积传过来，避免误报"找不到来源"）
+    carried_vars: list[str] = []
+    # 用户直接提供的"账号准备/注册"接口信息（文本），供前置链跨模块建账号用
+    setup_doc: str = ""
+
+
+def _available_functions_block() -> str:
+    """枚举平台已注册的动态函数（function:xxx），生成"名字+作用"清单喂给 AI，
+    防止它瞎编不存在的函数名（如 function:random_username）。"""
+    try:
+        import inspect
+        from utils.function_executor import function_name
+        funcs = function_name()
+    except Exception:
+        return "function:unique(前缀)、function:unique_mobile()、function:unique_email()（无法读取完整列表）"
+    lines: list[str] = []
+    for name, fn in funcs.items():
+        if name.startswith("_") or not inspect.isfunction(fn):
+            continue
+        doc = (inspect.getdoc(fn) or "").strip().splitlines()
+        desc = doc[0].strip() if doc else "（无说明）"
+        try:
+            params = inspect.signature(fn).parameters
+            req = [
+                p.name for p in params.values()
+                if p.kind in (p.POSITIONAL_OR_KEYWORD, p.POSITIONAL_ONLY)
+                and p.default is p.empty and p.name not in ("args", "kwargs")
+            ]
+            arg_hint = "(" + ", ".join(req) + ")" if req else "()"
+        except Exception:
+            arg_hint = "()"
+        lines.append(f"- function:{name}{arg_hint} —— {desc}")
+    return "\n".join(sorted(lines)) if lines else ""
+
+
+def _variable_pool_keys(db, project_id: int) -> set[str]:
+    """项目可用变量池的 key 集合（项目专属 + 全局）。"""
+    rows = (
+        db.session.query(ConfigStore.config_key)
+        .filter(
+            ConfigStore.config_group == "default_parameters",
+            (ConfigStore.project_id == project_id) | (ConfigStore.project_id.is_(None)),
+        )
+        .all()
+    )
+    return {r[0] for r in rows if r[0]}
+
+
+def _module_produced_vars(db, module_id: int) -> set[str]:
+    """本模块已有 api 用例能 extract 出的变量名（供跨用例依赖校验，避免对已有登录 token 误报）。"""
+    out: set[str] = set()
+    cases = (
+        db.session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.module_id == module_id, TestCase.case_type == CASE_TYPE_API)
+        .all()
+    )
+    for c in cases:
+        # v1 兼容字段 extract_data（JSON 文本：{var: jsonpath}）
+        if c.extract_data:
+            try:
+                d = json.loads(c.extract_data)
+                if isinstance(d, dict):
+                    out |= {str(k) for k in d if str(k).strip()}
+            except Exception:
+                pass
+        for s in (c.steps or []):
+            ex = s.extract
+            if isinstance(ex, list):
+                out |= {str(i.get("name")) for i in ex if isinstance(i, dict) and i.get("name")}
+            elif isinstance(ex, dict):
+                out |= {str(k) for k in ex if str(k).strip()}
+    return out
 
 
 @router.post("/ai_generate_batch")
 def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
     """第二步：基于 digest + 本批测试点 + 已生成用例名 → 生成这一批的控件级详细用例。
     每批都带 done_names 避免重复，带 digest 保证多批连贯。"""
-    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
 
     if not payload.points:
         raise HTTPException(status_code=400, detail="本批没有测试点")
@@ -887,27 +1812,89 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         else "（本模块暂无已有用例，新用例按本批顺序排列即可）"
     )
 
+    cross_ctx = _build_cross_module_context(db, module)
+    if payload.setup_doc.strip():
+        cross_ctx += (
+            "\n\n【用户提供的『账号准备/注册』接口信息】（**仅前置链可跨模块使用**，"
+            "据此建一个 function:unique 的一次性测试账号、密码固定字面量，再登录拿 token）：\n"
+            + payload.setup_doc.strip()[:2000]
+        )
     placeholders = {
         "MODULE_NAME": module.name,
         "DIGEST": payload.digest.strip() or "（无摘要，请按测试点标题合理推断）",
-        "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
+        "CROSS_MODULE_CONTEXT": cross_ctx,
         "BATCH_POINTS": batch_points,
         "DONE_NAMES": done_names,
         "EXISTING_ORDERED": existing_ordered,
         "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if payload.mode == "interface" else "",
+        "AVAILABLE_FUNCTIONS": _available_functions_block() if payload.mode == "interface" else "",
     }
     template = _load_prompt(
         "interface_case_batch" if payload.mode == "interface" else "functional_case_batch"
     )
-    prompt = _render_prompt(template, placeholders)
+    call_options = model_task_options(cfg, "api_batch" if payload.mode == "interface" else "functional_batch")
+
+    system_prompt = (
+        "你是结构化 JSON 生成器。必须只输出一个合法 JSON 数组，数组元素是接口或功能测试用例对象。"
+        "不要输出 Markdown 说明、标题、自然语言解释或代码块外文字。"
+        "如果用户提示要求 ```json``` 代码块，也只能在代码块内放合法 JSON。"
+    )
+
+    def call_and_shape(point_lines: str, *, timeout: int = 180) -> tuple[str, list[dict]]:
+        one_prompt = _render_prompt(template, {**placeholders, "BATCH_POINTS": point_lines})
+        raw_text, _tin, _tout = chat_markdown(
+            one_prompt,
+            cfg,
+            timeout=timeout or call_options["timeout"],
+            system_prompt=system_prompt,
+            enable_thinking=call_options["enable_thinking"],
+            json_mode=call_options["json_mode"],
+            max_tokens=call_options["max_tokens"],
+            temperature=call_options["temperature"],
+            reasoning_effort=call_options.get("reasoning_effort"),
+        )
+        parsed_obj = _extract_json_list(raw_text)
+        return raw_text, _shape_cases(parsed_obj)
 
     try:
-        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+        raw, shaped = call_and_shape(batch_points, timeout=call_options["timeout"])
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
 
-    parsed = _extract_json_list(raw)
-    shaped = _shape_cases(parsed)
+    if not shaped:
+        logger.warning(
+            "ai_generate_batch parse failed module_id=%s mode=%s points=%s raw_prefix=%r",
+            payload.module_id,
+            payload.mode,
+            [p.title for p in payload.points],
+            (raw or "")[:1000],
+        )
+        # DeepSeek 等兼容 OpenAI 网关偶发 HTTP 200 但 content 为空；复杂场景批次更容易触发。
+        # 失败时把 6 条拆成单点逐条再问，既降低输出长度，也减少模型安全/截断导致的空响应。
+        recovered: list[dict] = []
+        for p in payload.points:
+            point_line = f"- [{p.category or '未分类'}] {p.title}"
+            try:
+                one_raw, one_shaped = call_and_shape(point_line, timeout=120)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ai_generate_batch single-point retry failed module_id=%s point=%r error=%s",
+                    payload.module_id,
+                    p.title,
+                    exc,
+                )
+                continue
+            if one_shaped:
+                recovered.extend(one_shaped)
+                continue
+            logger.warning(
+                "ai_generate_batch single-point parse failed module_id=%s point=%r raw_prefix=%r",
+                payload.module_id,
+                p.title,
+                (one_raw or "")[:1000],
+            )
+        shaped = recovered
+
     if not shaped:
         raise HTTPException(status_code=502, detail="本批解析失败或无有效用例，请重试")
 
@@ -922,6 +1909,14 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         seen.add(key)
         c["duplicate"] = key in existing_norm
         cases.append(c)
+
+    # 接口模式：生成后校验 + 加固（变量来源校验、缺断言提示、写入数据命名空间）
+    if payload.mode == "interface":
+        cases = _merge_response_check_cases(cases)
+        var_pool_keys = _variable_pool_keys(db, module.project_id)
+        carried = set(payload.carried_vars or []) | _module_produced_vars(db, payload.module_id)
+        cases = _harden_generated_cases(cases, var_pool_keys, carried)
+
     return {"status": "success", "data": {"cases": cases, "model": payload.model_name}}
 
 
@@ -934,10 +1929,16 @@ class DiagnoseRunRequest(pydantic.BaseModel):
 def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
     """分析一条接口用例最近一次执行结果：分类(用例问题/接口问题/环境其他)+原因+建议，
     用例问题给出修正后的 extract/assertion 供「一键修复」。"""
-    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
 
     cfg = _resolve_model(db, payload.model_name)
-    case = db.session.query(TestCase).filter(TestCase.id == payload.case_id).first()
+    call_options = model_task_options(cfg, "api_run_diagnose")
+    case = (
+        db.session.query(TestCase)
+        .options(selectinload(TestCase.steps))
+        .filter(TestCase.id == payload.case_id)
+        .first()
+    )
     if case is None:
         raise HTTPException(status_code=404, detail="用例不存在")
     if case.case_type != CASE_TYPE_API:
@@ -970,14 +1971,7 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
         }
         for r in rows
     ]
-    case_def = {
-        "name": case.name,
-        "method": case.method,
-        "path": case.path,
-        "params": case.params,
-        "extract_data": case.extract_data,
-        "assertion": case.assertion,
-    }
+    case_def = _serialize_api_case_definition(case)
     placeholders = {
         "CASE_DEF": json.dumps(case_def, ensure_ascii=False)[:4000],
         "RUN_RESULT": json.dumps(run_result, ensure_ascii=False)[:9000],
@@ -985,7 +1979,20 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
     template = _load_prompt("api_run_diagnose")
     prompt = _render_prompt(template, placeholders)
     try:
-        raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+        raw, _tin, _tout = chat_markdown(
+            prompt,
+            cfg,
+            timeout=call_options["timeout"],
+            system_prompt=(
+                "你是接口测试诊断器。必须只输出一个合法 JSON 对象，"
+                "不要输出 Markdown、解释或思考过程。"
+            ),
+            enable_thinking=call_options["enable_thinking"],
+            json_mode=call_options["json_mode"],
+            max_tokens=call_options["max_tokens"],
+            temperature=call_options["temperature"],
+            reasoning_effort=call_options.get("reasoning_effort"),
+        )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
 
@@ -1016,6 +2023,7 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
             "fix": {
                 "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
                 "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
+                "params": fix.get("params") if isinstance(fix.get("params"), dict) else {},
             },
         },
     }
@@ -1028,18 +2036,363 @@ class ReportDiagnoseRequest(pydantic.BaseModel):
 
 @router.post("/ai_diagnose_report")
 def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
-    """对一份测试报告里所有接口用例的执行结果做全面分析（分块调 AI），逐条返回分类+发现+修正。"""
-    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+    """异步提交：对一份测试报告里所有接口用例执行结果做 AI 全面诊断 + 参数修复。
 
-    cfg = _resolve_model(db, payload.model_name)
+    早期版本是同步阻塞接口（一个请求里串行把所有用例喂给 AI），任务既不进全局任务看板、
+    也无法终止。现在改成建一行 AiRun(feature=api_report_fix) + 派 Celery 任务，立即返回
+    ai_run_id；任务因此出现在 /tasks-overview/in-progress，可查看进度、可终止。
+    前端轮询 /api/ai/runs/{id}，success 后从 output_payload.items 取诊断结果再应用。"""
+    from database.models import (
+        AiRun,
+        TestReport,
+        AI_RUN_STATUS_PENDING,
+        AI_FEATURE_API_REPORT_FIX,
+    )
+    from tasks.ai_tasks import dispatch_ai_task
+
+    # 早校验模型，给前端明确报错（handler 里还会再 resolve 一次）
+    _resolve_model(db, payload.model_name)
+
+    report = db.session.query(TestReport).filter(TestReport.id == payload.report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    run = AiRun(
+        feature=AI_FEATURE_API_REPORT_FIX,
+        status=AI_RUN_STATUS_PENDING,
+        project_id=report.project_id,
+        input_payload={
+            "report_id": payload.report_id,
+            "model_name": payload.model_name,
+        },
+    )
+    db.session.add(run)
+    db.session.flush()
+    db.session.refresh(run)
+    db.commit()
+
+    async_result = dispatch_ai_task.delay(run.id)
+    run.celery_task_id = async_result.id
+    db.commit()
+
+    return {
+        "status": "success",
+        "data": {
+            "ai_run_id": run.id,
+            "feature": run.feature,
+            "celery_task_id": async_result.id,
+        },
+    }
+
+
+class ReportFixApplyRequest(pydantic.BaseModel):
+    ai_run_id: int
+    verify: bool = True    # 应用后自动重跑验证 + 绿变红自动回滚
+    max_rounds: int = 3    # 多轮修复上限：仍失败的用例带新证据自动再诊断再修（1=只修一轮）
+
+
+@router.post("/ai_report_fix/apply")
+def ai_report_fix_apply(payload: ReportFixApplyRequest, db: DBDep, user: OptionalUserDep = None):
+    """把 AI 诊断结果（预检通过的部分）应用到用例，并触发闭环验证。
+
+    与旧的前端逐条 update 相比：
+      1. 应用前跑 preflight（分类过滤 / 真实响应 JSONPath 预检 / 变量产出校验 / params 合并），
+         坏修复直接拦掉，不落库；
+      2. 每条用例一个编辑事件、共用一个 batch，支持按用例精准回滚；
+      3. verify=True 时自动重跑原报告全部用例（保证 ${var} 依赖链完整），
+         绿变红的用例自动回滚——修复率在机制上不再可能为负。
+
+    返回 {batch_id, applied, skipped, verify_report_id}；闭环结果由
+    tasks.verify_ai_fix 写入 ai_run.output_payload["verify"]，前端轮询即可。
+    """
+    from database.models import AiRun, TestReport, AI_FEATURE_API_REPORT_FIX
+    from server.services.ai_fix_service import apply_report_fixes, prepare_verification_run
+
+    run = db.session.query(AiRun).filter(AiRun.id == payload.ai_run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="AI 诊断任务不存在")
+    if run.feature != AI_FEATURE_API_REPORT_FIX:
+        raise HTTPException(status_code=400, detail=f"ai_run {run.id} 不是报告修复任务")
+    if run.status != "success":
+        raise HTTPException(status_code=400, detail=f"诊断任务状态为 {run.status}，尚不能应用")
+
+    output = run.output_payload or {}
+    if output.get("apply"):
+        raise HTTPException(status_code=400, detail="该诊断结果已应用过；请重新诊断后再应用，避免重复修改")
+
+    report_id = int((run.input_payload or {}).get("report_id") or 0)
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="原测试报告不存在")
+
+    items = output.get("items") or []
+    result = apply_report_fixes(
+        db.session, report_id, items,
+        operator_id=user.id if user else None,
+    )
+
+    verify_report_id: int | None = None
+    prepared: dict | None = None
+    if payload.verify and result["applied"] and report.project_id is None:
+        logger.warning("[ai_fix] 报告 %s 没有 project_id，跳过闭环验证", report_id)
+    if payload.verify and result["applied"] and report.project_id is not None:
+        prepared = prepare_verification_run(
+            db.session,
+            project_id=report.project_id,
+            category=report.category,
+            base_report_id=report_id,
+        )
+        if prepared:
+            verify_report_id = prepared["report_id"]
+
+    # apply 结果先写回 ai_run；多轮循环状态放 loop/rounds，闭环结果由 verify 任务追加
+    max_rounds = max(1, min(int(payload.max_rounds or 3), 5))
+    round_entry = {
+        "round": 1,
+        "batch_id": result["batch_id"],
+        "applied": result["applied"],
+        "skipped": result["skipped"],
+        "base_report_id": report_id,
+        "verify_report_id": verify_report_id,
+        "status": "verifying" if verify_report_id else "no_verify",
+    }
+    run.output_payload = {
+        **output,
+        "apply": {   # 兼容旧读法：首轮信息
+            "batch_id": result["batch_id"],
+            "applied": result["applied"],
+            "skipped": result["skipped"],
+            "verify_report_id": verify_report_id,
+            "applied_at": datetime.now().isoformat(),
+        },
+        "loop": {"max_rounds": max_rounds},
+        "rounds": [round_entry],
+    }
+    db.commit()
+
+    if verify_report_id is not None and prepared:
+        from tasks import run_test_task
+        from tasks.ai_fix_verify_task import verify_ai_fix_task
+
+        run_test_task.delay(prepared["task_id"], verify_report_id, prepared["cases_to_run"], report.category)
+        verify_ai_fix_task.delay(run.id, report_id, verify_report_id, result["batch_id"], 1)
+    else:
+        # 没有验证闭环（verify=False / 无 project / 无可应用修复）→ 立即按诊断分类打标：
+        # 接口问题/环境照常标；用例问题因无验证背书一律标"需人工"提示复核。
+        try:
+            from server.services.ai_flag_service import (
+                derive_outcomes_from_items,
+                upsert_flags_from_outcomes,
+            )
+
+            applied_ids = {a["case_id"] for a in result["applied"] if a.get("case_id") is not None}
+            skip_reasons = {
+                s["case_id"]: (s.get("reasons") or [])
+                for s in result["skipped"] if s.get("case_id") is not None
+            }
+            outcomes = derive_outcomes_from_items(
+                items,
+                unverified=True,
+                applied_ids=applied_ids,
+                skip_reasons_by_case=skip_reasons,
+            )
+            upsert_flags_from_outcomes(db.session, outcomes, ai_run_id=run.id, report_id=report_id)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 —— 标记是提示层，失败不影响应用结果
+            logger.warning("[ai_fix] 无验证路径打标失败（忽略）：%s", exc)
+
+    return {
+        "status": "success",
+        "data": {
+            "batch_id": result["batch_id"],
+            "applied": result["applied"],
+            "skipped": result["skipped"],
+            "verify_report_id": verify_report_id,
+        },
+    }
+
+
+# 会改动共享数据 / 状态的 HTTP 方法
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+# 用例名/路径里命中这些词，说明它很可能改了某个共享账号/资源的状态
+_STATE_MUTATION_HINTS = (
+    "修改密码", "改密", "重置密码", "password", "改用户名", "改资料", "更新资料",
+    "删除", "delete", "禁用", "注销", "锁定", "logout", "登出", "吊销", "revoke",
+)
+
+
+def _parse_json_loose(text):
+    """尽力把字符串解析成 dict；失败返回 {}。"""
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        v = json.loads(text)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
+    """把 API 用例真实执行定义序列化给 AI；优先使用 v2 steps，避免只看到废弃 v1 字段。"""
+    steps = []
+    for step in sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id)):
+        if step.step_type != "http_request":
+            continue
+        config = step.config if isinstance(step.config, dict) else {}
+        steps.append(
+            {
+                "step_id": step.id,
+                "step_name": step.step_name,
+                "method": config.get("method"),
+                "path": config.get("path"),
+                "headers": config.get("headers") or {},
+                "data_type": config.get("data_type") or "application/json",
+                "params": config.get("params") or {},
+                "extract": step.extract or _parse_json_loose(config.get("extract_data")),
+                "assertion": step.assertion or _parse_json_loose(config.get("assertion")),
+            }
+        )
+    first = steps[0] if steps else {}
+    return {
+        "name": case.name,
+        "method": first.get("method") or case.method,
+        "path": first.get("path") or case.path,
+        "headers": first.get("headers") or _parse_json_loose(case.headers),
+        "params": first.get("params") or _parse_json_loose(case.params),
+        "extract_data": first.get("extract") or _parse_json_loose(case.extract_data),
+        "assertion": first.get("assertion") or _parse_json_loose(case.assertion),
+        "steps": steps,
+        "note": "params 是平台实际发送的请求体/请求参数模板；修请求参数时请返回完整 fix.params。",
+    }
+
+
+def _build_report_dependency_context(items_ordered: list[dict], case_map: dict) -> tuple[str, dict[str, str]]:
+    """构建"全局执行上下文"，让 AI 修复时能看清接口的**上下依赖**与**参数产出/引用关系**。
+
+    每个 chunk 都会带上这段（哪怕分块调用），所以即使 0005 改密码、0025 重登录被切到
+    不同 chunk，模型也能看到完整链路。包含四部分：
+      1. 按执行顺序的用例清单（顺序 + method + path）；
+      2. 变量产出表：每个变量最早由哪条用例 extract 出来（token/test_token01/id …）；
+      3. 变量引用表：每个变量被哪些用例 ${var} 引用；
+      4. 状态变更用例：会改共享账号/资源的用例（改密码、删除等）——下游若复用同一账号
+         却仍引用旧值（如 ${my_password}），会失败。
+
+    返回 (context_text, producers)；producers 供程序化线索（hints）复用。
+    """
+    producers: dict[str, str] = {}          # var -> "0002 登录测试账号 (extract $.data.token)"
+    consumers: dict[str, set[str]] = {}     # var -> {引用它的用例名}
+    order_lines: list[str] = []
+    mutations: list[str] = []
+
+    for idx, it in enumerate(items_ordered, start=1):
+        name = str(it.get("name") or f"case#{it.get('case_id')}")
+        d = it.get("def") or {}
+        results = it.get("result") or []
+        # method / path：def 优先，缺了就从执行请求里兜底
+        method = str(d.get("method") or "").upper()
+        path = str(d.get("path") or "")
+        if (not method or not path) and results:
+            req = _parse_json_loose(results[0].get("request"))
+            method = method or str(req.get("请求方法") or req.get("method") or "").upper()
+            path = path or str(req.get("请求地址") or req.get("url") or req.get("path") or "")
+        order_lines.append(f"{idx}. {name}  [{method or '?'} {path or '?'}]")
+
+        # —— 产出：extract 定义 + 实际 extract_values ——
+        produced_here: dict[str, str] = {}
+        extract_def = d.get("extract_data")
+        if isinstance(extract_def, dict):
+            for var, jp in extract_def.items():
+                produced_here[str(var)] = str(jp)
+        elif isinstance(extract_def, list):
+            for rule in extract_def:
+                if isinstance(rule, dict) and rule.get("name"):
+                    produced_here[str(rule.get("name"))] = str(rule.get("jsonpath") or rule.get("path") or "")
+        for step_def in d.get("steps") or []:
+            if not isinstance(step_def, dict):
+                continue
+            ex = step_def.get("extract")
+            if isinstance(ex, dict):
+                for var, jp in ex.items():
+                    produced_here.setdefault(str(var), str(jp))
+            elif isinstance(ex, list):
+                for rule in ex:
+                    if isinstance(rule, dict) and rule.get("name"):
+                        produced_here.setdefault(
+                            str(rule.get("name")),
+                            str(rule.get("jsonpath") or rule.get("path") or ""),
+                        )
+        for r in results:
+            for var in _parse_json_loose(r.get("extract_values")).keys():
+                produced_here.setdefault(str(var), "")
+        for var, jp in produced_here.items():
+            if var and var not in producers:   # 只记最早的产出方
+                tail = f" (extract {jp})" if jp else ""
+                producers[var] = f"{name}{tail}"
+
+        # —— 引用：扫描 def + 实际请求里的 ${var} ——
+        ref_blob = json.dumps(d, ensure_ascii=False, default=str)
+        for r in results:
+            ref_blob += " " + str(r.get("request") or "")
+        for var in set(_VAR_REF_RE.findall(ref_blob)):
+            consumers.setdefault(str(var).split(".")[0], set()).add(name)
+
+        # —— 状态变更标记 ——
+        hay = f"{name} {path}".lower()
+        if method in _MUTATING_METHODS and any(h.lower() in hay for h in _STATE_MUTATION_HINTS):
+            mutations.append(f"- {name} [{method} {path}] —— 会改共享账号/资源状态")
+
+    lines: list[str] = []
+    lines.append("## 全局执行上下文（本报告所有用例，按执行顺序；用于判断接口上下依赖与参数关系）")
+    lines.append("### 执行顺序")
+    lines.extend(order_lines)
+    lines.append("### 变量产出表（变量 → 最早产出它的用例；下游要用某变量，必须有产出方且排在它前面）")
+    if producers:
+        for var in sorted(producers):
+            lines.append(f"- ${{{var}}} ← {producers[var]}")
+    else:
+        lines.append("- （无用例 extract 出任何变量）")
+    lines.append("### 变量引用表（变量 → 引用它的用例）")
+    if consumers:
+        for var in sorted(consumers):
+            who = "、".join(sorted(consumers[var])[:8])
+            lines.append(f"- ${{{var}}}: {who}")
+    else:
+        lines.append("- （无用例引用 ${变量}）")
+    lines.append("### 状态变更用例（会改共享数据；其后再用同一账号的旧密码/旧 token 等会失败）")
+    lines.extend(mutations or ["- （无）"])
+    return "\n".join(lines), producers
+
+
+def diagnose_report_items(
+    session,
+    report_id: int,
+    cfg,
+    only_case_ids: set[int] | None = None,
+    attempt_notes: dict[int, str] | None = None,
+) -> dict:
+    """报告级 AI 诊断核心逻辑（同步执行体，供 Celery handler / 多轮修复循环调用）。
+
+    读报告里所有接口用例的执行结果，分块喂给 AI，逐条返回分类 + 发现 + 修复建议。
+    每条用例附带程序化预分析线索（hints）：JSONPath 候选、未解析变量、断言 actual 等
+    确定性可算的信息，让模型从"猜"变成"确认"。
+
+    only_case_ids：只诊断这些用例（多轮修复的第 2+ 轮用，全局上下文仍覆盖整份报告）。
+    attempt_notes：case_id → 上一轮修复情况说明，注入 previous_attempt 字段避免模型原地打转。
+
+    返回 {"items": [...], "total": N}。无执行记录抛 ValueError（handler 兜底成 failed）。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+    from server.services.ai_fix_service import build_case_hints
+
     rows = (
-        db.session.query(TestStepReport)
-        .filter(TestStepReport.report_id == payload.report_id)
+        session.query(TestStepReport)
+        .filter(TestStepReport.report_id == report_id)
         .order_by(TestStepReport.case_id, TestStepReport.id)
         .all()
     )
     if not rows:
-        raise HTTPException(status_code=400, detail="该报告没有执行记录")
+        raise ValueError("该报告没有执行记录")
 
     by_case: dict[int, list] = {}
     for r in rows:
@@ -1049,7 +2402,12 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
 
     case_map = {
         c.id: c
-        for c in db.session.query(TestCase).filter(TestCase.id.in_(list(by_case.keys()))).all()
+        for c in (
+            session.query(TestCase)
+            .options(selectinload(TestCase.steps))
+            .filter(TestCase.id.in_(list(by_case.keys())))
+            .all()
+        )
     }
 
     items_in = []
@@ -1060,13 +2418,7 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
         items_in.append({
             "case_id": cid,
             "name": c.name,
-            "def": {
-                "method": c.method,
-                "path": c.path,
-                "params": c.params,
-                "extract_data": c.extract_data,
-                "assertion": c.assertion,
-            },
+            "def": _serialize_api_case_definition(c),
             "result": [
                 {
                     "request": (r.input_data or "")[:1200],
@@ -1081,16 +2433,92 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
             ],
         })
 
+    # 按执行顺序（用例 sort_order）排好，让"上下依赖/产出在前、引用在后"的判断成立
+    def _sort_key(it):
+        c = case_map.get(it.get("case_id"))
+        so = getattr(c, "sort_order", None)
+        return (so if so is not None else 1 << 30, str(it.get("name") or ""))
+    items_in.sort(key=_sort_key)
+
+    # 全局上下文：变量产出/引用表 + 状态变更用例。整份报告算一次，注入到每个 chunk。
+    report_context, producers = _build_report_dependency_context(items_in, case_map)
+
+    # 用户历史反馈：清除标记时留下的更正/经验，按用例注入（权威性最高，防止重复误判）
+    from server.services.ai_flag_service import get_case_feedback
+    try:
+        feedback_by_case = get_case_feedback(session, [it.get("case_id") for it in items_in])
+    except Exception as exc:  # noqa: BLE001 —— 反馈是增强项，失败不阻塞诊断
+        logger.warning("[diagnose] get_case_feedback 失败：%s", exc)
+        feedback_by_case = {}
+
+    # 程序化线索：用未截断的原始执行行做确定性预分析（截断后的 item 数据可能丢证据）
+    for it in items_in:
+        cid = it.get("case_id")
+        try:
+            hints = build_case_hints(it.get("def") or {}, by_case.get(cid) or [], producers)
+        except Exception as exc:  # noqa: BLE001 —— 线索是增强项，失败不阻塞诊断
+            logger.warning("[diagnose] build_case_hints case=%s 失败：%s", cid, exc)
+            hints = []
+        if hints:
+            it["hints"] = hints
+        fb = feedback_by_case.get(cid)
+        if fb:
+            it["user_feedback"] = fb
+        note = (attempt_notes or {}).get(cid)
+        if note:
+            it["previous_attempt"] = note
+
+    # 多轮修复：第 2+ 轮只重诊断指定用例（上下文仍是全报告）
+    if only_case_ids is not None:
+        items_in = [it for it in items_in if it.get("case_id") in only_case_ids]
+        if not items_in:
+            return {"items": [], "total": 0}
+
     out = []
     template = _load_prompt("api_report_diagnose")
-    chunk_size = 6
-    for i in range(0, len(items_in), chunk_size):
-        chunk = items_in[i : i + chunk_size]
-        prompt = _render_prompt(template, {"CASES": json.dumps(chunk, ensure_ascii=False)[:14000]})
+    call_options = model_task_options(cfg, "api_report_fix")
+    diagnose_system_prompt = (
+        "你是接口测试诊断器。必须只输出一个合法 JSON 数组（可包在 ```json``` 代码块里），"
+        "每条用例一个对象。不要输出 Markdown 标题、解释或思考过程。"
+    )
+    # 按字符预算装箱分块，替代旧的 chunk_size=6 + json.dumps(chunk)[:14000] 硬截断——
+    # 那会把后半个 chunk 的用例数据拦腰切成非法 JSON，模型对这些用例只能瞎猜。
+    # 预算按“每 chunk 输入体量 ≈ 24k 字符”估（约 1.2 万 token），单条超预算的用例独立成块。
+    chunk_char_budget = 24000
+    max_cases_per_chunk = 6
+    chunks: list[list[dict]] = []
+    cur: list[dict] = []
+    cur_chars = 0
+    for it in items_in:
+        item_chars = len(json.dumps(it, ensure_ascii=False))
+        if cur and (cur_chars + item_chars > chunk_char_budget or len(cur) >= max_cases_per_chunk):
+            chunks.append(cur)
+            cur, cur_chars = [], 0
+        cur.append(it)
+        cur_chars += item_chars
+    if cur:
+        chunks.append(cur)
+
+    for chunk in chunks:
+        prompt = _render_prompt(template, {
+            "REPORT_CONTEXT": report_context[:6000],
+            "CASES": json.dumps(chunk, ensure_ascii=False),
+        })
         try:
-            raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=240)
+            raw, _tin, _tout = chat_markdown(
+                prompt,
+                cfg,
+                timeout=call_options["timeout"],
+                system_prompt=diagnose_system_prompt,
+                enable_thinking=call_options["enable_thinking"],
+                json_mode=call_options["json_mode"],
+                max_tokens=call_options["max_tokens"],
+                temperature=call_options["temperature"],
+                reasoning_effort=call_options.get("reasoning_effort"),
+            )
         except Exception as e:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+            # 在 Celery handler 里执行：抛普通异常即可，dispatch 兜底成 ai_run.status=failed。
+            raise RuntimeError(f"AI 调用失败：{e}") from e
         parsed = _extract_json_list(raw)
         if isinstance(parsed, list):
             for x in parsed:
@@ -1101,6 +2529,20 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
                     _cid = int(x.get("case_id"))
                 except Exception:
                     _cid = None
+                reorder = fix.get("reorder") if isinstance(fix.get("reorder"), dict) else {}
+                # 场景多步用例的按步修复：fix.steps=[{step_id, params, headers}]
+                step_fixes = []
+                for sf in fix.get("steps") or []:
+                    if not isinstance(sf, dict):
+                        continue
+                    try:
+                        _sid = int(sf.get("step_id"))
+                    except Exception:
+                        continue
+                    sf_params = sf.get("params") if isinstance(sf.get("params"), dict) else {}
+                    sf_headers = sf.get("headers") if isinstance(sf.get("headers"), dict) else {}
+                    if sf_params or sf_headers:
+                        step_fixes.append({"step_id": _sid, "params": sf_params, "headers": sf_headers})
                 out.append({
                     "case_id": _cid,
                     "module_id": case_map[_cid].module_id if _cid in case_map else None,
@@ -1110,10 +2552,16 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
                     "fix": {
                         "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
                         "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
+                        "params": fix.get("params") if isinstance(fix.get("params"), dict) else {},
+                        "headers": fix.get("headers") if isinstance(fix.get("headers"), dict) else {},
+                        "steps": step_fixes,
+                        "reorder": {"before_case_name": str(reorder.get("before_case_name") or "").strip()}
+                        if reorder.get("before_case_name")
+                        else {},
                     },
                 })
 
-    return {"status": "success", "data": {"items": out, "total": len(items_in)}}
+    return {"items": out, "total": len(items_in)}
 
 
 @router.post("")

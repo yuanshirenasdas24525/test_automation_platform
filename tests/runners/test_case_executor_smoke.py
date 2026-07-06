@@ -30,6 +30,7 @@ from runners.context.execution_context import ExecutionContext
 from runners.dispatcher import StepDispatcher
 from runners.protocol import StepStatus
 from runners.steps.http_request import HttpRequestStepRunner
+from utils.encrypt import decrypt_text, encrypt_text
 
 
 # ===================================================================
@@ -40,6 +41,7 @@ class _FakeProcessor:
         self.base_header = {}
         self.base_url = {"url": base_url}
         self.extra_pool = extra_pool or {}
+        self.encryption_decryption = {}
 
     def handler_files(self, file_path):  # pragma: no cover - 冒烟没用到
         return None
@@ -173,6 +175,186 @@ def test_variable_propagation_across_steps(monkeypatch):
     # 第二次请求的 Authorization 里应当是替换后的值
     second_headers = calls["recorded"][1]["headers"]
     assert second_headers.get("Authorization") == "Bearer xyz"
+
+
+def test_failed_extract_does_not_overwrite_existing_variable(monkeypatch):
+    resp = _FakeResponse(401, {"detail": "用户名或密码错误"})
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+    ctx = ExecutionContext()
+    ctx.set_var("token", "old-token")
+
+    case = {
+        "id": 20,
+        "name": "login failed should keep old token",
+        "case_type": "api",
+        "steps": [{
+            "id": 2001,
+            "step_order": 0,
+            "step_name": "login failed",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/login",
+                "headers": {},
+                "data_type": "json",
+                "params": {"username": "admin", "password": "bad"},
+            },
+            "extract": [
+                {"name": "token", "from": "response.body", "jsonpath": "$.data.token"},
+            ],
+            "assertion": [
+                {"type": "equal", "target": "status_code", "expected": 401},
+            ],
+        }],
+    }
+
+    result = executor.run(case, ctx)
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert result.steps[0].extracted == {}
+    assert ctx.get_var("token") == "old-token"
+    assert http_runner.processor.extra_pool.get("token") is None
+
+
+def test_http_step_signs_headers_by_configured_order(monkeypatch):
+    resp = _FakeResponse(200, {"ok": True})
+    http_runner, calls = _make_runner_with_mocked_http(monkeypatch, [resp])
+    http_runner.processor.encryption_decryption = {
+        "on_off": "true",
+        "key": "secret-key",
+        "request_header_order_encrypt": '["B", "A"]',
+    }
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+
+    case = {
+        "id": 21,
+        "name": "header order sign",
+        "case_type": "api",
+        "steps": [{
+            "id": 2101,
+            "step_order": 0,
+            "step_name": "signed headers",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/signed",
+                "headers": {"A": "1", "B": "2"},
+                "data_type": "json",
+                "params": {},
+            },
+            "assertion": [{"type": "equal", "target": "status_code", "expected": 200}],
+        }],
+    }
+
+    result = executor.run(case)
+    assert result.status == StepStatus.PASSED, result.error_message
+    headers = calls["recorded"][0]["headers"]
+    raw = f"B=2&A=1&{headers['power-timestamp']}{headers['power-nonce']}secret-key"
+    import hashlib
+    assert headers["power-sign"] == hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def test_http_step_encrypts_whole_request_and_decrypts_response_field(monkeypatch):
+    calls = {"recorded": []}
+
+    def fake_request(self, *args, **kwargs):
+        calls["recorded"].append(kwargs)
+        encrypted_request = kwargs["json"]["payload"]
+        assert json.loads(decrypt_text(encrypted_request, "secret-key")) == {
+            "username": "u",
+            "password": "p",
+        }
+        return _FakeResponse(200, {"payload": encrypt_text({"ok": True}, "secret-key")})
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    http_runner = HttpRequestStepRunner(processor=_FakeProcessor())
+    http_runner.processor.encryption_decryption = {
+        "on_off": "true",
+        "key": "secret-key",
+        "request_body_whole_encrypt": "true",
+        "request_body_whole_encrypt_field": "payload",
+        "response_body_whole_decrypt": "true",
+        "response_body_whole_decrypt_field": "payload",
+    }
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+
+    case = {
+        "id": 22,
+        "name": "whole body crypto",
+        "case_type": "api",
+        "steps": [{
+            "id": 2201,
+            "step_order": 0,
+            "step_name": "encrypted payload",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/encrypted",
+                "headers": {},
+                "data_type": "json",
+                "params": {"username": "u", "password": "p"},
+            },
+            "assertion": [
+                {"type": "equal", "target": "status_code", "expected": 200},
+                {"type": "jsonpath", "target": "$.payload.ok", "expected": True},
+            ],
+        }],
+    }
+
+    result = executor.run(case)
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert isinstance(calls["recorded"][0]["json"]["payload"], str)
+
+
+def test_http_step_uses_custom_crypto_handlers(monkeypatch):
+    calls = {"recorded": []}
+
+    def fake_request(self, *args, **kwargs):
+        calls["recorded"].append(kwargs)
+        assert kwargs["headers"]["X-Custom-Crypto"] == "demo"
+        assert kwargs["json"] == {"wrapped": {"name": "alice"}}
+        return _FakeResponse(200, {"wrapped_response": {"ok": True}})
+
+    monkeypatch.setattr(requests.Session, "request", fake_request)
+    http_runner = HttpRequestStepRunner(processor=_FakeProcessor())
+    http_runner.processor.encryption_decryption = {
+        "on_off": "true",
+        "custom_request_handler": "demo_request_crypto",
+        "custom_response_handler": "demo_response_crypto",
+        "custom_crypto_only": "true",
+        "custom_demo_header": "demo",
+    }
+    dispatcher = _build_dispatcher(http_runner)
+    executor = CaseExecutor(dispatcher)
+
+    case = {
+        "id": 23,
+        "name": "custom crypto",
+        "case_type": "api",
+        "steps": [{
+            "id": 2301,
+            "step_order": 0,
+            "step_name": "custom handlers",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/custom",
+                "headers": {},
+                "data_type": "json",
+                "params": {"name": "alice"},
+            },
+            "assertion": [
+                {"type": "equal", "target": "status_code", "expected": 200},
+                {"type": "jsonpath", "target": "$.ok", "expected": True},
+            ],
+        }],
+    }
+
+    result = executor.run(case)
+    assert result.status == StepStatus.PASSED, result.error_message
 
 
 # ===================================================================

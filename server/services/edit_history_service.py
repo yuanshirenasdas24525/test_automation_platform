@@ -242,6 +242,7 @@ def record_test_case_update(
     field_changes: list[dict],
     operator_id: int | None = None,
     summary: str | None = None,
+    batch: EditOperationBatch | None = None,
 ) -> EditOperationEvent | None:
     """记录用例修改。"""
     after_snapshot = snapshot_test_case(case)
@@ -264,6 +265,7 @@ def record_test_case_update(
         field_changes=changes,
         operator_id=operator_id,
         summary=summary or f"修改用例 #{case.id}",
+        batch=batch,
     )
 
 

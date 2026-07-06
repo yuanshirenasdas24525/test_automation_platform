@@ -582,6 +582,65 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
 
   // ---------- 通用 ----------
   {
+    value: "http_request",
+    group: "generic",
+    label: "HTTP 请求 (http_request)",
+    desc: "发一个接口请求。每个步骤独立填方法/路径/请求头/请求体/提取/断言。提取出的变量后续步骤可用 ${var} 引用。",
+    defaultConfig: { method: "GET", data_type: "application/json" },
+    defaultName: (c) => `${String(c.method || "GET")} ${String(c.path || "")}`.trim(),
+    fields: [
+      { key: "method", label: "方法", kind: "select", required: true,
+        options: [
+          { value: "GET", label: "GET" },
+          { value: "POST", label: "POST" },
+          { value: "PUT", label: "PUT" },
+          { value: "PATCH", label: "PATCH" },
+          { value: "DELETE", label: "DELETE" },
+        ] },
+      { key: "path", label: "路径", kind: "highlight", rows: 1, required: true,
+        placeholder: "/api/auth/login（相对路径会拼 base_url，也可填完整 URL）" },
+      { key: "data_type", label: "Content-Type", kind: "text",
+        placeholder: "application/json" },
+      { key: "headers", label: "请求头", kind: "highlight", rows: 2,
+        placeholder: '{"Authorization": "Bearer ${token1}"}',
+        hint: <>JSON 对象。支持 <code>{"${var}"}</code></> },
+      { key: "params", label: "请求体 / 参数", kind: "highlight", rows: 3,
+        placeholder: '{"username": "${generate_account}", "password": "NewTest@123"}',
+        hint: <>JSON 对象。支持 <code>{"${var}"}</code> 和 <code>function:xxx()</code></> },
+      { key: "extract_data", label: "提取参数", kind: "highlight", rows: 2,
+        placeholder: '{"token1": "$.data.token"}',
+        hint: <>JSON 对象 <code>{"{ 变量名: $.json.path }"}</code>，提取出的变量后续步骤可 <code>{"${变量名}"}</code> 引用</> },
+      { key: "assertion", label: "断言", kind: "highlight", rows: 2,
+        placeholder: '{"status_code": 200, "$.data.token": "not_empty"}',
+        hint: <>JSON 对象 <code>{"{ $.code: 0 }"}</code>；非空写 <code>not_empty</code></> },
+      { key: "sql_query", label: "SQL 校验", kind: "highlight", rows: 2,
+        placeholder: "select status from orders where id = ${order_id}",
+        hint: <>可选。请求前 / 后查库，多条用 <code>;</code> 分隔</> },
+    ],
+  },
+  {
+    value: "assert",
+    group: "generic",
+    label: "断言 (assert)",
+    desc: "对前面步骤提取出的变量做二次校验。target / expected 两边都支持 ${var}，可用来对比两次请求的结果（如 ${token1} ≠ ${token2}）。",
+    defaultConfig: { type: "not_equal" },
+    defaultName: (c) => `断言 ${String(c.type || "not_equal")} ${String(c.target ?? "")}`.trim(),
+    fields: [
+      { key: "type", label: "断言类型", kind: "select", required: true,
+        options: [
+          { value: "equal", label: "equal（相等）" },
+          { value: "not_equal", label: "not_equal（不等）" },
+          { value: "contains", label: "contains（包含）" },
+          { value: "is_not_null", label: "is_not_null（非空）" },
+          { value: "is_null", label: "is_null（为空）" },
+        ] },
+      { key: "target", label: "target", kind: "highlight", rows: 1, required: true,
+        placeholder: "${token1}（或 $.data.token 取最近一次响应）" },
+      { key: "expected", label: "expected", kind: "highlight", rows: 1,
+        placeholder: "${token2} / 字面量；is_null / is_not_null 不用填" },
+    ],
+  },
+  {
     value: "sleep",
     group: "generic",
     label: "等待 (sleep)",
@@ -617,12 +676,14 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
   const defaultNewType = React.useMemo(() => {
     if (category === "web") return "web_goto";
     if (isAppFamily) return "app_launch";
-    return "web_goto"; // mixed / api / functional 等先默认 web
+    if (category === "api") return "http_request";
+    return "web_goto"; // mixed / functional 等先默认 web
   }, [category, isAppFamily]);
 
   const allowedGroups = React.useMemo(() => {
     if (category === "web") return new Set(["web", "generic"]);
     if (isAppFamily) return new Set(["app", "generic"]);
+    if (category === "api") return new Set(["generic"]); // api 多步骤：http_request / assert / sleep
     return new Set(["web", "app", "generic"]); // mixed
   }, [category, isAppFamily]);
 
@@ -1132,6 +1193,16 @@ function FieldRenderer({
 function stringify(v: unknown): string {
   if (v == null) return "";
   if (typeof v === "string") return v;
+  // 对象 / 数组（如 AI 生成的 config.headers / config.params 是 dict）转成
+  // 格式化 JSON 显示，否则会被 String() 渲染成 "[object Object]"。
+  // 编辑后存的是字符串，http_request runner 同时兼容 dict 和 JSON 字符串。
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v, null, 2);
+    } catch {
+      return String(v);
+    }
+  }
   return String(v);
 }
 

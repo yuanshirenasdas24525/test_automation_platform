@@ -149,6 +149,7 @@ class StepDispatcher:
         """
         from runners.steps.http_request import HttpRequestStepRunner
         from runners.steps.generic import SleepStepRunner, AssertStepRunner
+        from runners.steps.sql_exec import SqlStepRunner
         from runners.steps.app_actions import build_app_runners
         from runners.steps.app_generic import build_app_generic_runners
         # 注意：web step runner 现在是真实实现（web_actions），老的 web_stubs 仅保留兼容。
@@ -158,6 +159,7 @@ class StepDispatcher:
         d.register(HttpRequestStepRunner())
         d.register(SleepStepRunner())
         d.register(AssertStepRunner())
+        d.register(SqlStepRunner())
         d.register_all(build_app_runners())
         d.register_all(build_app_generic_runners())  # 通用 app_action / app_assert
         d.register_all(build_web_runners())

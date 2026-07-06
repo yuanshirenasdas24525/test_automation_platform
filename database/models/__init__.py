@@ -144,6 +144,42 @@ from .test_step_report import TestStepReport
 
 # ============ 配置 ============
 from .config_store import ConfigStore
+from .script_store import (
+    ScriptStore,
+    SCRIPT_KIND_FUNCTION,
+    SCRIPT_KIND_CRYPTO_REQUEST,
+    SCRIPT_KIND_CRYPTO_RESPONSE,
+    ALL_SCRIPT_KINDS,
+)
+from .module_outline import (
+    ModuleOutline,
+    ModuleOutlinePoint,
+    OUTLINE_POINT_COVERED,
+    OUTLINE_POINT_GAP,
+    OUTLINE_POINT_OBSOLETE,
+    ALL_OUTLINE_POINT_STATUSES,
+    OUTLINE_POINT_SOURCE_AI,
+    OUTLINE_POINT_SOURCE_MANUAL,
+    ALL_OUTLINE_POINT_SOURCES,
+)
+from .ai_case_flag import (
+    AiCaseFlag,
+    AI_FLAG_MANUAL_FIX,
+    AI_FLAG_INTERFACE_DEFECT,
+    AI_FLAG_ENVIRONMENT,
+    AI_FLAG_AI_FIXED,
+    ALL_AI_FLAG_TYPES,
+    AI_FLAG_STATUS_ACTIVE,
+    AI_FLAG_STATUS_CLEARED,
+    AI_FLAG_STATUS_AUTO_CLEARED,
+    AI_FLAG_STATUS_SUPERSEDED,
+    ALL_AI_FLAG_STATUSES,
+    AI_FLAG_REASON_MANUALLY_FIXED,
+    AI_FLAG_REASON_MISJUDGED,
+    AI_FLAG_REASON_EXTERNAL_FIXED,
+    AI_FLAG_REASON_WONT_FIX,
+    ALL_AI_FLAG_REASONS,
+)
 
 # ============ AI 任务 / 需求（AI 模块）============
 from .ai_run import (
@@ -164,6 +200,7 @@ from .ai_run import (
     AI_FEATURE_FUNCTIONAL_TO_AUTO,
     AI_FEATURE_LOAD_PLAN_GEN,
     AI_FEATURE_BUG_FIX,
+    AI_FEATURE_API_REPORT_FIX,
 )
 from .requirement import (
     Requirement,
@@ -312,7 +349,7 @@ __all__ = [
     "Device",
     "AppPackage",
     "TestReport", "TestStepReport",
-    "ConfigStore",
+    "ConfigStore", "ScriptStore",
     "AiRun", "Requirement", "RequirementAssignee", "RequirementVersionHistory",
     "RequirementEditHistory",
     "Attachment", "ATTACHMENT_KIND_LINK", "ATTACHMENT_KIND_FILE",
@@ -374,7 +411,7 @@ __all__ = [
     "AI_FEATURE_FUNCTIONAL_CASE_GEN", "AI_FEATURE_FUNCTIONAL_CASE_REVIEW",
     "AI_FEATURE_API_CASE_GEN", "AI_FEATURE_REPORT_SUMMARY",
     "AI_FEATURE_FUNCTIONAL_TO_AUTO", "AI_FEATURE_LOAD_PLAN_GEN",
-    "AI_FEATURE_BUG_FIX",
+    "AI_FEATURE_BUG_FIX", "AI_FEATURE_API_REPORT_FIX",
     # Requirement constants
     "REQUIREMENT_STATUS_DRAFT", "REQUIREMENT_STATUS_APPROVED",
     "REQUIREMENT_STATUS_ARCHIVED", "ALL_REQUIREMENT_STATUSES",
@@ -423,4 +460,20 @@ __all__ = [
     # Pydantic (v1 遗留)
     "ProjectCreate", "ModuleCreate", "TestCaseCreate", "RunTestRequest",
     "ConfigUpdateItem", "ResponseModel", "ReorderItem", "ReorderRequest",
+    # Script store constants
+    "SCRIPT_KIND_FUNCTION", "SCRIPT_KIND_CRYPTO_REQUEST",
+    "SCRIPT_KIND_CRYPTO_RESPONSE", "ALL_SCRIPT_KINDS",
+    # Module outline
+    "ModuleOutline", "ModuleOutlinePoint",
+    "AiCaseFlag",
+    "AI_FLAG_MANUAL_FIX", "AI_FLAG_INTERFACE_DEFECT", "AI_FLAG_ENVIRONMENT", "AI_FLAG_AI_FIXED",
+    "ALL_AI_FLAG_TYPES",
+    "AI_FLAG_STATUS_ACTIVE", "AI_FLAG_STATUS_CLEARED", "AI_FLAG_STATUS_AUTO_CLEARED",
+    "AI_FLAG_STATUS_SUPERSEDED", "ALL_AI_FLAG_STATUSES",
+    "AI_FLAG_REASON_MANUALLY_FIXED", "AI_FLAG_REASON_MISJUDGED",
+    "AI_FLAG_REASON_EXTERNAL_FIXED", "AI_FLAG_REASON_WONT_FIX", "ALL_AI_FLAG_REASONS",
+    "OUTLINE_POINT_COVERED", "OUTLINE_POINT_GAP", "OUTLINE_POINT_OBSOLETE",
+    "ALL_OUTLINE_POINT_STATUSES",
+    "OUTLINE_POINT_SOURCE_AI", "OUTLINE_POINT_SOURCE_MANUAL",
+    "ALL_OUTLINE_POINT_SOURCES",
 ]

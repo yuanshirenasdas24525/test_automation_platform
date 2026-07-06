@@ -103,6 +103,17 @@ def run_test_task(t_id, r_id, cases, category):
         # 统一 finalize，它自己兜底把 status 写成终态
         finalize_report(r_id, db_session, t_id)
 
+        # 用例通过 → 自动清掉它身上的 AI 标记（manual_fix / ai_fixed）。
+        # 标记只是提示层，这步失败不许传染主流程。
+        try:
+            _auto_clear_ai_flags(r_id, db_session)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[run_test_task] 自动清 AI 标记失败（忽略）: {exc}")
+            try:
+                db_session.rollback()
+            except Exception:
+                pass
+
     except Exception as exc:
         # 任何没被内层捕获的异常都在这里兜底
         traceback.print_exc()
@@ -116,6 +127,30 @@ def run_test_task(t_id, r_id, cases, category):
             db_session.close()
         except Exception:
             pass
+
+
+def _auto_clear_ai_flags(report_id: int, db_session) -> None:
+    """本次报告里聚合状态为 passed 的用例 → 自动清 AI 标记（manual_fix/ai_fixed）。"""
+    from database.models import TestStepReport
+    from server.services.ai_flag_service import auto_clear_on_pass
+
+    rows = (
+        db_session.query(TestStepReport.case_id, TestStepReport.status)
+        .filter(TestStepReport.report_id == report_id, TestStepReport.case_id.isnot(None))
+        .all()
+    )
+    statuses: dict[int, list[str]] = {}
+    for cid, st in rows:
+        statuses.setdefault(cid, []).append(str(st or "").lower())
+    passed = [
+        cid for cid, sts in statuses.items()
+        if sts and all(s in ("passed", "skipped") for s in sts) and "passed" in sts
+    ]
+    if passed:
+        n = auto_clear_on_pass(db_session, passed)
+        if n:
+            db_session.commit()
+            print(f"[run_test_task] 自动清除 {n} 个 AI 标记（用例已通过）")
 
 
 # ---------------------------------------------------------------------------

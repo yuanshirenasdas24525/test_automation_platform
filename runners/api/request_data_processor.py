@@ -1,4 +1,6 @@
+from __future__ import annotations
 
+import re
 from typing import Any, List
 from runners.api.file_parameter import FileParameter
 from utils.platform_utils import rep_expr, extractor, convert_json
@@ -30,6 +32,17 @@ class RequestDataProcessor:
         self.base_header = rep_expr(header_key, self.extra_pool) if isinstance(header_key, str) else header_key or {}
         self.base_url = rep_expr(host_key, self.extra_pool) if isinstance(host_key, str) else host_key or {}
         self.db = db
+
+    def _render_sql(self, sql: str) -> str:
+        """执行 SQL 前统一替换 ${var}，并阻断未解析占位符直达数据库。"""
+        rendered = rep_expr(sql or "", self.extra_pool)
+        leftovers = re.findall(r"\$\{[^}\n]+\}", rendered)
+        if leftovers:
+            raise ValueError(
+                "SQL 中存在未解析变量："
+                f"{', '.join(leftovers)}。请确认变量已在环境变量、用例变量或前序提取中写入。"
+            )
+        return rendered
 
     def handler_path(self, path_str: str) -> str:
         """
@@ -80,7 +93,7 @@ class RequestDataProcessor:
         data_obj = convert_json(variable)
         if data_obj and data_obj.get('CustomDatabaseLink') is not None:
             db = DB(data_obj.get('CustomDatabaseLink'))
-            sql = rep_expr(sql, self.extra_pool)
+            sql = self._render_sql(sql)
             sql_results = []
             for sql_statement in sql.split(";"):
                 sql_statement = sql_statement.strip()
@@ -146,7 +159,7 @@ class RequestDataProcessor:
                 else:
                     v = exec_func(v)
             elif isinstance(k, str) and k.startswith("sql:"):
-                sql = k.split("sql:", 1)[1].strip()
+                sql = self._render_sql(k.split("sql:", 1)[1].strip())
                 results = self.db.sql.query(sql)
                 actual = str(results[0]) if results else "db_error"
 
@@ -164,7 +177,7 @@ class RequestDataProcessor:
             return []
 
         results = []
-        sql = rep_expr(sql, self.extra_pool)
+        sql = self._render_sql(sql)
         for sql_statement in sql.split(";"):
             sql_statement = sql_statement.strip()
             if not sql_statement:
@@ -180,6 +193,7 @@ class RequestDataProcessor:
     def execute_sql_from_case(self, sql: str, extra_str: str):
         """执行 SQL 并更新参数池"""
         try:
+            sql = self._render_sql(sql)
             index = 0
             for statement in sql.split(";"):
                 stmt = statement.strip()

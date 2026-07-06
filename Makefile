@@ -1,7 +1,7 @@
 # 测试自动化平台 —— 常用本地命令入口
 # 用法：make dev / make stop / make migrate / make lint / make build
 
-.PHONY: help venv setup dev stop migrate lint build
+.PHONY: help venv setup dev stop migrate lint build backfill-flags check-flags
 
 # PIP_TRUSTED=1 时跳过 pip 的 SSL 证书校验（公司网络做 SSL 检查 / 证书装不全时用）
 PIP_TRUSTED ?= 0
@@ -16,6 +16,8 @@ help:
 	@echo "  make migrate  alembic upgrade head"
 	@echo "  make lint     前端 eslint 检查"
 	@echo "  make build    前端构建（tsc -b + vite build）"
+	@echo "  make backfill-flags           历史 AI 诊断回填成用例标记（幂等可重跑）"
+	@echo "  make check-flags [MODULE=20]  AI 标记链路只读诊断"
 
 # 用 3.10+（优先 3.12，对齐 Dockerfile）重建 venv
 venv:
@@ -46,6 +48,17 @@ migrate:
 	fi; \
 	echo "▶ $$PY -m alembic upgrade head"; \
 	$$PY -m alembic upgrade head
+
+# 历史 AI 诊断（ai_runs.feature=api_report_fix）→ 用例标记；幂等，可重复跑
+backfill-flags:
+	@if [ -x venv/bin/python ]; then PY=venv/bin/python; else PY=$$(command -v python3 || command -v python); fi; \
+	echo "▶ $$PY -m database.migrations.data_migrations.backfill_ai_case_flags --commit"; \
+	$$PY -m database.migrations.data_migrations.backfill_ai_case_flags --commit
+
+# AI 标记链路只读诊断；可选 MODULE=<模块id> 检查指定模块
+check-flags:
+	@if [ -x venv/bin/python ]; then PY=venv/bin/python; else PY=$$(command -v python3 || command -v python); fi; \
+	$$PY -m database.migrations.data_migrations.check_ai_flags $(if $(MODULE),--module-id $(MODULE),)
 
 lint:
 	cd frontend && npm run lint

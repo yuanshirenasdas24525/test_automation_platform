@@ -26,6 +26,7 @@ from .reports import router as reports_router
 from .requirement_analysis import router as requirement_analysis_router
 from .requirements import router as requirements_router
 from .runs import router as runs_router
+from .scripts import router as scripts_router
 from .roles import router as roles_router
 from .tasks import router as tasks_router
 from .tasks_overview import router as tasks_overview_router
@@ -57,6 +58,7 @@ __all__ = [
     "requirement_analysis_router",
     "requirements_router",
     "runs_router",
+    "scripts_router",
     "system_router",
     "tasks_router",
     "tasks_overview_router",

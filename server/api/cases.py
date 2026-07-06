@@ -21,6 +21,7 @@ v2 新增（2026-04）：
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any
 
 import pydantic
@@ -30,7 +31,7 @@ from sqlalchemy.orm import selectinload
 
 from server.api.auth import _get_optional_user
 from server.api.deps import DBDep
-from database.models import ApiCaseEditHistory, Task, TestCase, TestCaseCreate, User
+from database.models import ApiCaseEditHistory, EditOperationBatch, Task, TestCase, TestCaseCreate, User
 from server.services.edit_history_service import (
     record_test_case_create,
     record_test_case_delete,
@@ -92,6 +93,28 @@ class TestCaseRollbackPayload(pydantic.BaseModel):
     force: bool = False
 
 
+def _strip_nul_chars(obj: Any) -> Any:
+    """递归去掉字符串里的 NUL（U+0000）。
+
+    PostgreSQL 的 text 和 jsonb 都**无法存储 `\\u0000`**，一旦请求参数 / 断言 / step
+    config 里出现真实 NUL 字节（常见于安全/控制字符类用例，如 username="test\\u0000user"），
+    写库会直接抛错变 500。这里在落库前统一清掉 NUL，避免整条用例存不进去。
+
+    注意：只处理 NUL 这一种 Postgres 真正存不下的字符；其它控制字符（\\t \\n 等）保留。
+    为了不把"控制字符安全用例"悄悄变成正常输入，这里把真实 NUL 替换成可见的字面量
+    `\\u0000`（6 个字符），既能入库、又保留"该字段含异常字符"的测试意图。
+    """
+    if isinstance(obj, str):
+        return obj.replace("\x00", "\\u0000") if "\x00" in obj else obj
+    if isinstance(obj, dict):
+        return {_strip_nul_chars(k): _strip_nul_chars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_nul_chars(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_strip_nul_chars(v) for v in obj)
+    return obj
+
+
 # ---------- 请求体里的 steps → test_steps 行 ----------
 def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
     """把 `steps` 字段完整落进 test_steps 表。
@@ -126,15 +149,23 @@ def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
             # 真跑的时候 dispatcher 找不到 runner 会自己报 ERROR。
             pass
 
+        config = s.get("config") or {}
+        extract = s.get("extract")
+        assertion = s.get("assertion")
+        if not extract and isinstance(config, dict):
+            extract = _v1_extract_to_step(config.get("extract_data") or config.get("extract"))
+        if not assertion and isinstance(config, dict):
+            assertion = _v1_assertion_to_step(config.get("assertion"))
+
         db.session.add(TestStep(
             case_id=case_id,
             step_order=int(s.get("step_order") if s.get("step_order") is not None else i),
             step_name=s.get("step_name") or f"step-{i + 1}",
             step_type=step_type,
             skip=bool(s.get("skip") or False),
-            config=s.get("config") or {},
-            extract=s.get("extract"),
-            assertion=s.get("assertion"),
+            config=config,
+            extract=extract,
+            assertion=assertion,
             wait_before=float(s.get("wait_before") or 0),
             timeout=int(s.get("timeout") or 30),
             retry=int(s.get("retry") or 0),
@@ -274,7 +305,8 @@ def create_case(
     - 没指定：追加到模块末尾（max+1）。
     - payload 里的 steps 会同步写入 test_steps（见 _replace_case_steps）。
     """
-    payload = case.model_dump()
+    # 落库前清掉 NUL（Postgres text/jsonb 存不下 ，否则整条用例写库 500）
+    payload = _strip_nul_chars(case.model_dump())
     # steps / case_type 属于新增字段，不在 TestCase model 列里，单独处理
     steps = payload.pop("steps", None)
     if payload.get("case_type") is None:
@@ -348,6 +380,7 @@ def update_case(
     db: DBDep,
     user: OptionalUserDep = None,
     session_id: str | None = Query(None, description="快速编辑会话 id"),
+    history_batch_id: int | None = Query(None, description="复用同一次批量编辑的历史批次 id"),
 ):
     """按主键更新用例。允许改 module_id。payload 带 steps 就整体重写。
 
@@ -366,7 +399,8 @@ def update_case(
     before_snapshot = snapshot_test_case(db_case)
 
     # 关键：exclude_unset → 没传的字段不进 payload，避免 setattr None 把 DB 清空
-    payload = case.model_dump(exclude_unset=True)
+    # 同时清掉 NUL（Postgres 存不下，否则更新写库 500）
+    payload = _strip_nul_chars(case.model_dump(exclude_unset=True))
     # steps 是子表，单独走 _replace_case_steps；不能 setattr 到 ORM 上
     steps = payload.pop("steps", None)
     # case_type 显式传 None 也别覆盖（前端有时会带 case_type=null）
@@ -422,8 +456,14 @@ def update_case(
 
     db.session.flush()
     db_case = _load_case_for_history(db, case_id)
+    event = None
     if db_case is not None:
-        record_test_case_update(
+        history_batch = None
+        if history_batch_id is not None:
+            history_batch = db.session.query(EditOperationBatch).filter(EditOperationBatch.id == history_batch_id).first()
+            if history_batch is None:
+                raise HTTPException(status_code=404, detail="历史批次不存在")
+        event = record_test_case_update(
             db.session,
             db_case,
             before_snapshot=before_snapshot,
@@ -433,6 +473,7 @@ def update_case(
             ],
             operator_id=user.id if user else None,
             summary=f"修改用例：{db_case.name}",
+            batch=history_batch,
         )
     if changes:
         _record_api_edit(
@@ -443,7 +484,42 @@ def update_case(
             changes=changes,
             session_id=session_id,
         )
-    return {"status": "success", "message": "修改成功"}
+    return {"status": "success", "message": "修改成功", "data": {"batch_id": event.batch_id if event else None}}
+
+
+class RenumberRequest(pydantic.BaseModel):
+    module_id: int
+    case_type: str | None = None          # 默认全部；可传 'api' 只编号接口用例
+    width: int = 4                        # 序号位数：4 → 0001
+    enable: bool = True                   # False = 去掉已有序号
+
+
+# 匹配名字开头已有的序号前缀，如 "0001 "、"12. "、"003、"，用于去重/幂等
+_NUM_PREFIX_RE = re.compile(r"^\s*\d{2,}[\s.、:：\-_)]+")
+
+
+@router.post("/renumber")
+def renumber_cases(payload: RenumberRequest, db: DBDep):
+    """按当前执行顺序（sort_order）给模块下的用例名加序号前缀 0001/0002/...。
+
+    让"执行顺序"在用例名上一眼可见。幂等：会先剥掉已有序号再重新编，重复点不会叠加。
+    enable=False 则去掉序号。
+    """
+    q = db.session.query(TestCase).filter(TestCase.module_id == payload.module_id)
+    if payload.case_type:
+        q = q.filter(TestCase.case_type == payload.case_type)
+    cases = q.order_by(TestCase.sort_order.asc().nullslast(), TestCase.id.asc()).all()
+    width = max(1, min(int(payload.width or 4), 8))
+
+    updated = 0
+    for i, c in enumerate(cases, start=1):
+        base = _NUM_PREFIX_RE.sub("", c.name or "").lstrip()
+        new_name = f"{str(i).zfill(width)} {base}" if payload.enable else base
+        if new_name != c.name:
+            c.name = new_name
+            updated += 1
+    db.session.flush()
+    return {"status": "success", "data": {"total": len(cases), "updated": updated}}
 
 
 @router.delete("/{case_id}")
@@ -452,6 +528,7 @@ def delete_case(
     db: DBDep,
     user: OptionalUserDep = None,
     session_id: str | None = Query(None, description="快速编辑会话 id"),
+    history_batch_id: int | None = Query(None, description="复用同一次批量编辑的历史批次 id"),
 ):
     db_case = _load_case_for_history(db, case_id)
     if not db_case:
@@ -470,11 +547,17 @@ def delete_case(
         _operator_name(user),
         session_id=session_id,
     )
+    history_batch = None
+    if history_batch_id is not None:
+        history_batch = db.session.query(EditOperationBatch).filter(EditOperationBatch.id == history_batch_id).first()
+        if history_batch is None:
+            raise HTTPException(status_code=404, detail="历史批次不存在")
     event = record_test_case_delete(
         db.session,
         db_case,
         operator_id=user.id if user else None,
         summary=f"删除用例：{db_case.name}",
+        batch=history_batch,
     )
     db.session.flush()
     db.session.delete(db_case)
@@ -545,6 +628,7 @@ def _serialize_case(c: TestCase, *, include_steps: bool = False, db=None) -> dic
         "sql_query": c.sql_query,
         "assertion": c.assertion,
         "wait_time": c.wait_time,
+        "repeat_count": getattr(c, "repeat_count", 1) or 1,
         "sort_order": c.sort_order,
     }
     if include_steps:

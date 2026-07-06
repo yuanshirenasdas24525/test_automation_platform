@@ -375,6 +375,7 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "name": c.name,
         "description": c.description,
         "case_type": c.case_type or "api",
+        "project_id": c.module.project_id if c.module else None,
         "project_name": proj_name,
         "module_name": c.module.name if c.module else None,
         "skip": bool(c.skip),
@@ -382,6 +383,7 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "priority": c.priority,
         "timeout": c.timeout,
         "retry": c.retry,
+        "repeat_count": getattr(c, "repeat_count", 1) or 1,
         "variables": c.variables,
         "pre_hook": c.pre_hook,
         "post_hook": c.post_hook,
@@ -399,5 +401,4 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "assertion": c.assertion,
         "wait_time": c.wait_time,
     }
-
 

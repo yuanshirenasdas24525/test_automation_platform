@@ -30,7 +30,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -59,6 +59,7 @@ from server.api import (
     reports_router,
     roles_router,
     runs_router,
+    scripts_router,
     system_router,
     tasks_router,
     tasks_overview_router,
@@ -66,6 +67,7 @@ from server.api import (
     users_router,
     version_summaries_router,
 )
+from server.api.auth import get_current_user
 
 # ---------------------------------------------------------------------------
 # 路径常量
@@ -140,6 +142,11 @@ def health():
 # ---------------------------------------------------------------------------
 for router in (
     auth_router,
+):
+    app.include_router(router, prefix="/api")
+
+
+for router in (
     projects_router,
     modules_router,
     project_versions_router,
@@ -148,6 +155,7 @@ for router in (
     functional_cases_router,
     content_router,
     runs_router,
+    scripts_router,
     reports_router,
     roles_router,
     config_router,
@@ -169,7 +177,7 @@ for router in (
     version_summaries_router,
     bug_fix_router,
 ):
-    app.include_router(router, prefix="/api")
+    app.include_router(router, prefix="/api", dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------

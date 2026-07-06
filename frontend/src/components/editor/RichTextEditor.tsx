@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -19,6 +20,7 @@ import { Toolbar } from "./Toolbar";
 const lowlight = createLowlight(common);
 
 type ToolbarLevel = "full" | "minimal" | "none";
+type EditorVariant = "default" | "code";
 
 interface RichTextEditorProps {
   value: string;
@@ -27,6 +29,7 @@ interface RichTextEditorProps {
   placeholder?: string;
   toolbar?: ToolbarLevel;
   readOnly?: boolean;
+  variant?: EditorVariant;
 }
 
 export function RichTextEditor({
@@ -36,6 +39,7 @@ export function RichTextEditor({
   placeholder,
   toolbar = "full",
   readOnly = false,
+  variant = "default",
 }: RichTextEditorProps) {
   const editor = useEditor({
     extensions: [
@@ -61,23 +65,36 @@ export function RichTextEditor({
     },
   });
 
+  useEffect(() => {
+    if (!editor) return;
+    if (editor.getHTML() === value) return;
+    editor.commands.setContent(value, { emitUpdate: false });
+  }, [editor, value]);
+
   if (!editor) return null;
+
+  const isCodeVariant = variant === "code";
 
   return (
     <div
       className={cn(
-        "rounded-md border border-input bg-background",
-        readOnly ? "p-4" : "flex flex-col",
+        isCodeVariant
+          ? "bg-transparent"
+          : "rounded-md border border-input bg-background",
+        readOnly ? (isCodeVariant ? "" : "p-4") : "flex flex-col",
       )}
     >
-      {toolbar !== "none" && !readOnly && (
+      {toolbar !== "none" && !readOnly && !isCodeVariant && (
         <Toolbar editor={editor} level={toolbar} />
       )}
       <EditorContent
         editor={editor}
+        spellCheck={!isCodeVariant}
         className={cn(
           "rich-editor-content prose prose-sm max-w-none",
-          !readOnly && "flex-1 overflow-y-auto border-t px-4 py-3",
+          isCodeVariant && "rich-editor-code-only",
+          !readOnly && !isCodeVariant && "flex-1 overflow-y-auto border-t px-4 py-3",
+          !readOnly && isCodeVariant && "overflow-y-auto",
         )}
         style={readOnly ? {} : { minHeight: height, maxHeight: height }}
       />

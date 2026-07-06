@@ -1,14 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
   ArrowUp,
+  Bug,
   ChevronRight,
+  CloudOff,
   Download,
   FileText,
   Folder,
   History,
+  ListChecks,
+  ListOrdered,
   Loader2,
   Pencil,
   Play,
@@ -17,6 +21,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Wrench,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,6 +42,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { MarkdownView } from "@/components/editor/MarkdownView";
 import {
   aiModelsApi,
   apiCasesApi,
@@ -53,6 +59,10 @@ import {
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
+  AiCaseFlag,
+  AiFlagClearReason,
+  AiFlagCounts,
+  AiFlagType,
   ApiCase,
   ApiCaseEditRecord,
   ApiRunStatus,
@@ -61,6 +71,7 @@ import type {
   TestCaseCreate,
   TestStepDraft,
 } from "@/types/domain";
+import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { CaseDialog, type CaseFormValues } from "./ProjectDetailPage";
 
@@ -68,11 +79,20 @@ type DiagnoseResult = {
   classification: string;
   reason: string;
   suggestion: string;
-  fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
+  fix: {
+    extract: Record<string, unknown>;
+    assertion: Record<string, unknown>;
+    params?: Record<string, unknown>;
+  };
 };
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 500] as const;
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+type ApiQuickNewRow = {
+  tempId: string;
+  aboveCaseId?: number;
+  insertSortOrder?: number;
+};
 
 const STATUS_META: Record<ApiRunStatus, { label: string; className: string }> = {
   pending: { label: "待执行", className: "bg-slate-100 text-slate-600" },
@@ -81,6 +101,41 @@ const STATUS_META: Record<ApiRunStatus, { label: string; className: string }> = 
   error: { label: "错误", className: "bg-orange-100 text-orange-700" },
   skipped: { label: "跳过", className: "bg-zinc-100 text-zinc-600" },
 };
+
+// AI 诊断标记的展示元数据（docs/ai_case_flags_design.md §1）
+const FLAG_META: Record<AiFlagType, { label: string; className: string; Icon: typeof Wrench; hint: string }> = {
+  manual_fix: {
+    label: "需人工",
+    className: "bg-amber-100 text-amber-700 hover:bg-amber-200",
+    Icon: Wrench,
+    hint: "AI 判定为用例问题但无法自动修复，需人工修改",
+  },
+  interface_defect: {
+    label: "疑似接口缺陷",
+    className: "bg-red-100 text-red-700 hover:bg-red-200",
+    Icon: Bug,
+    hint: "AI 判定接口返回异常，建议重点检查接口本身",
+  },
+  environment: {
+    label: "环境",
+    className: "bg-slate-200 text-slate-600 hover:bg-slate-300",
+    Icon: CloudOff,
+    hint: "AI 判定为环境/依赖问题（超时/5xx/连不上等）",
+  },
+  ai_fixed: {
+    label: "AI已修复",
+    className: "bg-emerald-100 text-emerald-700 hover:bg-emerald-200",
+    Icon: Sparkles,
+    hint: "AI 已修复且重跑验证通过，建议复核；下次通过后自动消失",
+  },
+};
+
+const CLEAR_REASON_OPTIONS: { value: AiFlagClearReason; label: string; desc: string }[] = [
+  { value: "manually_fixed", label: "已人工修复", desc: "备注里写下改了什么，会作为经验喂给 AI" },
+  { value: "misjudged", label: "AI 判断有误", desc: "需选择正确分类；下次诊断会遵循你的更正" },
+  { value: "external_fixed", label: "接口已修复 / 环境已恢复", desc: "问题在平台外部解决了" },
+  { value: "wont_fix", label: "无需处理（预期行为）", desc: "如负向用例 4xx 本来就对；AI 以后不再自动修它" },
+];
 
 function messageOf(error: unknown): string {
   if (error instanceof ApiError || error instanceof Error) return error.message;
@@ -106,7 +161,7 @@ function appendAssertionRule(
     throw new Error("该用例没有可更新的 HTTP 步骤，请进入用例编辑器手动处理");
   }
   const type = expected === "not_empty"
-    ? "not_null"
+    ? "is_not_null"
     : target.startsWith("$")
       ? "jsonpath"
       : "equal";
@@ -133,7 +188,7 @@ function assertionRulesToLegacyMap(steps: TestStepDraft[]) {
     for (const item of step.assertion ?? []) {
       const raw = item as Record<string, unknown>;
       const target = String(raw.target ?? "").trim();
-      if (target) out[target] = raw.type === "not_null" ? "not_empty" : raw.expected;
+      if (target) out[target] = raw.type === "not_null" || raw.type === "is_not_null" ? "not_empty" : raw.expected;
     }
   }
   return out;
@@ -177,7 +232,25 @@ function extractRulesToLegacyMap(steps: TestStepDraft[]) {
 
 function formatTime(value: string | null | undefined): string {
   if (!value) return "--";
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value.replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function getTimeValue(value: string | null | undefined): number {
+  if (!value) return 0;
+  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value.replace(" ", "T");
+  const time = new Date(normalized).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function Checkbox({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) {
@@ -199,19 +272,23 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<ApiRunStatus | "all">("all");
+  const [flagFilter, setFlagFilter] = useState<AiFlagType | "all">("all");
+  const [flagDialogCase, setFlagDialogCase] = useState<ApiCase | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [editor, setEditor] = useState<ApiCase | "new" | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [newRows, setNewRows] = useState<string[]>([]);
+  const [newRows, setNewRows] = useState<ApiQuickNewRow[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const [diagnose, setDiagnose] = useState<{ row: ApiCase; loading: boolean; result: DiagnoseResult | null } | null>(null);
   const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
+  const [renumbering, setRenumbering] = useState(false);
 
   const aiModelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: () => aiModelsApi.list() });
   const firstModel = (aiModelsQuery.data ?? []).find((m) => m.enabled)?.name ?? "";
+  const enabledModels = (aiModelsQuery.data ?? []).filter((m) => m.enabled).map((m) => m.name);
 
   const handleDiagnose = async (row: ApiCase) => {
     if (!firstModel) {
@@ -239,16 +316,24 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     enabled: Number.isFinite(projectId),
   });
   const casesQuery = useQuery({
-    queryKey: ["api-cases", moduleId, status, keyword, page, pageSize],
+    queryKey: ["api-cases", moduleId, status, flagFilter, keyword, page, pageSize],
     queryFn: () => apiCasesApi.list({
       moduleId: moduleId!,
       status: status === "all" ? undefined : status,
+      flagType: flagFilter === "all" ? undefined : flagFilter,
       keyword,
       page,
       pageSize,
     }),
     enabled: moduleId != null,
   });
+  // 模块卡片角标：项目内各模块 active AI 标记计数（含子树聚合）
+  const flagCountsQuery = useQuery({
+    queryKey: ["api-flag-counts", projectId],
+    queryFn: () => apiCasesApi.aiFlagCounts(projectId),
+    enabled: Number.isFinite(projectId),
+  });
+  const flagCounts: AiFlagCounts = flagCountsQuery.data ?? {};
 
   const modules = (contentQuery.data ?? []).filter((node) => node.type === "module");
   const cases = casesQuery.data?.items ?? [];
@@ -260,6 +345,21 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     queryClient.invalidateQueries({ queryKey: ["api-test-history"] });
     queryClient.invalidateQueries({ queryKey: ["api-edit-history"] });
     queryClient.invalidateQueries({ queryKey: ["project-stack-counts", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["api-flag-counts", projectId] });
+  };
+
+  const renumberCases = async (enable: boolean) => {
+    if (moduleId == null) return;
+    setRenumbering(true);
+    try {
+      const res = await apiCasesApi.renumber(moduleId, { enable });
+      invalidate();
+      toast.success(enable ? `已按执行顺序编号 ${res.total} 条用例` : `已去掉 ${res.updated} 条用例的序号`);
+    } catch (e) {
+      toast.error(messageOf(e));
+    } finally {
+      setRenumbering(false);
+    }
   };
 
   useEffect(() => {
@@ -271,7 +371,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     setQuickEdit(true);
     setEditSession(sessionId());
     setSelected(new Set());
-    setNewRows([sessionId()]);
+    setNewRows([{ tempId: sessionId() }]);
   };
   const exitQuickEdit = () => {
     setQuickEdit(false);
@@ -279,6 +379,13 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     setSelected(new Set());
     setNewRows([]);
   };
+
+  const insertRowAbove = useCallback((caseId: number, sortOrder?: number | null) => {
+    setNewRows((current) => [
+      ...current,
+      { tempId: sessionId(), aboveCaseId: caseId, insertSortOrder: sortOrder ?? undefined },
+    ]);
+  }, []);
 
   const runMutation = useMutation({
     mutationFn: (ids: number[]) => runsApi.trigger({
@@ -400,11 +507,18 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
       assertion: values.assertion,
       sql_query: values.sql_query,
       wait_time: values.wait_time,
+      repeat_count: values.repeat_count ?? 1,
       skip: values.skip,
       case_type: "api",
       // 不送 steps：让后端按最新 v1 字段重新合成 http_request step，
       // 否则 steps=null 会走"整体替换"分支、跳过重建 → 改了执行旧的。
     };
+    // API 用例统一以 steps 为唯一执行来源：CaseDialog 已把「单请求合成的 1 步」或
+    // 「多步骤编辑器的 N 步」放进 values.steps，这里整体下发，避免两种模式互相覆盖。
+    const finalSteps = values.steps as TestStepDraft[] | null | undefined;
+    if (finalSteps && finalSteps.length) {
+      payload.steps = finalSteps;
+    }
     setEditorSaving(true);
     try {
       if (editor === "new") {
@@ -462,6 +576,10 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
           </>
         ) : (
           <>
+            <Button variant="outline" size="sm" disabled={moduleId == null || renumbering} onClick={() => renumberCases(true)} title="按执行顺序给用例名加 0001/0002… 前缀">
+              {renumbering ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListOrdered className="h-4 w-4" />}按顺序编号
+            </Button>
+            <Button variant="ghost" size="sm" disabled={moduleId == null || renumbering} onClick={() => renumberCases(false)} title="去掉用例名上的序号前缀">去掉编号</Button>
             <Button variant="outline" size="sm" disabled={moduleId == null} onClick={exportCases}><Download className="h-4 w-4" />导出</Button>
             {selected.size > 0 ? <Button size="sm" disabled={runMutation.isPending} onClick={() => runMutation.mutate([...selected])}><Play className="h-4 w-4" />运行选中（{selected.size}）</Button> : null}
           </>
@@ -480,6 +598,16 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
                 <SelectItem value="skipped">跳过</SelectItem>
               </SelectContent>
             </Select>
+            <Select value={flagFilter} onValueChange={(value) => { setFlagFilter(value as AiFlagType | "all"); setPage(1); }}>
+              <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全部标记</SelectItem>
+                <SelectItem value="manual_fix">需人工</SelectItem>
+                <SelectItem value="interface_defect">疑似接口缺陷</SelectItem>
+                <SelectItem value="environment">环境问题</SelectItem>
+                <SelectItem value="ai_fixed">AI已修复</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         ) : null}
       </div>
@@ -489,7 +617,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
           {moduleId == null || modules.length > 0 ? (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold">{moduleId == null ? "模块" : "子模块"}（{modules.length}）</h3>
-              {modules.length ? <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{modules.map((node) => <ModuleCard key={node.id} node={node} onOpen={() => setTrail([...trail, { id: node.id, name: node.name }])} />)}</div> : <Empty text="当前层级没有模块" />}
+              {modules.length ? <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{modules.map((node) => <ModuleCard key={node.id} node={node} flagCount={flagCounts[String(node.id)]} onOpen={() => setTrail([...trail, { id: node.id, name: node.name }])} />)}</div> : <Empty text="当前层级没有模块" />}
             </section>
           ) : null}
           {moduleId != null ? (
@@ -507,18 +635,23 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
                   onRun={(row) => runMutation.mutate([row.id])}
                   onDiagnose={handleDiagnose}
                   onShowRunDetail={setRunDetailCase}
+                  onShowFlag={setFlagDialogCase}
                   onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
                   onReorder={reorder}
+                  onInsertAbove={insertRowAbove}
                   onSaved={invalidate}
                   newRows={newRows}
                   onFirstInput={(rowId) => {
-                    setNewRows((current) => current.at(-1) === rowId
-                      ? [...current, sessionId()]
-                      : current);
+                    setNewRows((current) => {
+                      const bottomRows = current.filter((item) => item.aboveCaseId == null);
+                      return bottomRows.at(-1)?.tempId === rowId
+                        ? [...current, { tempId: sessionId() }]
+                        : current;
+                    });
                   }}
                   onRemoveNewRow={(rowId) => setNewRows((current) => {
-                    const next = current.filter((id) => id !== rowId);
-                    return next.length ? next : [sessionId()];
+                    const next = current.filter((item) => item.tempId !== rowId);
+                    return next.some((item) => item.aboveCaseId == null) ? next : [...next, { tempId: sessionId() }];
                   })}
                 />
               )}
@@ -550,6 +683,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
         quickEdit={quickEdit}
         moduleId={moduleId}
         firstModel={firstModel}
+        models={enabledModels}
         onInvalidate={invalidate}
         onEditCase={(row) => {
           setRecordsOpen(false);
@@ -560,6 +694,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
       <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
       <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
+      <AiFlagClearDialog row={flagDialogCase} onClose={() => setFlagDialogCase(null)} onCleared={() => { setFlagDialogCase(null); invalidate(); }} />
     </div>
   );
 }
@@ -587,17 +722,51 @@ function DiagnoseDialog({
     cls === "用例问题" &&
     result != null &&
     (Object.keys(result.fix.extract || {}).length > 0 ||
-      Object.keys(result.fix.assertion || {}).length > 0);
+      Object.keys(result.fix.assertion || {}).length > 0 ||
+      Object.keys(result.fix.params || {}).length > 0);
 
   const applyFix = async () => {
     if (!result) return;
     setFixing(true);
     try {
-      const body: TestCaseCreate = { module_id: row.module_id, name: row.name, case_type: "api" };
-      if (Object.keys(result.fix.extract || {}).length > 0) body.extract_data = JSON.stringify(result.fix.extract, null, 2);
-      if (Object.keys(result.fix.assertion || {}).length > 0) body.assertion = JSON.stringify(result.fix.assertion, null, 2);
+      // 关键：把修正**直接写进执行步骤 steps**，而不是只改 v1 的 extract_data。
+      // 否则执行时读的是 step.extract（旧的错 JSONPath），改了 v1 字段也白搭，
+      // 表现就是"AI 修复后还是提取不到 token"。
+      const detail = await casesApi.get(row.id);
+      let steps = detail.steps ?? [];
+
+      const fixExtract = result.fix.extract || {};
+      for (const [name, jp] of Object.entries(fixExtract)) {
+        if (name && jp) steps = appendExtractRule(steps, null, name, String(jp)).steps;
+      }
+      const fixAssertion = result.fix.assertion || {};
+      for (const [target, expected] of Object.entries(fixAssertion)) {
+        if (target) steps = appendAssertionRule(steps, null, target, expected).steps;
+      }
+      const fixParams = result.fix.params || {};
+      if (Object.keys(fixParams).length > 0) {
+        const idx = steps.findIndex((s) => s.step_type === "http_request");
+        if (idx >= 0) {
+          steps = steps.map((s, i) =>
+            i === idx
+              ? { ...s, config: { ...((s.config as Record<string, unknown>) ?? {}), params: fixParams } }
+              : s,
+          );
+        }
+      }
+
+      const body: TestCaseCreate = {
+        module_id: detail.module_id,
+        name: detail.name,
+        case_type: "api",
+        steps,
+        // 同步 v1 字段，编辑表单显示一致
+        extract_data: JSON.stringify(extractRulesToLegacyMap(steps), null, 2),
+        assertion: JSON.stringify(assertionRulesToLegacyMap(steps), null, 2),
+      };
+      if (Object.keys(fixParams).length > 0) body.params = JSON.stringify(fixParams, null, 2);
       await apiCasesApi.update(row.id, body);
-      toast.success("已按修正更新用例，可重新运行验证");
+      toast.success("已按修正更新执行步骤，可重新运行验证");
       onFixed();
     } catch (e) {
       toast.error(messageOf(e));
@@ -640,6 +809,9 @@ function DiagnoseDialog({
                 {Object.keys(result.fix.assertion || {}).length > 0 ? (
                   <div>断言：{JSON.stringify(result.fix.assertion)}</div>
                 ) : null}
+                {Object.keys(result.fix.params || {}).length > 0 ? (
+                  <div>请求参数：{JSON.stringify(result.fix.params)}</div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -673,6 +845,10 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
   }, [row?.id]);
 
   const detail = query.data;
+  useEffect(() => {
+    if (!detail?.steps?.length) return;
+    setExpanded(new Set(detail.steps.map((step) => step.step_report_id)));
+  }, [detail?.report_id, detail?.steps]);
   return (
     <Dialog open={row != null} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[88vh] max-w-5xl overflow-y-auto">
@@ -718,14 +894,25 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
                       <span className="text-xs text-muted-foreground">{step.status_code ?? "--"}</span>
                     </button>
                     {open ? (
-                      <div className="grid gap-2 border-t bg-muted/10 p-3 md:grid-cols-2">
-                        <JsonBlock title="请求地址" value={step.request.url} />
-                        <JsonBlock title="请求头" value={step.request.headers} />
-                        <JsonBlock title="请求参数" value={step.request.params} />
-                        <JsonBlock title="响应参数" value={step.response} />
-                        <JsonBlock title="断言" value={step.assertion} />
-                        <JsonBlock title="提取参数" value={step.extract} />
-                        {step.error_message ? <JsonBlock title="错误信息" value={step.error_message} /> : null}
+                      <div className="space-y-2 border-t bg-muted/10 p-3">
+                        <div className="grid gap-2 md:grid-cols-2">
+                          <JsonBlock title="请求地址" value={step.request.url} />
+                          <JsonBlock title="请求头" value={step.request.headers} />
+                        </div>
+                        <RequestBodySection
+                          written={step.request.body_template ?? step.request.params}
+                          sent={step.request.body ?? step.request.params}
+                        />
+                        <DetailSection title="响应参数" summary={summarizeValue(step.response)} defaultOpen={false}>
+                          <JsonPre value={step.response} />
+                        </DetailSection>
+                        <AssertionSection assertion={step.assertion} />
+                        <ExtractSection extract={step.extract} />
+                        {step.error_message ? (
+                          <DetailSection title="错误信息" summary={String(step.error_message).slice(0, 80)} defaultOpen>
+                            <JsonPre value={step.error_message} />
+                          </DetailSection>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -746,10 +933,106 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
   return (
     <div className="min-w-0 rounded border bg-background p-2">
       <div className="mb-1 text-xs font-medium text-muted-foreground">{title}</div>
-      <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
-        {formatJsonValue(value)}
-      </pre>
+      <JsonPre value={value} />
     </div>
+  );
+}
+
+function JsonPre({ value }: { value: unknown }) {
+  return (
+    <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
+      {formatJsonValue(value)}
+    </pre>
+  );
+}
+
+function DetailSection({
+  title,
+  summary,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  summary?: string;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <details open={defaultOpen} className="group rounded border bg-background">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2">
+        <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-90" />
+        <span className="text-xs font-medium text-muted-foreground">{title}</span>
+        {summary ? <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{summary}</span> : null}
+      </summary>
+      <div className="border-t p-3">{children}</div>
+    </details>
+  );
+}
+
+function RequestBodySection({ written, sent }: { written: unknown; sent: unknown }) {
+  return (
+    <DetailSection title="请求参数" summary={summarizeValue(sent)} defaultOpen>
+      <div className="grid gap-2 md:grid-cols-2">
+        <JsonBlock title="实际填写的" value={written} />
+        <JsonBlock title="请求填写的" value={sent} />
+      </div>
+    </DetailSection>
+  );
+}
+
+function AssertionSection({ assertion }: { assertion: { configured: unknown; results: unknown } }) {
+  const configured = Array.isArray(assertion.configured) ? assertion.configured : [];
+  const results = Array.isArray(assertion.results) ? assertion.results : [];
+  const failed = results.filter((item) => isRecord(item) && item.status === "failed").length;
+  const passed = results.filter((item) => isRecord(item) && item.status === "passed").length;
+  const summary = results.length
+    ? `通过 ${passed} · 失败 ${failed}`
+    : configured.length
+      ? `已配置 ${configured.length} 条，暂无执行明细`
+      : "未配置";
+
+  return (
+    <DetailSection title="断言" summary={summary} defaultOpen={failed > 0}>
+      <div className="space-y-3">
+        <JsonBlock title={`配置断言（${configured.length}）`} value={configured} />
+        {results.length ? (
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">执行明细（{results.length}）</div>
+          {results.map((item, index) => {
+            const row = isRecord(item) ? item : {};
+            const status = String(row.status ?? "");
+            return (
+              <div key={index} className="rounded border bg-muted/10 p-2">
+                <div className="mb-1 flex items-center gap-2 text-xs">
+                  <StatusBadge status={normalizeRunStatus(status)} />
+                  <span className="font-mono">{String(row.type ?? "--")}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{String(row.target ?? "--")}</span>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <JsonBlock title="预期" value={row.expected} />
+                  <JsonBlock title="实际" value={row.actual} />
+                </div>
+                {row.error ? <div className="mt-2 text-xs text-destructive">{String(row.error)}</div> : null}
+              </div>
+            );
+          })}
+          </div>
+        ) : null}
+      </div>
+    </DetailSection>
+  );
+}
+
+function ExtractSection({ extract }: { extract: { configured: unknown; values: unknown } }) {
+  const configured = Array.isArray(extract.configured) ? extract.configured : [];
+  const values = isRecord(extract.values) ? extract.values : {};
+  return (
+    <DetailSection title="提取参数" summary={summarizeExtract(extract)} defaultOpen={configured.length > 0 || Object.keys(values).length > 0}>
+      <div className="grid gap-2 md:grid-cols-2">
+        <JsonBlock title={`配置提取规则（${configured.length}）`} value={configured} />
+        <JsonBlock title={`提取结果（${Object.keys(values).length}）`} value={values} />
+      </div>
+    </DetailSection>
   );
 }
 
@@ -761,6 +1044,24 @@ function formatJsonValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function summarizeValue(value: unknown): string {
+  if (value == null || value === "") return "--";
+  if (Array.isArray(value)) return `${value.length} 项`;
+  if (isRecord(value)) return `${Object.keys(value).length} 个字段`;
+  const text = typeof value === "string" ? value : formatJsonValue(value);
+  return text.replace(/\s+/g, " ").slice(0, 80);
+}
+
+function summarizeExtract(value: { configured: unknown; values: unknown }): string {
+  const values = isRecord(value.values) ? Object.keys(value.values).length : 0;
+  const configured = Array.isArray(value.configured) ? value.configured.length : 0;
+  return `已提取 ${values} · 已配置 ${configured}`;
 }
 
 function normalizeRunStatus(status: string | null | undefined): ApiRunStatus {
@@ -776,14 +1077,172 @@ function Breadcrumb({ project, trail, onJump }: { project: string; trail: Array<
   return <nav className="flex min-w-0 items-center gap-1 text-sm"><button className="font-medium hover:underline" onClick={() => onJump(-1)}>{project}</button>{trail.map((item, index) => <span key={item.id} className="flex min-w-0 items-center gap-1"><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button className="max-w-48 truncate hover:underline" onClick={() => onJump(index)}>{item.name}</button></span>)}</nav>;
 }
 
-function ModuleCard({ node, onOpen }: { node: ContentNode; onOpen: () => void }) {
-  return <button type="button" onClick={onOpen} className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left hover:border-primary/40 hover:bg-accent/30"><Folder className="h-5 w-5 text-amber-500" /><span className="truncate text-sm font-medium">{node.name}</span><ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" /></button>;
+function ModuleCard({ node, flagCount, onOpen }: {
+  node: ContentNode;
+  flagCount?: { total: number } & Partial<Record<AiFlagType, number>>;
+  onOpen: () => void;
+}) {
+  const problemCount = (flagCount?.manual_fix ?? 0) + (flagCount?.interface_defect ?? 0) + (flagCount?.environment ?? 0);
+  const fixedCount = flagCount?.ai_fixed ?? 0;
+  const flagTitle = flagCount
+    ? [
+        flagCount.manual_fix ? `需人工 ${flagCount.manual_fix}` : "",
+        flagCount.interface_defect ? `疑似接口缺陷 ${flagCount.interface_defect}` : "",
+        flagCount.environment ? `环境 ${flagCount.environment}` : "",
+        flagCount.ai_fixed ? `AI已修复 ${flagCount.ai_fixed}` : "",
+      ].filter(Boolean).join(" · ")
+    : "";
+  return (
+    <button type="button" onClick={onOpen} className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left hover:border-primary/40 hover:bg-accent/30">
+      <Folder className="h-5 w-5 shrink-0 text-amber-500" />
+      <span className="truncate text-sm font-medium">{node.name}</span>
+      {problemCount > 0 ? (
+        <span className="shrink-0 rounded-full bg-red-100 px-1.5 py-0.5 text-[11px] font-medium leading-none text-red-700" title={`AI 标记（含子模块）：${flagTitle}`}>
+          {problemCount}
+        </span>
+      ) : null}
+      {problemCount === 0 && fixedCount > 0 ? (
+        <span className="shrink-0 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium leading-none text-emerald-700" title={`AI 标记（含子模块）：${flagTitle}`}>
+          {fixedCount}
+        </span>
+      ) : null}
+      <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" />
+    </button>
+  );
+}
+
+/** 用例行上的 AI 诊断标记徽标；点击打开详情/清除对话框。 */
+function AiFlagBadge({ flag, onClick }: { flag?: AiCaseFlag | null; onClick: () => void }) {
+  if (!flag) return null;
+  const meta = FLAG_META[flag.flag_type];
+  if (!meta) return null;
+  const Icon = meta.Icon;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${meta.hint}${flag.findings.length ? `\n${flag.findings.slice(0, 2).join("\n")}` : ""}\n点击查看详情 / 清除标记`}
+      className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium leading-none", meta.className)}
+    >
+      <Icon className="h-3 w-3" />
+      {meta.label}
+    </button>
+  );
+}
+
+/** 标记详情 + 清除（清除原因会作为反馈回流给下次 AI 诊断）。 */
+function AiFlagClearDialog({ row, onClose, onCleared }: {
+  row: ApiCase | null;
+  onClose: () => void;
+  onCleared: () => void;
+}) {
+  const [reason, setReason] = useState<AiFlagClearReason>("manually_fixed");
+  const [corrected, setCorrected] = useState<string>("正常");
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    if (row) { setReason("manually_fixed"); setCorrected("正常"); setNote(""); }
+  }, [row?.id]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const flag = row?.ai_flag;
+  if (!row || !flag) return null;
+  const meta = FLAG_META[flag.flag_type];
+  const Icon = meta?.Icon ?? Sparkles;
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      await apiCasesApi.clearAiFlag(row.id, {
+        reason,
+        corrected_classification: reason === "misjudged" ? corrected : undefined,
+        note: note.trim() || undefined,
+      });
+      toast.success(
+        reason === "misjudged"
+          ? "已清除标记并记录更正——下次 AI 诊断该用例时会遵循你的分类"
+          : reason === "wont_fix"
+            ? "已清除标记——AI 以后不会再自动修复该用例"
+            : "已清除标记，反馈已记录",
+      );
+      onCleared();
+    } catch (e) {
+      toast.error(messageOf(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="w-[calc(100vw-2rem)] max-w-lg overflow-hidden">
+        <DialogHeader className="min-w-0 pr-8">
+          <DialogTitle className="flex min-w-0 items-center gap-2">
+            <span className={cn("flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs", meta?.className)}>
+              <Icon className="h-3.5 w-3.5" />{meta?.label}
+            </span>
+            <span className="min-w-0 truncate">{row.name}</span>
+          </DialogTitle>
+          <DialogDescription>
+            清除原因会作为反馈记录，并在下次 AI 诊断该用例时生效（更正分类 / 不再自动修复 / 经验参考）。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-w-0 space-y-3 text-sm">
+          {flag.findings.length ? (
+            <div className="min-w-0 space-y-1 overflow-hidden rounded border bg-muted/30 p-2.5">
+              <div className="text-xs font-medium text-muted-foreground">AI 诊断发现{flag.fix_rounds ? `（尝试修复 ${flag.fix_rounds} 轮）` : ""}</div>
+              <ul className="list-disc space-y-0.5 pl-4">
+                {flag.findings.slice(0, 5).map((f, i) => <li key={i} className="break-words">{f}</li>)}
+              </ul>
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            <div className="text-xs font-medium text-muted-foreground">清除原因（必选，将回流给 AI）</div>
+            {CLEAR_REASON_OPTIONS.map((opt) => (
+              <label key={opt.value} className={cn("flex min-w-0 cursor-pointer items-start gap-2 rounded border p-2", reason === opt.value && "border-primary bg-primary/5")}>
+                <input type="radio" className="mt-0.5" checked={reason === opt.value} onChange={() => setReason(opt.value)} />
+                <span className="min-w-0">
+                  <span className="font-medium">{opt.label}</span>
+                  <span className="block text-xs text-muted-foreground">{opt.desc}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {reason === "misjudged" ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">正确分类：</span>
+              <Select value={corrected} onValueChange={setCorrected}>
+                <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="正常">正常</SelectItem>
+                  <SelectItem value="用例问题">用例问题</SelectItem>
+                  <SelectItem value="接口问题">接口问题</SelectItem>
+                  <SelectItem value="环境/其他">环境/其他</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : null}
+          <Textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder={reason === "manually_fixed" ? "改了什么？（会作为经验喂给 AI，建议填写）" : "备注（可选）"}
+            className="min-h-16 text-sm"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            清除标记并提交反馈
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onReorder, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
@@ -795,9 +1254,11 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
   onDelete: (row: ApiCase) => void;
   onDiagnose: (row: ApiCase) => void;
   onShowRunDetail: (row: ApiCase) => void;
+  onShowFlag: (row: ApiCase) => void;
   onReorder: (row: ApiCase, direction: "up" | "down") => void;
+  onInsertAbove: (caseId: number, sortOrder?: number | null) => void;
   onSaved: () => void;
-  newRows: string[];
+  newRows: ApiQuickNewRow[];
   onFirstInput: (rowId: string) => void;
   onRemoveNewRow: (rowId: string) => void;
 }) {
@@ -813,11 +1274,30 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
       <span className="text-right">操作</span>
     </div>
     {cases.map((row, index) => quickEdit ? (
-      <QuickEditRow key={row.id} row={row} sessionId={sessionId} checked={selected.has(row.id)} onChecked={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} onUp={() => index > 0 && onReorder(row, "up")} onDown={() => index < cases.length - 1 && onReorder(row, "down")} onSaved={onSaved} />
+      <Fragment key={row.id}>
+        {newRows.filter((item) => item.aboveCaseId === row.id).map((item, itemIndex) => (
+          <QuickCreateRow
+            key={item.tempId}
+            moduleId={moduleId}
+            sessionId={sessionId}
+            isTrailing={false}
+            autoFocusName={itemIndex === 0}
+            insertSortOrder={item.insertSortOrder}
+            onFirstInput={() => undefined}
+            onCreated={() => onRemoveNewRow(item.tempId)}
+            onRemove={() => onRemoveNewRow(item.tempId)}
+            onSaved={onSaved}
+          />
+        ))}
+        <QuickEditRow key={`case-${row.id}`} row={row} sessionId={sessionId} checked={selected.has(row.id)} onChecked={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} onInsertAbove={() => onInsertAbove(row.id, row.sort_order)} onUp={() => index > 0 && onReorder(row, "up")} onDown={() => index < cases.length - 1 && onReorder(row, "down")} onSaved={onSaved} />
+      </Fragment>
     ) : (
       <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", gridClass)}>
         <Checkbox checked={selected.has(row.id)} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
-        <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)}><FileText className="h-4 w-4 shrink-0 text-sky-500" /><span className="truncate">{row.name}</span></button>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
+          <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} />
+        </div>
         <Badge variant="outline" className="w-fit font-mono">{row.method ?? "GET"}</Badge>
         <span className="truncate font-mono text-xs" title={row.path ?? ""}>{row.path || "--"}</span>
         <StatusBadge
@@ -828,15 +1308,15 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
         <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="运行" onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
       </div>
     ))}
-    {quickEdit ? newRows.map((rowId, index) => (
+    {quickEdit ? newRows.filter((item) => item.aboveCaseId == null).map((item, index, bottomRows) => (
       <QuickCreateRow
-        key={rowId}
+        key={item.tempId}
         moduleId={moduleId}
         sessionId={sessionId}
-        isTrailing={index === newRows.length - 1}
-        onFirstInput={() => onFirstInput(rowId)}
-        onCreated={() => onRemoveNewRow(rowId)}
-        onRemove={() => onRemoveNewRow(rowId)}
+        isTrailing={index === bottomRows.length - 1}
+        onFirstInput={() => onFirstInput(item.tempId)}
+        onCreated={() => onRemoveNewRow(item.tempId)}
+        onRemove={() => onRemoveNewRow(item.tempId)}
         onSaved={onSaved}
       />
     )) : null}
@@ -854,8 +1334,8 @@ function StatusBadge({ status, clickable = false, onClick }: { status: ApiRunSta
   );
 }
 
-function QuickEditRow({ row, sessionId, checked, onChecked, onEdit, onDelete, onUp, onDown, onSaved }: {
-  row: ApiCase; sessionId: string | null; checked: boolean; onChecked: () => void; onEdit: () => void; onDelete: () => void; onUp: () => void; onDown: () => void; onSaved: () => void;
+function QuickEditRow({ row, sessionId, checked, onChecked, onEdit, onDelete, onInsertAbove, onUp, onDown, onSaved }: {
+  row: ApiCase; sessionId: string | null; checked: boolean; onChecked: () => void; onEdit: () => void; onDelete: () => void; onInsertAbove: () => void; onUp: () => void; onDown: () => void; onSaved: () => void;
 }) {
   const [name, setName] = useState(row.name);
   const [method, setMethod] = useState(row.method ?? "GET");
@@ -889,11 +1369,11 @@ function QuickEditRow({ row, sessionId, checked, onChecked, onEdit, onDelete, on
     <Input className="h-8 font-mono text-xs" value={headers} onChange={(event) => setHeaders(event.target.value)} placeholder='{"Authorization":"Bearer ${token}"}' />
     <Input className="h-8 font-mono text-xs" value={params} onChange={(event) => setParams(event.target.value)} placeholder='{"key":"value"}' />
     <div className="flex"><Button variant="ghost" size="icon" className="h-7 w-7" onClick={onUp}><ArrowUp className="h-3.5 w-3.5" /></Button><Button variant="ghost" size="icon" className="h-7 w-7" onClick={onDown}><ArrowDown className="h-3.5 w-3.5" /></Button></div>
-    <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" disabled={!dirty || saving} onClick={save}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button></div>
+    <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" disabled={!dirty || saving} onClick={save}>{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" title="在本行上方插入" onClick={onInsertAbove}><Plus className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" onClick={onEdit}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onDelete}><Trash2 className="h-4 w-4" /></Button></div>
   </div>;
 }
 
-function QuickCreateRow({ moduleId, sessionId, isTrailing, onFirstInput, onCreated, onRemove, onSaved }: { moduleId: number; sessionId: string | null; isTrailing: boolean; onFirstInput: () => void; onCreated: () => void; onRemove: () => void; onSaved: () => void }) {
+function QuickCreateRow({ moduleId, sessionId, isTrailing, autoFocusName = false, insertSortOrder, onFirstInput, onCreated, onRemove, onSaved }: { moduleId: number; sessionId: string | null; isTrailing: boolean; autoFocusName?: boolean; insertSortOrder?: number; onFirstInput: () => void; onCreated: () => void; onRemove: () => void; onSaved: () => void }) {
   const [name, setName] = useState("");
   const [method, setMethod] = useState("GET");
   const [path, setPath] = useState("");
@@ -901,8 +1381,12 @@ function QuickCreateRow({ moduleId, sessionId, isTrailing, onFirstInput, onCreat
   const [params, setParams] = useState("");
   const [saving, setSaving] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
   const spawnedRef = useRef(false);
   const hasContent = Boolean(name.trim() || path.trim() || headers.trim() || params.trim());
+  useEffect(() => {
+    if (autoFocusName) nameRef.current?.focus();
+  }, [autoFocusName]);
   const markInput = () => {
     if (!spawnedRef.current) {
       spawnedRef.current = true;
@@ -913,7 +1397,7 @@ function QuickCreateRow({ moduleId, sessionId, isTrailing, onFirstInput, onCreat
     if (!hasContent || saving) return;
     setSaving(true);
     try {
-      await apiCasesApi.create({ module_id: moduleId, name: name.trim() || "未命名 API 用例", method, path, headers, params, case_type: "api" }, sessionId ?? undefined);
+      await apiCasesApi.create({ module_id: moduleId, name: name.trim() || "未命名 API 用例", method, path, headers, params, case_type: "api", sort_order: insertSortOrder ?? null }, sessionId ?? undefined);
       onSaved();
       onCreated();
     } catch (error) { toast.error(messageOf(error)); } finally { setSaving(false); }
@@ -927,12 +1411,12 @@ function QuickCreateRow({ moduleId, sessionId, isTrailing, onFirstInput, onCreat
   };
   return <div ref={rowRef} onBlur={handleBlur} className="grid min-w-max grid-cols-[36px_minmax(180px,1.1fr)_90px_minmax(180px,1.2fr)_minmax(220px,1.4fr)_minmax(220px,1.4fr)_90px_120px] items-center gap-2 bg-primary/5 px-3 py-2">
     <Plus className="h-4 w-4 text-primary" />
-    <Input className="h-8" value={name} onChange={(event) => { setName(event.target.value); markInput(); }} placeholder="输入任意内容后自动追加下一行" />
+    <Input ref={nameRef} className="h-8" value={name} onChange={(event) => { setName(event.target.value); markInput(); }} placeholder={insertSortOrder != null ? "在本行上方插入新用例" : "输入任意内容后自动追加下一行"} />
     <Select value={method} onValueChange={(value) => { setMethod(value); markInput(); }}><SelectTrigger className="h-8"><SelectValue /></SelectTrigger><SelectContent>{METHODS.map((item) => <SelectItem key={item} value={item}>{item}</SelectItem>)}</SelectContent></Select>
     <Input className="h-8 font-mono text-xs" value={path} onChange={(event) => { setPath(event.target.value); markInput(); }} placeholder="/api/example" />
     <Input className="h-8 font-mono text-xs" value={headers} onChange={(event) => { setHeaders(event.target.value); markInput(); }} placeholder='{"Authorization":"Bearer ${token}"}' />
     <Input className="h-8 font-mono text-xs" value={params} onChange={(event) => { setParams(event.target.value); markInput(); }} placeholder='{"key":"value"}' />
-    <span className="text-xs text-muted-foreground">新增到末尾</span>
+    <span className="text-xs text-muted-foreground">{insertSortOrder != null ? "向上插入" : "新增到末尾"}</span>
     <div className="flex justify-end">{saving ? <Loader2 className="h-4 w-4 animate-spin" /> : hasContent ? <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" onClick={onRemove}><Trash2 className="h-4 w-4" /></Button> : null}</div>
   </div>;
 }
@@ -952,6 +1436,7 @@ function RecordsDialog({
   quickEdit,
   moduleId,
   firstModel,
+  models,
   onInvalidate,
   onEditCase,
   onClose,
@@ -960,6 +1445,7 @@ function RecordsDialog({
   quickEdit: boolean;
   moduleId: number | null;
   firstModel: string;
+  models: string[];
   onInvalidate: () => void;
   onEditCase: (row: ApiCase) => void;
   onClose: () => void;
@@ -979,6 +1465,9 @@ function RecordsDialog({
   });
   const loading = quickEdit ? editQuery.isLoading : testQuery.isLoading;
   const [analysis, setAnalysis] = useState<ReportAnalysisState | null>(null);
+  // 修复用的模型：诊断+修参数是推理要求最高的任务，允许用户选强模型，默认第一个启用的
+  const [fixModel, setFixModel] = useState<string>("");
+  const effectiveFixModel = fixModel || firstModel;
   const aiRunQuery = useQuery({
     queryKey: ["api-report-analysis-run", analysis?.runId],
     queryFn: () => aiApi.getRun(analysis!.runId!),
@@ -1004,13 +1493,26 @@ function RecordsDialog({
     }
   };
 
-  const analyzeReport = async (reportId: number) => {
+  const analyzeReport = async (reportId: number, opts?: { force?: boolean }) => {
     analysisAbortRef.current?.abort();
     const controller = new AbortController();
     analysisAbortRef.current = controller;
     setAnalysis({ reportId, stage: "collecting", preview: null });
     try {
       const preview = await reportsApi.analysisPreview(reportId, controller.signal);
+      // 非强制刷新：优先复用上次已保存的分析结果，避免重新跑（尤其 AI 汇总）
+      if (!opts?.force) {
+        try {
+          const saved = await reportsApi.analysisLatest(reportId);
+          if (saved?.ai_run_id) {
+            setAnalysis({ reportId, stage: "done", preview, runId: saved.ai_run_id });
+            toast.success("已加载上次分析结果（点「重新分析」可刷新）");
+            return;
+          }
+        } catch {
+          /* 没有历史就照常新跑 */
+        }
+      }
       setAnalysis({ reportId, stage: firstModel ? "rules" : "done", preview });
       if (!firstModel) {
         toast.success("规则诊断已完成");
@@ -1064,7 +1566,10 @@ function RecordsDialog({
     }
   };
 
-  const applyAssertionSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+  const applyAssertionSuggestion = async (
+    suggestion: ReportAnalysisSuggestion,
+    history?: { sessionId: string; batchId?: number },
+  ) => {
     if (suggestion.case_id == null) {
       toast.error("建议里缺少用例 ID，无法应用");
       return;
@@ -1087,13 +1592,14 @@ function RecordsDialog({
         target,
         action.expected ?? "",
       );
-      await apiCasesApi.update(detail.id, {
+      const updateResult = await apiCasesApi.update(detail.id, {
         module_id: detail.module_id,
         name: detail.name,
         assertion: JSON.stringify(assertionRulesToLegacyMap(nextAssertion.steps), null, 2),
         steps: nextAssertion.steps,
         case_type: "api",
-      });
+      }, history?.sessionId, history?.batchId);
+      if (history && updateResult.batch_id != null) history.batchId = updateResult.batch_id;
       toast.success("已应用断言，重新运行后可验证效果");
       onInvalidate();
     } catch (error) {
@@ -1101,7 +1607,10 @@ function RecordsDialog({
     }
   };
 
-  const applyExtractSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+  const applyExtractSuggestion = async (
+    suggestion: ReportAnalysisSuggestion,
+    history?: { sessionId: string; batchId?: number },
+  ) => {
     if (suggestion.case_id == null) {
       toast.error("建议里缺少用例 ID，无法应用");
       return;
@@ -1125,13 +1634,14 @@ function RecordsDialog({
         variable,
         jsonpath,
       );
-      await apiCasesApi.update(detail.id, {
+      const updateResult = await apiCasesApi.update(detail.id, {
         module_id: detail.module_id,
         name: detail.name,
         extract_data: JSON.stringify(extractRulesToLegacyMap(nextExtract.steps), null, 2),
         steps: nextExtract.steps,
         case_type: "api",
-      });
+      }, history?.sessionId, history?.batchId);
+      if (history && updateResult.batch_id != null) history.batchId = updateResult.batch_id;
       toast.success(`已更新提取参数 ${variable} → ${jsonpath}`);
       onInvalidate();
     } catch (error) {
@@ -1146,8 +1656,9 @@ function RecordsDialog({
       return;
     }
     let ok = 0;
+    const history = { sessionId: `ai-apply-assertions-${Date.now()}` };
     for (const item of applicable) {
-      await applyAssertionSuggestion(item);
+      await applyAssertionSuggestion(item, history);
       ok += 1;
     }
     toast.success(`已应用 ${ok} 条断言建议`);
@@ -1160,8 +1671,9 @@ function RecordsDialog({
       return;
     }
     let ok = 0;
+    const history = { sessionId: `ai-apply-extracts-${Date.now()}` };
     for (const item of applicable) {
-      await applyExtractSuggestion(item);
+      await applyExtractSuggestion(item, history);
       ok += 1;
     }
     toast.success(`已应用 ${ok} 条提取修复`);
@@ -1204,6 +1716,156 @@ function RecordsDialog({
     }
   };
 
+  const deleteDuplicateSuggestions = async (items: ReportAnalysisSuggestion[]) => {
+    const ids = [
+      ...new Set(
+        items
+          .filter((item) => item.action?.type === "delete_duplicate_case")
+          .map((item) => Number(item.action?.duplicate_case_id ?? item.action?.case_id ?? item.case_id))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    ];
+    if (ids.length === 0) {
+      toast.info("没有可删除的重复用例");
+      return;
+    }
+    if (!window.confirm(`确认删除 ${ids.length} 条重复用例吗？建议先确认保留用例无误。`)) return;
+    try {
+      const sessionId = `ai-delete-duplicates-${Date.now()}`;
+      let historyBatchId: number | undefined;
+      const results = [];
+      for (const caseId of ids) {
+        const result = await apiCasesApi.remove(caseId, sessionId, historyBatchId);
+        if (result.batch_id != null) historyBatchId = result.batch_id;
+        results.push(result);
+      }
+      const batchIds = results.map((item) => item.batch_id).filter((id): id is number => id != null);
+      toast.success(`已删除 ${ids.length} 条重复用例，建议重新分析刷新结果`, batchIds.length > 0 ? {
+        action: {
+          label: "撤销",
+          onClick: async () => {
+            try {
+              await Promise.all(batchIds.map((batchId) => casesApi.rollbackHistory(batchId, { mode: "full" })));
+              toast.success("已恢复重复用例");
+              onInvalidate();
+            } catch (error) {
+              toast.error(messageOf(error));
+            }
+          },
+        },
+      } : undefined);
+      onInvalidate();
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
+  const deleteDuplicateSuggestion = async (suggestion: ReportAnalysisSuggestion) => {
+    await deleteDuplicateSuggestions([suggestion]);
+  };
+
+  // AI 读取真实响应 → 生成 fix → 服务端预检 + 应用 + 重跑验证闭环。
+  // 模型输出只是候选：分类过滤 / JSONPath 对真实响应预检 / 变量产出校验 / params 合并
+  // 都在服务端做；应用后自动重跑，绿变红自动按快照回滚，修复率不会为负。
+  const applyAiReportFixes = async () => {
+    const reportId = analysis?.reportId;
+    if (!reportId) return;
+    if (!effectiveFixModel) {
+      toast.error("没有可用的 AI 模型，无法生成参数修复");
+      return;
+    }
+    try {
+      toast.info(`正在用 ${effectiveFixModel} 读取响应并生成修复，可在任务看板查看进度 / 终止…`);
+      // 异步提交：建 AiRun + 派 Celery，任务进全局看板、可终止。再轮询拿结果。
+      const submitted = await functionalCasesApi.aiDiagnoseReport({ report_id: reportId, model_name: effectiveFixModel });
+      const runId = submitted.ai_run_id;
+      let run = await aiApi.getRun(runId);
+      while (run.status === "pending" || run.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        run = await aiApi.getRun(runId);
+      }
+      if (run.status === "cancelled") {
+        toast.info("已终止 AI 修复任务");
+        return;
+      }
+      if (run.status === "failed") {
+        toast.error(run.error || "AI 修复任务失败");
+        return;
+      }
+      // 服务端应用：预检（分类过滤/真实响应 JSONPath 预检/变量校验/params 合并）
+      // + 每用例快照 + 自动重跑验证；绿变红的用例后端自动回滚。
+      const applyRes = await functionalCasesApi.aiApplyReportFixes({ ai_run_id: runId });
+      const appliedCount = applyRes.applied.length;
+      const skippedCount = applyRes.skipped.length;
+      if (appliedCount === 0) {
+        toast.info(
+          skippedCount > 0
+            ? `预检未放行任何修复（拦截 ${skippedCount} 条：非用例问题 / 响应预检不通过 / 变量缺产出方等）`
+            : "AI 没有给出可应用的修复",
+        );
+        onInvalidate();
+        return;
+      }
+      onInvalidate();
+      if (applyRes.verify_report_id == null) {
+        toast.success(`已应用 ${appliedCount} 条修复（拦截 ${skippedCount} 条），未触发自动验证，请手动重跑核对`);
+        return;
+      }
+      toast.info(`已应用 ${appliedCount} 条修复（预检拦截 ${skippedCount} 条），正在重跑验证；仍失败的会带新证据自动再修（最多 3 轮），绿变红自动回滚…`);
+
+      type VerifyResult = {
+        status: string;
+        fixed_count?: number;
+        regressed_count?: number;
+        still_red_count?: number;
+        rolled_back_count?: number;
+        collateral_regressed_count?: number;
+        untouched_red_count?: number;
+        rounds_used?: number;
+        note?: string;
+        message?: string;
+      };
+      const deadline = Date.now() + 15 * 60_000;
+      let verify: VerifyResult | undefined;
+      let lastRound = 1;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const latest = await aiApi.getRun(runId);
+        const payload = latest.output_payload as { verify?: VerifyResult; rounds?: { round?: number }[] } | null;
+        verify = payload?.verify;
+        if (verify) break;
+        const round = payload?.rounds?.length ?? 1;
+        if (round > lastRound) {
+          lastRound = round;
+          toast.info(`第 ${round} 轮修复已应用，正在重跑验证…`);
+        }
+      }
+      onInvalidate();
+      if (!verify) {
+        toast.info("多轮验证仍在后台执行，结果稍后可在测试记录里查看（绿变红会自动回滚）");
+        return;
+      }
+      if (verify.status !== "done") {
+        toast.warning(verify.message || "验证未正常完成，已应用的修复保留，请手动重跑核对");
+        return;
+      }
+      const collateral = verify.collateral_regressed_count ?? 0;
+      const summary =
+        `${verify.rounds_used ?? 1} 轮修复完成：生效 ${verify.fixed_count ?? 0} 条（红→绿）；` +
+        `绿变红 ${verify.regressed_count ?? 0} 条（已自动回滚 ${verify.rolled_back_count ?? 0}）；` +
+        `仍失败 ${verify.still_red_count ?? 0} 条` +
+        (collateral > 0 ? `；另有 ${collateral} 条未修改用例被连带打挂，请人工检查` : "") +
+        (verify.note ? `（${verify.note}）` : "");
+      if ((verify.fixed_count ?? 0) > 0 && (verify.regressed_count ?? 0) === 0 && collateral === 0) {
+        toast.success(summary);
+      } else {
+        toast.info(summary);
+      }
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
   return (
     <>
       <Dialog open={open} onOpenChange={(value) => !value && onClose()}><DialogContent className="max-w-4xl"><DialogHeader><DialogTitle>{quickEdit ? "编辑记录" : "测试记录"}</DialogTitle><DialogDescription>{quickEdit ? "同一次快速编辑中的改动按会话聚合。" : "API 自动执行结果按报告聚合。点报告右侧「AI 全面分析」可批量诊断所有用例。"}</DialogDescription></DialogHeader><div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">{loading ? <Loading /> : quickEdit ? <EditRecords records={editQuery.data ?? []} onRollback={rollbackRecord} /> : <TestRecords reports={testQuery.data ?? []} onAnalyze={analyzeReport} />}</div><DialogFooter><Button variant="outline" onClick={onClose}>关闭</Button></DialogFooter></DialogContent></Dialog>
@@ -1215,7 +1877,14 @@ function RecordsDialog({
         onApplyExtract={applyExtractSuggestion}
         onApplyExtracts={applyExtractSuggestions}
         onApplyOrder={applyOrderSuggestion}
+        onDeleteDuplicate={deleteDuplicateSuggestion}
+        onDeleteDuplicates={deleteDuplicateSuggestions}
+        onAiFixAll={applyAiReportFixes}
+        models={models}
+        fixModel={effectiveFixModel}
+        onFixModelChange={setFixModel}
         onEditCase={openSuggestedCase}
+        onReanalyze={() => analysis && analyzeReport(analysis.reportId, { force: true })}
         onCancel={cancelAnalysis}
         onClose={() => setAnalysis(null)}
       />
@@ -1261,7 +1930,14 @@ function ReportAnalysisDialog({
   onApplyExtract,
   onApplyExtracts,
   onApplyOrder,
+  onDeleteDuplicate,
+  onDeleteDuplicates,
+  onAiFixAll,
+  models,
+  fixModel,
+  onFixModelChange,
   onEditCase,
+  onReanalyze,
   onCancel,
   onClose,
 }: {
@@ -1272,10 +1948,20 @@ function ReportAnalysisDialog({
   onApplyExtract: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
   onApplyExtracts: (suggestions: ReportAnalysisSuggestion[]) => Promise<void>;
   onApplyOrder: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onDeleteDuplicate: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onDeleteDuplicates: (suggestions: ReportAnalysisSuggestion[]) => Promise<void>;
+  onAiFixAll: () => Promise<void>;
+  models: string[];
+  fixModel: string;
+  onFixModelChange: (name: string) => void;
   onEditCase: (caseId: number | null) => Promise<void>;
+  onReanalyze: () => void;
   onCancel: () => void;
   onClose: () => void;
 }) {
+  const [applyingAll, setApplyingAll] = useState(false);
+  const [aiFixing, setAiFixing] = useState(false);
+  const [deletingDuplicates, setDeletingDuplicates] = useState(false);
   if (!state) return null;
   const aiOutput = run?.status === "success" ? (run.output_payload as ReportAnalysisOutput | null) : null;
   const output = aiOutput ?? state.preview;
@@ -1296,6 +1982,8 @@ function ReportAnalysisDialog({
   const autoApplicable = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "add_assertion");
   const autoExtract = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "update_extract");
   const autoOrder = suggestions.filter((item) => item.apply_mode === "high_confidence" && item.action?.type === "reorder_case_before");
+  const duplicateSuggestions = suggestions.filter((item) => item.action?.type === "delete_duplicate_case");
+  const hasApplyAll = autoOrder.length + autoExtract.length + autoApplicable.length > 0;
   const groupedSuggestions = groupAnalysisSuggestions(suggestions);
   const cancellable =
     state.stage !== "failed" &&
@@ -1308,7 +1996,7 @@ function ReportAnalysisDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-4xl">
+      <DialogContent className="max-h-[88vh] w-[min(92vw,1120px)] max-w-6xl grid-rows-[auto_minmax(0,1fr)_auto]">
         <DialogHeader>
           <DialogTitle>AI 全面分析</DialogTitle>
           <DialogDescription>先展示规则诊断，AI 汇总在后台继续生成。</DialogDescription>
@@ -1323,7 +2011,7 @@ function ReportAnalysisDialog({
             分析失败：{state.error || run?.error || "未知错误"}
           </div>
         ) : (
-          <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+          <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
             <AnalysisStageBar stage={stage} />
             <div className="flex flex-wrap items-center gap-3 text-sm">
               <span className="font-medium">规则诊断已输出</span>
@@ -1332,40 +2020,95 @@ function ReportAnalysisDialog({
               <span className="text-xs text-emerald-700">高置信 {high}</span>
               <span className="text-xs text-amber-700">需审核 {review}</span>
               <span className="text-xs text-red-700">需人工 {manual}</span>
-              {autoOrder.length > 0 ? (
+              {hasApplyAll ? (
                 <Button
                   size="sm"
-                  variant="outline"
                   className="ml-auto h-7 px-2 text-xs"
+                  disabled={applyingAll}
                   onClick={async () => {
-                    for (const item of autoOrder) await onApplyOrder(item);
+                    setApplyingAll(true);
+                    try {
+                      // 顺序优先（会重排 sort_order），再取参、再断言
+                      for (const item of autoOrder) await onApplyOrder(item);
+                      if (autoExtract.length) await onApplyExtracts(autoExtract);
+                      if (autoApplicable.length) await onApplyAssertions(autoApplicable);
+                      toast.success(
+                        `已一键应用 ${autoOrder.length + autoExtract.length + autoApplicable.length} 项调整（顺序/取参/断言）`,
+                      );
+                    } finally {
+                      setApplyingAll(false);
+                    }
                   }}
                 >
-                  <ArrowUp className="h-3.5 w-3.5" /> 应用全部顺序调整（{autoOrder.length}）
+                  {applyingAll ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                  一键应用全部调整（{autoOrder.length + autoExtract.length + autoApplicable.length}）
                 </Button>
               ) : null}
-              {autoExtract.length > 0 ? (
+              {duplicateSuggestions.length > 0 ? (
                 <Button
                   size="sm"
-                  variant="outline"
-                  className={autoOrder.length === 0 ? "ml-auto h-7 px-2 text-xs" : "h-7 px-2 text-xs"}
-                  onClick={() => void onApplyExtracts(autoExtract)}
+                  variant="destructive"
+                  className={hasApplyAll ? "h-7 px-2 text-xs" : "ml-auto h-7 px-2 text-xs"}
+                  disabled={deletingDuplicates}
+                  onClick={async () => {
+                    setDeletingDuplicates(true);
+                    try {
+                      await onDeleteDuplicates(duplicateSuggestions);
+                    } finally {
+                      setDeletingDuplicates(false);
+                    }
+                  }}
                 >
-                  <Save className="h-3.5 w-3.5" /> 应用全部提取修复（{autoExtract.length}）
+                  {deletingDuplicates ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  一键删除重复用例（{duplicateSuggestions.length}）
                 </Button>
               ) : null}
-              {autoApplicable.length > 0 ? (
-                <Button
-                  size="sm"
-                  className={autoOrder.length === 0 && autoExtract.length === 0 ? "ml-auto h-7 px-2 text-xs" : "h-7 px-2 text-xs"}
-                  onClick={() => void onApplyAssertions(autoApplicable)}
+              {models.length > 1 ? (
+                <select
+                  className={
+                    (hasApplyAll || duplicateSuggestions.length > 0 ? "" : "ml-auto ") +
+                    "h-7 rounded-md border bg-background px-1.5 text-xs text-muted-foreground"
+                  }
+                  value={fixModel}
+                  disabled={aiFixing}
+                  title="修复用的 AI 模型（诊断+修参数是推理要求最高的任务，建议选推理模型）"
+                  onChange={(e) => onFixModelChange(e.target.value)}
                 >
-                  <Save className="h-3.5 w-3.5" /> 应用全部高置信断言（{autoApplicable.length}）
-                </Button>
+                  {models.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
               ) : null}
+              <Button
+                size="sm"
+                variant="outline"
+                className={
+                  hasApplyAll || duplicateSuggestions.length > 0 || models.length > 1
+                    ? "h-7 px-2 text-xs"
+                    : "ml-auto h-7 px-2 text-xs"
+                }
+                disabled={aiFixing}
+                title="用 AI 读取真实响应，批量修复请求参数/提取/断言；应用前程序化预检，应用后自动重跑验证（最多 3 轮），绿变红自动回滚"
+                onClick={async () => {
+                  setAiFixing(true);
+                  try {
+                    await onAiFixAll();
+                  } finally {
+                    setAiFixing(false);
+                  }
+                }}
+              >
+                {aiFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                AI 修复参数并应用
+              </Button>
             </div>
             {aiOutput?.ai_summary ? (
-              <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded bg-muted/40 p-3 text-xs leading-relaxed">{aiOutput.ai_summary}</pre>
+              <div className="h-64 min-h-[160px] max-h-[56vh] resize-y overflow-auto rounded border bg-muted/20 p-3 text-sm">
+                <MarkdownView
+                  source={aiOutput.ai_summary}
+                  className="prose prose-sm max-w-none break-words [&_ol]:list-decimal [&_ul]:list-disc [&_li]:ml-4 [&_pre]:whitespace-pre-wrap"
+                />
+              </div>
             ) : state.runId && run?.status !== "failed" ? (
               <div className="rounded border bg-muted/30 p-2 text-xs text-muted-foreground">
                 <Loader2 className="mr-1.5 inline h-3.5 w-3.5 animate-spin" />
@@ -1379,6 +2122,7 @@ function ReportAnalysisDialog({
                 onApplyAssertion={onApplyAssertion}
                 onApplyExtract={onApplyExtract}
                 onApplyOrder={onApplyOrder}
+                onDeleteDuplicate={onDeleteDuplicate}
                 onEditCase={onEditCase}
               />
             ))}
@@ -1386,6 +2130,11 @@ function ReportAnalysisDialog({
         )}
         <DialogFooter>
           {cancellable ? <Button variant="destructive" onClick={onCancel}>中断分析</Button> : null}
+          {!cancellable && output ? (
+            <Button variant="outline" onClick={onReanalyze}>
+              <Sparkles className="h-4 w-4" /> 重新分析
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={onClose}>关闭</Button>
         </DialogFooter>
       </DialogContent>
@@ -1424,21 +2173,24 @@ function AnalysisSuggestionGroupCard({
   onApplyAssertion,
   onApplyExtract,
   onApplyOrder,
+  onDeleteDuplicate,
   onEditCase,
 }: {
   group: ReturnType<typeof groupAnalysisSuggestions>[number];
   onApplyAssertion: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
   onApplyExtract: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
   onApplyOrder: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
+  onDeleteDuplicate: (suggestion: ReportAnalysisSuggestion) => Promise<void>;
   onEditCase: (caseId: number | null) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState<"apply" | "extract" | "order" | "edit" | null>(null);
-  const runAction = async (kind: "apply" | "extract" | "order" | "edit", item?: ReportAnalysisSuggestion) => {
+  const [busy, setBusy] = useState<"apply" | "extract" | "order" | "delete" | "edit" | null>(null);
+  const runAction = async (kind: "apply" | "extract" | "order" | "delete" | "edit", item?: ReportAnalysisSuggestion) => {
     setBusy(kind);
     try {
       if (kind === "apply" && item) await onApplyAssertion(item);
       else if (kind === "extract" && item) await onApplyExtract(item);
       else if (kind === "order" && item) await onApplyOrder(item);
+      else if (kind === "delete" && item) await onDeleteDuplicate(item);
       else await onEditCase(group.caseId);
     } finally {
       setBusy(null);
@@ -1458,6 +2210,7 @@ function AnalysisSuggestionGroupCard({
           const canApplyAssertion = item.action?.type === "add_assertion";
           const canApplyExtract = item.action?.type === "update_extract" && item.action?.suggested_jsonpath;
           const canApplyOrder = item.action?.type === "reorder_case_before";
+          const canDeleteDuplicate = item.action?.type === "delete_duplicate_case";
           const needsSetupCase = item.action?.type === "create_setup_case";
           return (
             <div key={`${item.step_report_id ?? index}-${index}`} className="rounded-md bg-muted/20 p-2">
@@ -1484,6 +2237,18 @@ function AnalysisSuggestionGroupCard({
                   >
                     {busy === "order" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
                     调整顺序
+                  </Button>
+                ) : null}
+                {canDeleteDuplicate ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    className="h-7 px-2 text-xs"
+                    disabled={busy !== null}
+                    onClick={() => void runAction("delete", item)}
+                  >
+                    {busy === "delete" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                    删除重复用例
                   </Button>
                 ) : null}
                 {canApplyExtract ? (
@@ -1580,9 +2345,80 @@ function analysisModeLabel(mode: string): string {
 function EditRecords({ records, onRollback }: { records: ApiCaseEditRecord[]; onRollback: (record: ApiCaseEditRecord, fullBatch?: boolean) => void }) {
   const groups = useMemo(() => {
     const map = new Map<string, ApiCaseEditRecord[]>();
-    records.forEach((record) => { const key = record.session_id ?? `single-${record.id}`; map.set(key, [...(map.get(key) ?? []), record]); });
-    return [...map.entries()].map(([key, items]) => ({ key, items, time: Math.max(...items.map((item) => new Date(item.created_at).getTime())) })).sort((a, b) => b.time - a.time);
+    records
+      .filter((record) => !(record.session_id?.startsWith("ai-") && record.batch_id == null))
+      .forEach((record) => {
+        const createdSecond = (record.created_at || "").replace(" ", "T").slice(0, 19);
+        const key = record.session_id ?? `time-${createdSecond}-${record.operator ?? ""}-${record.action}`;
+        map.set(key, [...(map.get(key) ?? []), record]);
+      });
+    return [...map.entries()]
+      .map(([key, items]) => ({
+        key,
+        items,
+        time: Math.max(...items.map((item) => getTimeValue(item.created_at))),
+      }))
+      .sort((a, b) => b.time - a.time);
   }, [records]);
   if (!groups.length) return <Empty text="该模块还没有编辑记录" />;
-  return <>{groups.map((group) => { const counts = { create: 0, update: 0, delete: 0 }; group.items.forEach((item) => { counts[item.action] += 1; }); const canRollbackBatch = group.items.filter((item) => item.rollback_available && item.batch_id).length > 1; return <details key={group.key} className="rounded-lg border bg-card px-3 py-2"><summary className="cursor-pointer list-none"><div className="flex items-center gap-3"><span className="font-medium">{formatTime(new Date(group.time).toISOString())} 编辑记录</span><span className="ml-auto text-xs text-muted-foreground">新增 {counts.create} · 修改 {counts.update} · 删除 {counts.delete}</span></div></summary><div className="mt-2 divide-y border-t">{group.items.map((item) => <div key={item.id} className="py-2 text-sm"><div className="flex items-center gap-2"><Badge variant="outline">{item.action}</Badge><span>{item.case_name}</span>{item.rollback_status && item.rollback_status !== "none" ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">已回滚</span> : item.rollback_available ? <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">可回滚</span> : null}<span className="ml-auto text-xs text-muted-foreground">{item.operator ?? "System"}</span>{item.rollback_available && item.batch_id ? <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onRollback(item)}>回滚</Button> : null}{canRollbackBatch && item.rollback_available && item.batch_id ? <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onRollback(item, true)}>整次回滚</Button> : null}</div>{item.changes.length ? <ul className="mt-1 space-y-0.5 pl-16 text-xs text-muted-foreground">{item.changes.map((change, index) => <li key={`${change.field}-${index}`}>{change.field}：<span className="line-through">{String(change.old || "空")}</span> → <span className="text-foreground">{String(change.new || "空")}</span></li>)}</ul> : null}</div>)}</div></details>; })}</>;
+  return (
+    <>
+      {groups.map((group) => {
+        const counts = { create: 0, update: 0, delete: 0 };
+        group.items.forEach((item) => { counts[item.action] += 1; });
+        const rollbackBatchIds = [
+          ...new Set(group.items.filter((item) => item.rollback_available && item.batch_id).map((item) => item.batch_id)),
+        ];
+        const canRollbackBatch = rollbackBatchIds.length === 1 && group.items.filter((item) => item.rollback_available).length > 1;
+        const first = group.items[0];
+        const title = first.session_id?.startsWith("ai-") || group.items.length > 1 ? "批量编辑记录" : "编辑记录";
+        return (
+          <details key={group.key} className="rounded-lg border bg-card px-3 py-2">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center gap-3">
+                <span className="font-medium">{formatTime(first.created_at)} {title}</span>
+                <span className="ml-auto text-xs text-muted-foreground">
+                  新增 {counts.create} · 修改 {counts.update} · 删除 {counts.delete}
+                </span>
+              </div>
+            </summary>
+            <div className="mt-2 divide-y border-t">
+              {group.items.map((item) => (
+                <div key={`${item.batch_id ?? "legacy"}-${item.id}`} className="py-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline">{item.action}</Badge>
+                    <span>{item.case_name}</span>
+                    {item.rollback_status && item.rollback_status !== "none" ? (
+                      <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">已回滚</span>
+                    ) : item.rollback_available ? (
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">可回滚</span>
+                    ) : null}
+                    <span className="ml-auto text-xs text-muted-foreground">{item.operator ?? "System"}</span>
+                    {item.rollback_available && item.batch_id ? (
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onRollback(item)}>回滚</Button>
+                    ) : null}
+                    {canRollbackBatch && item.rollback_available && item.batch_id ? (
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => onRollback(item, true)}>整次回滚</Button>
+                    ) : null}
+                  </div>
+                  {item.changes.length ? (
+                    <ul className="mt-1 space-y-0.5 pl-16 text-xs text-muted-foreground">
+                      {item.changes.map((change, index) => (
+                        <li key={`${change.field}-${index}`}>
+                          {change.field}：
+                          <span className="line-through">{String(change.old || "空")}</span>
+                          {" → "}
+                          <span className="text-foreground">{String(change.new || "空")}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      })}
+    </>
+  );
 }

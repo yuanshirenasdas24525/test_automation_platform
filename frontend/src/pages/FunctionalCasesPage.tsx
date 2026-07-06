@@ -40,6 +40,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SideDrawer } from "@/components/ui/side-drawer";
+import { ModuleOutlinePanel } from "@/components/case/module-outline-drawer";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2234,6 +2236,22 @@ function upsertFailedBatch(items: AiBatchFailure[], next: AiBatchFailure) {
   );
 }
 
+const ASSERT_NOT_EMPTY = new Set(["not_empty", "not_null", "notnull", "notempty", "非空"]);
+const ASSERT_IS_EMPTY = new Set(["is_null", "为空", "空"]);
+
+/** 断言映射 {target: expected} → 结构化断言规则；正确处理"非空/为空"哨兵，
+ *  避免 not_empty 被当成字面量做相等比较（这会让非空值反而判失败）。 */
+function assertionMapToRules(map: Record<string, unknown>) {
+  return Object.entries(map ?? {})
+    .filter(([t]) => t)
+    .map(([target, expected]) => {
+      const ev = typeof expected === "string" ? expected.trim().toLowerCase() : null;
+      if (ev && ASSERT_NOT_EMPTY.has(ev)) return { type: "is_not_null", target, expected: null };
+      if (ev && ASSERT_IS_EMPTY.has(ev)) return { type: "is_null", target, expected: null };
+      return { type: target.startsWith("$") ? "jsonpath" : "equal", target, expected };
+    });
+}
+
 /** 将 AI 返回的人类可读接口步骤整理成可直接执行的 API 用例字段。 */
 function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
   // 优先用 AI 给的结构化字段；缺失时再从 steps 文本里兜底解析
@@ -2241,6 +2259,7 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
   let path = generated.path || "";
   const headers: Record<string, unknown> = { ...(generated.headers ?? {}) };
   let body: Record<string, unknown> | null = generated.body ?? null;
+  const firstRequest = generated.requests?.[0];
 
   if (!method || !path) {
     for (const line of [generated.name, ...generated.steps]) {
@@ -2251,6 +2270,14 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
         break;
       }
     }
+  }
+  if (firstRequest) {
+    // 多步用例：v1 展示字段整体取第一步，避免"路径取第一步、body 取顶层"拼成不一致的假象
+    method = (firstRequest.method || "GET").toUpperCase();
+    path = firstRequest.path || path;
+    for (const k of Object.keys(headers)) delete headers[k];
+    Object.assign(headers, firstRequest.headers ?? {});
+    body = firstRequest.body ?? null;
   }
   if (!method) method = "GET";
   if (Object.keys(headers).length === 0 || body === null) {
@@ -2271,18 +2298,15 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
   const ct =
     (headers["Content-Type"] as string) ?? (headers["content-type"] as string) ?? "application/json";
   const has = (o?: Record<string, unknown>) => o && Object.keys(o).length > 0;
+  const primaryExtract = has(generated.extract) ? generated.extract : firstRequest?.extract;
+  const primaryAssertion = has(generated.assertion) ? generated.assertion : firstRequest?.assertion;
+  const primarySql = generated.sql || firstRequest?.sql || null;
 
   // 统一按操作流程执行：直接产出一条 http_request step（提取/断言进 step，执行不经 v1 桥接）
-  const extractRules = Object.entries(generated.extract ?? {})
+  const extractRules = Object.entries(primaryExtract ?? {})
     .filter(([n, jp]) => n && jp)
     .map(([name, jp]) => ({ name, from: "response.body", jsonpath: String(jp) }));
-  const assertionRules = Object.entries(generated.assertion ?? {})
-    .filter(([t]) => t)
-    .map(([target, expected]) => ({
-      type: target.startsWith("$") ? "jsonpath" : "equal",
-      target,
-      expected,
-    }));
+  const assertionRules = assertionMapToRules(primaryAssertion ?? {});
   const safety = generated.data_safety;
   const safetyLines = [
     safety?.policy ? `数据安全：${safety.policy}` : "",
@@ -2291,31 +2315,52 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
     safety?.function_hints?.length ? `动态函数建议：${safety.function_hints.join("；")}` : "",
     safety?.cleanup_required ? "清理建议：执行后清理 AUTO_TEST_ 命名空间下的临时测试数据" : "",
   ].filter(Boolean);
-  const httpStep = {
-    step_order: 0,
-    step_name: generated.name,
-    step_type: "http_request",
-    skip: false,
-    config: {
-      method,
-      path,
-      headers,
-      data_type: ct,
-      params: body ?? {},
-      sql_query: generated.sql || null,
-    },
-    extract: extractRules.length ? extractRules : null,
-    assertion: assertionRules.length ? assertionRules : null,
-    wait_before: 0,
-    timeout: 60,
-    retry: 0,
-    on_failure: "stop" as const,
-  };
+  // 场景用例：多步 requests → 多条 http_request step；单接口用例 → 一条 step。
+  const steps =
+    generated.requests && generated.requests.length > 0
+      ? generated.requests.map((req, i) =>
+          buildHttpStepFromReq(
+            {
+              method: req.method,
+              path: req.path,
+              headers: req.headers,
+              body: req.body,
+              extract: req.extract,
+              assertion: req.assertion,
+              sql: req.sql,
+              name: req.name,
+            },
+            i,
+            generated.name,
+          ),
+        )
+      : [
+          {
+            step_order: 0,
+            step_name: generated.name,
+            step_type: "http_request",
+            skip: false,
+            config: { method, path, headers, data_type: ct, params: body ?? {}, sql_query: primarySql },
+            extract: extractRules.length ? extractRules : null,
+            assertion: assertionRules.length ? assertionRules : null,
+            wait_before: 0,
+            timeout: 60,
+            retry: 0,
+            on_failure: "stop" as const,
+          },
+        ];
+
+  // 清理闭环（数据治理#2）：teardown_api / teardown_sql → post_hook（执行后无论成败都跑）
+  const postHook = buildTeardownHooks(generated);
+
+  // warnings：变量找不到来源 / 缺断言等提示，写进 description 引导用户/下一轮 AI 修正
+  const warningLines = (generated.warnings ?? []).map((w) => `⚠️ ${w}`);
 
   return {
     module_id: moduleId,
     name: generated.name,
     description: [
+      warningLines.length ? warningLines.join("\n") : "",
       safetyLines.length ? safetyLines.join("\n") : "",
       generated.preconditions.length ? `前置条件：${generated.preconditions.join("；")}` : "",
       generated.expected.length ? `预期结果：${generated.expected.join("；")}` : "",
@@ -2330,11 +2375,67 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
     headers: Object.keys(headers).length ? JSON.stringify(headers, null, 2) : null,
     data_type: ct,
     params: body ? JSON.stringify(body, null, 2) : null,
-    extract_data: has(generated.extract) ? JSON.stringify(generated.extract, null, 2) : null,
-    assertion: has(generated.assertion) ? JSON.stringify(generated.assertion, null, 2) : null,
-    sql_query: generated.sql ? generated.sql : null,
-    steps: [httpStep],
+    extract_data: has(primaryExtract) ? JSON.stringify(primaryExtract, null, 2) : null,
+    assertion: has(primaryAssertion) ? JSON.stringify(primaryAssertion, null, 2) : null,
+    sql_query: primarySql,
+    ...(postHook.length ? { post_hook: postHook } : {}),
+    steps,
   };
+}
+
+/** 把一个请求对象（场景多步里的一步，或单接口）转成 http_request step。 */
+function buildHttpStepFromReq(
+  req: { method?: string; path: string; headers?: Record<string, unknown>; body?: Record<string, unknown>; extract?: Record<string, unknown>; assertion?: Record<string, unknown>; sql?: string; name?: string },
+  order: number,
+  fallbackName: string,
+) {
+  const headers: Record<string, unknown> = { ...(req.headers ?? {}) };
+  const ct = (headers["Content-Type"] as string) ?? (headers["content-type"] as string) ?? "application/json";
+  const extractRules = Object.entries(req.extract ?? {})
+    .filter(([n, jp]) => n && jp)
+    .map(([name, jp]) => ({ name, from: "response.body", jsonpath: String(jp) }));
+  const assertionRules = assertionMapToRules(req.assertion ?? {});
+  return {
+    step_order: order,
+    step_name: req.name || `${fallbackName} #${order + 1}`,
+    step_type: "http_request",
+    skip: false,
+    config: {
+      method: (req.method || "GET").toUpperCase(),
+      path: req.path,
+      headers,
+      data_type: ct,
+      params: req.body ?? {},
+      sql_query: req.sql || null,
+    },
+    extract: extractRules.length ? extractRules : null,
+    assertion: assertionRules.length ? assertionRules : null,
+    wait_before: 0,
+    timeout: 60,
+    retry: 0,
+    on_failure: "stop" as const,
+  };
+}
+
+/** teardown_api / teardown_sql → post_hook（CaseExecutor 在 finally 里跑，保证清理一定执行）。 */
+function buildTeardownHooks(generated: AiGeneratedCase): Array<Record<string, unknown>> {
+  const hooks: Array<Record<string, unknown>> = [];
+  for (const t of generated.teardown_api ?? []) {
+    if (!t?.path) continue;
+    hooks.push({
+      type: "http_request",
+      config: {
+        method: (t.method || "DELETE").toUpperCase(),
+        path: t.path,
+        headers: t.headers ?? {},
+        params: t.body ?? {},
+      },
+    });
+  }
+  if (generated.teardown_sql && generated.teardown_sql.trim()) {
+    hooks.push({ type: "sql", config: { sql: generated.teardown_sql.trim(), commit: true } });
+  }
+  return hooks;
 }
 
 function mergeCreatedCaseOrder(
@@ -2365,50 +2466,81 @@ function mergeCreatedCaseOrder(
   return merged;
 }
 
-function orderInterfaceCasesForExecution(cases: AiGeneratedCase[]) {
-  const remaining = cases.map((item, index) => ({ item, index }));
-  const ordered: typeof remaining = [];
-  const produced = new Set<string>();
-  const maxPasses = remaining.length + 2;
+/**
+ * 接口用例按依赖做拓扑排序（问题9-12）：
+ *  - 依赖 = 用例 A 引用了 ${var}，而 ${var} 由用例 B 的 extract 产出 ⇒ B 必须排在 A 前；
+ *  - `externalVars`：模块已有用例（及变量池）能产出的变量名，视为已满足，
+ *    避免新用例引用「已有登录用例的 token」时被误判为缺依赖（问题11）；
+ *  - Kahn 拓扑排序：入度为 0 的按 interfaceCaseRank 启发式先后；
+ *  - **环检测**：存在循环依赖时剩余用例按 rank 兜底排出，返回 hasCycle 供上层提示（问题12）。
+ */
+function orderInterfaceCasesForExecution(
+  cases: AiGeneratedCase[],
+  externalVars: Set<string> = new Set(),
+): { ordered: AiGeneratedCase[]; hasCycle: boolean } {
+  const n = cases.length;
+  const produces = cases.map((c) => producedVariables(c));
+  const refs = cases.map((c) => referencedVariables(c));
 
-  for (let pass = 0; pass < maxPasses && remaining.length > 0; pass++) {
-    let moved = false;
-    for (let i = 0; i < remaining.length; i++) {
-      const refs = referencedVariables(remaining[i].item);
-      const missing = [...refs].filter((name) => !produced.has(name) && cases.some((c) => producedVariables(c).has(name)));
-      if (missing.length === 0) {
-        const [next] = remaining.splice(i, 1);
-        ordered.push(next);
-        producedVariables(next.item).forEach((name) => produced.add(name));
-        moved = true;
-        i -= 1;
-      }
-    }
-    if (!moved) break;
+  // 变量 → 产出它的用例下标（同名多个取第一个产出者）
+  const producerOf = new Map<string, number>();
+  produces.forEach((set, i) => {
+    set.forEach((name) => {
+      if (!producerOf.has(name)) producerOf.set(name, i);
+    });
+  });
+
+  // 建依赖边：j 产出、i 引用 ⇒ j 必须在 i 前（j → i）
+  const indeg = new Array(n).fill(0);
+  const edges: number[][] = Array.from({ length: n }, () => []);
+  for (let i = 0; i < n; i++) {
+    const dep = new Set<number>();
+    refs[i].forEach((name) => {
+      if (externalVars.has(name)) return; // 已有用例/变量池满足
+      const j = producerOf.get(name);
+      if (j != null && j !== i) dep.add(j);
+    });
+    dep.forEach((j) => {
+      edges[j].push(i);
+      indeg[i] += 1;
+    });
   }
 
-  const rest = remaining
-    .slice()
-    .sort((a, b) => interfaceCaseRank(a.item) - interfaceCaseRank(b.item) || a.index - b.index);
-  const sorted = [...ordered, ...rest].map((entry) => entry.item);
-  return sorted.sort((a, b) => {
-    const dep = dependencyCompare(a, b);
-    return dep || interfaceCaseRank(a) - interfaceCaseRank(b);
-  });
-}
+  const sortReady = (arr: number[]) =>
+    arr.sort((a, b) => interfaceCaseRank(cases[a]) - interfaceCaseRank(cases[b]) || a - b);
 
-function dependencyCompare(a: AiGeneratedCase, b: AiGeneratedCase) {
-  const aProduces = producedVariables(a);
-  const bProduces = producedVariables(b);
-  const aRefsB = [...referencedVariables(a)].some((name) => bProduces.has(name));
-  const bRefsA = [...referencedVariables(b)].some((name) => aProduces.has(name));
-  if (aRefsB && !bRefsA) return 1;
-  if (bRefsA && !aRefsB) return -1;
-  return 0;
+  const orderedIdx: number[] = [];
+  const placed = new Array(n).fill(false);
+  let ready = sortReady([...Array(n).keys()].filter((i) => indeg[i] === 0));
+  while (ready.length) {
+    const i = ready.shift()!;
+    if (placed[i]) continue;
+    placed[i] = true;
+    orderedIdx.push(i);
+    for (const k of edges[i]) {
+      indeg[k] -= 1;
+      if (indeg[k] === 0 && !placed[k]) ready.push(k);
+    }
+    ready = sortReady(ready.filter((x) => !placed[x]));
+  }
+
+  // 环：剩余未放置的按 rank 兜底排出
+  const hasCycle = orderedIdx.length < n;
+  if (hasCycle) {
+    const rest = [...Array(n).keys()]
+      .filter((i) => !placed[i])
+      .sort((a, b) => interfaceCaseRank(cases[a]) - interfaceCaseRank(cases[b]) || a - b);
+    orderedIdx.push(...rest);
+  }
+  return { ordered: orderedIdx.map((i) => cases[i]), hasCycle };
 }
 
 function producedVariables(c: AiGeneratedCase) {
-  return new Set(Object.keys(c.extract ?? {}).filter(Boolean));
+  const names = new Set(Object.keys(c.extract ?? {}).filter(Boolean));
+  for (const req of c.requests ?? []) {
+    for (const k of Object.keys(req.extract ?? {})) if (k) names.add(k);
+  }
+  return names;
 }
 
 function referencedVariables(c: AiGeneratedCase) {
@@ -2417,13 +2549,17 @@ function referencedVariables(c: AiGeneratedCase) {
     headers: c.headers,
     body: c.body,
     sql: c.sql,
+    requests: c.requests,
     steps: c.steps,
     expected: c.expected,
   });
-  return new Set([...text.matchAll(/\$\{([A-Za-z_][\w.-]*)\}/g)].map((m) => m[1]));
+  // 注意：${var.sub} 取基名 var，对齐后端校验（依赖判断只看变量来源是否存在）
+  return new Set([...text.matchAll(/\$\{([A-Za-z_][\w.-]*)\}/g)].map((m) => m[1].split(".")[0]));
 }
 
 function interfaceCaseRank(c: AiGeneratedCase) {
+  // 前置链最先执行（它准备账号并产出共享 token，后面都依赖它）
+  if (/前置链/.test(c.name)) return 5;
   const text = `${c.name} ${c.method ?? ""} ${c.path ?? ""} ${c.steps.join(" ")} ${c.expected.join(" ")}`.toLowerCase();
   if (/login|登录|auth|token/.test(text)) return 10;
   if (/register|signup|create|add|新增|创建|注册|准备/.test(text)) return 20;
@@ -2591,14 +2727,21 @@ export function AiGenerateDialog({
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"functional" | "interface">(initialMode);
   const [coverage, setCoverage] = useState<"standard" | "full" | "exhaustive">("full");
+  // 接口模式可选：勾选要生成的维度（空 = 按覆盖力度自动取舍全部）
+  const [dimensions, setDimensions] = useState<Set<string>>(new Set());
   const [docUrls, setDocUrls] = useState("");
+  // 接口模式可选：前置链账号准备接口信息（用户直接粘贴）
+  const [setupDoc, setSetupDoc] = useState("");
   const [smartInsert, setSmartInsert] = useState(true);
   const [gapFilling, setGapFilling] = useState(false);
   const [modelName, setModelName] = useState("");
   const [images, setImages] = useState<File[]>([]);
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
+  // 抽屉顶部 Tab：模块大纲（长期保存）/ 生成用例（AI 向导）
+  const [view, setView] = useState<"outline" | "generate">("generate");
   const [draftNotice, setDraftNotice] = useState("");
+  const [savedDraft, setSavedDraft] = useState<AiGenerateDraft | null>(null);
   const [outlining, setOutlining] = useState(false);
   const [outlineError, setOutlineError] = useState("");
   const [digest, setDigest] = useState("");
@@ -2607,6 +2750,7 @@ export function AiGenerateDialog({
   const [genQueue, setGenQueue] = useState<AiOutlinePoint[]>([]);
   const [cursor, setCursor] = useState(0);
   const [batchRunning, setBatchRunning] = useState(false);
+  const [stoppingGeneration, setStoppingGeneration] = useState(false);
   const [failedBatches, setFailedBatches] = useState<AiBatchFailure[]>([]);
   const outlineAbortRef = useRef<AbortController | null>(null);
   const draftReadyRef = useRef(false);
@@ -2728,11 +2872,13 @@ export function AiGenerateDialog({
       const detail = (event as CustomEvent<{ type_key?: string; id?: number }>).detail;
       if (detail?.type_key !== localTaskTypeKey) return;
       stopRef.current = true;
+      setStoppingGeneration(true);
       outlineAbortRef.current?.abort();
       outlineAbortRef.current = null;
       setOutlining(false);
       setGapFilling(false);
       setBatchRunning(false);
+      setStoppingGeneration(false);
       setOutlineError("已从任务列表终止生成");
       toast.info("已终止 AI 用例生成");
     };
@@ -2744,26 +2890,8 @@ export function AiGenerateDialog({
     if (open) {
       const draft = moduleId ? readAiGenerateDraft(projectId, moduleId, initialMode) : null;
       if (draft) {
-        setText(draft.text ?? "");
-        setMode(draft.mode ?? initialMode);
-        setCoverage(draft.coverage ?? "full");
-        setDocUrls(draft.docUrls ?? "");
-        setSmartInsert(draft.smartInsert ?? true);
-        setModelName(draft.modelName ?? "");
-        setStage(draft.stage ?? "input");
-        setOutlineError("");
-        setDigest(draft.digest ?? "");
-        setPoints(draft.points ?? []);
-        setPickedPoints(new Set(draft.pickedPoints ?? []));
-        setGenQueue(draft.genQueue ?? []);
-        setCursor(draft.cursor ?? 0);
-        setFailedBatches(draft.failedBatches ?? []);
-        setCases(draft.cases ?? []);
-        casesRef.current = draft.cases ?? [];
-        setPicked(new Set(draft.picked ?? []));
-        setWrittenNames(new Set(draft.writtenNames ?? []));
-        setDraftNotice(`已恢复 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿`);
-      } else {
+        setSavedDraft(draft);
+        setDraftNotice(`发现 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿，点击恢复数据`);
         setText("");
         setMode(initialMode);
         setCoverage("full");
@@ -2777,17 +2905,40 @@ export function AiGenerateDialog({
         setGenQueue([]);
         setCursor(0);
         setFailedBatches([]);
+        setStoppingGeneration(false);
+        setCases([]);
+        casesRef.current = [];
+        setPicked(new Set());
+        setWrittenNames(new Set());
+      } else {
+        setSavedDraft(null);
+        setText("");
+        setMode(initialMode);
+        setCoverage("full");
+        setDocUrls("");
+        setSmartInsert(true);
+        setStage("input");
+        setOutlineError("");
+        setDigest("");
+        setPoints([]);
+        setPickedPoints(new Set());
+        setGenQueue([]);
+        setCursor(0);
+        setFailedBatches([]);
+        setStoppingGeneration(false);
         setCases([]);
         casesRef.current = [];
         setPicked(new Set());
         setWrittenNames(new Set());
         setDraftNotice("");
       }
+      setView("generate");
       setReqPickId(null);
       setDocPickId(null);
       setImages([]);
       setDocs([]);
       stopRef.current = false;
+      setStoppingGeneration(false);
       outlineAbortRef.current?.abort();
       outlineAbortRef.current = null;
       draftReadyRef.current = true;
@@ -2871,6 +3022,7 @@ export function AiGenerateDialog({
     }, 180_000);
     setOutlineError("");
     setOutlining(true);
+    setStoppingGeneration(false);
     try {
       const res = await functionalCasesApi.aiGenerateOutline({
         module_id: moduleId,
@@ -2879,6 +3031,8 @@ export function AiGenerateDialog({
         mode,
         coverage,
         doc_urls: docUrls.trim(),
+        dimensions: mode === "interface" ? [...dimensions].join(",") : "",
+        setup_doc: mode === "interface" ? setupDoc.trim() : "",
         images,
         docs,
       }, controller.signal);
@@ -2895,14 +3049,15 @@ export function AiGenerateDialog({
       window.clearTimeout(timeout);
       if (outlineAbortRef.current === controller) outlineAbortRef.current = null;
       setOutlining(false);
+      setStoppingGeneration(false);
     }
   };
 
   const stopOutline = () => {
+    setStoppingGeneration(true);
     outlineAbortRef.current?.abort();
-    outlineAbortRef.current = null;
-    setOutlining(false);
-    setOutlineError("已停止生成测试点");
+    setOutlineError("正在停止生成测试点…");
+    toast.info("正在停止生成测试点");
   };
 
   // 第二步：按大纲分批生成详细用例（每批带已生成用例名 → 不重复、保持连贯）
@@ -2914,6 +3069,7 @@ export function AiGenerateDialog({
   ) => {
     if (!moduleId) return;
     stopRef.current = false;
+    setStoppingGeneration(false);
     setBatchRunning(true);
     let acc = existing.slice();
     let cur = startCursor;
@@ -2925,6 +3081,9 @@ export function AiGenerateDialog({
       const displayEnd = displayStart + chunk.length;
       const failureId = `${displayStart}-${displayEnd}-${chunk.map((p) => p.title).join("|")}`;
       try {
+        // 跨批次把前面已产出的变量名带过去，避免后批引用前批 extract 出的 ${id} 被误判缺来源
+        const carriedVars = new Set<string>();
+        for (const c of acc) producedVariables(c).forEach((v) => carriedVars.add(v));
         const res = await functionalCasesApi.aiGenerateBatch({
           module_id: moduleId,
           model_name: modelName,
@@ -2932,6 +3091,8 @@ export function AiGenerateDialog({
           points: chunk,
           done_names: acc.map((c) => c.name),
           mode,
+          carried_vars: [...carriedVars],
+          setup_doc: mode === "interface" ? setupDoc.trim() : "",
         });
         if (stopRef.current) break;
         acc = [...acc, ...res.cases];
@@ -2970,6 +3131,7 @@ export function AiGenerateDialog({
       }
     }
     setBatchRunning(false);
+    setStoppingGeneration(false);
     if (stopRef.current) {
       toast.info("已停止生成后续批次");
     } else if (failedCount > 0) {
@@ -2991,6 +3153,7 @@ export function AiGenerateDialog({
     setWrittenNames(new Set());
     setFailedBatches([]);
     setStage("cases");
+    setStoppingGeneration(false);
     void runBatches(q, 0, []);
   };
 
@@ -3012,10 +3175,42 @@ export function AiGenerateDialog({
     }
   };
 
+  const restoreSavedDraft = () => {
+    if (!savedDraft) return;
+    const draft = savedDraft;
+    draftReadyRef.current = false;
+    setText(draft.text ?? "");
+    setMode(draft.mode ?? initialMode);
+    setCoverage(draft.coverage ?? "full");
+    setDocUrls(draft.docUrls ?? "");
+    setSmartInsert(draft.smartInsert ?? true);
+    setModelName(draft.modelName ?? "");
+    setStage(draft.stage ?? "input");
+    setOutlineError("");
+    setDigest(draft.digest ?? "");
+    setPoints(draft.points ?? []);
+    setPickedPoints(new Set(draft.pickedPoints ?? []));
+    setGenQueue(draft.genQueue ?? []);
+    setCursor(draft.cursor ?? 0);
+    setFailedBatches(draft.failedBatches ?? []);
+    setStoppingGeneration(false);
+    setCases(draft.cases ?? []);
+    casesRef.current = draft.cases ?? [];
+    setPicked(new Set(draft.picked ?? []));
+    setWrittenNames(new Set(draft.writtenNames ?? []));
+    setDraftNotice(`已恢复 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿`);
+    setSavedDraft(null);
+    window.setTimeout(() => {
+      draftReadyRef.current = true;
+    }, 0);
+    toast.success("已恢复 AI 生成草稿");
+  };
+
   const clearSavedDraft = () => {
     if (!moduleId) return;
     draftReadyRef.current = false;
     removeAiGenerateDraft(projectId, moduleId, initialMode);
+    setSavedDraft(null);
     setText("");
     setMode(initialMode);
     setCoverage("full");
@@ -3053,13 +3248,26 @@ export function AiGenerateDialog({
     setInserting(true);
     try {
       if (mode === "interface") {
-        const ordered = orderInterfaceCasesForExecution(chosen);
         const existing =
           smartInsert
             ? (await apiCasesApi.list({ moduleId, pageSize: 500 })).items
                 .slice()
                 .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
             : [];
+        // 模块已有用例能产出的变量（如已有登录用例的 token）视为已满足，避免误判缺依赖
+        const externalVars = new Set<string>();
+        for (const e of existing) {
+          try {
+            const d = JSON.parse((e as { extract_data?: string }).extract_data || "{}");
+            if (d && typeof d === "object") Object.keys(d).forEach((k) => k && externalVars.add(k));
+          } catch {
+            /* 忽略无法解析的 extract_data */
+          }
+        }
+        const { ordered, hasCycle } = orderInterfaceCasesForExecution(chosen, externalVars);
+        if (hasCycle) {
+          toast.warning("检测到用例间存在循环依赖，已尽力排序但请人工核对执行顺序");
+        }
         const createdIds: number[] = [];
         for (const c of ordered) {
           const res = await casesApi.create(toInterfaceCase(moduleId, c));
@@ -3144,6 +3352,9 @@ export function AiGenerateDialog({
         mode,
         digest,
         points,
+        // 带上生成大纲时的原始材料：查漏只有 digest 会信息不对称，模型找不出字段级遗漏
+        text,
+        doc_urls: docUrls,
       });
       if (stopRef.current) return;
       const have = new Set(points.map((p) => p.title.replace(/\s+/g, "")));
@@ -3182,18 +3393,96 @@ export function AiGenerateDialog({
     });
   };
 
+  const pendingInsertCount = cases.filter(
+    (c, i) => picked.has(i) && !writtenNames.has(c.name),
+  ).length;
+
+  const generateFooter = view === "generate" ? (
+    stage === "input" ? (
+      <DialogFooter>
+        <Button variant="outline" onClick={outlining ? stopOutline : onClose} disabled={stoppingGeneration}>
+          {outlining && stoppingGeneration ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> 停止中…
+            </>
+          ) : outlining ? (
+            "停止"
+          ) : (
+            "取消"
+          )}
+        </Button>
+        <Button onClick={makeOutline} disabled={outlining || !modelName}>
+          {outlining ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> 规划测试点…
+            </>
+          ) : (
+            <>
+              <Sparkles className="h-4 w-4" /> 生成大纲
+            </>
+          )}
+        </Button>
+      </DialogFooter>
+    ) : stage === "outline" ? (
+      <DialogFooter>
+        <Button variant="outline" onClick={() => setStage("input")}>
+          上一步
+        </Button>
+        <Button onClick={startGeneration} disabled={pickedPoints.size === 0}>
+          <Sparkles className="h-4 w-4" /> 开始生成（{pickedPoints.size} 个点）
+        </Button>
+      </DialogFooter>
+    ) : (
+      <DialogFooter>
+        <Button variant="outline" onClick={onClose}>
+          关闭
+        </Button>
+        <Button onClick={insert} disabled={inserting || batchRunning || pendingInsertCount === 0}>
+          {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+          {pendingInsertCount === 0 && writtenNames.size > 0
+            ? "已全部写入"
+            : `写入当前模块（${pendingInsertCount}）`}
+        </Button>
+      </DialogFooter>
+    )
+  ) : null;
+
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>AI 生成{mode === "interface" ? "接口" : "功能"}用例</DialogTitle>
-          <DialogDescription>
-            先出测试点大纲 → 你确认 → 逐批生成控件级详细用例（参考其它模块、保持连贯），审阅后写入当前模块
-          </DialogDescription>
-        </DialogHeader>
+    <SideDrawer
+      open={open}
+      onClose={onClose}
+      storageKey="ai-gen-drawer-width"
+      defaultWidth={720}
+      minWidth={560}
+      footer={generateFooter}
+      title={
+        <>
+          <Sparkles className="h-[17px] w-[17px] text-primary" />
+          AI 生成{mode === "interface" ? "接口" : "功能"}用例
+        </>
+      }
+    >
+      <div className="flex-1 space-y-3 overflow-auto p-4">
+        <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
+          <button onClick={() => setView("generate")} className={cn("rounded px-3 py-1", view === "generate" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>生成用例</button>
+          <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>模块大纲</button>
+        </div>
+        {view === "outline" ? (
+          <ModuleOutlinePanel moduleId={moduleId} mode={mode} onApplied={onInserted} />
+        ) : (
+        <>
+        <p className="text-xs text-muted-foreground">
+          先出测试点大纲 → 你确认 → 逐批生成控件级详细用例（参考其它模块、保持连贯），审阅后写入当前模块
+        </p>
         {draftNotice ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
-            <span>{draftNotice}</span>
+            {savedDraft ? (
+              <button className="text-left font-medium hover:underline" onClick={restoreSavedDraft}>
+                {draftNotice}
+              </button>
+            ) : (
+              <span>{draftNotice}</span>
+            )}
             <button className="font-medium hover:underline" onClick={clearSavedDraft}>
               清除草稿
             </button>
@@ -3309,6 +3598,20 @@ export function AiGenerateDialog({
                 />
               </div>
             ) : null}
+            {mode === "interface" ? (
+              <div className="space-y-1">
+                <Label className="text-xs">前置链·账号准备接口（可选，给前置链跨模块建测试账号用）</Label>
+                <Textarea
+                  rows={2}
+                  value={setupDoc}
+                  onChange={(e) => setSetupDoc(e.target.value)}
+                  placeholder={'粘贴"创建账号/注册"接口信息，如：\nPOST /api/users  body: {username, password, role_codes}  响应: {data:{id, username}}'}
+                />
+                <p className="text-xs text-muted-foreground">
+                  当前模块没有注册接口时，填这个，前置链就能用它建一个一次性测试账号（改密/删除类用例不再卡 admin）。
+                </p>
+              </div>
+            ) : null}
             {/* 上传：截图/原型图 + 文档 */}
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
@@ -3415,6 +3718,33 @@ export function AiGenerateDialog({
                 标准会明显减少数量；穷尽会显著增加测试点，适合最后补全覆盖。
               </p>
             </div>
+            {mode === "interface" ? (
+              <div className="space-y-1">
+                <Label className="text-xs">测试维度（可选，不勾=全部）</Label>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {["正常", "参数校验", "边界", "鉴权", "越权", "响应校验", "安全", "场景", "关联"].map((d) => (
+                    <label key={d} className="flex items-center gap-1 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={dimensions.has(d)}
+                        onChange={(e) =>
+                          setDimensions((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(d);
+                            else next.delete(d);
+                            return next;
+                          })
+                        }
+                      />
+                      {d}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  只想补某几类（如只要「安全」「场景」）时勾选；留空则按覆盖力度生成全部维度。
+                </p>
+              </div>
+            ) : null}
             {outlineError ? (
               <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
                 {outlineError}
@@ -3428,22 +3758,6 @@ export function AiGenerateDialog({
                 <ProjectAiOverviewView projectId={projectId} />
               </div>
             </details>
-            <DialogFooter>
-              <Button variant="outline" onClick={outlining ? stopOutline : onClose}>
-                {outlining ? "停止" : "取消"}
-              </Button>
-              <Button onClick={makeOutline} disabled={outlining || !modelName}>
-                {outlining ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> 规划测试点…
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="h-4 w-4" /> 生成大纲
-                  </>
-                )}
-              </Button>
-            </DialogFooter>
           </div>
         ) : stage === "outline" ? (
           <div className="space-y-3">
@@ -3512,14 +3826,6 @@ export function AiGenerateDialog({
                 </label>
               ))}
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setStage("input")}>
-                上一步
-              </Button>
-              <Button onClick={startGeneration} disabled={pickedPoints.size === 0}>
-                <Sparkles className="h-4 w-4" /> 开始生成（{pickedPoints.size} 个点）
-              </Button>
-            </DialogFooter>
           </div>
         ) : (
           <div className="space-y-3">
@@ -3527,17 +3833,26 @@ export function AiGenerateDialog({
               <span className="text-muted-foreground">
                 已生成 {cases.length} 条 · 测试点 {cursor}/{genQueue.length}
                 {failedBatches.length > 0 ? ` · 失败批次 ${failedBatches.length}` : ""}
-                {batchRunning ? "（生成中…）" : ""}
+                {batchRunning ? (stoppingGeneration ? "（停止中，等待当前批次结束…）" : "（生成中…）") : ""}
               </span>
               <div className="flex items-center gap-3">
                 {batchRunning ? (
                   <button
-                    className="text-xs text-destructive hover:underline"
+                    className="inline-flex items-center gap-1 text-xs text-destructive hover:underline disabled:cursor-not-allowed disabled:opacity-70"
+                    disabled={stoppingGeneration}
                     onClick={() => {
                       stopRef.current = true;
+                      setStoppingGeneration(true);
+                      toast.info("正在停止生成，当前批次返回后会结束");
                     }}
                   >
-                    停止
+                    {stoppingGeneration ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> 停止中…
+                      </>
+                    ) : (
+                      "停止"
+                    )}
                   </button>
                 ) : cursor < genQueue.length ? (
                   <button
@@ -3614,7 +3929,7 @@ export function AiGenerateDialog({
                 ) : null}
               </div>
             ) : null}
-            <div className="max-h-[45vh] space-y-2 overflow-y-auto pr-1">
+            <div className="space-y-2 pr-1">
               {cases.length === 0 && batchRunning ? (
                 <div className="flex items-center gap-2 p-3 text-sm text-muted-foreground">
                   <Loader2 className="h-4 w-4 animate-spin" /> 正在生成第一批…
@@ -3689,28 +4004,12 @@ export function AiGenerateDialog({
                 </div>
               ))}
             </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
-                关闭
-              </Button>
-              {(() => {
-                const pending = cases.filter(
-                  (c, i) => picked.has(i) && !writtenNames.has(c.name),
-                ).length;
-                return (
-                  <Button onClick={insert} disabled={inserting || batchRunning || pending === 0}>
-                    {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    {pending === 0 && writtenNames.size > 0
-                      ? "已全部写入"
-                      : `写入当前模块（${pending}）`}
-                  </Button>
-                );
-              })()}
-            </DialogFooter>
           </div>
         )}
-      </DialogContent>
-    </Dialog>
+        </>
+        )}
+      </div>
+    </SideDrawer>
   );
 }
 

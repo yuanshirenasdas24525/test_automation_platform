@@ -21,6 +21,7 @@ from database.models import (
     AiRun,
     AI_FEATURE_TEST_RESULT_ANALYSIS,
     AI_RUN_STATUS_PENDING,
+    AI_RUN_STATUS_SUCCESS,
     Project,
     TestReport,
     TestStepReport,
@@ -191,6 +192,42 @@ def get_report_analysis_preview(report_id: int, db: DBDep):
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "success", "data": output}
+
+
+@router.get("/{report_id}/ai-analysis/latest")
+def get_latest_report_ai_analysis(report_id: int, db: DBDep):
+    """返回该报告最近一次**成功**的 AI 全面分析结果（含规则诊断 cases + AI 汇总）。
+
+    用于「关掉页面后再打开，直接复用上次结果、不必重新跑 AI」。没有历史则 data=null。
+    """
+    # input_payload 里存了 report_id；按 feature + 成功状态取最近若干条，在 Python 里精确匹配，
+    # 避开不同数据库对 JSON 列过滤语法的差异。
+    rows = (
+        db.session.query(AiRun)
+        .filter(
+            AiRun.feature == AI_FEATURE_TEST_RESULT_ANALYSIS,
+            AiRun.status == AI_RUN_STATUS_SUCCESS,
+        )
+        .order_by(AiRun.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    for run in rows:
+        payload = run.input_payload or {}
+        try:
+            if int(payload.get("report_id") or 0) == report_id:
+                return {
+                    "status": "success",
+                    "data": {
+                        "ai_run_id": run.id,
+                        "status": run.status,
+                        "output_payload": run.output_payload,
+                        "created_at": run.created_at.isoformat() if run.created_at else None,
+                    },
+                }
+        except (TypeError, ValueError):
+            continue
+    return {"status": "success", "data": None}
 
 
 @router.post("/{report_id}/ai-analysis")

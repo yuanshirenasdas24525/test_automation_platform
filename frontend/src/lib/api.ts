@@ -13,9 +13,16 @@ import type {
   AiOutlinePoint,
   AiModelConfig,
   AiModelConfigUpsert,
+  ModuleOutline,
+  OutlineAlignPreview,
+  OutlineReplanPreview,
   AiModelTestResult,
   AiRun,
   AiRunStatus,
+  AiCaseFlag,
+  AiFlagClearReason,
+  AiFlagCounts,
+  AiFlagType,
   ApiCaseEditRecord,
   ApiCaseLatestRunDetail,
   ApiCaseListResponse,
@@ -69,6 +76,12 @@ import type {
   Role,
   RunTestRequest,
   RunTestResult,
+  ScriptItem,
+  ScriptKind,
+  ScriptPayload,
+  ScriptScope,
+  ScriptTestPayload,
+  ScriptTestResult,
   Task,
   TaskCreate,
   TaskFromTestFailurePayload,
@@ -320,17 +333,23 @@ export const casesApi = {
       body,
     });
   },
-  update(id: number, body: TestCaseCreate, sessionId?: string) {
-    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-    return request<void>(`/api/test_cases/${id}${q}`, { method: "PUT", body });
+  update(id: number, body: TestCaseCreate, sessionId?: string, historyBatchId?: number) {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session_id", sessionId);
+    if (historyBatchId != null) params.set("history_batch_id", String(historyBatchId));
+    const qs = params.toString();
+    return request<{ batch_id?: number | null }>(`/api/test_cases/${id}${qs ? `?${qs}` : ""}`, { method: "PUT", body });
   },
   /** 拉一个用例的详情（含 steps），给 Web/App 编辑态用。 */
   get(id: number) {
     return request<TestCaseDetail>(`/api/test_cases/${id}`);
   },
-  remove(id: number, sessionId?: string) {
-    const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
-    return request<{ batch_id?: number | null }>(`/api/test_cases/${id}${q}`, { method: "DELETE" });
+  remove(id: number, sessionId?: string, historyBatchId?: number) {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("session_id", sessionId);
+    if (historyBatchId != null) params.set("history_batch_id", String(historyBatchId));
+    const qs = params.toString();
+    return request<{ batch_id?: number | null }>(`/api/test_cases/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
   },
   rollbackHistory(batchId: number, payload: RequirementRollbackPayload) {
     return request<RequirementRollbackResult>(
@@ -418,6 +437,81 @@ export const casesApi = {
 };
 
 // -------------------------------------------------------------------------
+// 模块大纲（测试点）：长期保存 + 刷新对齐。见 docs/module_outline_design.md
+// -------------------------------------------------------------------------
+export const moduleOutlineApi = {
+  /** 读某模块大纲；没有则返回 null。 */
+  get(moduleId: number) {
+    return request<ModuleOutline | null>(
+      `/api/functional_cases/module_outline?module_id=${moduleId}`,
+    );
+  },
+  /** 算大纲 ↔ 当前用例的 diff（不落库）。 */
+  alignPreview(moduleId: number, mode: string = "interface") {
+    return request<OutlineAlignPreview>(
+      `/api/functional_cases/module_outline/align_preview`,
+      { method: "POST", body: { module_id: moduleId, mode } },
+    );
+  },
+  /** 按最新用例重算并应用对齐（幂等）。 */
+  applyAlign(moduleId: number, mode: string = "interface") {
+    return request<ModuleOutline>(
+      `/api/functional_cases/module_outline/apply`,
+      { method: "POST", body: { module_id: moduleId, mode } },
+    );
+  },
+  /** 清理没有关联用例的测试点（缺口垃圾），只保留同步自真实用例的点。 */
+  purgeGaps(moduleId: number, mode: string = "interface") {
+    return request<{ removed: number; outline: ModuleOutline | null }>(
+      `/api/functional_cases/module_outline/purge_gaps`,
+      { method: "POST", body: { module_id: moduleId, mode } },
+    );
+  },
+  /** AI 增量重规划预览：基于现有大纲 + 本次变更，产出新测试点的 diff（不落库）。 */
+  replanPreview(args: {
+    moduleId: number;
+    modelName: string;
+    changeText: string;
+    mode?: string;
+    incremental?: boolean;
+  }) {
+    return request<OutlineReplanPreview>(
+      `/api/functional_cases/module_outline/replan_preview`,
+      {
+        method: "POST",
+        body: {
+          module_id: args.moduleId,
+          model_name: args.modelName,
+          change_text: args.changeText,
+          mode: args.mode ?? "interface",
+          incremental: args.incremental ?? true,
+        },
+      },
+    );
+  },
+  /** 应用 AI 增量重规划：把预览产出的新测试点写入大纲。 */
+  replanApply(args: {
+    moduleId: number;
+    mode?: string;
+    digest: string;
+    points: { title: string; category?: string }[];
+  }) {
+    return request<ModuleOutline>(
+      `/api/functional_cases/module_outline/replan_apply`,
+      {
+        method: "POST",
+        body: {
+          module_id: args.moduleId,
+          mode: args.mode ?? "interface",
+          digest: args.digest,
+          points: args.points,
+        },
+      },
+    );
+  },
+};
+
+// -------------------------------------------------------------------------
 // API Cases 工作台
 // -------------------------------------------------------------------------
 export const apiCasesApi = {
@@ -425,6 +519,7 @@ export const apiCasesApi = {
     moduleId: number;
     status?: ApiRunStatus | ApiRunStatus[];
     keyword?: string;
+    flagType?: AiFlagType;
     page?: number;
     pageSize?: number;
   }) {
@@ -434,18 +529,43 @@ export const apiCasesApi = {
       qs.set("status", values.join(","));
     }
     if (filters.keyword?.trim()) qs.set("keyword", filters.keyword.trim());
+    if (filters.flagType) qs.set("flag_type", filters.flagType);
     if (filters.page != null) qs.set("page", String(filters.page));
     if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
     return request<ApiCaseListResponse>(`/api/api_cases?${qs}`);
   },
+  /** 清除用例的 AI 诊断标记；reason 会作为反馈回流给下次 AI 诊断。 */
+  clearAiFlag(caseId: number, body: { reason: AiFlagClearReason; corrected_classification?: string; note?: string }) {
+    return request<AiCaseFlag>(`/api/api_cases/${caseId}/ai_flag/clear`, { method: "POST", body });
+  },
+  /** 用例的 AI 标记历史（含已清除的反馈记录）。 */
+  aiFlagHistory(caseId: number, limit = 20) {
+    return request<AiCaseFlag[]>(`/api/api_cases/${caseId}/ai_flags?limit=${limit}`);
+  },
+  /** 项目内各模块 active 标记计数（含子树聚合），模块卡片角标用。 */
+  aiFlagCounts(projectId: number) {
+    return request<AiFlagCounts>(`/api/api_cases/flag_counts?project_id=${projectId}`);
+  },
   create(body: TestCaseCreate, sessionId?: string) {
     return casesApi.create({ ...body, case_type: "api" }, sessionId);
   },
-  update(id: number, body: TestCaseCreate, sessionId?: string) {
-    return casesApi.update(id, { ...body, case_type: "api" }, sessionId);
+  update(id: number, body: TestCaseCreate, sessionId?: string, historyBatchId?: number) {
+    return casesApi.update(id, { ...body, case_type: "api" }, sessionId, historyBatchId);
   },
-  remove(id: number, sessionId?: string) {
-    return casesApi.remove(id, sessionId);
+  remove(id: number, sessionId?: string, historyBatchId?: number) {
+    return casesApi.remove(id, sessionId, historyBatchId);
+  },
+  /** 按执行顺序给模块下用例名加序号前缀 0001/0002/...（enable=false 去掉）。 */
+  renumber(moduleId: number, opts?: { enable?: boolean; caseType?: string; width?: number }) {
+    return request<{ total: number; updated: number }>(`/api/test_cases/renumber`, {
+      method: "POST",
+      body: {
+        module_id: moduleId,
+        enable: opts?.enable ?? true,
+        case_type: opts?.caseType ?? "api",
+        width: opts?.width ?? 4,
+      },
+    });
   },
   editHistory(moduleId: number, limit = 200) {
     return request<ApiCaseEditRecord[]>(
@@ -607,6 +727,10 @@ export const functionalCasesApi = {
     mode?: "functional" | "interface";
     coverage?: "standard" | "full" | "exhaustive";
     doc_urls?: string;
+    /** 接口模式可选：勾选的维度（逗号分隔），留空=按覆盖力度自动取舍全部。 */
+    dimensions?: string;
+    /** 前置链账号准备接口信息（用户直接粘贴，供前置链跨模块建账号用）。 */
+    setup_doc?: string;
     images?: File[];
     docs?: File[];
   }, signal?: AbortSignal) {
@@ -617,6 +741,8 @@ export const functionalCasesApi = {
     fd.append("mode", body.mode ?? "functional");
     fd.append("coverage", body.coverage ?? "standard");
     fd.append("doc_urls", body.doc_urls ?? "");
+    fd.append("dimensions", body.dimensions ?? "");
+    fd.append("setup_doc", body.setup_doc ?? "");
     (body.images ?? []).forEach((f) => fd.append("images", f));
     (body.docs ?? []).forEach((f) => fd.append("docs", f));
     return request<{
@@ -634,6 +760,10 @@ export const functionalCasesApi = {
     points: AiOutlinePoint[];
     done_names: string[];
     mode?: "functional" | "interface";
+    /** 跨批次已产出的变量名（前端累积传入，避免误报"变量找不到来源"）。 */
+    carried_vars?: string[];
+    /** 前置链账号准备接口信息（供前置链跨模块建账号用）。 */
+    setup_doc?: string;
   }) {
     return request<{ cases: AiGeneratedCase[]; model: string }>(
       "/api/functional_cases/ai_generate_batch",
@@ -646,30 +776,42 @@ export const functionalCasesApi = {
       classification: string;
       reason: string;
       suggestion: string;
-      fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
+      fix: {
+        extract: Record<string, unknown>;
+        assertion: Record<string, unknown>;
+        params?: Record<string, unknown>;
+      };
     }>("/api/functional_cases/ai_diagnose_run", { method: "POST", body });
   },
-  /** 对一份测试报告里所有接口用例执行结果做全面分析。 */
+  /** 提交报告级 AI 全面诊断 + 参数修复（异步）。返回 ai_run_id，前端轮询 /api/ai/runs/{id}
+   *  拿 output_payload.items 再应用。任务会出现在全局任务看板，可终止。 */
   aiDiagnoseReport(body: { report_id: number; model_name: string }) {
     return request<{
-      items: {
-        case_id: number;
-        module_id: number | null;
-        name: string;
-        classification: string;
-        findings: string[];
-        fix: { extract: Record<string, unknown>; assertion: Record<string, unknown> };
-      }[];
-      total: number;
+      ai_run_id: number;
+      feature: string;
+      celery_task_id?: string;
     }>("/api/functional_cases/ai_diagnose_report", { method: "POST", body });
   },
-  /** 查漏补缺：给已有大纲找遗漏的测试点。 */
+  /** 应用报告级 AI 修复（服务端预检 + 快照 + 自动重跑验证；绿变红自动回滚）。
+   *  闭环结果由后端写入 ai_run.output_payload.verify，轮询 /api/ai/runs/{id} 可见。 */
+  aiApplyReportFixes(body: { ai_run_id: number; verify?: boolean }) {
+    return request<{
+      batch_id: number | null;
+      applied: { case_id: number; name: string; event_id: number | null; parts: string[] }[];
+      skipped: { case_id: number | null; name: string; reasons: string[] }[];
+      verify_report_id: number | null;
+    }>("/api/functional_cases/ai_report_fix/apply", { method: "POST", body });
+  },
+  /** 查漏补缺：给已有大纲找遗漏的测试点。text/doc_urls 传生成大纲时的原始材料，
+   * 只靠 digest 模型拿不到字段级信息、找不出漏。 */
   aiOutlineGaps(body: {
     module_id: number;
     model_name: string;
     mode: "functional" | "interface";
     digest: string;
     points: AiOutlinePoint[];
+    text?: string;
+    doc_urls?: string;
   }) {
     return request<{ points: AiOutlinePoint[] }>("/api/functional_cases/ai_outline_gaps", {
       method: "POST",
@@ -776,6 +918,32 @@ export const configApi = {
       "/api/config/test-embedding",
       { method: "POST", body: { project_id: projectId } },
     );
+  },
+};
+
+// -------------------------------------------------------------------------
+// Scripts（脚本库）
+// -------------------------------------------------------------------------
+export const scriptsApi = {
+  list(params: { project_id?: number; scope?: ScriptScope | "available"; kind?: ScriptKind } = {}) {
+    const qs = new URLSearchParams();
+    if (params.project_id != null) qs.set("project_id", String(params.project_id));
+    if (params.scope) qs.set("scope", params.scope);
+    if (params.kind) qs.set("kind", params.kind);
+    const query = qs.toString();
+    return request<ScriptItem[]>(`/api/scripts${query ? `?${query}` : ""}`);
+  },
+  create(body: ScriptPayload) {
+    return request<ScriptItem>("/api/scripts", { method: "POST", body });
+  },
+  update(id: number, body: ScriptPayload) {
+    return request<ScriptItem>(`/api/scripts/${id}`, { method: "PUT", body });
+  },
+  remove(id: number) {
+    return request<void>(`/api/scripts/${id}`, { method: "DELETE" });
+  },
+  test(id: number, body: ScriptTestPayload) {
+    return request<ScriptTestResult>(`/api/scripts/${id}/test`, { method: "POST", body });
   },
 };
 
@@ -917,6 +1085,15 @@ export const reportsApi = {
       method: "POST",
       body,
     });
+  },
+  /** 取该报告最近一次成功的 AI 全面分析结果（复用上次、避免重跑）；无则 data=null。 */
+  analysisLatest(id: number) {
+    return request<{
+      ai_run_id: number;
+      status: string;
+      output_payload: ReportAnalysisOutput | null;
+      created_at: string | null;
+    } | null>(`/api/reports/${id}/ai-analysis/latest`);
   },
   remove(id: number) {
     return request<void>(`/api/reports/${id}`, { method: "DELETE" });

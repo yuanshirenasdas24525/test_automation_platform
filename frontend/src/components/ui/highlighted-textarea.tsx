@@ -17,9 +17,12 @@ type Token = { text: string; className?: string };
 //   ${...}                         → 蓝色（变量占位符，来自 extra_pool 的替换）
 //   $.something[0].x / $[0].x      → 紫色（JSONPath，用于 extract_data / assertion 左值）
 //   function:xxx(args?)            → 绿色（helper：随机时间、签名、转换等）
-//   sql:select ... (到行尾)        → 橙色（断言里的 sql: 前缀）
+//   sql:select ... (到右引号或行尾)  → 橙色（断言里的 sql: 前缀）
+//      注意：断言里 sql: 是 JSON 字符串 key，形如 "sql:SELECT ... '李四'": "equal(1)"。
+//      SQL 里可能含单引号字面量，但 JSON key 不会含未转义的双引号，所以高亮到下一个 " 截断，
+//      避免把 key 的右引号、冒号、以及后面的 value 一起染色。
 const HIGHLIGHT_RE =
-  /(\$\{[^}\n]*\})|(\$(?:\.[A-Za-z0-9_[\]]+|\[[^\]\n]*\])+)|(\bfunction:[A-Za-z_][\w.]*(?:\([^)\n]*\))?)|(\bsql:[^\n]*)/g;
+  /(\$\{[^}\n]*\})|(\$(?:\.[A-Za-z0-9_[\]]+|\[[^\]\n]*\])+)|(\bfunction:[A-Za-z_][\w.]*(?:\([^)\n]*\))?)|(\bsql:[^"\n]*)/g;
 
 function tokenize(text: string): Token[] {
   if (!text) return [];
@@ -146,3 +149,90 @@ export const HighlightedTextarea = React.forwardRef<
 });
 
 HighlightedTextarea.displayName = "HighlightedTextarea";
+
+const SHARED_INPUT_TYPO =
+  "block h-10 w-full rounded-md border px-3 py-2 text-sm font-mono leading-6 " +
+  "whitespace-pre";
+
+export interface HighlightedInputProps
+  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange"> {
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  containerClassName?: string;
+  invalid?: boolean;
+}
+
+export const HighlightedInput = React.forwardRef<
+  HTMLInputElement,
+  HighlightedInputProps
+>(function HighlightedInput(
+  {
+    className,
+    containerClassName,
+    value,
+    onChange,
+    invalid,
+    spellCheck = false,
+    ...props
+  },
+  ref,
+) {
+  const inputRef = React.useRef<HTMLInputElement>(null);
+  const preRef = React.useRef<HTMLPreElement>(null);
+  React.useImperativeHandle(ref, () => inputRef.current as HTMLInputElement);
+
+  const safeValue = value ?? "";
+  const tokens = React.useMemo(() => tokenize(String(safeValue)), [safeValue]);
+
+  const syncScroll = React.useCallback(() => {
+    const input = inputRef.current;
+    const pre = preRef.current;
+    if (!input || !pre) return;
+    pre.scrollLeft = input.scrollLeft;
+  }, []);
+
+  return (
+    <div className={cn("relative", containerClassName)}>
+      <pre
+        ref={preRef}
+        aria-hidden="true"
+        className={cn(
+          SHARED_INPUT_TYPO,
+          "pointer-events-none absolute inset-0 m-0 overflow-hidden",
+          "border-transparent bg-transparent text-foreground",
+        )}
+      >
+        {tokens.map((t, i) =>
+          t.className ? (
+            <span key={i} className={t.className}>
+              {t.text}
+            </span>
+          ) : (
+            <React.Fragment key={i}>{t.text}</React.Fragment>
+          ),
+        )}
+      </pre>
+      <input
+        ref={inputRef}
+        value={safeValue}
+        onChange={onChange}
+        onScroll={syncScroll}
+        spellCheck={spellCheck}
+        className={cn(
+          SHARED_INPUT_TYPO,
+          "relative bg-transparent text-transparent caret-foreground",
+          "placeholder:text-muted-foreground",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+          invalid
+            ? "border-destructive focus-visible:ring-destructive"
+            : "border-input",
+          "selection:bg-primary/25",
+          className,
+        )}
+        {...props}
+      />
+    </div>
+  );
+});
+
+HighlightedInput.displayName = "HighlightedInput";

@@ -144,6 +144,10 @@ export interface ContentNode {
   sql_query?: string | null;
   assertion?: string | null;
   wait_time?: number | null;
+  /** 单用例重复执行次数，默认 1 */
+  repeat_count?: number | null;
+  /** 步骤数；>1 视为多步骤用例（前端换图标） */
+  step_count?: number | null;
   last_status?: string | null;
 }
 
@@ -176,12 +180,78 @@ export interface TestCaseCreate {
   sql_query?: string | null;
   assertion?: string | null;
   wait_time?: number | null;
+  /** 单用例重复执行次数，默认 1（仅自动化类型用）。 */
+  repeat_count?: number | null;
 }
 
 /** GET /api/test_cases/:id 的返回体 data 字段形状。 */
 export interface TestCaseDetail extends TestCaseCreate {
   id: number;
   steps: TestStepDraft[];
+}
+
+// ---------------------------------------------------------------------------
+// 模块大纲（测试点）—— 长期保存 + 刷新对齐。设计见 docs/module_outline_design.md
+// ---------------------------------------------------------------------------
+export type OutlinePointStatus = "covered" | "gap" | "obsolete";
+
+export interface ModuleOutlinePoint {
+  id: number;
+  outline_id: number;
+  title: string;
+  category?: string | null;
+  sort_order: number;
+  linked_case_id?: number | null;
+  status: OutlinePointStatus;
+  source: "ai" | "manual";
+}
+
+export interface ModuleOutline {
+  id: number;
+  module_id: number;
+  mode: string;
+  digest?: string | null;
+  model_name?: string | null;
+  last_aligned_at?: string | null;
+  points: ModuleOutlinePoint[];
+  covered_count: number;
+  gap_count: number;
+}
+
+export type OutlineAlignOp =
+  | "added"
+  | "linked"
+  | "renamed"
+  | "orphaned"
+  | "unchanged";
+
+export interface OutlineAlignChange {
+  op: OutlineAlignOp;
+  point_id: number | null;
+  title: string;
+  old_title?: string;
+  category?: string | null;
+  linked_case_id?: number | null;
+  source: string;
+  next_status: string;
+}
+
+export interface OutlineAlignPreview {
+  module_id: number;
+  mode: string;
+  has_outline: boolean;
+  changes: OutlineAlignChange[];
+  summary: { added: number; linked: number; renamed: number; orphaned: number };
+}
+
+/** AI 增量重规划预览：changes 只含 added；digest/points 供 apply 回传。 */
+export interface OutlineReplanPreview {
+  module_id: number;
+  has_outline: boolean;
+  changes: OutlineAlignChange[];
+  summary: { added: number };
+  digest: string;
+  points: { title: string; category?: string }[];
 }
 
 export type ApiRunStatus = "passed" | "failed" | "error" | "skipped" | "pending";
@@ -205,7 +275,9 @@ export interface ApiCaseLatestRunStepDetail {
     method: string | null;
     url: string | null;
     headers: unknown;
-    params: unknown;
+    body_template?: unknown;
+    body?: unknown;
+    params?: unknown;
   };
   response: unknown;
   assertion: {
@@ -231,13 +303,41 @@ export interface ApiCaseLatestRunDetail {
   steps: ApiCaseLatestRunStepDetail[];
 }
 
+/** AI 诊断标记（active 状态挂在用例上；清除原因即反馈，回流下次诊断） */
+export type AiFlagType = "manual_fix" | "interface_defect" | "environment" | "ai_fixed";
+export type AiFlagClearReason = "manually_fixed" | "misjudged" | "external_fixed" | "wont_fix";
+
+export interface AiCaseFlag {
+  id: number;
+  case_id: number;
+  flag_type: AiFlagType;
+  classification: string | null;
+  findings: string[];
+  fix_rounds: number;
+  source_ai_run_id: number | null;
+  source_report_id: number | null;
+  status: "active" | "cleared" | "auto_cleared" | "superseded";
+  cleared_reason: AiFlagClearReason | null;
+  corrected_classification: string | null;
+  cleared_note: string | null;
+  cleared_at: string | null;
+  created_at: string | null;
+}
+
+/** module_id(字符串键) → 含子树聚合的 active 标记计数 */
+export type AiFlagCounts = Record<string, { total: number } & Partial<Record<AiFlagType, number>>>;
+
 export interface ApiCase extends TestCaseCreate {
   id: number;
   module_id: number;
   case_type: "api";
   tags: string[];
   skip: boolean;
+  /** 步骤数；>1 视为多步骤用例（前端换图标） */
+  step_count?: number | null;
   latest_run: ApiCaseLatestRun | null;
+  /** AI 诊断标记（无标记为 null） */
+  ai_flag?: AiCaseFlag | null;
 }
 
 export interface ApiCaseListResponse {
@@ -360,6 +460,14 @@ export interface AiGeneratedCase {
   extract?: Record<string, unknown>;
   assertion?: Record<string, unknown>;
   sql?: string;
+  /** 场景用例：多步请求（每项一次接口调用），有此字段时顶层 method/path 等可忽略。 */
+  requests?: AiGeneratedRequest[];
+  /** 清理闭环：执行后删除本用例创建的数据（DELETE 接口优先）。 */
+  teardown_api?: Array<{ method?: string; path: string; headers?: Record<string, unknown>; body?: Record<string, unknown> }>;
+  /** 清理闭环：删库兜底 SQL（只删 AUTO_TEST_ 命名空间 / ${提取变量} 定位的数据）。 */
+  teardown_sql?: string;
+  /** 后端生成校验给出的提示（变量找不到来源、缺断言等），引导用户/下一轮 AI 修正。 */
+  warnings?: string[];
   data_safety?: {
     namespace?: string;
     policy?: string;
@@ -369,6 +477,18 @@ export interface AiGeneratedCase {
     function_hints?: string[];
     cleanup_required?: boolean;
   };
+}
+
+/** 场景用例里的一次接口调用。 */
+export interface AiGeneratedRequest {
+  name?: string;
+  method?: string;
+  path: string;
+  headers?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+  extract?: Record<string, unknown>;
+  assertion?: Record<string, unknown>;
+  sql?: string;
 }
 
 /** AI 规划出的一个测试点（来自 /functional_cases/ai_generate_outline）。 */
@@ -847,7 +967,7 @@ export interface UserCreate {
   username: string;
   full_name?: string | null;
   email?: string | null;
-  password?: string | null;
+  password: string;
   is_active?: boolean;
   role_codes?: string[] | null;
 }
@@ -1091,6 +1211,7 @@ export type AiProvider =
   | "anthropic"
   | "ollama"
   | "deepseek"
+  | "zai"
   | "azure"
   | "custom";
 
@@ -1302,4 +1423,48 @@ export interface InProgressTask {
   project_name: string | null;
   started_at: string | null;
   detail_url: string;
+}
+
+// =============================================================================
+// 脚本库 —— GET/POST /api/scripts
+// =============================================================================
+
+export type ScriptKind = "function" | "crypto_request" | "crypto_response";
+export type ScriptScope = "global" | "project";
+
+export interface ScriptItem {
+  id: number;
+  name: string;
+  kind: ScriptKind;
+  code: string;
+  enabled: boolean;
+  project_id: number | null;
+  scope: ScriptScope;
+  description: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ScriptPayload {
+  name: string;
+  kind: ScriptKind;
+  code: string;
+  enabled: boolean;
+  project_id?: number | null;
+  description?: string | null;
+}
+
+export interface ScriptTestPayload {
+  args?: unknown[];
+  kwargs?: Record<string, unknown>;
+  headers?: Record<string, unknown>;
+  body?: unknown;
+  config?: Record<string, unknown>;
+  vars?: Record<string, unknown>;
+}
+
+export interface ScriptTestResult {
+  ok: boolean;
+  result?: unknown;
+  error?: string;
 }

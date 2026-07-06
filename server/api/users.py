@@ -7,20 +7,22 @@
 from __future__ import annotations
 
 import random
+import re
 import string
-from typing import List, Optional
+from typing import Annotated
 
 import bcrypt
 import pydantic
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 from sqlalchemy import or_
 
-from server.api.deps import DBDep
+from server.api.deps import CurrentUserDep, DBDep
 from database.models import User, Role, ALL_ROLE_CODES
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 PROTECTED_ADMIN_USERNAME = "admin"
+USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 def _is_protected_admin(user: User) -> bool:
@@ -33,31 +35,93 @@ def _assert_not_protected_admin(user: User) -> None:
         raise HTTPException(status_code=403, detail="admin 账号为系统内置账号，禁止编辑、停用或修改密码")
 
 
+def _assert_admin(user: User) -> None:
+    """用户管理写操作只允许管理员执行。"""
+    if not any(role.code == "admin" for role in (user.roles or [])):
+        raise HTTPException(status_code=403, detail="仅管理员可管理用户")
+
+
+def _validate_username(value: str) -> str:
+    """账号名只能作为登录标识，禁止 HTML/脚本片段混入。"""
+    username = value.strip()
+    if not username:
+        raise ValueError("username 不能为空")
+    if not USERNAME_PATTERN.fullmatch(username):
+        raise ValueError("username 只能包含字母、数字、下划线、点和短横线")
+    return username
+
+
 class UserCreate(pydantic.BaseModel):
     username: str = pydantic.Field(..., min_length=1, max_length=64)
-    full_name: Optional[str] = pydantic.Field(None, max_length=128)
-    email: Optional[str] = pydantic.Field(None, max_length=255)
-    password: Optional[str] = pydantic.Field(None, min_length=1, max_length=128)
+    full_name: str | None = pydantic.Field(None, max_length=128)
+    email: str | None = pydantic.Field(None, max_length=255)
+    password: str = pydantic.Field(..., min_length=6, max_length=128)
     is_active: bool = True
-    role_codes: Optional[List[str]] = None
+    role_codes: list[str] | None = None
+
+    @pydantic.field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        return _validate_username(value)
 
 
 class UserUpdate(pydantic.BaseModel):
-    username: Optional[str] = pydantic.Field(None, max_length=64)
-    full_name: Optional[str] = pydantic.Field(None, max_length=128)
-    email: Optional[str] = pydantic.Field(None, max_length=255)
-    password: Optional[str] = pydantic.Field(None, min_length=1, max_length=128)
-    is_active: Optional[bool] = None
+    username: str | None = pydantic.Field(None, min_length=1, max_length=64)
+    full_name: str | None = pydantic.Field(None, max_length=128)
+    email: str | None = pydantic.Field(None, max_length=255)
+    password: str | None = pydantic.Field(None, min_length=6, max_length=128)
+    is_active: bool | None = None
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def validate_payload(cls, data):
+        """更新用户必须至少改一个字段，且不接受显式 null。"""
+        if not isinstance(data, dict):
+            return data
+        if not data:
+            raise ValueError("至少提供一个要更新的字段")
+        null_fields = [key for key, value in data.items() if value is None]
+        if null_fields:
+            raise ValueError(f"字段不能为 null: {', '.join(null_fields)}")
+        return data
+
+    @pydantic.field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str | None) -> str | None:
+        return _validate_username(value) if value is not None else None
 
 
 class RoleAssign(pydantic.BaseModel):
-    role_codes: List[str]
+    role_codes: list[str]
+
+    @pydantic.field_validator("role_codes")
+    @classmethod
+    def validate_role_codes(cls, value: list[str]) -> list[str]:
+        cleaned = [str(item).strip() for item in value]
+        if not cleaned:
+            raise ValueError("role_codes 不能为空")
+        if any(not item for item in cleaned):
+            raise ValueError("role_code 不能为空")
+        return cleaned
+
+
+def _parse_bool_query(value: str | None) -> bool | None:
+    """用户列表筛选只接受 true/false，避免 yes/on 这类宽松布尔绕过参数校验。"""
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise HTTPException(status_code=422, detail="is_active 只能是 true 或 false")
 
 
 # ============ 用户 CRUD ============
 
 @router.post("")
-def create_user(payload: UserCreate, db: DBDep):
+def create_user(payload: UserCreate, db: DBDep, current_user: CurrentUserDep):
+    _assert_admin(current_user)
     if db.session.query(User).filter(User.username == payload.username).first():
         raise HTTPException(status_code=409, detail="username 已存在")
     if payload.email and db.session.query(User).filter(User.email == payload.email).first():
@@ -71,29 +135,34 @@ def create_user(payload: UserCreate, db: DBDep):
         email=payload.email,
         is_active=payload.is_active,
     )
-    if payload.password:
-        user.password_hash = bcrypt.hashpw(
-            payload.password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8")
+    user.password_hash = bcrypt.hashpw(
+        payload.password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
     if payload.role_codes:
         roles = db.session.query(Role).filter(Role.code.in_(payload.role_codes)).all()
         user.roles = list(roles)
     db.session.add(user)
     db.session.flush()
     db.session.refresh(user)
-    return {"status": "success", "data": user.to_dict()}
+    data = user.to_dict()
+    # 兼容历史/AI 生成用例里的 $.data.user.id / $.data.user.username 提取路径；
+    # 同时保留原来的 $.data.id / $.data.username，避免影响前端现有调用。
+    return {"status": "success", "data": {**data, "user": data}}
 
 
 @router.get("")
 def list_users(
     db: DBDep,
-    is_active: Optional[bool] = Query(None),
-    role_code: Optional[str] = Query(None),
-    q: Optional[str] = Query(None),
+    current_user: CurrentUserDep,
+    is_active: str | None = Query(None),
+    role_code: str | None = Query(None),
+    q: str | None = Query(None),
 ):
+    _assert_admin(current_user)
+    active_filter = _parse_bool_query(is_active)
     query = db.session.query(User)
-    if is_active is not None:
-        query = query.filter(User.is_active == is_active)
+    if active_filter is not None:
+        query = query.filter(User.is_active == active_filter)
     if role_code:
         query = query.join(User.roles).filter(Role.code == role_code)
     if q:
@@ -106,7 +175,8 @@ def list_users(
 
 
 @router.get("/{user_id}")
-def get_user(user_id: int, db: DBDep):
+def get_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: CurrentUserDep):
+    _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -114,7 +184,8 @@ def get_user(user_id: int, db: DBDep):
 
 
 @router.put("/{user_id}")
-def update_user(user_id: int, payload: UserUpdate, db: DBDep):
+def update_user(user_id: Annotated[int, Path(gt=0)], payload: UserUpdate, db: DBDep, current_user: CurrentUserDep):
+    _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -127,6 +198,13 @@ def update_user(user_id: int, payload: UserUpdate, db: DBDep):
         user.username = f"{user.username}_{suffix}"
 
     if "username" in data and data["username"] is not None:
+        exists = (
+            db.session.query(User)
+            .filter(User.username == data["username"], User.id != user.id)
+            .first()
+        )
+        if exists:
+            raise HTTPException(status_code=409, detail="username 已存在")
         user.username = data["username"]
 
     if "password" in data and data["password"] is not None:
@@ -143,7 +221,8 @@ def update_user(user_id: int, payload: UserUpdate, db: DBDep):
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: DBDep):
+def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: CurrentUserDep):
+    _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
@@ -156,13 +235,14 @@ def delete_user(user_id: int, db: DBDep):
 # ============ 角色管理 ============
 
 @router.post("/{user_id}/roles")
-def set_user_roles(user_id: int, payload: RoleAssign, db: DBDep):
+def set_user_roles(user_id: Annotated[int, Path(gt=0)], payload: RoleAssign, db: DBDep, current_user: CurrentUserDep):
+    _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     _assert_not_protected_admin(user)
     if not set(payload.role_codes) <= ALL_ROLE_CODES:
-        raise HTTPException(status_code=400, detail=f"非法 role_code，可选: {sorted(ALL_ROLE_CODES)}")
+        raise HTTPException(status_code=422, detail=f"非法 role_code，可选: {sorted(ALL_ROLE_CODES)}")
 
     roles = db.session.query(Role).filter(Role.code.in_(payload.role_codes)).all()
     user.roles.clear()
@@ -173,11 +253,21 @@ def set_user_roles(user_id: int, payload: RoleAssign, db: DBDep):
 
 
 @router.delete("/{user_id}/roles/{role_code}")
-def remove_user_role(user_id: int, role_code: str, db: DBDep):
+def remove_user_role(
+    user_id: Annotated[int, Path(gt=0)],
+    role_code: Annotated[str, Path(min_length=1)],
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     _assert_not_protected_admin(user)
+
+    role_code = role_code.strip()
+    if not role_code:
+        raise HTTPException(status_code=422, detail="role_code 不能为空")
 
     role = db.session.query(Role).filter(Role.code == role_code).first()
     if role is None or role not in user.roles:

@@ -160,12 +160,28 @@ export function ProjectsPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => projectsApi.remove(id),
+    onMutate: async (id: number) => {
+      await queryClient.cancelQueries({ queryKey: ["projects"] });
+      const snapshots = queryClient.getQueriesData<Project[]>({ queryKey: ["projects"] });
+      for (const [key, data] of snapshots) {
+        if (Array.isArray(data)) {
+          queryClient.setQueryData(
+            key,
+            data.filter((project) => project.id !== id),
+          );
+        }
+      }
+      setPendingDelete(null);
+      return { snapshots };
+    },
+    onError: (err, _id, ctx) => {
+      ctx?.snapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
+      handleError(err);
+    },
     onSuccess: () => {
       toast.success("项目已删除");
-      invalidate();
-      setPendingDelete(null);
     },
-    onError: handleError,
+    onSettled: () => invalidate(),
   });
 
   const runMutation = useMutation({

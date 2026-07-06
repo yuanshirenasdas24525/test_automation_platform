@@ -45,6 +45,7 @@ const PROVIDERS: { value: AiProvider; label: string; hint?: string }[] = [
   { value: "anthropic", label: "Anthropic", hint: "claude-3-5-*" },
   { value: "ollama", label: "Ollama（本地）", hint: "qwen2.5 / llama3" },
   { value: "deepseek", label: "DeepSeek" },
+  { value: "zai", label: "Z.AI（智谱）", hint: "glm-5.2" },
   { value: "azure", label: "Azure OpenAI" },
   { value: "custom", label: "Custom（OpenAI 协议兼容）" },
 ];

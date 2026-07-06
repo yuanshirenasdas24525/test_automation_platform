@@ -4,6 +4,7 @@ class ExecutionContext:
 
     def __init__(self, record_property=None):
         self.record_property = record_property
+        self.records = {}
         self.vars = {}
         self.logs = []
         self.attachments = []
@@ -22,5 +23,6 @@ class ExecutionContext:
 
     def record(self, key, value):
         """🔥 写入 pytest report"""
+        self.records[key] = value
         if self.record_property:
             self.record_property(key, value)

@@ -23,11 +23,88 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+_TASK_DEFAULT_OPTIONS: dict[str, dict[str, Any]] = {
+    # 大纲/查漏补缺是“结构化规划”，优先稳定 JSON，关闭 GLM/DeepSeek 类思考避免空 final content。
+    "api_outline": {"timeout": 180, "max_tokens": 20000, "json_mode": True, "enable_thinking": False, "temperature": 0.2},
+    "api_outline_gap": {"timeout": 180, "max_tokens": 12000, "json_mode": True, "enable_thinking": False, "temperature": 0.2},
+    # 功能用例大纲/批量与接口档同构（否则落到空默认：json_mode=False + 8192 tokens + 0.4 温度）。
+    "functional_outline": {"timeout": 180, "max_tokens": 20000, "json_mode": True, "enable_thinking": False, "temperature": 0.2},
+    "functional_batch": {"timeout": 240, "max_tokens": 24000, "json_mode": False, "enable_thinking": True, "temperature": 0.3},
+    # 详细用例需要推理接口依赖、变量贯通和参数值，保留思考。
+    "api_batch": {"timeout": 240, "max_tokens": 24000, "json_mode": False, "enable_thinking": True, "temperature": 0.3},
+    # 报告修复需要读真实响应和上下文，允许更长输出和更强推理。
+    "api_report_fix": {"timeout": 300, "max_tokens": 20000, "json_mode": False, "enable_thinking": True, "temperature": 0.2},
+    "api_run_diagnose": {"timeout": 180, "max_tokens": 12000, "json_mode": True, "enable_thinking": True, "temperature": 0.2},
+}
+
+
+def _extra_value(extra: dict[str, Any], task: str, key: str, default: Any) -> Any:
+    """模型 extra 支持全局覆盖和按任务覆盖：max_tokens / api_batch_max_tokens。"""
+    task_key = f"{task}_{key}"
+    if task_key in extra:
+        return extra[task_key]
+    return extra.get(key, default)
+
+
+def _to_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "开启", "是"}
+
+
+def _to_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _to_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def model_task_options(cfg: "AiModelConfig", task: str) -> dict[str, Any]:  # noqa: F821
+    """按模型和任务选择调用策略。
+
+    extra 覆盖示例：
+      - max_tokens=32000 或 api_batch_max_tokens=32000
+      - enable_thinking=true 或 api_outline_enable_thinking=false
+      - reasoning_effort=high 或 api_report_fix_reasoning_effort=high
+      - temperature=0.2 / api_batch_temperature=0.3
+    """
+    defaults = dict(_TASK_DEFAULT_OPTIONS.get(task, {}))
+    extra = cfg.extra or {}
+    model = (cfg.model or "").lower()
+    provider = (cfg.provider or "").lower()
+
+    # OpenAI 推理模型不给 temperature 更稳；强度由 reasoning_effort 控制。
+    default_reasoning = defaults.get("reasoning_effort")
+    if default_reasoning is None and provider in {"openai", "azure"} and re.match(r"^(o\d|gpt-5)", model):
+        default_reasoning = "medium" if task in {"api_outline", "api_outline_gap"} else "high"
+
+    return {
+        "timeout": _to_int(_extra_value(extra, task, "timeout", defaults.get("timeout", 120)), defaults.get("timeout", 120)),
+        "max_tokens": _to_int(_extra_value(extra, task, "max_tokens", defaults.get("max_tokens", 8192)), defaults.get("max_tokens", 8192)),
+        "json_mode": _to_bool(_extra_value(extra, task, "json_mode", defaults.get("json_mode", False)), defaults.get("json_mode", False)),
+        "enable_thinking": _to_bool(
+            _extra_value(extra, task, "enable_thinking", defaults.get("enable_thinking", True)),
+            defaults.get("enable_thinking", True),
+        ),
+        "temperature": _to_float(_extra_value(extra, task, "temperature", defaults.get("temperature", 0.4)), defaults.get("temperature", 0.4)),
+        "reasoning_effort": _extra_value(extra, task, "reasoning_effort", default_reasoning),
+    }
 
 # ---------------------------------------------------------------------------
 # 异常
@@ -367,6 +444,9 @@ def _call_provider(
     if provider_name in ("openai", "deepseek", "azure"):
         from .providers.openai_provider import call_openai
         return call_openai(api_key, model, prompt, base_url, max_tokens, timeout, json_mode=json_mode)
+    elif provider_name == "zai":
+        from .providers.zai_provider import call_zai
+        return call_zai(api_key, model, prompt, base_url, max_tokens, timeout, json_mode=json_mode)
     elif provider_name == "anthropic":
         from .providers.anthropic_provider import call_anthropic
         return call_anthropic(api_key, model, prompt, base_url, max_tokens, timeout)
@@ -374,7 +454,7 @@ def _call_provider(
         from .providers.ollama_provider import call_ollama
         return call_ollama(base_url or "http://localhost:11434", model, prompt, max_tokens, timeout)
     else:
-        raise ProviderError(f"不支持的 provider: {provider_name!r}（合法：openai / deepseek / anthropic / ollama）")
+        raise ProviderError(f"不支持的 provider: {provider_name!r}（合法：openai / deepseek / zai / anthropic / ollama）")
 
 
 # ---------------------------------------------------------------------------
@@ -572,23 +652,49 @@ def chat_markdown(
     prompt: str,
     cfg: "AiModelConfig",   # noqa: F821 — 推迟到运行时 import
     timeout: int = 120,
+    system_prompt: str | None = None,
+    enable_thinking: bool = True,
+    json_mode: bool = False,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, int, int]:
-    """文本 → Markdown。不强制 JSON。返回 (markdown_text, tokens_in, tokens_out)。"""
+    """文本 → Markdown。不强制 JSON。返回 (markdown_text, tokens_in, tokens_out)。
+
+    enable_thinking: 仅对 zai(GLM) 生效。默认 True 保留模型思考；连通测试等场景传
+      False 关闭思考以提速。其它 provider 忽略此参数。
+    json_mode: 结构化短输出场景可开启，默认 False 以保持 Markdown 分析链路行为不变。"""
     provider = (cfg.provider or "").strip().lower()
     api_key = (cfg.api_key or "").strip()
     base_url = (cfg.base_url or "").strip() or None
     model = (cfg.model or "").strip()
-    max_tokens = int((cfg.extra or {}).get("max_tokens") or 8192)
+    max_tokens = int(max_tokens or (cfg.extra or {}).get("max_tokens") or 8192)
+    temperature = 0.4 if temperature is None else float(temperature)
 
     if provider in ("openai", "deepseek", "azure"):
-        return _openai_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+        return _openai_markdown(
+            api_key, model, prompt, base_url, max_tokens, timeout, system_prompt,
+            json_mode=json_mode, enable_thinking=enable_thinking,
+            temperature=temperature, reasoning_effort=reasoning_effort,
+        )
+    if provider == "zai":
+        from .providers.zai_provider import call_zai
+        return call_zai(
+            api_key, model, prompt, base_url, max_tokens, timeout,
+            json_mode=json_mode, system_prompt=system_prompt or _system_for_markdown(),
+            enable_thinking=enable_thinking, temperature=temperature,
+        )
     if provider == "anthropic":
-        return _anthropic_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+        return _anthropic_markdown(api_key, model, prompt, base_url, max_tokens, timeout, system_prompt, temperature)
     if provider == "ollama":
-        return _ollama_markdown(base_url or "http://localhost:11434", model, prompt, max_tokens, timeout)
+        return _ollama_markdown(base_url or "http://localhost:11434", model, prompt, max_tokens, timeout, system_prompt, temperature)
     if provider == "custom":
         # 兼容 OpenAI 协议的自建网关
-        return _openai_markdown(api_key, model, prompt, base_url, max_tokens, timeout)
+        return _openai_markdown(
+            api_key, model, prompt, base_url, max_tokens, timeout, system_prompt,
+            json_mode=json_mode, enable_thinking=enable_thinking,
+            temperature=temperature, reasoning_effort=reasoning_effort,
+        )
     raise ProviderError(f"不支持的 provider: {provider!r}")
 
 
@@ -613,6 +719,8 @@ def chat_markdown_with_images(
 
     if provider in ("openai", "deepseek", "azure", "custom"):
         return _openai_vision(api_key, model, prompt, image_paths, base_url, max_tokens, timeout)
+    if provider == "zai":
+        return _zai_vision(api_key, model, prompt, image_paths, base_url, max_tokens, timeout)
     if provider == "anthropic":
         return _anthropic_vision(api_key, model, prompt, image_paths, base_url, max_tokens, timeout)
     if provider == "ollama":
@@ -626,19 +734,39 @@ def chat_markdown_with_images(
 def _openai_markdown(
     api_key: str, model: str, prompt: str,
     base_url: Optional[str], max_tokens: int, timeout: int,
+    system_prompt: str | None = None,
+    json_mode: bool = False,
+    enable_thinking: bool = True,
+    temperature: float = 0.4,
+    reasoning_effort: str | None = None,
 ) -> tuple[str, int, int]:
     if not api_key:
         raise ProviderError("openai-compatible: api_key 未配置")
     url = (base_url or "https://api.openai.com").rstrip("/") + "/v1/chat/completions"
+    # OpenAI 推理模型（o1/o3/o4/gpt-5 系）：拒收 temperature，且要求用
+    # max_completion_tokens 替代 max_tokens，否则直接 HTTP 400。
+    is_reasoning_model = bool(re.match(r"^(o\d|gpt-5)", (model or "").lower()))
     body = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _system_for_markdown()},
+            {"role": "system", "content": system_prompt or _system_for_markdown()},
             {"role": "user", "content": prompt},
         ],
-        "max_tokens": max_tokens,
-        "temperature": 0.4,
     }
+    if is_reasoning_model:
+        body["max_completion_tokens"] = max_tokens
+    else:
+        body["max_tokens"] = max_tokens
+        body["temperature"] = temperature
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    if base_url and "api.deepseek.com" in base_url and not enable_thinking:
+        # DeepSeek V4 默认开启 thinking。结构化 JSON 生成不需要思考过程，
+        # 关闭后可避免只返回 reasoning_content / 空 final content 的偶发现象。
+        body["thinking"] = {"type": "disabled"}
+    if reasoning_effort:
+        # OpenAI 推理模型支持 reasoning_effort；其它 OpenAI-compatible 网关可通过 extra 显式开启。
+        body["reasoning_effort"] = str(reasoning_effort)
     return _openai_call(url, api_key, body, timeout)
 
 
@@ -670,6 +798,34 @@ def _openai_vision(
     return _openai_call(url, api_key, body, timeout)
 
 
+def _zai_vision(
+    api_key: str, model: str, prompt: str, image_paths: list[str],
+    base_url: Optional[str], max_tokens: int, timeout: int,
+) -> tuple[str, int, int]:
+    if not api_key:
+        raise ProviderError("zai api_key 未配置")
+    from .providers.zai_provider import build_zai_chat_url
+
+    url = build_zai_chat_url(base_url)
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for p in image_paths:
+        data_url, _ = _read_image_as_data_url(p)
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": data_url},
+        })
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _system_for_markdown()},
+            {"role": "user", "content": content},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    return _openai_call(url, api_key, body, timeout)
+
+
 def _openai_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[str, int, int]:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -683,7 +839,18 @@ def _openai_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[str,
         raise ProviderError(f"openai HTTP {resp.status_code}: {resp.text[:500]}")
     try:
         data = resp.json()
-        content = data["choices"][0]["message"]["content"] or ""
+        choice = data["choices"][0]
+        message = choice["message"]
+        content = message.get("content") or ""
+        if not content:
+            logger.warning(
+                "openai-compatible returned empty content model=%s finish_reason=%r "
+                "message_keys=%s reasoning_prefix=%r",
+                body.get("model"),
+                choice.get("finish_reason"),
+                sorted(message.keys()),
+                str(message.get("reasoning_content") or "")[:300],
+            )
         usage = data.get("usage") or {}
         return (
             content,
@@ -698,6 +865,8 @@ def _openai_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[str,
 def _anthropic_markdown(
     api_key: str, model: str, prompt: str,
     base_url: Optional[str], max_tokens: int, timeout: int,
+    system_prompt: str | None = None,
+    temperature: float = 0.4,
 ) -> tuple[str, int, int]:
     if not api_key:
         raise ProviderError("anthropic api_key 未配置")
@@ -705,9 +874,9 @@ def _anthropic_markdown(
     body = {
         "model": model,
         "max_tokens": max_tokens,
-        "system": _system_for_markdown(),
+        "system": system_prompt or _system_for_markdown(),
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.4,
+        "temperature": temperature,
     }
     return _anthropic_call(url, api_key, body, timeout)
 
@@ -768,15 +937,17 @@ def _anthropic_call(url: str, api_key: str, body: dict, timeout: int) -> tuple[s
 # ------- Ollama -------
 def _ollama_markdown(
     base_url: str, model: str, prompt: str, max_tokens: int, timeout: int,
+    system_prompt: str | None = None,
+    temperature: float = 0.4,
 ) -> tuple[str, int, int]:
     return _ollama_call(base_url, {
         "model": model,
         "messages": [
-            {"role": "system", "content": _system_for_markdown()},
+            {"role": "system", "content": system_prompt or _system_for_markdown()},
             {"role": "user", "content": prompt},
         ],
         "stream": False,
-        "options": {"num_predict": max_tokens, "temperature": 0.4},
+        "options": {"num_predict": max_tokens, "temperature": temperature},
     }, timeout)
 
 
@@ -855,5 +1026,6 @@ def provider_ping(cfg: "AiModelConfig") -> str:    # noqa: F821
         prompt="请回复『ok』两个字，不需要别的内容。",
         cfg=cfg,
         timeout=30,
+        enable_thinking=False,   # 连通测试不需要思考，GLM 关闭后秒回
     )
     return (text or "").strip()
