@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
 from server.api.deps import DBDep
 from database.models import (
@@ -367,6 +368,14 @@ def delete_project(project_id: int, db: DBDep):
 
     # modules 关系上挂了 cascade="all, delete-orphan"，关联的模块 / 用例会一起删。
     db.session.delete(db_project)
+    try:
+        db.session.flush()
+    except IntegrityError as exc:
+        db.session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="项目下仍有关联数据（如需求、版本、任务、报告或 AI 记录），暂不能直接删除。请先清理关联数据后再删除。",
+        ) from exc
     return {"status": "success", "message": "项目已删除"}
 
 
