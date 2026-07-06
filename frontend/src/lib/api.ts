@@ -1055,7 +1055,12 @@ async function fetchReports(params: {
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
   });
   const path = `/api/reports${qs.toString() ? "?" + qs.toString() : ""}`;
-  const res = await fetch(path, { headers: { Accept: "application/json" } });
+  const headers = new Headers({ Accept: "application/json" });
+  const token = getToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(path, { headers });
   const payload = (await res.json()) as {
     status: string;
     data: TestReportSummary[];
