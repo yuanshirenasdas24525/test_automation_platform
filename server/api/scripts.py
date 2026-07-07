@@ -7,7 +7,8 @@ from fastapi import APIRouter, HTTPException, Query
 from sqlalchemy import or_
 
 from database.models import ALL_SCRIPT_KINDS, ScriptStore
-from server.api.deps import DBDep
+from server.api.deps import DBDep, require_roles
+from fastapi import Depends
 from utils.script_runtime import run_script
 
 
@@ -66,7 +67,7 @@ def list_scripts(
     return {"status": "success", "data": [row.to_dict() for row in rows]}
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require_roles("dev", "test"))])
 def create_script(payload: ScriptPayload, db: DBDep):
     _validate_payload(payload)
     _ensure_unique(db, payload.name, payload.kind, payload.project_id)
@@ -83,7 +84,7 @@ def create_script(payload: ScriptPayload, db: DBDep):
     return {"status": "success", "data": row.to_dict()}
 
 
-@router.put("/{script_id}")
+@router.put("/{script_id}", dependencies=[Depends(require_roles("dev", "test"))])
 def update_script(script_id: int, payload: ScriptPayload, db: DBDep):
     _validate_payload(payload)
     row = _get_script_or_404(db, script_id)
@@ -98,7 +99,7 @@ def update_script(script_id: int, payload: ScriptPayload, db: DBDep):
     return {"status": "success", "data": row.to_dict()}
 
 
-@router.delete("/{script_id}")
+@router.delete("/{script_id}", dependencies=[Depends(require_roles("dev", "test"))])
 def delete_script(script_id: int, db: DBDep):
     row = _get_script_or_404(db, script_id)
     db.session.delete(row)
@@ -106,7 +107,7 @@ def delete_script(script_id: int, db: DBDep):
     return {"status": "success"}
 
 
-@router.post("/{script_id}/test")
+@router.post("/{script_id}/test", dependencies=[Depends(require_roles("dev", "test"))])
 def test_script(script_id: int, payload: ScriptTestPayload, db: DBDep):
     row = _get_script_or_404(db, script_id)
     try:

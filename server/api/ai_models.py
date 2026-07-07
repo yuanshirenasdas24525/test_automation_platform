@@ -16,7 +16,7 @@ from database.schemas.ai_config import (
     AiModelTestResult,
     ALL_AI_PROVIDERS,
 )
-from server.api.deps import DBDep
+from server.api.deps import DBDep, RequireAdmin
 from server.services.ai_model_service import (
     delete_ai_model,
     get_ai_model,
@@ -47,7 +47,7 @@ def list_models(db: DBDep) -> dict[str, Any]:
     return {"status": "success", "data": items}
 
 
-@router.post("")
+@router.post("", dependencies=[RequireAdmin])
 def create_model(payload: dict[str, Any], db: DBDep):
     name = (payload.get("name") or "").strip()
     if not name:
@@ -68,7 +68,7 @@ def create_model(payload: dict[str, Any], db: DBDep):
     return {"status": "success", "data": saved.model_dump()}
 
 
-@router.put("/{name}")
+@router.put("/{name}", dependencies=[RequireAdmin])
 def update_model(name: str, payload: AiModelConfigUpsert, db: DBDep):
     _validate(payload)
     if get_ai_model(db.session, name) is None:
@@ -79,7 +79,7 @@ def update_model(name: str, payload: AiModelConfigUpsert, db: DBDep):
     return {"status": "success", "data": saved.model_dump()}
 
 
-@router.delete("/{name}")
+@router.delete("/{name}", dependencies=[RequireAdmin])
 def delete_model(name: str, db: DBDep):
     n = delete_ai_model(db.session, name)
     if n == 0:

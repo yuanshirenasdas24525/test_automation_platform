@@ -10,7 +10,8 @@ from __future__ import annotations
 import pydantic
 from fastapi import APIRouter, HTTPException
 
-from server.api.deps import DBDep
+from server.api.deps import DBDep, require_roles
+from fastapi import Depends
 from server.services.bug_fix_service import (
     rollback_bug_fix,
     get_available_agents,
@@ -40,7 +41,7 @@ class BugFixRollbackRequest(pydantic.BaseModel):
 # ---------------------------------------------------------------------------
 # 端点
 # ---------------------------------------------------------------------------
-@router.post("/tasks/{task_id}/ai-fix")
+@router.post("/tasks/{task_id}/ai-fix", dependencies=[Depends(require_roles("dev", "test"))])
 def ai_fix_bug(task_id: int, payload: BugFixRequest, db: DBDep):
     """触发 AI 一键修复 Bug。
 
@@ -110,7 +111,7 @@ def ai_fix_bug(task_id: int, payload: BugFixRequest, db: DBDep):
     }
 
 
-@router.post("/tasks/{task_id}/ai-fix/rollback")
+@router.post("/tasks/{task_id}/ai-fix/rollback", dependencies=[Depends(require_roles("dev", "test"))])
 def ai_fix_rollback(task_id: int, payload: BugFixRollbackRequest, db: DBDep):
     """回滚 AI 修复（删远程分支 + 恢复 Bug 状态）。"""
     task = db.session.query(Task).filter(Task.id == task_id).first()

@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
-from server.api.deps import DBDep
+from server.api.deps import DBDep, RequireAdmin
 from database.models import (
     ALL_CASE_TYPES,
     CASE_TYPE_FUNCTIONAL,
@@ -358,7 +358,7 @@ def test_git_config(project_id: int, db: DBDep):
     return GitConfigTestResult(**data)
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", dependencies=[RequireAdmin])
 def delete_project(project_id: int, db: DBDep):
     db_project = (
         db.session.query(Project).filter(Project.id == project_id).first()

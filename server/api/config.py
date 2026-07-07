@@ -20,7 +20,7 @@ from typing import Optional
 import pydantic
 from fastapi import APIRouter, HTTPException, Query
 
-from server.api.deps import DBDep
+from server.api.deps import DBDep, RequireAdmin
 from database.models import ConfigStore, ConfigUpdateItem
 from utils.reload_config import config_center
 
@@ -79,7 +79,7 @@ async def get_all_configs(
 # ---------------------------------------------------------------------------
 # 写
 # ---------------------------------------------------------------------------
-@router.post("/save")
+@router.post("/save", dependencies=[RequireAdmin])
 async def save_configs(configs: ConfigUpdateItem, db: DBDep):
     if not configs.category:
         raise HTTPException(status_code=400, detail="category 不能为空")
@@ -115,7 +115,7 @@ async def save_configs(configs: ConfigUpdateItem, db: DBDep):
     return {"status": "success", "message": "保存成功"}
 
 
-@router.post("/add")
+@router.post("/add", dependencies=[RequireAdmin])
 def add_config(item: ConfigUpdateItem, db: DBDep):
     if not item.config_group:
         raise HTTPException(status_code=400, detail="config_group 不能为空")
@@ -136,7 +136,7 @@ def add_config(item: ConfigUpdateItem, db: DBDep):
     return {"status": "success"}
 
 
-@router.delete("/delete/{config_id}")
+@router.delete("/delete/{config_id}", dependencies=[RequireAdmin])
 async def delete_config(config_id: int, db: DBDep):
     row = (
         db.session.query(ConfigStore).filter(ConfigStore.id == config_id).first()
@@ -157,7 +157,7 @@ class CopyFromGlobalRequest(pydantic.BaseModel):
     categories: list[str] | None = None
 
 
-@router.post("/copy-from-global")
+@router.post("/copy-from-global", dependencies=[RequireAdmin])
 async def copy_from_global(payload: CopyFromGlobalRequest, db: DBDep):
     """将全局模板（project_id IS NULL）的配置拷贝到指定项目。
 
