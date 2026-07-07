@@ -53,7 +53,7 @@ class Finder:
         except Exception as e:
             try:
                 self.handle_blacklist()
-            except:
+            except Exception:
                 pass
 
             if (by, value) in self.whitelist:
@@ -83,7 +83,7 @@ class Finder:
                 return WebDriverWait(self.driver, 3).until(
                     EC.presence_of_element_located(_AppiumBy.by(by, value))
                 )
-            except:
+            except Exception:
                 if mode == "vertical":
                     self.driver.swipe(size["width"]//2, int(size["height"]*0.8),
                                       size["width"]//2, int(size["height"]*0.2), 500)
@@ -104,12 +104,12 @@ class Finder:
                         LOGGER.info(f"处理黑名单: {value}")
                         try:
                             els[0].click()
-                        except:
+                        except Exception:
                             self.driver.tap([
                                 (int(size["width"] * 0.9), int(size["height"] * 0.2))
                             ])
                         clicked = True
-                except:
+                except Exception:
                     pass
             if not clicked:
                 return

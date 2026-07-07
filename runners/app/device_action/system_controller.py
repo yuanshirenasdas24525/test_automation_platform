@@ -11,14 +11,14 @@ class SystemController:
             content = self.driver.get_clipboard_text()
             LOGGER.info(f"剪贴板内容: {content}")
             return content
-        except:
+        except Exception:
             return None
 
     def open_notifications(self):
         try:
             self.driver.open_notifications()
             LOGGER.info("通知栏已打开")
-        except:
+        except Exception:
             pass
 
     def handle_alert(self, action='accept'):
@@ -29,25 +29,25 @@ class SystemController:
             else:
                 alert.dismiss()
             LOGGER.info(f"弹窗已{('接受' if action=='accept' else '拒绝')}")
-        except:
+        except Exception:
             pass
 
     def handle_permissions_dialog(self, accept=True):
         try:
             self.driver.execute_script('mobile: acceptAlert' if accept else 'mobile: dismissAlert')
-        except:
+        except Exception:
             pass
 
     def use_touch_id(self, match=True):
         try:
             self.driver.execute_script('mobile: touchId', {'match': match})
-        except:
+        except Exception:
             pass
 
     def use_face_id(self, match=True):
         try:
             self.driver.execute_script('mobile: faceId', {'match': match})
-        except:
+        except Exception:
             pass
 
     def send_intent(self, action, data=None):
@@ -56,13 +56,13 @@ class SystemController:
             if data:
                 payload['data'] = data
             self.driver.execute_script('mobile: sendIntent', payload)
-        except:
+        except Exception:
             pass
 
     def start_screen_recording(self):
         try:
             self.driver.start_recording_screen()
-        except:
+        except Exception:
             pass
 
     def stop_screen_recording(self, filename):
@@ -70,43 +70,43 @@ class SystemController:
             video_raw = self.driver.stop_recording_screen()
             with open(filename, 'wb') as f:
                 f.write(base64.b64decode(video_raw))
-        except:
+        except Exception:
             pass
 
     def capture_logs(self, log_type='logcat'):
         try:
             return self.driver.get_log(log_type)
-        except:
+        except Exception:
             return None
 
     def get_performance_data(self, package_name, data_type, timeout=5):
         try:
             return self.driver.get_performance_data(package_name, data_type, timeout)
-        except:
+        except Exception:
             return None
 
     def simulate_network_condition(self, condition):
         try:
             self.driver.set_network_connection(condition)
-        except:
+        except Exception:
             pass
 
     def set_orientation(self, orientation):
         try:
             self.driver.orientation = orientation
-        except:
+        except Exception:
             pass
 
     def adjust_volume(self, volume_type, level):
         try:
             self.driver.execute_script('mobile: volume', {'volume': volume_type, 'level': level})
-        except:
+        except Exception:
             pass
 
     def get_device_time(self):
         try:
             return self.driver.device_time
-        except:
+        except Exception:
             return None
 
     def slider_validation(self, image_path):
@@ -120,5 +120,5 @@ class SystemController:
             })
             with open(image_path, "rb") as f:
                 return base64.b64encode(f.read()).decode("utf-8")
-        except:
+        except Exception:
             return None

@@ -12,30 +12,30 @@ class InputController:
     def back(self):
         try:
             return self.driver.back()
-        except:
+        except Exception:
             try:
                 self.driver.press_keycode(4)
-            except:
+            except Exception:
                 pass
 
     def tap(self, positions):
         try:
             return self.driver.tap(positions)
-        except:
+        except Exception:
             try:
                 for x, y in positions:
                     self.driver.execute_script("mobile: tap", {"x": x, "y": y})
-            except:
+            except Exception:
                 pass
 
     def swipe(self, start_x, start_y, end_x, end_y, duration=500):
         try:
             return self.driver.swipe(start_x, start_y, end_x, end_y, duration)
-        except:
+        except Exception:
             try:
                 action = self.driver.create_touch_action()
                 action.press(x=start_x, y=start_y).wait(ms=duration).move_to(x=end_x, y=end_y).release().perform()
-            except:
+            except Exception:
                 pass
 
     def ac_send(self, element, value):
@@ -99,11 +99,11 @@ class InputController:
     def send_key_event(self, keycode):
         try:
             self.driver.press_keycode(keycode)
-        except:
+        except Exception:
             pass
 
     def trigger_physical_button(self, button_name):
         try:
             self.driver.execute_script('mobile: pressButton', {'name': button_name})
-        except:
+        except Exception:
             pass
