@@ -194,6 +194,9 @@ for router in (
 # 静态资源
 # ---------------------------------------------------------------------------
 # Allure 报告：Celery worker 跑完会把产物写到这里，前端拿 /reports/<task_id>/ 打开
+# StaticFiles 要求 import 时目录就存在（早于 lifespan），全新部署时 data/reports
+# 还没被任何一次跑测试创建，所以这里必须先 mkdir，否则模块导入即崩。
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 
 # 需求附件：用户上传到 data/attachments/req_{id}/，前端用 /attachments/req_{id}/{name} 访问。
