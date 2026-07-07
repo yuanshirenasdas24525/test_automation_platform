@@ -22,6 +22,9 @@ x-app-common: &app-common
   environment: &app-env
     TZ: Asia/Shanghai
     PYTHONUNBUFFERED: "1"
+    # 生产环境必须设置（≥32 位随机串）；不设则回退到配置中心/默认值
+    JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
     # 探活
     REDIS_HOST: redis
     REDIS_PORT: "6379"
@@ -33,9 +36,10 @@ x-app-common: &app-common
     # 平台 DB —— 使用 PostgreSQL
     DB_HOST: postgres
     DB_PORT: "5432"
-    DB_USER: tap
-    DB_PASSWORD: tap_pass
-    DB_NAME: tap
+    DB_USER: ${DB_USER:-tap}
+    # 生产部署请在 .env 或环境里覆盖 DB_PASSWORD，不要用默认值
+    DB_PASSWORD: ${DB_PASSWORD:-tap_pass}
+    DB_NAME: ${DB_NAME:-tap}
   volumes: &app-vols
     # 数据 / 日志 / 报告 / app 包都挂出来，container 重建不丢数据
     - ./data:/app/data
@@ -75,9 +79,9 @@ services:
     image: postgres:15-alpine
     container_name: tap_postgres
     environment:
-      POSTGRES_USER: tap
-      POSTGRES_PASSWORD: tap_pass
-      POSTGRES_DB: tap
+      POSTGRES_USER: ${DB_USER:-tap}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tap_pass}
+      POSTGRES_DB: ${DB_NAME:-tap}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
