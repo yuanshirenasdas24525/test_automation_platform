@@ -1,17 +1,10 @@
-# src/database/base.py
-from sqlalchemy import JSON as _JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
 
-# 跨数据库的 JSON 列类型：
-#   - PostgreSQL 用 JSONB（支持 GIN 索引、更丰富的查询操作符）
-#   - 其他数据库（SQLite/MySQL）回退到通用 JSON 类型
-# 使用方式：
-#   from src.database.base import Base, JSONType
-#   config = Column(JSONType, nullable=False)
-JSONType = _JSON().with_variant(JSONB(), "postgresql")
+# 平台元数据库统一 PostgreSQL，JSON 列直接使用 JSONB。
+JSONType = JSONB
 
 
 def embedding_column(dim: int):
@@ -20,8 +13,7 @@ def embedding_column(dim: int):
     PostgreSQL 下用 ``pgvector`` 的 ``vector(dim)``，可走 HNSW / ivfflat 索引
     + ``<=>``/``<->``/``<#>`` 距离算子，性能最好。
 
-    pgvector 库不存在时（比如 import 期 model 文件被加载、但环境没装这个包）
-    回退到 JSON，**仅作 import 兼容**，迁移 / 实际查询仍按 PG + pgvector 设计。
+    pgvector 库不存在时抛出明确错误，避免迁移或运行时悄悄退成普通 JSON。
 
     用法：
         from database.base import embedding_column
@@ -29,6 +21,6 @@ def embedding_column(dim: int):
     """
     try:
         from pgvector.sqlalchemy import Vector  # type: ignore
-        return Vector(dim)
-    except Exception:  # noqa: BLE001 — pgvector 没装也不阻断 import
-        return _JSON()
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError("缺少 pgvector 依赖，平台元数据库需要 PostgreSQL + pgvector") from exc
+    return Vector(dim)

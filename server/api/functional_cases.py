@@ -2235,7 +2235,7 @@ def _parse_json_loose(text):
 
 
 def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
-    """把 API 用例真实执行定义序列化给 AI；优先使用 v2 steps，避免只看到废弃 v1 字段。"""
+    """把 API 用例真实执行定义序列化给 AI；执行定义只取 steps。"""
     steps = []
     for step in sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id)):
         if step.step_type != "http_request":
@@ -2250,19 +2250,19 @@ def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
                 "headers": config.get("headers") or {},
                 "data_type": config.get("data_type") or "application/json",
                 "params": config.get("params") or {},
-                "extract": step.extract or _parse_json_loose(config.get("extract_data")),
-                "assertion": step.assertion or _parse_json_loose(config.get("assertion")),
+                "extract": step.extract or [],
+                "assertion": step.assertion or [],
             }
         )
     first = steps[0] if steps else {}
     return {
         "name": case.name,
-        "method": first.get("method") or case.method,
-        "path": first.get("path") or case.path,
-        "headers": first.get("headers") or _parse_json_loose(case.headers),
-        "params": first.get("params") or _parse_json_loose(case.params),
-        "extract_data": first.get("extract") or _parse_json_loose(case.extract_data),
-        "assertion": first.get("assertion") or _parse_json_loose(case.assertion),
+        "method": first.get("method"),
+        "path": first.get("path"),
+        "headers": first.get("headers") or {},
+        "params": first.get("params") or {},
+        "extract_data": first.get("extract") or [],
+        "assertion": first.get("assertion") or [],
         "steps": steps,
         "note": "params 是平台实际发送的请求体/请求参数模板；修请求参数时请返回完整 fix.params。",
     }

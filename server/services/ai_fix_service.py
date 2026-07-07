@@ -667,28 +667,6 @@ def _upsert_assertion_rule(rules: Any, target: str, expected: Any) -> list:
     return new
 
 
-def _legacy_extract_map(steps) -> dict:
-    out: dict[str, Any] = {}
-    for s in steps:
-        for r in s.extract or []:
-            if isinstance(r, dict) and r.get("name") and (r.get("jsonpath") or r.get("path")):
-                out[str(r["name"])] = r.get("jsonpath") or r.get("path")
-    return out
-
-
-def _legacy_assertion_map(steps) -> dict:
-    out: dict[str, Any] = {}
-    for s in steps:
-        for r in s.assertion or []:
-            if not isinstance(r, dict):
-                continue
-            target = str(r.get("target") or "").strip()
-            if not target:
-                continue
-            out[target] = "not_empty" if r.get("type") in ("not_null", "is_not_null") else r.get("expected")
-    return out
-
-
 def apply_report_fixes(
     session: Session,
     report_id: int,
@@ -752,7 +730,7 @@ def apply_report_fixes(
 
 
 def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
-    """把 sanitize 过的 fix 落到 ORM（steps + v1 镜像列）。返回实际改动的部分。"""
+    """把 sanitize 过的 fix 落到 TestStep。返回实际改动的部分。"""
     parts: list[str] = []
     steps_sorted = sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id or 0))
     http_steps = [s for s in steps_sorted if s.step_type == "http_request"]
@@ -774,13 +752,11 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
         cfg = dict(first_http.config or {})
         cfg["params"] = fix["params"]          # 预检阶段已合并完成
         first_http.config = cfg
-        case.params = json.dumps(fix["params"], ensure_ascii=False, indent=2)
         parts.append("params")
     if fix.get("headers"):
         cfg = dict(first_http.config or {})
         cfg["headers"] = fix["headers"]        # 预检阶段已合并完成
         first_http.config = cfg
-        case.headers = json.dumps(fix["headers"], ensure_ascii=False, indent=2)
         parts.append("headers")
 
     for sf in fix.get("steps") or []:
@@ -796,10 +772,6 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
         if "steps" not in parts:
             parts.append("steps")
 
-    if "extract" in parts:
-        case.extract_data = json.dumps(_legacy_extract_map(steps_sorted), ensure_ascii=False, indent=2)
-    if "assertion" in parts:
-        case.assertion = json.dumps(_legacy_assertion_map(steps_sorted), ensure_ascii=False, indent=2)
     return parts
 
 

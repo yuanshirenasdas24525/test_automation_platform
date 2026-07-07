@@ -10,7 +10,7 @@
 v2 新增（2026-04）：
   - POST / PUT 支持 `steps` 字段：web / app 用例真正的执行步骤下沉到 test_steps 表，
     payload 里带 steps 就按"先清空再重写"的语义写入。
-  - POST / PUT 支持 `case_type`：为空时按老字段（method/path）推断 api。
+  - POST / PUT 支持 `case_type`：为空时按 steps 推断，自动化用例必须有 steps。
   - 新增 `GET /test_cases/{id}`：返回用例 + 它的所有 steps，给前端编辑态加载用。
 
 注意：`TestCaseCreate` 里没有"硬删除 steps"的信号 —— 判断语义：
@@ -20,7 +20,6 @@ v2 新增（2026-04）：
 """
 from __future__ import annotations
 
-import json
 import re
 from typing import Annotated, Any
 
@@ -119,7 +118,7 @@ def _strip_nul_chars(obj: Any) -> Any:
 def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
     """把 `steps` 字段完整落进 test_steps 表。
 
-    - None  → 不动（创建时意味着本 case 没有 steps，就真的没有）
+    - None  → 不动（更新已有用例时保留原 steps）
     - []    → 清空
     - [...] → 先清空再整体写入
 
@@ -149,125 +148,26 @@ def _replace_case_steps(db, case_id: int, steps: list[Any] | None) -> None:
             # 真跑的时候 dispatcher 找不到 runner 会自己报 ERROR。
             pass
 
-        config = s.get("config") or {}
-        extract = s.get("extract")
-        assertion = s.get("assertion")
-        if not extract and isinstance(config, dict):
-            extract = _v1_extract_to_step(config.get("extract_data") or config.get("extract"))
-        if not assertion and isinstance(config, dict):
-            assertion = _v1_assertion_to_step(config.get("assertion"))
-
         db.session.add(TestStep(
             case_id=case_id,
             step_order=int(s.get("step_order") if s.get("step_order") is not None else i),
             step_name=s.get("step_name") or f"step-{i + 1}",
             step_type=step_type,
             skip=bool(s.get("skip") or False),
-            config=config,
-            extract=extract,
-            assertion=assertion,
+            config=s.get("config") or {},
+            extract=s.get("extract"),
+            assertion=s.get("assertion"),
             wait_before=float(s.get("wait_before") or 0),
             timeout=int(s.get("timeout") or 30),
             retry=int(s.get("retry") or 0),
             on_failure=(s.get("on_failure") or "stop"),
         ))
 
-
-def _v1_extract_to_step(raw) -> list[dict]:
-    """v1 提取参数 {"token": "$.data.token"} → step.extract [{name,from,jsonpath}]。"""
-    if not raw:
-        return []
-    obj = raw
-    if isinstance(raw, str):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            return []
-    out: list[dict] = []
-    if isinstance(obj, dict):
-        for name, jp in obj.items():
-            if str(name).strip() and str(jp).strip():
-                out.append({"name": str(name), "from": "response.body", "jsonpath": str(jp)})
-    return out
-
-
-def _v1_assertion_to_step(raw) -> list[dict]:
-    """v1 断言 {"$.code": 0, "status_code": 200} → step.assertion [{type,target,expected}]。
-    target 以 $ 开头视为 jsonpath；status_code 用 equal；其余按 equal。"""
-    if not raw:
-        return []
-    obj = raw
-    if isinstance(raw, str):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            return []
-    _NOT_NULL = {"not_empty", "not_null", "非空", "@notnull", "@notempty", "notnull", "notempty"}
-    _IS_NULL = {"is_null", "null", "为空", "空", "@null"}
-    out: list[dict] = []
-    if isinstance(obj, dict):
-        for target, expected in obj.items():
-            t = str(target).strip()
-            if not t:
-                continue
-            ev = expected.strip().lower() if isinstance(expected, str) else expected
-            if isinstance(expected, str) and ev in _NOT_NULL:
-                # token / id 这类每次都变的值：断言「非空」（引擎类型名是 is_not_null）
-                out.append({"type": "is_not_null", "target": t, "expected": None})
-            elif isinstance(expected, str) and ev in _IS_NULL:
-                out.append({"type": "is_null", "target": t, "expected": None})
-            else:
-                atype = "jsonpath" if t.startswith("$") else "equal"
-                out.append({"type": atype, "target": t, "expected": expected})
-    return out
-
-
-def _synthesize_http_step_from_v1_fields(payload: dict) -> dict | None:
-    """从 v1 风格字段（method/path/headers/...）合成一条 http_request step。
-
-    用途：前端 API 表单存的是 v1 字段（不送 steps 数组），但 v2 执行链路
-    只认 test_steps 表。在保存用例时自动合成一条 step 写进去，让用户
-    新建的 API 用例**不需要再跑数据迁移**就能直接执行。
-
-    返回：dict 形式的 step（让 _replace_case_steps 能直接吃）；
-         如果 v1 字段都为空 → 返回 None（让调用方决定不写 step）
-    """
-    method = (payload.get("method") or "").strip()
-    path = (payload.get("path") or "").strip()
-    if not method and not path:
-        return None  # 用户连 method/path 都没填，没法合成有意义的 step
-
-    return {
-        "step_order": 0,
-        "step_name": (payload.get("name") or "API 请求"),
-        "step_type": "http_request",
-        "skip": False,
-        "config": {
-            "method": method.upper() or "GET",
-            "path": path,
-            "headers": payload.get("headers") or {},
-            "data_type": payload.get("data_type") or "application/json",
-            "params": payload.get("params") or {},
-            "file_path": payload.get("file_path"),
-            "sql_query": payload.get("sql_query"),
-        },
-        # v1 的 extract_data / assertion（JSON）转成结构化 extract / assertion，
-        # 这样 AI 生成或用户手填的提取/断言才会真正进入执行链路。
-        "extract": _v1_extract_to_step(payload.get("extract_data")),
-        "assertion": _v1_assertion_to_step(payload.get("assertion")),
-        "wait_before": int(payload.get("wait_time") or 0),
-        "timeout": 60,
-        "retry": 0,
-        "on_failure": "stop",
-    }
-
-
 def _infer_case_type(payload: dict) -> str:
     """payload 没显式 case_type 时兜个底：
       - 有 steps 且全是 web_* → web
       - 有 steps 且全是 app_* → app
       - 混合类型 → mixed
-      - 没 steps 但有 method/path → api
       - 其它 → api（保守）
     """
     explicit = payload.get("case_type")
@@ -308,21 +208,13 @@ def create_case(
     # 落库前清掉 NUL（Postgres text/jsonb 存不下 ，否则整条用例写库 500）
     payload = _strip_nul_chars(case.model_dump())
     # steps / case_type 属于新增字段，不在 TestCase model 列里，单独处理
+    steps_field_provided = "steps" in case.model_fields_set
     steps = payload.pop("steps", None)
     if payload.get("case_type") is None:
         payload["case_type"] = _infer_case_type({"steps": steps, **payload})
 
-    # v1 → v2 自动桥接：API 类用例如果走老表单只填了 v1 字段（method/path/...），
-    # 不送 steps，这里自动合成一条 http_request step，避免 case 没 steps 跑不动。
-    # 用户也可以前端直接送 steps（StepEditor 路径），那就不走合成。
-    if (
-        not steps
-        and payload.get("case_type") in ("api", None)
-        and (payload.get("method") or payload.get("path"))
-    ):
-        synthesized = _synthesize_http_step_from_v1_fields(payload)
-        if synthesized:
-            steps = [synthesized]
+    if payload.get("case_type") != "functional" and (not steps_field_provided or not steps):
+        raise HTTPException(status_code=422, detail="自动化用例必须提交 steps，后端不再兜底生成步骤")
 
     explicit_order = payload.get("sort_order")
     if explicit_order is not None:
@@ -422,37 +314,12 @@ def update_case(
 
     # steps 处理：
     #   1) 前端送了 steps 字段（不管是空还是有值）→ 整体替换
-    #   2) 前端没送 steps 但通过 v1 字段改了 method/path/headers 等 → 自动重建
-    #      唯一一条 http_request step（用最新 v1 字段）
-    #   3) 都没动 → 保持 DB 原值
+    #   2) 前端没送 steps → 保持 DB 原值，不再兜底生成步骤
     if "steps" in case.model_fields_set:
+        next_case_type = (payload.get("case_type") or db_case.case_type or "api").lower()
+        if next_case_type != "functional" and not steps:
+            raise HTTPException(status_code=422, detail="自动化用例必须提交至少一个 step")
         _replace_case_steps(db, case_id, steps)
-    elif (
-        (db_case.case_type or "api").lower() == "api"
-        and any(
-            field in case.model_fields_set
-            for field in ("method", "path", "headers", "data_type",
-                          "params", "file_path", "sql_query", "wait_time",
-                          "extract_data", "assertion")
-        )
-    ):
-        # 用 db_case 当前的最新字段重建唯一的 http_request step
-        merged = {
-            "name": db_case.name,
-            "method": db_case.method,
-            "path": db_case.path,
-            "headers": db_case.headers,
-            "data_type": db_case.data_type,
-            "params": db_case.params,
-            "file_path": db_case.file_path,
-            "sql_query": db_case.sql_query,
-            "wait_time": db_case.wait_time,
-            "extract_data": db_case.extract_data,
-            "assertion": db_case.assertion,
-        }
-        synthesized = _synthesize_http_step_from_v1_fields(merged)
-        if synthesized:
-            _replace_case_steps(db, case_id, [synthesized])
 
     db.session.flush()
     db_case = _load_case_for_history(db, case_id)

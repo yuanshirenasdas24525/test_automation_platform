@@ -228,7 +228,7 @@ def test_web_wait_without_locator_sleeps_only(monkeypatch):
     ctx = ExecutionContext()
     _, adapter = _bind_fake_session(ctx)
     slept = []
-    monkeypatch.setattr("src.runners.steps.web_actions.time.sleep",
+    monkeypatch.setattr("runners.steps.web_actions.time.sleep",
                         lambda s: slept.append(s))
     r = _dispatch_web_step(ctx, {
         "id": 6, "step_order": 0, "step_name": "sleep",

@@ -1,4 +1,5 @@
-import { Navigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { useEffect } from "react";
+import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Code2,
   FolderKanban,
@@ -12,6 +13,7 @@ import {
 import { CurrentUserSwitcher } from "@/components/CurrentUserSwitcher";
 import { FloatingTaskWidget } from "@/components/FloatingTaskWidget";
 import { useCurrentUser } from "@/lib/current-user";
+import { AUTH_EXPIRED_EVENT } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
@@ -34,9 +36,19 @@ const NAV: NavItem[] = [
 ];
 
 export function AppLayout() {
+  const navigate = useNavigate();
   const { pathname, search } = useLocation();
   const current = pathname + search;
-  const { user } = useCurrentUser();
+  const { user, setUser } = useCurrentUser();
+
+  useEffect(() => {
+    const handleAuthExpired = () => {
+      setUser(null);
+      navigate("/login", { replace: true });
+    };
+    window.addEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handleAuthExpired);
+  }, [navigate, setUser]);
 
   // 没登录用户 → 跳到 /login。CurrentUserProvider 已经提到了 main.tsx，
   // /login 页面也能拿到同一份 Context 来 setUser。

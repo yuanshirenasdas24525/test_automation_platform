@@ -9,7 +9,7 @@
   5. step 失败 + on_failure=stop：后续 step 不执行
   6. step 失败 + on_failure=continue：后续 step 继续执行
   7. 未注册的 step_type：返回 ERROR 但不炸
-  8. v1 兼容：case 没有 steps，靠 method/path 合成一条
+  8. v2 不变量：case 没有 steps 直接失败
 
 跑法（需要在项目根目录）：
 
@@ -513,7 +513,7 @@ def test_unknown_step_type_returns_error(monkeypatch):
     executor = CaseExecutor(dispatcher)
 
     case = {
-        "id": 5, "name": "unknown-type", "case_type": "mixed",
+        "id": 5, "name": "unknown-type", "case_type": "api",
         "steps": [{
             "id": 501, "step_order": 0, "step_name": "x",
             "step_type": "totally_made_up",
@@ -526,23 +526,18 @@ def test_unknown_step_type_returns_error(monkeypatch):
 
 
 # ===================================================================
-# 6. v1 兼容：case 没 steps，靠 method/path 合成一条 http_request
+# 6. v2 不变量：case 没 steps 直接失败，不再从老字段合成
 # ===================================================================
-def test_v1_compat_synthesizes_step(monkeypatch):
-    resp = _FakeResponse(200, {"v1": True})
-    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])
+def test_missing_steps_returns_error(monkeypatch):
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [])
     dispatcher = _build_dispatcher(http_runner)
     executor = CaseExecutor(dispatcher)
 
     case = {
-        "id": 6, "name": "legacy", "case_type": None,
-        "method": "GET", "path": "/legacy",
-        "headers": "{}", "data_type": "application/json",
-        "params": "{}", "assertion": None,
-        # 注意：没有 "steps" 键
+        "id": 6,
+        "name": "missing-steps",
+        "case_type": "api",
     }
     result = executor.run(case)
-    # 虽然 case.assertion 为 None，http_request 拿不到任何断言也是过
-    assert result.status == StepStatus.PASSED, result.error_message
-    assert len(result.steps) == 1
-    assert result.steps[0].step_type == "http_request"
+    assert result.status == StepStatus.ERROR
+    assert "没有 steps" in (result.error_message or "")

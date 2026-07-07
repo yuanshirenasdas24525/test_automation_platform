@@ -206,7 +206,7 @@ def test_app_swipe_with_direction_ratio():
 def test_app_wait_sleep_only(monkeypatch):
     ctx, _session, _driver = _make_ctx_with_fake_session()
     slept = []
-    monkeypatch.setattr("src.runners.steps.app_actions.time.sleep",
+    monkeypatch.setattr("runners.steps.app_actions.time.sleep",
                         lambda s: slept.append(s))
     step = {
         "id": 14, "step_order": 0, "step_name": "wait",

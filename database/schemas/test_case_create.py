@@ -1,25 +1,7 @@
-"""
-创建 / 编辑用例的请求体（v1 + v2 混合兼容版）。
+"""创建 / 编辑用例的请求体。
 
-历史背景：
-  - v1 schema 是"一条用例 = 一个 HTTP 请求"，所以字段里有 method/path/headers 这些
-    HTTP 专用字段。API 项目到现在还在用这个形状。
-  - v2 之后 TestCase 的真正执行步骤下沉到 `test_steps` 表，web/app/mixed 用例必须
-    带 `steps` 字段一起创建 / 更新。纯 API 用例要么走老的 HTTP 字段（后端 CaseExecutor
-    v1 兼容分支会合成一条 step），要么也走 steps。
-
-因此这里把两种形态都放在同一个 schema 里：
-  - 旧字段（method / path / headers / ...）保留，API 用例可以继续用；
-  - 新增 `case_type` 明示用例类型（api / app / web / mixed），默认 api；
-  - 新增 `steps`：一个 step 字典列表，字段与 TestStep 模型一致。web / app 用例**必传**，
-    API 用例可选（不传就走 v1 兼容路径）。
-
-修订点（2026-04）：
-  - Pydantic v2：所有 `Optional[X]` 都显式加 `= None`，避免被当成必填。
-  - 新增 `sort_order`：让"指定位置插入"的前端功能真正生效。
-  - `wait_time: Optional[int] = 0`（旧代码 `int = None` 类型错误）。
-  - method / path / assertion / description → Optional，与 TestCase model 对齐。
-  - 2026-04 再加：`case_type` + `steps` + `tags` + `priority`，支持 web/app 用例。
+执行定义统一放在 `steps`。method / path / headers 等历史 HTTP 字段只因数据库列
+暂时保留而存在，不再作为后端生成 step 的输入。
 """
 from __future__ import annotations
 
@@ -55,7 +37,7 @@ class TestCaseCreate(pydantic.BaseModel):
     skip: bool = False
     sort_order: Optional[int] = None
 
-    # ------- v2 新增：用例类型 + 步骤 -------
+    # ------- 用例类型 + 步骤 -------
     case_type: Optional[
         Literal["api", "android", "ios", "web", "mixed", "functional"]
     ] = None
@@ -63,7 +45,7 @@ class TestCaseCreate(pydantic.BaseModel):
     priority: Optional[int] = None
     steps: Optional[List[StepPayload]] = None
 
-    # ------- v1 HTTP 特有字段（App / Web 用例可以不传） -------
+    # ------- 历史 HTTP 字段：暂留到后续删列迁移 -------
     method: Optional[str] = None
     path: Optional[str] = None
     headers: Optional[str] = None

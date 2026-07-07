@@ -61,8 +61,7 @@ class CodeChunk(Base):
     # 原文（拼 prompt 用）；用 Text 避免长度限制
     content = Column(Text, nullable=False)
 
-    # 向量列 —— 使用 JSONType 存储任意维度的向量
-    # pgvector 扩展在 PostgreSQL 中不可用时，retriever 走 JSON fallback 路径
+    # 向量列 —— 现有迁移仍是 JSONB；检索层优先 pgvector，旧数据按 JSONB 读取。
     embedding = Column(JSONType, nullable=True)
 
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

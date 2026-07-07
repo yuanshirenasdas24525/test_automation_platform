@@ -50,8 +50,8 @@
 2. **CASES 被拦腰截断成非法 JSON**。`json.dumps(chunk, ensure_ascii=False)[:14000]`（`functional_cases.py:2064`），而 chunk=6 条用例，每条 result 单行就允许 1200+1800+800+500+800≈5100 字符，6 条轻松超 3 万字符——**后半个 chunk 的用例数据被硬切**。模型对这些用例只能给最安全的泛泛建议：补断言。`REPORT_CONTEXT[:6000]`（2063）同理。
 3. **system prompt 冲突**：`chat_markdown(prompt, cfg, timeout=240)`（2067）同问题 2，默认 system 是"不要返回 JSON"。
 4. **prompt 把 fix.params 卡得极死**（`api_report_diagnose.md:49-50`）："fix 只在 classification=用例问题 时给"、"fix.params 只在参数确实写错时给（完整对象）"。在证据不足（因 1/2）时，模型的理性选择就是永远只给 assertion。
-5. **应用侧只 patch 第一条 http_request step**。`applyAiReportFixes`（`ApiCasesPage.tsx:1573` 附近 `steps.findIndex(...)`）——场景多步用例第 2..N 步即使模型给了修复也落不下去；且 `params: fp` 是**整体替换**，模型给残缺对象会清掉原字段。
-6. 修复用的模型写死 `firstModel`（第一个可用模型，`ApiCasesPage.tsx:1520`），不是用户在界面选的模型。
+5. **应用侧只 patch 第一条 http_request step**。`applyAiReportFixes`（`AutomationCasesPage.tsx:1573` 附近 `steps.findIndex(...)`）——场景多步用例第 2..N 步即使模型给了修复也落不下去；且 `params: fp` 是**整体替换**，模型给残缺对象会清掉原字段。
+6. 修复用的模型写死 `firstModel`（第一个可用模型，`AutomationCasesPage.tsx:1520`），不是用户在界面选的模型。
 
 ### 方案
 

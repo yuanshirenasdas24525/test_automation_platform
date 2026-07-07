@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Pencil, Plus } from "lucide-react";
+import { ChevronDown, Pencil, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -38,6 +38,7 @@ export function AdminWorkspace() {
 
   const [editing, setEditing] = useState<User | null>(null);
   const [creating, setCreating] = useState(false);
+  const [membersExpanded, setMembersExpanded] = useState(false);
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["users"] });
@@ -46,48 +47,62 @@ export function AdminWorkspace() {
     <>
       <Card className="col-span-full">
         <div className="flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <h3 className="text-sm font-semibold">成员管理</h3>
-            <div className="mt-0.5 text-xs text-muted-foreground">
-              共 {users.length} 人 · 编辑与停用
+          <button
+            type="button"
+            className="flex items-center gap-2 text-left"
+            aria-expanded={membersExpanded}
+            onClick={() => setMembersExpanded((expanded) => !expanded)}
+          >
+            <ChevronDown
+              className={`h-4 w-4 text-muted-foreground transition-transform ${
+                membersExpanded ? "rotate-0" : "-rotate-90"
+              }`}
+            />
+            <div>
+              <h3 className="text-sm font-semibold">成员管理</h3>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                共 {users.length} 人 · 编辑与停用
+              </div>
             </div>
-          </div>
+          </button>
           <Button size="sm" onClick={() => setCreating(true)}>
             <Plus className="mr-1 h-3.5 w-3.5" /> 新建用户
           </Button>
         </div>
-        <CardContent className="p-0">
-          {usersQuery.isLoading ? (
-            <div className="px-4 py-6 text-xs text-muted-foreground">
-              加载中…
-            </div>
-          ) : users.length === 0 ? (
-            <div className="px-4 py-6 text-xs text-muted-foreground">
-              暂无活跃用户。
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
-                <tr>
-                  <th className="px-4 py-2 text-left">用户名</th>
-                  <th className="px-4 py-2 text-left">姓名 / 邮箱</th>
-                  <th className="px-4 py-2 text-left">角色</th>
-                  <th className="px-4 py-2 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {users.map((u) => (
-                  <UserRow
-                    key={u.id}
-                    user={u}
-                    onEdit={() => setEditing(u)}
-                    onChanged={invalidate}
-                  />
-                ))}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
+        {membersExpanded ? (
+          <CardContent className="p-0">
+            {usersQuery.isLoading ? (
+              <div className="px-4 py-6 text-xs text-muted-foreground">
+                加载中…
+              </div>
+            ) : users.length === 0 ? (
+              <div className="px-4 py-6 text-xs text-muted-foreground">
+                暂无活跃用户。
+              </div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2 text-left">用户名</th>
+                    <th className="px-4 py-2 text-left">姓名 / 邮箱</th>
+                    <th className="px-4 py-2 text-left">角色</th>
+                    <th className="px-4 py-2 text-right">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {users.map((u) => (
+                    <UserRow
+                      key={u.id}
+                      user={u}
+                      onEdit={() => setEditing(u)}
+                      onChanged={invalidate}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </CardContent>
+        ) : null}
       </Card>
 
       <Card className="border-dashed">

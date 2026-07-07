@@ -169,7 +169,7 @@ export interface TestCaseCreate {
    */
   steps?: TestStepDraft[] | null;
 
-  /** v1 遗留 HTTP 字段（API 用例继续用） */
+  /** 历史 HTTP 字段：数据库列暂留，执行定义以 steps 为准。 */
   method?: string | null;
   path?: string | null;
   headers?: string | null;
@@ -330,7 +330,7 @@ export type AiFlagCounts = Record<string, { total: number } & Partial<Record<AiF
 export interface ApiCase extends TestCaseCreate {
   id: number;
   module_id: number;
-  case_type: "api";
+  case_type: CaseType;
   tags: string[];
   skip: boolean;
   /** 步骤数；>1 视为多步骤用例（前端换图标） */
@@ -983,11 +983,53 @@ export interface UserUpdate {
 export interface LoginRequest {
   username: string;
   password: string;
+  client?: {
+    session_kind?: string | null;
+    client_type?: string | null;
+    client_name?: string | null;
+    app_version?: string | null;
+    platform?: string | null;
+    device_id?: string | null;
+    device_name?: string | null;
+    os_name?: string | null;
+    os_version?: string | null;
+    browser_name?: string | null;
+    browser_version?: string | null;
+  };
 }
 
 export interface LoginResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
   token: string;
   user: User;
+}
+
+export interface UserSession {
+  id: number;
+  user_id: number;
+  session_kind: string;
+  client_type: string;
+  client_name?: string | null;
+  app_version?: string | null;
+  platform?: string | null;
+  device_id?: string | null;
+  device_name?: string | null;
+  os_name?: string | null;
+  os_version?: string | null;
+  browser_name?: string | null;
+  browser_version?: string | null;
+  user_agent?: string | null;
+  ip_address?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+  revoked_reason?: string | null;
+  last_used_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  is_current: boolean;
+  is_active: boolean;
 }
 
 export interface ChangePasswordRequest {

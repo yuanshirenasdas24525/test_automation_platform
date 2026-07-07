@@ -19,6 +19,7 @@ from .project import (
 )
 from .module import Module
 from .user import User
+from .user_session import UserSession
 from .role import (
     Role,
     user_roles,

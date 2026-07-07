@@ -5,6 +5,8 @@
   - 角色通过 user_roles 关联 roles 表（多对多），不在 users 表内冗余 role 字段
   - is_active 用于离职 / 停用场景：保留历史记录但不出现在分配下拉
 """
+from __future__ import annotations
+
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, func
 from sqlalchemy.orm import relationship
 
@@ -27,6 +29,7 @@ class User(Base):
     )
 
     # 关系：roles 通过 user_roles 关联（在 role.py 里定义 backref）
+    sessions = relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
     # tasks_as_dev / tasks_as_test 通过 task.py 里的 assignee_dev / assignee_test FK 反向
 
     def to_dict(self) -> dict:

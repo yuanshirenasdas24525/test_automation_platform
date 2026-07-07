@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useCurrentUser } from "@/lib/current-user";
+import { authApi } from "@/lib/api";
 import { ROLE_LABELS } from "@/types/domain";
 import type { RoleCode } from "@/types/domain";
 
@@ -63,8 +64,10 @@ export function CurrentUserSwitcher() {
         )}
         <DropdownMenuItem
           onSelect={() => {
-            setUser(null);
-            navigate("/login", { replace: true });
+            void authApi.logout().finally(() => {
+              setUser(null);
+              navigate("/login", { replace: true });
+            });
           }}
           className="text-destructive"
         >

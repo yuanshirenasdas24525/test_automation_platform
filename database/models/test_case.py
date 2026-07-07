@@ -71,7 +71,7 @@ class TestCase(Base):
 
     # ============ v1 历史列（保留 nullable=True 占位）=========
     # 这些列在 v2 数据迁移 v2_cases_to_steps 之后已经全部转成 TestStep.config，
-    # 代码层不再读写；保留列只是为了兼容 PG/SQLite 不丢字段（避免下游脚本崩）。
+    # 代码层不再读写；保留列只是为了避免下游脚本在迁移窗口期崩。
     # 后续可加一条 alembic 迁移把它们 DROP 掉。
     method = Column(String, nullable=True)
     path = Column(String, nullable=True)

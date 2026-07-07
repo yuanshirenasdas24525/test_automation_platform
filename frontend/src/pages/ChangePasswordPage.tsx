@@ -21,6 +21,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authApi } from "@/lib/api";
+import { useCurrentUser } from "@/lib/current-user";
 
 const schema = z
   .object({
@@ -37,6 +38,7 @@ type FormValues = z.infer<typeof schema>;
 
 export function ChangePasswordPage() {
   const navigate = useNavigate();
+  const { setUser } = useCurrentUser();
   const [submitting, setSubmitting] = useState(false);
 
   const form = useForm<FormValues>({
@@ -51,8 +53,9 @@ export function ChangePasswordPage() {
         old_password: values.old_password,
         new_password: values.new_password,
       });
-      toast.success("密码修改成功");
-      navigate(-1);
+      setUser(null);
+      toast.success("密码修改成功，请重新登录");
+      navigate("/login", { replace: true });
     } catch (err) {
       toast.error((err as Error).message || "修改失败");
     } finally {

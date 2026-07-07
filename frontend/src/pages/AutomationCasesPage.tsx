@@ -45,7 +45,7 @@ import {
 import { MarkdownView } from "@/components/editor/MarkdownView";
 import {
   aiModelsApi,
-  apiCasesApi,
+  automationCasesApi,
   ApiError,
   aiApi,
   casesApi,
@@ -67,13 +67,14 @@ import type {
   ApiCaseEditRecord,
   ApiRunStatus,
   ApiTestHistoryReport,
+  CaseType,
   ContentNode,
   TestCaseCreate,
   TestStepDraft,
 } from "@/types/domain";
 import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
-import { CaseDialog, type CaseFormValues } from "./ProjectDetailPage";
+import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 
 type DiagnoseResult = {
   classification: string;
@@ -88,6 +89,15 @@ type DiagnoseResult = {
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 500] as const;
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+const CASE_LABELS: Record<CaseType, string> = {
+  api: "API",
+  web: "Web",
+  android: "Android",
+  ios: "iOS",
+  mixed: "Mixed",
+  functional: "功能",
+};
+type AutomationTabCaseType = Exclude<CaseType, "functional" | "mixed">;
 type ApiQuickNewRow = {
   tempId: string;
   aboveCaseId?: number;
@@ -146,6 +156,32 @@ function sessionId(): string {
   return `api-edit-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function buildQuickHttpStep(input: {
+  name: string;
+  method: string;
+  path: string;
+  headers?: string;
+  params?: string;
+}): TestStepDraft {
+  return {
+    step_order: 0,
+    step_name: input.name.trim() || "API 请求",
+    step_type: "http_request",
+    skip: false,
+    config: {
+      method: (input.method || "GET").toUpperCase(),
+      path: input.path || "",
+      headers: input.headers || "",
+      data_type: "application/json",
+      params: input.params || "",
+    },
+    wait_before: 0,
+    timeout: 60,
+    retry: 0,
+    on_failure: "stop",
+  };
+}
+
 function appendAssertionRule(
   steps: TestStepDraft[],
   stepId: number | null,
@@ -182,18 +218,6 @@ function appendAssertionRule(
   return { steps: nextSteps };
 }
 
-function assertionRulesToLegacyMap(steps: TestStepDraft[]) {
-  const out: Record<string, unknown> = {};
-  for (const step of steps) {
-    for (const item of step.assertion ?? []) {
-      const raw = item as Record<string, unknown>;
-      const target = String(raw.target ?? "").trim();
-      if (target) out[target] = raw.type === "not_null" || raw.type === "is_not_null" ? "not_empty" : raw.expected;
-    }
-  }
-  return out;
-}
-
 function appendExtractRule(
   steps: TestStepDraft[],
   stepId: number | null,
@@ -215,19 +239,6 @@ function appendExtractRule(
     ? old.map((item) => String((item as Record<string, unknown>).name ?? "") === variable ? rule : item)
     : [...old, rule];
   return { steps: nextSteps };
-}
-
-function extractRulesToLegacyMap(steps: TestStepDraft[]) {
-  const out: Record<string, unknown> = {};
-  for (const step of steps) {
-    for (const item of step.extract ?? []) {
-      const raw = item as Record<string, unknown>;
-      const name = String(raw.name ?? "").trim();
-      const jsonpath = raw.jsonpath ?? raw.path ?? raw.expr;
-      if (name && jsonpath) out[name] = jsonpath;
-    }
-  }
-  return out;
 }
 
 function formatTime(value: string | null | undefined): string {
@@ -261,10 +272,20 @@ function Badge({ children, className }: { children: ReactNode; variant?: "outlin
   return <span className={cn("inline-flex items-center rounded-md border px-2 py-0.5 text-xs", className)}>{children}</span>;
 }
 
-export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) {
+export function AutomationCasesPage({
+  embedded = false,
+  caseType = "api",
+  resetKey = 0,
+}: {
+  embedded?: boolean;
+  caseType?: AutomationTabCaseType;
+  resetKey?: number;
+} = {}) {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
   const queryClient = useQueryClient();
+  const caseLabel = CASE_LABELS[caseType];
+  const isApiWorkbench = caseType === "api";
   const [trail, setTrail] = useState<Array<{ id: number; name: string }>>([]);
   const moduleId = trail.at(-1)?.id ?? null;
   const [quickEdit, setQuickEdit] = useState(false);
@@ -311,16 +332,17 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     enabled: Number.isFinite(projectId),
   });
   const contentQuery = useQuery({
-    queryKey: ["content", projectId, moduleId, "api-workbench"],
-    queryFn: () => contentApi.list(projectId, moduleId, "api"),
+    queryKey: ["content", projectId, moduleId, "automation-workbench", caseType],
+    queryFn: () => contentApi.list(projectId, moduleId, caseType),
     enabled: Number.isFinite(projectId),
   });
   const casesQuery = useQuery({
-    queryKey: ["api-cases", moduleId, status, flagFilter, keyword, page, pageSize],
-    queryFn: () => apiCasesApi.list({
+    queryKey: ["automation-cases", caseType, moduleId, status, flagFilter, keyword, page, pageSize],
+    queryFn: () => automationCasesApi.list({
       moduleId: moduleId!,
+      caseType,
       status: status === "all" ? undefined : status,
-      flagType: flagFilter === "all" ? undefined : flagFilter,
+      flagType: isApiWorkbench && flagFilter !== "all" ? flagFilter : undefined,
       keyword,
       page,
       pageSize,
@@ -330,10 +352,10 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   // 模块卡片角标：项目内各模块 active AI 标记计数（含子树聚合）
   const flagCountsQuery = useQuery({
     queryKey: ["api-flag-counts", projectId],
-    queryFn: () => apiCasesApi.aiFlagCounts(projectId),
-    enabled: Number.isFinite(projectId),
+    queryFn: () => automationCasesApi.aiFlagCounts(projectId),
+    enabled: Number.isFinite(projectId) && isApiWorkbench,
   });
-  const flagCounts: AiFlagCounts = flagCountsQuery.data ?? {};
+  const flagCounts: AiFlagCounts = isApiWorkbench ? flagCountsQuery.data ?? {} : {};
 
   const modules = (contentQuery.data ?? []).filter((node) => node.type === "module");
   const cases = casesQuery.data?.items ?? [];
@@ -341,9 +363,9 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
 
   const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ["api-cases"] });
-    queryClient.invalidateQueries({ queryKey: ["api-test-history"] });
-    queryClient.invalidateQueries({ queryKey: ["api-edit-history"] });
+    queryClient.invalidateQueries({ queryKey: ["automation-cases", caseType] });
+    queryClient.invalidateQueries({ queryKey: ["automation-test-history", caseType] });
+    queryClient.invalidateQueries({ queryKey: ["automation-edit-history", caseType] });
     queryClient.invalidateQueries({ queryKey: ["project-stack-counts", projectId] });
     queryClient.invalidateQueries({ queryKey: ["api-flag-counts", projectId] });
   };
@@ -352,7 +374,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
     if (moduleId == null) return;
     setRenumbering(true);
     try {
-      const res = await apiCasesApi.renumber(moduleId, { enable });
+      const res = await automationCasesApi.renumber(moduleId, { enable, caseType });
       invalidate();
       toast.success(enable ? `已按执行顺序编号 ${res.total} 条用例` : `已去掉 ${res.updated} 条用例的序号`);
     } catch (e) {
@@ -365,7 +387,21 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   useEffect(() => {
     setSelected(new Set());
     setPage(1);
-  }, [moduleId, quickEdit]);
+  }, [moduleId, quickEdit, caseType]);
+
+  useEffect(() => {
+    setTrail([]);
+    setSelected(new Set());
+    setPage(1);
+    setEditor(null);
+    setRecordsOpen(false);
+    setRunDetailCase(null);
+    setFlagDialogCase(null);
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (!isApiWorkbench) exitQuickEdit();
+  }, [isApiWorkbench]);
 
   const enterQuickEdit = () => {
     setQuickEdit(true);
@@ -390,11 +426,11 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const runMutation = useMutation({
     mutationFn: (ids: number[]) => runsApi.trigger({
       project: projectId,
-      category: "api",
+      category: caseType,
       case_ids: ids,
     }),
     onSuccess: (result) => {
-      toast.success(`已提交 ${result.case_number ?? 0} 条 API 用例，报告 #${result.report_id}`);
+      toast.success(`已提交 ${result.case_number ?? 0} 条 ${caseLabel} 用例，报告 #${result.report_id}`);
       setSelected(new Set());
       invalidate();
       window.setTimeout(invalidate, 2500);
@@ -404,7 +440,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   });
 
   const removeMutation = useMutation({
-    mutationFn: (caseId: number) => apiCasesApi.remove(caseId, editSession ?? undefined),
+    mutationFn: (caseId: number) => automationCasesApi.remove(caseId, editSession ?? undefined),
     onSuccess: (data) => {
       if (data.batch_id) {
         toast.success("用例已删除", {
@@ -432,7 +468,7 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const batchDelete = async () => {
     if (!selected.size || !window.confirm(`确定删除选中的 ${selected.size} 条用例吗？`)) return;
     try {
-      const results = await Promise.all([...selected].map((caseId) => apiCasesApi.remove(caseId, editSession ?? undefined)));
+      const results = await Promise.all([...selected].map((caseId) => automationCasesApi.remove(caseId, editSession ?? undefined)));
       const batchIds = results.map((item) => item.batch_id).filter((id): id is number => id != null);
       toast.success(`已删除 ${selected.size} 条用例`, batchIds.length > 0 ? {
         action: {
@@ -485,8 +521,8 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   const exportCases = async () => {
     if (moduleId == null) return;
     try {
-      await casesApi.exportCases({ projectId, moduleId, caseTypes: ["api"], format: "xlsx" });
-      toast.success("API 用例已导出");
+      await casesApi.exportCases({ projectId, moduleId, caseTypes: [caseType], format: "xlsx" });
+      toast.success(`${caseLabel} 用例已导出`);
     } catch (error) {
       toast.error(messageOf(error));
     }
@@ -509,23 +545,22 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
       wait_time: values.wait_time,
       repeat_count: values.repeat_count ?? 1,
       skip: values.skip,
-      case_type: "api",
-      // 不送 steps：让后端按最新 v1 字段重新合成 http_request step，
-      // 否则 steps=null 会走"整体替换"分支、跳过重建 → 改了执行旧的。
+      case_type: caseType,
+      // API 单请求和多步骤都由 CaseDialog 归一化为 steps；后端不再兜底生成步骤。
     };
     // API 用例统一以 steps 为唯一执行来源：CaseDialog 已把「单请求合成的 1 步」或
     // 「多步骤编辑器的 N 步」放进 values.steps，这里整体下发，避免两种模式互相覆盖。
     const finalSteps = values.steps as TestStepDraft[] | null | undefined;
-    if (finalSteps && finalSteps.length) {
+    if (finalSteps) {
       payload.steps = finalSteps;
     }
     setEditorSaving(true);
     try {
       if (editor === "new") {
-        await apiCasesApi.create(payload, quickEdit ? editSession ?? undefined : undefined);
+        await automationCasesApi.create(payload, quickEdit ? editSession ?? undefined : undefined);
         toast.success("用例已创建");
       } else {
-        await apiCasesApi.update(editor.id, payload, quickEdit ? editSession ?? undefined : undefined);
+        await automationCasesApi.update(editor.id, payload, quickEdit ? editSession ?? undefined : undefined);
         toast.success("用例已更新");
       }
       setEditor(null);
@@ -553,21 +588,32 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
   return (
     <div className={cn("space-y-4 pb-24", !embedded && "p-6")}>
       <div className="flex items-center justify-between gap-4">
-        <Breadcrumb project={projectQuery.data?.name ?? "…"} trail={trail} onJump={(index) => setTrail(index < 0 ? [] : trail.slice(0, index + 1))} />
+        <Breadcrumb
+          typeLabel={`${caseLabel} 用例`}
+          project={projectQuery.data?.name ?? "…"}
+          trail={trail}
+          onJump={(index) =>
+            setTrail(index < 0 ? [] : trail.slice(0, index + 1))
+          }
+        />
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setRecordsOpen(true)} disabled={moduleId == null}>
             <History className="h-4 w-4" />{quickEdit ? "编辑记录" : "测试记录"}
           </Button>
-          <div className="inline-flex overflow-hidden rounded-md border">
-            <button type="button" className={cn("px-3 py-1.5 text-xs font-medium", !quickEdit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")} onClick={exitQuickEdit}>运行模式</button>
-            <button type="button" className={cn("border-l px-3 py-1.5 text-xs font-medium", quickEdit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")} onClick={enterQuickEdit}>快速编辑</button>
-          </div>
+          {isApiWorkbench ? (
+            <div className="inline-flex overflow-hidden rounded-md border">
+              <button type="button" className={cn("px-3 py-1.5 text-xs font-medium", !quickEdit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")} onClick={exitQuickEdit}>运行模式</button>
+              <button type="button" className={cn("border-l px-3 py-1.5 text-xs font-medium", quickEdit ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground")} onClick={enterQuickEdit}>快速编辑</button>
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" size="sm" disabled={moduleId == null} onClick={() => setEditor("new")}><Plus className="h-4 w-4" />新建 API 用例</Button>
-        <Button variant="outline" size="sm" disabled={moduleId == null} className="border-primary/40 text-primary" onClick={() => setAiOpen(true)}><Sparkles className="h-4 w-4" />AI 生成用例</Button>
+        <Button variant="outline" size="sm" disabled={moduleId == null} onClick={() => setEditor("new")}><Plus className="h-4 w-4" />新建 {caseLabel} 用例</Button>
+        {isApiWorkbench ? (
+          <Button variant="outline" size="sm" disabled={moduleId == null} className="border-primary/40 text-primary" onClick={() => setAiOpen(true)}><Sparkles className="h-4 w-4" />AI 生成用例</Button>
+        ) : null}
         {quickEdit ? (
           <>
             <input ref={fileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={(event) => event.target.files?.[0] && importFile(event.target.files[0])} />
@@ -598,16 +644,18 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
                 <SelectItem value="skipped">跳过</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={flagFilter} onValueChange={(value) => { setFlagFilter(value as AiFlagType | "all"); setPage(1); }}>
-              <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">全部标记</SelectItem>
-                <SelectItem value="manual_fix">需人工</SelectItem>
-                <SelectItem value="interface_defect">疑似接口缺陷</SelectItem>
-                <SelectItem value="environment">环境问题</SelectItem>
-                <SelectItem value="ai_fixed">AI已修复</SelectItem>
-              </SelectContent>
-            </Select>
+            {isApiWorkbench ? (
+              <Select value={flagFilter} onValueChange={(value) => { setFlagFilter(value as AiFlagType | "all"); setPage(1); }}>
+                <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">全部标记</SelectItem>
+                  <SelectItem value="manual_fix">需人工</SelectItem>
+                  <SelectItem value="interface_defect">疑似接口缺陷</SelectItem>
+                  <SelectItem value="environment">环境问题</SelectItem>
+                  <SelectItem value="ai_fixed">AI已修复</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -617,17 +665,19 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
           {moduleId == null || modules.length > 0 ? (
             <section className="space-y-2">
               <h3 className="text-sm font-semibold">{moduleId == null ? "模块" : "子模块"}（{modules.length}）</h3>
-              {modules.length ? <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{modules.map((node) => <ModuleCard key={node.id} node={node} flagCount={flagCounts[String(node.id)]} onOpen={() => setTrail([...trail, { id: node.id, name: node.name }])} />)}</div> : <Empty text="当前层级没有模块" />}
+              {modules.length ? <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{modules.map((node) => <ModuleCard key={node.id} node={node} flagCount={isApiWorkbench ? flagCounts[String(node.id)] : undefined} onOpen={() => setTrail([...trail, { id: node.id, name: node.name }])} />)}</div> : <Empty text="当前层级没有模块" />}
             </section>
           ) : null}
           {moduleId != null ? (
             <section className="space-y-2">
-              <h3 className="text-sm font-semibold">API 用例（{total}）</h3>
-              {casesQuery.isLoading ? <Loading /> : cases.length === 0 ? <Empty text="当前模块还没有 API 用例" /> : (
+              <h3 className="text-sm font-semibold">{caseLabel} 用例（{total}）</h3>
+              {casesQuery.isLoading ? <Loading /> : cases.length === 0 ? <Empty text={`当前模块还没有 ${caseLabel} 用例`} /> : (
                 <ApiCaseTable
                   cases={cases}
                   moduleId={moduleId}
                   quickEdit={quickEdit}
+                  caseType={caseType}
+                  enableAiActions={isApiWorkbench}
                   sessionId={editSession}
                   selected={selected}
                   onSelected={setSelected}
@@ -677,11 +727,12 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
         </div>
       )}
 
-      <CaseDialog state={originalDialogState} category="api" onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
+      <CaseDialog state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
       <RecordsDialog
         open={recordsOpen}
         quickEdit={quickEdit}
         moduleId={moduleId}
+        caseType={caseType}
         firstModel={firstModel}
         models={enabledModels}
         onInvalidate={invalidate}
@@ -691,7 +742,9 @@ export function ApiCasesPage({ embedded = false }: { embedded?: boolean } = {}) 
         }}
         onClose={() => setRecordsOpen(false)}
       />
-      <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
+      {isApiWorkbench ? (
+        <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
+      ) : null}
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
       <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
       <AiFlagClearDialog row={flagDialogCase} onClose={() => setFlagDialogCase(null)} onCleared={() => { setFlagDialogCase(null); invalidate(); }} />
@@ -729,9 +782,6 @@ function DiagnoseDialog({
     if (!result) return;
     setFixing(true);
     try {
-      // 关键：把修正**直接写进执行步骤 steps**，而不是只改 v1 的 extract_data。
-      // 否则执行时读的是 step.extract（旧的错 JSONPath），改了 v1 字段也白搭，
-      // 表现就是"AI 修复后还是提取不到 token"。
       const detail = await casesApi.get(row.id);
       let steps = detail.steps ?? [];
 
@@ -760,12 +810,8 @@ function DiagnoseDialog({
         name: detail.name,
         case_type: "api",
         steps,
-        // 同步 v1 字段，编辑表单显示一致
-        extract_data: JSON.stringify(extractRulesToLegacyMap(steps), null, 2),
-        assertion: JSON.stringify(assertionRulesToLegacyMap(steps), null, 2),
       };
-      if (Object.keys(fixParams).length > 0) body.params = JSON.stringify(fixParams, null, 2);
-      await apiCasesApi.update(row.id, body);
+      await automationCasesApi.update(row.id, body);
       toast.success("已按修正更新执行步骤，可重新运行验证");
       onFixed();
     } catch (e) {
@@ -836,7 +882,7 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const query = useQuery({
     queryKey: ["api-case-latest-run-detail", row?.id],
-    queryFn: () => apiCasesApi.latestRunDetail(row!.id),
+    queryFn: () => automationCasesApi.latestRunDetail(row!.id),
     enabled: row != null,
   });
 
@@ -1073,8 +1119,39 @@ function normalizeRunStatus(status: string | null | undefined): ApiRunStatus {
   return "pending";
 }
 
-function Breadcrumb({ project, trail, onJump }: { project: string; trail: Array<{ id: number; name: string }>; onJump: (index: number) => void }) {
-  return <nav className="flex min-w-0 items-center gap-1 text-sm"><button className="font-medium hover:underline" onClick={() => onJump(-1)}>{project}</button>{trail.map((item, index) => <span key={item.id} className="flex min-w-0 items-center gap-1"><ChevronRight className="h-3.5 w-3.5 text-muted-foreground" /><button className="max-w-48 truncate hover:underline" onClick={() => onJump(index)}>{item.name}</button></span>)}</nav>;
+function Breadcrumb({
+  typeLabel,
+  project,
+  trail,
+  onJump,
+}: {
+  typeLabel: string;
+  project: string;
+  trail: Array<{ id: number; name: string }>;
+  onJump: (index: number) => void;
+}) {
+  return (
+    <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+      <span className="text-muted-foreground">{typeLabel} ·</span>
+      <button
+        className="max-w-[12rem] truncate rounded px-1.5 py-0.5 font-medium hover:bg-accent"
+        onClick={() => onJump(-1)}
+      >
+        {project}
+      </button>
+      {trail.map((item, index) => (
+        <span key={item.id} className="flex min-w-0 items-center gap-1">
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <button
+            className="max-w-48 truncate rounded px-1.5 py-0.5 hover:bg-accent"
+            onClick={() => onJump(index)}
+          >
+            {item.name}
+          </button>
+        </span>
+      ))}
+    </nav>
+  );
 }
 
 function ModuleCard({ node, flagCount, onOpen }: {
@@ -1151,7 +1228,7 @@ function AiFlagClearDialog({ row, onClose, onCleared }: {
   const submit = async () => {
     setSubmitting(true);
     try {
-      await apiCasesApi.clearAiFlag(row.id, {
+      await automationCasesApi.clearAiFlag(row.id, {
         reason,
         corrected_classification: reason === "misjudged" ? corrected : undefined,
         note: note.trim() || undefined,
@@ -1242,10 +1319,12 @@ function AiFlagClearDialog({ row, onClose, onCleared }: {
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
+  caseType: AutomationTabCaseType;
+  enableAiActions: boolean;
   sessionId: string | null;
   selected: Set<number>;
   onSelected: (next: Set<number>) => void;
@@ -1263,13 +1342,14 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
   onRemoveNewRow: (rowId: string) => void;
 }) {
   const allSelected = cases.length > 0 && cases.every((row) => selected.has(row.id));
+  const caseLabel = CASE_LABELS[caseType];
   const gridClass = quickEdit
     ? "grid-cols-[36px_minmax(180px,1.1fr)_90px_minmax(180px,1.2fr)_minmax(220px,1.4fr)_minmax(220px,1.4fr)_90px_120px]"
     : "grid-cols-[36px_1.1fr_100px_1.5fr_120px_150px]";
   return <div className="overflow-x-auto rounded-lg border bg-card">
     <div className={cn("grid min-w-max items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground", gridClass)}>
       <Checkbox checked={allSelected} onCheckedChange={() => onSelected(allSelected ? new Set() : new Set(cases.map((row) => row.id)))} />
-      <span>用例名称</span><span>方法</span><span>路径</span>
+      <span>用例名称</span><span>{caseType === "api" ? "方法" : "类型"}</span><span>{caseType === "api" ? "路径" : "步骤"}</span>
       {quickEdit ? <><span>请求头</span><span>请求参数</span><span>排序</span></> : <span>最近结果</span>}
       <span className="text-right">操作</span>
     </div>
@@ -1296,16 +1376,18 @@ function ApiCaseTable({ cases, moduleId, quickEdit, sessionId, selected, onSelec
         <Checkbox checked={selected.has(row.id)} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
         <div className="flex min-w-0 items-center gap-1.5">
           <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
-          <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} />
+          {enableAiActions ? <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} /> : null}
         </div>
-        <Badge variant="outline" className="w-fit font-mono">{row.method ?? "GET"}</Badge>
-        <span className="truncate font-mono text-xs" title={row.path ?? ""}>{row.path || "--"}</span>
+        <Badge variant="outline" className="w-fit font-mono">{caseType === "api" ? row.method ?? "GET" : caseLabel}</Badge>
+        <span className="truncate font-mono text-xs" title={caseType === "api" ? row.path ?? "" : `${row.step_count ?? 0} 个步骤`}>
+          {caseType === "api" ? row.path || "--" : `${row.step_count ?? 0} 个步骤`}
+        </span>
         <StatusBadge
           status={row.latest_run?.status ?? "pending"}
           clickable={row.latest_run != null}
           onClick={() => row.latest_run && onShowRunDetail(row)}
         />
-        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="运行" onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
+        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="运行" onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button>{enableAiActions ? <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button> : null}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
       </div>
     ))}
     {quickEdit ? newRows.filter((item) => item.aboveCaseId == null).map((item, index, bottomRows) => (
@@ -1351,7 +1433,19 @@ function QuickEditRow({ row, sessionId, checked, onChecked, onEdit, onDelete, on
     if (!dirty || saving) return;
     setSaving(true);
     try {
-      await apiCasesApi.update(row.id, { module_id: row.module_id, name: name.trim(), method, path, headers, params }, sessionId ?? undefined);
+      await automationCasesApi.update(
+        row.id,
+        {
+          module_id: row.module_id,
+          name: name.trim(),
+          method,
+          path,
+          headers,
+          params,
+          steps: [buildQuickHttpStep({ name, method, path, headers, params })],
+        },
+        sessionId ?? undefined,
+      );
       savedDraftRef.current = JSON.stringify({ name: name.trim(), method, path, headers, params });
       onSaved();
     } catch (error) { toast.error(messageOf(error)); } finally { setSaving(false); }
@@ -1397,7 +1491,21 @@ function QuickCreateRow({ moduleId, sessionId, isTrailing, autoFocusName = false
     if (!hasContent || saving) return;
     setSaving(true);
     try {
-      await apiCasesApi.create({ module_id: moduleId, name: name.trim() || "未命名 API 用例", method, path, headers, params, case_type: "api", sort_order: insertSortOrder ?? null }, sessionId ?? undefined);
+      const caseName = name.trim() || "未命名 API 用例";
+      await automationCasesApi.create(
+        {
+          module_id: moduleId,
+          name: caseName,
+          method,
+          path,
+          headers,
+          params,
+          case_type: "api",
+          sort_order: insertSortOrder ?? null,
+          steps: [buildQuickHttpStep({ name: caseName, method, path, headers, params })],
+        },
+        sessionId ?? undefined,
+      );
       onSaved();
       onCreated();
     } catch (error) { toast.error(messageOf(error)); } finally { setSaving(false); }
@@ -1435,6 +1543,7 @@ function RecordsDialog({
   open,
   quickEdit,
   moduleId,
+  caseType,
   firstModel,
   models,
   onInvalidate,
@@ -1444,6 +1553,7 @@ function RecordsDialog({
   open: boolean;
   quickEdit: boolean;
   moduleId: number | null;
+  caseType: Exclude<CaseType, "functional">;
   firstModel: string;
   models: string[];
   onInvalidate: () => void;
@@ -1452,14 +1562,14 @@ function RecordsDialog({
 }) {
   const analysisAbortRef = useRef<AbortController | null>(null);
   const editQuery = useQuery({
-    queryKey: ["api-edit-history", moduleId],
-    queryFn: () => apiCasesApi.editHistory(moduleId!),
+    queryKey: ["automation-edit-history", caseType, moduleId],
+    queryFn: () => automationCasesApi.editHistory(moduleId!, 200, caseType),
     enabled: open && quickEdit && moduleId != null,
     staleTime: 0,
   });
   const testQuery = useQuery({
-    queryKey: ["api-test-history", moduleId],
-    queryFn: () => apiCasesApi.testHistory(moduleId!),
+    queryKey: ["automation-test-history", caseType, moduleId],
+    queryFn: () => automationCasesApi.testHistory(moduleId!, 100, caseType),
     enabled: open && !quickEdit && moduleId != null,
     staleTime: 0,
   });
@@ -1592,10 +1702,9 @@ function RecordsDialog({
         target,
         action.expected ?? "",
       );
-      const updateResult = await apiCasesApi.update(detail.id, {
+      const updateResult = await automationCasesApi.update(detail.id, {
         module_id: detail.module_id,
         name: detail.name,
-        assertion: JSON.stringify(assertionRulesToLegacyMap(nextAssertion.steps), null, 2),
         steps: nextAssertion.steps,
         case_type: "api",
       }, history?.sessionId, history?.batchId);
@@ -1634,10 +1743,9 @@ function RecordsDialog({
         variable,
         jsonpath,
       );
-      const updateResult = await apiCasesApi.update(detail.id, {
+      const updateResult = await automationCasesApi.update(detail.id, {
         module_id: detail.module_id,
         name: detail.name,
-        extract_data: JSON.stringify(extractRulesToLegacyMap(nextExtract.steps), null, 2),
         steps: nextExtract.steps,
         case_type: "api",
       }, history?.sessionId, history?.batchId);
@@ -1693,7 +1801,7 @@ function RecordsDialog({
       return;
     }
     try {
-      const list = await apiCasesApi.list({ moduleId: moduleIdForAction, pageSize: 0 });
+      const list = await automationCasesApi.list({ moduleId: moduleIdForAction, pageSize: 0 });
       const ordered = list.items.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
       const moving = ordered.find((item) => item.id === movingId);
       const before = ordered.find((item) => item.id === beforeId);
@@ -1735,7 +1843,7 @@ function RecordsDialog({
       let historyBatchId: number | undefined;
       const results = [];
       for (const caseId of ids) {
-        const result = await apiCasesApi.remove(caseId, sessionId, historyBatchId);
+        const result = await automationCasesApi.remove(caseId, sessionId, historyBatchId);
         if (result.batch_id != null) historyBatchId = result.batch_id;
         results.push(result);
       }

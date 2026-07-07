@@ -67,7 +67,7 @@ import {
   aiModelsApi,
   analysisDocsApi,
   ApiError,
-  apiCasesApi,
+  automationCasesApi,
   casesApi,
   contentApi,
   functionalCasesApi,
@@ -2302,7 +2302,7 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
   const primaryAssertion = has(generated.assertion) ? generated.assertion : firstRequest?.assertion;
   const primarySql = generated.sql || firstRequest?.sql || null;
 
-  // 统一按操作流程执行：直接产出一条 http_request step（提取/断言进 step，执行不经 v1 桥接）
+  // 统一按操作流程执行：直接产出 http_request step（提取/断言进 step）。
   const extractRules = Object.entries(primaryExtract ?? {})
     .filter(([n, jp]) => n && jp)
     .map(([name, jp]) => ({ name, from: "response.body", jsonpath: String(jp) }));
@@ -2369,15 +2369,6 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
       .join("\n"),
     case_type: "api" as const,
     priority: 3,
-    // v1 字段保留，供现有编辑表单显示；执行只认下面的 steps
-    method,
-    path,
-    headers: Object.keys(headers).length ? JSON.stringify(headers, null, 2) : null,
-    data_type: ct,
-    params: body ? JSON.stringify(body, null, 2) : null,
-    extract_data: has(primaryExtract) ? JSON.stringify(primaryExtract, null, 2) : null,
-    assertion: has(primaryAssertion) ? JSON.stringify(primaryAssertion, null, 2) : null,
-    sql_query: primarySql,
     ...(postHook.length ? { post_hook: postHook } : {}),
     steps,
   };
@@ -3250,7 +3241,7 @@ export function AiGenerateDialog({
       if (mode === "interface") {
         const existing =
           smartInsert
-            ? (await apiCasesApi.list({ moduleId, pageSize: 500 })).items
+            ? (await automationCasesApi.list({ moduleId, pageSize: 500 })).items
                 .slice()
                 .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
             : [];

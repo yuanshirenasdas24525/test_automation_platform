@@ -82,7 +82,7 @@ upsert 语义：同 case 已有 active 标记 → 旧标记置 superseded，插�
 
 ## 5. 前端交互
 
-### 列表（ApiCasesPage CaseTable）
+### 列表（AutomationCasesPage CaseTable）
 - `GET /api/api_cases` 响应每行新增 `ai_flag: {flag_type, findings, fix_rounds, source_report_id, created_at} | null`
   （后端批量查 active 标记，模式同 `_latest_runs` 防 N+1）。
 - 行内用例名称旁渲染彩色小徽标（图标+短文案，见 §1 表），tooltip 显示前 2 条 findings。
@@ -144,7 +144,7 @@ prompt（api_report_diagnose.md）新增：`user_feedback` 是用户对**本用�
 | 列表 | `server/api/api_cases.py` | `_active_flags` 批查 + `_serialize_case` 加 `ai_flag` + `flag_type` 筛选参数 |
 | 清除 | `server/api/api_cases.py` | `POST /{id}/ai_flag/clear`、`GET /{id}/ai_flags` |
 | 回流 | `functional_cases.py::diagnose_report_items` + `ai_fix_service.preflight` + prompt | §6.1/6.2 |
-| 前端 | `ApiCasesPage.tsx`（徽标+Popover+清除表单+筛选）、`api.ts`、`domain.ts` | §5 |
+| 前端 | `AutomationCasesPage.tsx`（徽标+Popover+清除表单+筛选）、`api.ts`、`domain.ts` | §5 |
 
 ## 8. 实施顺序与工作量
 

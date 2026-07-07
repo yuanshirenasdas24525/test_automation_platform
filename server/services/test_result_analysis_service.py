@@ -929,19 +929,7 @@ def _case_http_request_steps(case: TestCase) -> list[dict[str, Any]]:
         config = dict(step.config)
         config["step_id"] = step.id
         steps.append(config)
-    if steps:
-        return steps
-    if case.method or case.path:
-        return [
-            {
-                "method": case.method,
-                "path": case.path,
-                "headers": case.headers,
-                "params": case.params,
-                "data_type": case.data_type,
-            }
-        ]
-    return []
+    return steps
 
 
 def _case_intent_category(name: str | None) -> str:
@@ -967,22 +955,6 @@ def _case_assertion_signature(case: TestCase, step_id: Any = None) -> list[dict[
             raw_assertions.extend(step.assertion)
         elif isinstance(step.assertion, dict):
             raw_assertions.append(step.assertion)
-        config = step.config if isinstance(step.config, dict) else {}
-        config_assertion = _load_jsonish(config.get("assertion"))
-        if isinstance(config_assertion, dict):
-            raw_assertions.extend(
-                {"target": target, "expected": expected}
-                for target, expected in config_assertion.items()
-            )
-        elif isinstance(config_assertion, list):
-            raw_assertions.extend(config_assertion)
-    if not raw_assertions and case.assertion:
-        legacy = _load_jsonish(case.assertion)
-        if isinstance(legacy, dict):
-            raw_assertions.extend({"target": target, "expected": expected} for target, expected in legacy.items())
-        elif isinstance(legacy, list):
-            raw_assertions.extend(legacy)
-
     shaped = []
     for item in raw_assertions:
         if not isinstance(item, dict):
@@ -1011,14 +983,6 @@ def _case_extract_signature(case: TestCase, step_id: Any = None) -> list[str]:
                     names.add(str(rule.get("name")))
         elif isinstance(extract, dict):
             names.update(str(k) for k in extract.keys())
-        config = step.config if isinstance(step.config, dict) else {}
-        config_extract = _load_jsonish(config.get("extract_data"))
-        if isinstance(config_extract, dict):
-            names.update(str(k) for k in config_extract.keys())
-    if not names and case.extract_data:
-        legacy = _load_jsonish(case.extract_data)
-        if isinstance(legacy, dict):
-            names.update(str(k) for k in legacy.keys())
     return sorted(names)
 
 
@@ -1087,7 +1051,7 @@ def _first_http_method(case: TestCase) -> str:
     for step in case.steps or []:
         if step.step_type == "http_request" and isinstance(step.config, dict):
             return str(step.config.get("method") or "").upper()
-    return str(case.method or "").upper()
+    return ""
 
 
 def _case_user_fields(case: TestCase) -> list[str]:
@@ -1107,12 +1071,6 @@ def _case_text(case: TestCase) -> str:
     parts: list[Any] = [
         case.name,
         case.description,
-        case.method,
-        case.path,
-        case.headers,
-        case.params,
-        case.extract_data,
-        case.assertion,
     ]
     for step in case.steps or []:
         parts.extend([step.step_name, step.step_type, step.config, step.extract, step.assertion])

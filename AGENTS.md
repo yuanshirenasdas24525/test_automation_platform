@@ -339,7 +339,7 @@ import type { AiDialogueSession } from "@/types/domain";
 - **环境变量**：
   - `BACKEND_CORS_ORIGINS`（CORS，默认 `*`）
   - `CELERY_TASK_ALWAYS_EAGER=1`（同步调试）
-  - `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`（docker-compose 注入，**但 `celery_app.py` 当前还写死 `redis://127.0.0.1:6379`**，改前先确认）
+  - `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`（Celery broker / backend，docker-compose 默认注入）
   - `PLATFORM_SECRET_KEY`（AES-256 主密钥，加解密 Git 凭证；docker-compose 通过 `.env` 注入；不入仓）
   - `PYTHONUNBUFFERED=1`、`TZ=Asia/Shanghai`
 

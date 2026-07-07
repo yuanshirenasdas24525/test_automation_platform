@@ -12,6 +12,7 @@ from server.api.auth import _get_optional_user
 from server.api.deps import DBDep
 from database.models import (
     ApiCaseEditHistory,
+    AUTOMATED_CASE_TYPES,
     CASE_TYPE_API,
     EditOperationEvent,
     TestStep,
@@ -27,6 +28,14 @@ from server.services.edit_history_service import serialize_test_case_event
 OptionalUserDep = Annotated[Optional[User], Depends(_get_optional_user)]
 
 router = APIRouter(prefix="/api_cases", tags=["api_cases"])
+
+
+def validate_automation_case_type(case_type: str) -> str:
+    """校验并规范化自动化用例类型。"""
+    normalized_case_type = case_type.strip().lower()
+    if normalized_case_type not in AUTOMATED_CASE_TYPES:
+        raise HTTPException(status_code=422, detail="case_type 只支持 api/web/android/ios/mixed")
+    return normalized_case_type
 
 
 def _aggregate_status(statuses: list[str | None]) -> str:
@@ -89,7 +98,9 @@ def _serialize_case(
     latest_run: dict | None,
     step_count: int = 0,
     ai_flag: dict | None = None,
+    first_http_config: dict | None = None,
 ) -> dict:
+    http_config = first_http_config or {}
     return {
         "ai_flag": ai_flag,
         "id": case.id,
@@ -101,15 +112,15 @@ def _serialize_case(
         "tags": case.tags or [],
         "priority": case.priority,
         "sort_order": case.sort_order,
-        "method": case.method,
-        "path": case.path,
-        "headers": case.headers,
-        "data_type": case.data_type,
-        "params": case.params,
-        "extract_data": case.extract_data,
-        "sql_query": case.sql_query,
-        "assertion": case.assertion,
-        "wait_time": case.wait_time,
+        "method": http_config.get("method"),
+        "path": http_config.get("path"),
+        "headers": http_config.get("headers"),
+        "data_type": http_config.get("data_type"),
+        "params": http_config.get("params"),
+        "extract_data": None,
+        "sql_query": http_config.get("sql_query"),
+        "assertion": None,
+        "wait_time": None,
         "repeat_count": getattr(case, "repeat_count", 1) or 1,
         # 步骤数：>1 视为"多步骤用例"，前端换图标
         "step_count": step_count,
@@ -132,6 +143,23 @@ def _step_counts(db, case_ids: list[int]) -> dict[int, int]:
     return {cid: int(n) for cid, n in rows}
 
 
+def _first_http_configs(db, case_ids: list[int]) -> dict[int, dict]:
+    """取每条用例第一条 http_request step 的 config，列表展示用。"""
+    if not case_ids:
+        return {}
+    rows = (
+        db.session.query(TestStep)
+        .filter(TestStep.case_id.in_(case_ids), TestStep.step_type == "http_request")
+        .order_by(TestStep.case_id.asc(), TestStep.step_order.asc(), TestStep.id.asc())
+        .all()
+    )
+    result: dict[int, dict] = {}
+    for step in rows:
+        if step.case_id not in result and isinstance(step.config, dict):
+            result[step.case_id] = step.config
+    return result
+
+
 def _jsonish(value):
     """尽量把 JSON 字符串还原，失败时返回原文本，便于前端展示。"""
     if value is None:
@@ -149,72 +177,16 @@ def _jsonish(value):
         return text
 
 
-def _extract_rules_from_config(raw) -> list[dict]:
-    """兼容多步骤编辑器保存在 config.extract_data 里的 v1 JSON。"""
-    if not raw:
-        return []
-    obj = raw
-    if isinstance(raw, str):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            return []
-    if not isinstance(obj, dict):
-        return []
-    return [
-        {"name": str(name), "from": "response.body", "jsonpath": str(jsonpath)}
-        for name, jsonpath in obj.items()
-        if str(name).strip() and str(jsonpath).strip()
-    ]
-
-
-def _assertion_rules_from_config(raw) -> list[dict]:
-    """兼容多步骤编辑器保存在 config.assertion 里的 v1 JSON。"""
-    if not raw:
-        return []
-    obj = raw
-    if isinstance(raw, str):
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            return []
-    if not isinstance(obj, dict):
-        return []
-    not_empty = {"not_empty", "not_null", "非空", "@notnull", "@notempty", "notnull", "notempty"}
-    is_empty = {"is_null", "null", "为空", "空", "@null"}
-    rules = []
-    for target, expected in obj.items():
-        target_text = str(target).strip()
-        if not target_text:
-            continue
-        normalized = expected.strip().lower() if isinstance(expected, str) else expected
-        if isinstance(expected, str) and normalized in not_empty:
-            rules.append({"type": "is_not_null", "target": target_text, "expected": None})
-        elif isinstance(expected, str) and normalized in is_empty:
-            rules.append({"type": "is_null", "target": target_text, "expected": None})
-        else:
-            rules.append({
-                "type": "jsonpath" if target_text.startswith("$") else "equal",
-                "target": target_text,
-                "expected": expected,
-            })
-    return rules
-
-
 def _configured_extract(step_def: TestStep | None, config: dict) -> list[dict] | None:
     if step_def is None:
         return None
-    if step_def.extract:
-        return step_def.extract
-    return _extract_rules_from_config(config.get("extract_data") or config.get("extract"))
+    return step_def.extract
 
 
 def _configured_assertion(step_def: TestStep | None, config: dict) -> list[dict] | None:
     if step_def is None:
         return None
-    if step_def.assertion:
-        return step_def.assertion
-    return _assertion_rules_from_config(config.get("assertion"))
+    return step_def.assertion
 
 
 def _serialize_run_step(step: TestStepReport, step_def: TestStep | None = None) -> dict:
@@ -262,18 +234,20 @@ def _serialize_run_step(step: TestStepReport, step_def: TestStep | None = None) 
 def list_api_cases(
     db: DBDep,
     module_id: int = Query(...),
+    case_type: str = Query(CASE_TYPE_API, description="用例类型：api/web/android/ios/mixed"),
     status: str | None = Query(None, description="多值逗号分隔，可包含 pending"),
     keyword: str | None = Query(None),
     flag_type: str | None = Query(None, description="按 AI 标记筛选：manual_fix/interface_defect/environment/ai_fixed"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=0, le=500, description="0 表示不分页"),
 ):
-    """列出模块内 API 用例，并附最近一次自动执行结果 + AI 诊断标记。"""
+    """列出模块内自动化用例，并附最近一次自动执行结果 + AI 诊断标记。"""
     from server.services.ai_flag_service import get_active_flags
 
+    normalized_case_type = validate_automation_case_type(case_type)
     query = db.session.query(TestCase).filter(
         TestCase.module_id == module_id,
-        TestCase.case_type == CASE_TYPE_API,
+        TestCase.case_type == normalized_case_type,
     )
     if keyword and keyword.strip():
         pattern = f"%{keyword.strip()}%"
@@ -304,12 +278,14 @@ def list_api_cases(
         start = (page - 1) * page_size
         page_cases = filtered[start:start + page_size]
     step_count_map = _step_counts(db, [case.id for case in page_cases])
+    first_config_map = _first_http_configs(db, [case.id for case in page_cases])
     items = [
         _serialize_case(
             case,
             latest_map.get(case.id),
             step_count_map.get(case.id, 0),
             ai_flag=flag_map.get(case.id),
+            first_http_config=first_config_map.get(case.id),
         )
         for case in page_cases
     ]
@@ -376,8 +352,10 @@ def ai_flag_counts(db: DBDep, project_id: int = Query(...)):
 def list_edit_history(
     db: DBDep,
     module_id: int = Query(...),
+    case_type: str = Query(CASE_TYPE_API),
     limit: int = Query(200, ge=1, le=500),
 ):
+    normalized_case_type = validate_automation_case_type(case_type)
     rows = (
         db.session.query(ApiCaseEditHistory)
         .filter(ApiCaseEditHistory.module_id == module_id)
@@ -388,7 +366,7 @@ def list_edit_history(
     case_ids = [
         case_id for (case_id,) in db.session.query(TestCase.id).filter(
             TestCase.module_id == module_id,
-            TestCase.case_type == CASE_TYPE_API,
+            TestCase.case_type == normalized_case_type,
         ).all()
     ]
     event_rows = []
@@ -413,12 +391,14 @@ def list_edit_history(
 def list_test_history(
     db: DBDep,
     module_id: int = Query(...),
+    case_type: str = Query(CASE_TYPE_API),
     limit: int = Query(100, ge=1, le=500),
 ):
-    """按 TestReport 聚合当前模块 API 用例的自动执行记录。"""
+    """按 TestReport 聚合当前模块自动化用例的执行记录。"""
+    normalized_case_type = validate_automation_case_type(case_type)
     case_rows = (
         db.session.query(TestCase.id, TestCase.name)
-        .filter(TestCase.module_id == module_id, TestCase.case_type == CASE_TYPE_API)
+        .filter(TestCase.module_id == module_id, TestCase.case_type == normalized_case_type)
         .all()
     )
     case_names = {case_id: name for case_id, name in case_rows}
@@ -483,10 +463,10 @@ def list_test_history(
 
 @router.get("/{case_id}/latest_run_detail")
 def get_latest_run_detail(case_id: int, db: DBDep):
-    """读取 API 用例最近一次执行详情，用于点击状态查看请求/响应/断言/提取。"""
+    """读取自动化用例最近一次执行详情，用于点击状态查看步骤明细。"""
     case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
-    if case is None or case.case_type != CASE_TYPE_API:
-        raise HTTPException(status_code=404, detail="API 用例不存在")
+    if case is None or case.case_type not in AUTOMATED_CASE_TYPES:
+        raise HTTPException(status_code=404, detail="自动化用例不存在")
 
     latest = (
         db.session.query(TestStepReport.report_id)
@@ -545,8 +525,8 @@ def get_latest_run_detail(case_id: int, db: DBDep):
 @router.get("/{case_id}/runs")
 def list_case_runs(case_id: int, db: DBDep, limit: int = Query(20, ge=1, le=200)):
     case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
-    if case is None or case.case_type != CASE_TYPE_API:
-        raise HTTPException(status_code=404, detail="API 用例不存在")
+    if case is None or case.case_type not in AUTOMATED_CASE_TYPES:
+        raise HTTPException(status_code=404, detail="自动化用例不存在")
     report_ids = (
         db.session.query(TestStepReport.report_id)
         .filter(TestStepReport.case_id == case_id)

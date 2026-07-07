@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Path, Query
 from sqlalchemy import or_
 
 from server.api.deps import CurrentUserDep, DBDep
+from server.api.auth import revoke_user_sessions
 from database.models import User, Role, ALL_ROLE_CODES
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -211,10 +212,14 @@ def update_user(user_id: Annotated[int, Path(gt=0)], payload: UserUpdate, db: DB
         user.password_hash = bcrypt.hashpw(
             data["password"].encode("utf-8"), bcrypt.gensalt()
         ).decode("utf-8")
+        revoke_user_sessions(db, user.id, "password_reset_by_admin")
 
     for k, v in data.items():
         if k not in ("username", "password") and v is not None:
             setattr(user, k, v)
+
+    if data.get("is_active") is False:
+        revoke_user_sessions(db, user.id, "user_disabled")
 
     db.session.flush()
     return {"status": "success", "data": user.to_dict()}
@@ -228,6 +233,7 @@ def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: Cu
         raise HTTPException(status_code=404, detail="用户不存在")
     _assert_not_protected_admin(user)
     user.is_active = False
+    revoke_user_sessions(db, user.id, "user_deleted")
     db.session.flush()
     return {"status": "success", "message": "已软删（is_active=False）"}
 

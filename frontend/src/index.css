@@ -69,6 +69,411 @@
   }
 }
 
+@keyframes login-bug-crawl-body {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -1px;
+  }
+}
+
+@keyframes login-bug-step-a {
+  0%,
+  100% {
+    rotate: -8deg;
+  }
+  50% {
+    rotate: 20deg;
+  }
+}
+
+@keyframes login-bug-step-b {
+  0%,
+  100% {
+    rotate: 8deg;
+  }
+  50% {
+    rotate: -20deg;
+  }
+}
+
+@keyframes login-swatter-hit {
+  0% {
+    transform: translate(-36%, -78%) rotate(-24deg) scale(1);
+  }
+  55% {
+    transform: translate(-44%, -66%) rotate(16deg) scale(1.08);
+  }
+  100% {
+    transform: translate(-36%, -78%) rotate(-24deg) scale(1);
+  }
+}
+
+@keyframes login-bug-splatter-pop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(-10deg) scale(0.28);
+  }
+  12% {
+    opacity: 1;
+    transform: translate(-50%, -50%) rotate(-10deg) scale(1.08);
+  }
+  72% {
+    opacity: 0.86;
+    transform: translate(-50%, -50%) rotate(-10deg) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) rotate(-10deg) scale(0.96);
+  }
+}
+
+@keyframes login-bug-splatter-dot {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.4);
+  }
+  14% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(1.35);
+  }
+}
+
+.login-bug {
+  filter: drop-shadow(0 8px 10px rgba(15, 23, 42, 0.18));
+  animation: login-bug-crawl-body 0.42s ease-in-out infinite;
+  position: absolute;
+  transition: opacity 0.18s ease, scale 0.18s ease;
+  z-index: 3;
+}
+
+.login-bug-body {
+  background:
+    linear-gradient(90deg, transparent 47%, rgba(255, 255, 255, 0.9) 48%, rgba(255, 255, 255, 0.9) 53%, transparent 54%),
+    radial-gradient(circle at 28% 35%, rgba(255, 255, 255, 0.38), transparent 24%),
+    linear-gradient(110deg, var(--bug-shell, #b45309) 0 47%, #f8fafc 47% 54%, color-mix(in srgb, var(--bug-shell, #b45309) 62%, #111827) 54% 100%);
+  border: 2px solid rgba(15, 23, 42, 0.72);
+  border-radius: 58% 58% 48% 48%;
+  display: block;
+  height: 70%;
+  left: 15%;
+  position: absolute;
+  top: 30%;
+  width: 70%;
+}
+
+.login-bug-body::before {
+  background: #111827;
+  border: 2px solid rgba(15, 23, 42, 0.74);
+  border-radius: 48% 48% 42% 42%;
+  content: "";
+  height: 34%;
+  left: 18%;
+  position: absolute;
+  top: -30%;
+  width: 64%;
+}
+
+.login-bug-head {
+  background: linear-gradient(135deg, #374151, #111827);
+  border: 2px solid rgba(15, 23, 42, 0.7);
+  border-radius: 48% 48% 38% 38%;
+  display: block;
+  height: 34%;
+  left: 26%;
+  position: absolute;
+  top: 6%;
+  width: 48%;
+}
+
+.login-bug-head::before,
+.login-bug-head::after {
+  background: #e0f2fe;
+  border-radius: 999px;
+  content: "";
+  height: 24%;
+  position: absolute;
+  top: 27%;
+  width: 24%;
+}
+
+.login-bug-head::before {
+  left: 18%;
+}
+
+.login-bug-head::after {
+  right: 18%;
+}
+
+.login-bug-leg {
+  background: #4b5563;
+  border-radius: 999px;
+  display: block;
+  height: 3px;
+  position: absolute;
+  top: 56%;
+  transform-origin: center;
+  width: 48%;
+  z-index: -1;
+}
+
+.login-bug-leg::after {
+  background: #4b5563;
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  position: absolute;
+  right: -20%;
+  top: 0;
+  transform: rotate(-36deg);
+  transform-origin: left center;
+  width: 40%;
+}
+
+.login-bug-leg-1,
+.login-bug-leg-3,
+.login-bug-leg-5 {
+  left: -24%;
+}
+
+.login-bug-leg-2,
+.login-bug-leg-4,
+.login-bug-leg-6 {
+  right: -24%;
+}
+
+.login-bug-leg-1 {
+  top: 38%;
+  transform: rotate(34deg);
+  animation: login-bug-step-a 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-2 {
+  top: 38%;
+  transform: rotate(-34deg);
+  animation: login-bug-step-b 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-3 {
+  top: 58%;
+  transform: rotate(8deg);
+  animation: login-bug-step-b 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-4 {
+  top: 58%;
+  transform: rotate(-8deg);
+  animation: login-bug-step-a 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-5 {
+  top: 78%;
+  transform: rotate(-30deg);
+  animation: login-bug-step-a 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-6 {
+  top: 78%;
+  transform: rotate(30deg);
+  animation: login-bug-step-b 0.46s ease-in-out infinite;
+}
+
+.login-bug-leg-2::after,
+.login-bug-leg-4::after,
+.login-bug-leg-6::after {
+  left: -20%;
+  right: auto;
+  transform: rotate(36deg);
+  transform-origin: right center;
+}
+
+.login-bug-antler {
+  border-color: #374151;
+  border-radius: 999px;
+  border-style: solid;
+  border-width: 4px 4px 0 0;
+  display: block;
+  height: 58%;
+  position: absolute;
+  top: -28%;
+  width: 46%;
+  z-index: -1;
+}
+
+.login-bug-antler-left {
+  left: 3%;
+  transform: rotate(-44deg);
+}
+
+.login-bug-antler-right {
+  right: 3%;
+  transform: scaleX(-1) rotate(-44deg);
+}
+
+.login-bug-antler::after {
+  background: #374151;
+  border-radius: 999px;
+  content: "";
+  height: 4px;
+  position: absolute;
+  right: -9%;
+  top: 42%;
+  transform: rotate(34deg);
+  width: 34%;
+}
+
+.login-bug-dead {
+  opacity: 0;
+  scale: 0.25;
+}
+
+.login-bug-splatter {
+  animation: login-bug-splatter-pop 1.5s ease-out forwards;
+  background:
+    radial-gradient(ellipse at 34% 28%, rgba(255, 255, 255, 0.42) 0 10%, transparent 11%),
+    radial-gradient(ellipse at 52% 52%, color-mix(in srgb, var(--bug-splatter, #b45309) 42%, #ffffff) 0 38%, transparent 39%),
+    color-mix(in srgb, var(--bug-splatter, #b45309) 72%, #ffffff);
+  clip-path: polygon(
+    48% 2%,
+    58% 8%,
+    67% 5%,
+    76% 14%,
+    76% 26%,
+    92% 29%,
+    94% 43%,
+    84% 52%,
+    96% 64%,
+    91% 78%,
+    75% 80%,
+    66% 72%,
+    57% 96%,
+    45% 92%,
+    40% 75%,
+    27% 83%,
+    15% 78%,
+    7% 67%,
+    8% 53%,
+    18% 43%,
+    11% 31%,
+    15% 17%,
+    28% 10%,
+    39% 15%
+  );
+  filter: drop-shadow(0 5px 4px rgba(15, 23, 42, 0.1)) saturate(1.06);
+  height: 72px;
+  outline: 3px solid color-mix(in srgb, var(--bug-splatter, #b45309) 88%, #7f1d1d);
+  outline-offset: -3px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-50%, -50%) rotate(-10deg) scale(1);
+  transform-origin: center;
+  width: 96px;
+  z-index: 2;
+}
+
+.login-bug-splatter::before {
+  background: rgba(255, 255, 255, 0.26);
+  border-radius: 47% 53% 58% 42%;
+  content: "";
+  height: 38%;
+  left: 24%;
+  position: absolute;
+  top: 20%;
+  transform: rotate(-14deg);
+  width: 34%;
+}
+
+.login-bug-splatter-dot {
+  animation: login-bug-splatter-dot 1.5s ease-out forwards;
+  background:
+    radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.52) 0 18%, transparent 19%),
+    var(--bug-splatter, #b45309);
+  border-radius: 999px;
+  display: block;
+  height: 7px;
+  left: 50%;
+  position: absolute;
+  top: 50%;
+  width: 7px;
+}
+
+.login-bug-splatter-dot:nth-child(3n) {
+  background: #111827;
+}
+
+.login-bug-splatter-dot:nth-child(4n) {
+  height: 5px;
+  width: 5px;
+}
+
+.login-bug-splatter-dot.dot-1 { --dx: -44px; --dy: -12px; }
+.login-bug-splatter-dot.dot-2 { --dx: -34px; --dy: 22px; }
+.login-bug-splatter-dot.dot-3 { --dx: -6px; --dy: -34px; }
+.login-bug-splatter-dot.dot-4 { --dx: 24px; --dy: -24px; }
+.login-bug-splatter-dot.dot-5 { --dx: 42px; --dy: 6px; }
+.login-bug-splatter-dot.dot-6 { --dx: 18px; --dy: 34px; }
+
+.login-swatter {
+  height: 190px;
+  pointer-events: none;
+  position: absolute;
+  transform: translate(-36%, -78%) rotate(-24deg);
+  transform-origin: 42% 78%;
+  width: 150px;
+  z-index: 10;
+}
+
+.login-swatter-hit {
+  animation: login-swatter-hit 0.15s ease-out;
+}
+
+.login-swatter-head {
+  background:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.16) 1px, transparent 1px),
+    linear-gradient(rgba(15, 23, 42, 0.16) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(14, 165, 233, 0.94), rgba(45, 212, 191, 0.94));
+  background-size: 15px 15px, 15px 15px, 100% 100%;
+  border: 3px solid rgba(15, 23, 42, 0.72);
+  border-radius: 24px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.24);
+  display: block;
+  height: 108px;
+  left: 6px;
+  position: absolute;
+  top: 0;
+  width: 120px;
+}
+
+.login-swatter-head::after {
+  background: rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  content: "";
+  height: 10px;
+  left: 24px;
+  position: absolute;
+  top: 18px;
+  width: 44px;
+}
+
+.login-swatter-handle {
+  background: linear-gradient(180deg, #475569, #0f172a);
+  border-radius: 999px;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.22);
+  display: block;
+  height: 106px;
+  left: 62px;
+  position: absolute;
+  top: 92px;
+  transform: rotate(-13deg);
+  transform-origin: top center;
+  width: 16px;
+}
+
 /* ---- Tiptap editor styles ---- */
 .rich-editor-content .ProseMirror {
   outline: none;

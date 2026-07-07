@@ -91,6 +91,7 @@ import type {
   TestCaseDetail,
   User,
   UserCreate,
+  UserSession,
   UserUpdate,
   VersionBoard,
   VersionCase,
@@ -114,27 +115,151 @@ export class ApiError extends Error {
 // ---------------------------------------------------------------------------
 // Token 管理
 // ---------------------------------------------------------------------------
-const TOKEN_KEY = "pm.authToken";
+const TOKEN_KEY = "pm.accessToken";
+const LEGACY_TOKEN_KEY = "pm.authToken";
+const REFRESH_TOKEN_KEY = "pm.refreshToken";
+const DEVICE_ID_KEY = "pm.deviceId";
+export const AUTH_EXPIRED_EVENT = "pm:auth-expired";
+
+let refreshPromise: Promise<string | null> | null = null;
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_KEY);
+  return (
+    window.localStorage.getItem(TOKEN_KEY) ||
+    window.localStorage.getItem(LEGACY_TOKEN_KEY)
+  );
 }
 
 export function setToken(token: string | null) {
   if (typeof window === "undefined") return;
   if (token) {
     window.localStorage.setItem(TOKEN_KEY, token);
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY);
   } else {
     window.localStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY);
+    window.localStorage.removeItem(REFRESH_TOKEN_KEY);
   }
+}
+
+export function getRefreshToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(REFRESH_TOKEN_KEY);
+}
+
+export function setRefreshToken(token: string | null) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    window.localStorage.setItem(REFRESH_TOKEN_KEY, token);
+  } else {
+    window.localStorage.removeItem(REFRESH_TOKEN_KEY);
+  }
+}
+
+function notifyAuthExpired() {
+  setToken(null);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+  }
+}
+
+function getDeviceId(): string | null {
+  if (typeof window === "undefined") return null;
+  const existing = window.localStorage.getItem(DEVICE_ID_KEY);
+  if (existing) return existing;
+  const next =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  window.localStorage.setItem(DEVICE_ID_KEY, next);
+  return next;
+}
+
+function detectBrowser(userAgent: string) {
+  if (/Edg\//.test(userAgent)) return "Edge";
+  if (/Chrome\//.test(userAgent) && !/Chromium\//.test(userAgent)) return "Chrome";
+  if (/Safari\//.test(userAgent) && !/Chrome\//.test(userAgent)) return "Safari";
+  if (/Firefox\//.test(userAgent)) return "Firefox";
+  return "Browser";
+}
+
+function detectOs(userAgent: string, platform: string) {
+  if (/iPhone|iPad|iPod/.test(userAgent)) return "iOS";
+  if (/Android/.test(userAgent)) return "Android";
+  if (/Mac/.test(platform)) return "macOS";
+  if (/Win/.test(platform)) return "Windows";
+  if (/Linux/.test(platform)) return "Linux";
+  return platform || "Unknown";
+}
+
+function buildClientInfo(): NonNullable<LoginRequest["client"]> {
+  if (typeof window === "undefined") {
+    return { client_type: "web", session_kind: "password_login" };
+  }
+  const userAgent = window.navigator.userAgent;
+  const platform = window.navigator.platform;
+  const osName = detectOs(userAgent, platform);
+  const browserName = detectBrowser(userAgent);
+  return {
+    session_kind: "password_login",
+    client_type: "web",
+    client_name: browserName,
+    app_version: "web",
+    platform: osName.toLowerCase(),
+    device_id: getDeviceId(),
+    device_name: platform || osName,
+    os_name: osName,
+    browser_name: browserName,
+  };
+}
+
+async function refreshAccessToken(): Promise<string | null> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    notifyAuthExpired();
+    return null;
+  }
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | ApiEnvelope<{ access_token?: string; token?: string }>
+        | null;
+      if (!res.ok || !payload || payload.status === "error") {
+        notifyAuthExpired();
+        return null;
+      }
+      const nextToken = payload.data?.access_token || payload.data?.token || null;
+      if (!nextToken) {
+        notifyAuthExpired();
+        return null;
+      }
+      setToken(nextToken);
+      return nextToken;
+    })().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
 }
 
 type RequestInitJSON = Omit<RequestInit, "body"> & {
   body?: unknown;
 };
 
-async function request<T>(path: string, init: RequestInitJSON = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInitJSON = {},
+  retryOnAuth = true,
+): Promise<T> {
   const headers = new Headers(init.headers);
   const isFormData =
     typeof FormData !== "undefined" && init.body instanceof FormData;
@@ -157,6 +282,18 @@ async function request<T>(path: string, init: RequestInitJSON = {}): Promise<T> 
         ? JSON.stringify(init.body)
         : undefined,
   });
+
+  if (
+    res.status === 401 &&
+    retryOnAuth &&
+    path !== "/api/auth/login" &&
+    path !== "/api/auth/refresh"
+  ) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return request<T>(path, init, false);
+    }
+  }
 
   const text = await res.text();
   let payload: ApiEnvelope<T> | T | null = null;
@@ -512,11 +649,12 @@ export const moduleOutlineApi = {
 };
 
 // -------------------------------------------------------------------------
-// API Cases 工作台
+// 自动化用例工作台（后端路径沿用 /api/api_cases，实际支持 api/web/android/ios）
 // -------------------------------------------------------------------------
-export const apiCasesApi = {
+export const automationCasesApi = {
   list(filters: {
     moduleId: number;
+    caseType?: CaseType;
     status?: ApiRunStatus | ApiRunStatus[];
     keyword?: string;
     flagType?: AiFlagType;
@@ -524,6 +662,7 @@ export const apiCasesApi = {
     pageSize?: number;
   }) {
     const qs = new URLSearchParams({ module_id: String(filters.moduleId) });
+    qs.set("case_type", filters.caseType ?? "api");
     if (filters.status) {
       const values = Array.isArray(filters.status) ? filters.status : [filters.status];
       qs.set("status", values.join(","));
@@ -547,10 +686,10 @@ export const apiCasesApi = {
     return request<AiFlagCounts>(`/api/api_cases/flag_counts?project_id=${projectId}`);
   },
   create(body: TestCaseCreate, sessionId?: string) {
-    return casesApi.create({ ...body, case_type: "api" }, sessionId);
+    return casesApi.create({ ...body, case_type: body.case_type ?? "api" }, sessionId);
   },
   update(id: number, body: TestCaseCreate, sessionId?: string, historyBatchId?: number) {
-    return casesApi.update(id, { ...body, case_type: "api" }, sessionId, historyBatchId);
+    return casesApi.update(id, { ...body, case_type: body.case_type ?? "api" }, sessionId, historyBatchId);
   },
   remove(id: number, sessionId?: string, historyBatchId?: number) {
     return casesApi.remove(id, sessionId, historyBatchId);
@@ -567,14 +706,14 @@ export const apiCasesApi = {
       },
     });
   },
-  editHistory(moduleId: number, limit = 200) {
+  editHistory(moduleId: number, limit = 200, caseType: CaseType = "api") {
     return request<ApiCaseEditRecord[]>(
-      `/api/api_cases/edit_history?module_id=${moduleId}&limit=${limit}`,
+      `/api/api_cases/edit_history?module_id=${moduleId}&case_type=${caseType}&limit=${limit}`,
     );
   },
-  testHistory(moduleId: number, limit = 100) {
+  testHistory(moduleId: number, limit = 100, caseType: CaseType = "api") {
     return request<ApiTestHistoryReport[]>(
-      `/api/api_cases/test_history?module_id=${moduleId}&limit=${limit}`,
+      `/api/api_cases/test_history?module_id=${moduleId}&case_type=${caseType}&limit=${limit}`,
     );
   },
   runs(caseId: number, limit = 20) {
@@ -590,6 +729,9 @@ export const apiCasesApi = {
     return request<ApiCaseLatestRunDetail>(`/api/api_cases/${caseId}/latest_run_detail`);
   },
 };
+
+/** @deprecated 请使用 automationCasesApi。保留旧名是为了兼容少量历史调用点。 */
+export const apiCasesApi = automationCasesApi;
 
 // -------------------------------------------------------------------------
 // Functional Cases （人工功能用例 + "勾结果"链路）
@@ -1554,11 +1696,39 @@ export const authApi = {
   login(payload: LoginRequest) {
     return request<LoginResponse>("/api/auth/login", {
       method: "POST",
-      body: payload,
+      body: { ...payload, client: payload.client ?? buildClientInfo() },
     });
   },
   me() {
     return request<User>("/api/auth/me");
+  },
+  sessions() {
+    return request<UserSession[]>("/api/auth/sessions");
+  },
+  refresh(refreshToken: string) {
+    return request<{ access_token: string; expires_in: number; token?: string }>(
+      "/api/auth/refresh",
+      {
+        method: "POST",
+        body: { refresh_token: refreshToken },
+      },
+      false,
+    );
+  },
+  logout(refreshToken?: string | null) {
+    return request<void>(
+      "/api/auth/logout",
+      {
+        method: "POST",
+        body: { refresh_token: refreshToken ?? getRefreshToken() },
+      },
+      false,
+    );
+  },
+  logoutAll() {
+    return request<{ revoked: number }>("/api/auth/logout-all", {
+      method: "POST",
+    });
   },
   changePassword(payload: ChangePasswordRequest) {
     return request<{ message: string }>("/api/auth/password", {

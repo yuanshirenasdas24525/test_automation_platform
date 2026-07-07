@@ -27,8 +27,7 @@ x-app-common: &app-common
     REDIS_PORT: "6379"
     # Web 自动化：容器内无显示器，强制无头模式；本地调试时可 docker run -e WEB_HEADLESS=false
     WEB_HEADLESS: "true"
-    # Celery broker / backend（celery_app.py 当前是写死的，
-    # 改造成读 env 后这两行就生效；现状下作为文档保留）
+    # Celery broker / backend
     CELERY_BROKER_URL: redis://redis:6379/0
     CELERY_RESULT_BACKEND: redis://redis:6379/1
     # 平台 DB —— 使用 PostgreSQL
@@ -70,9 +69,7 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------------------------------
-  # 2. Postgres —— 平台元数据库
-  # 想用 SQLite：删掉这个 service 和上面 app-env 的 DB_* / depends_on.postgres
-  # 想用 MySQL：换成 mysql:8 镜像 + 改 DB_HOST/USER 等环境变量
+  # 2. Postgres —— 平台元数据库唯一支持的运行方式
   # -------------------------------------------------------------------------
   postgres:
     image: postgres:15-alpine

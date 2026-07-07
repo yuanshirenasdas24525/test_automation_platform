@@ -98,8 +98,6 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
-            # SQLite 下的批处理支持（ALTER 不会原生支持，需要 batch mode）
-            render_as_batch=connection.dialect.name == "sqlite",
         )
         with context.begin_transaction():
             context.run_migrations()

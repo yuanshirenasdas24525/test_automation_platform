@@ -1,0 +1,851 @@
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { useQuery } from "@tanstack/react-query";
+import { Braces, Check, Info, Loader2, X } from "lucide-react";
+import { toast } from "sonner";
+
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { HighlightedInput, HighlightedTextarea } from "@/components/ui/highlighted-textarea";
+import { StepEditor, validateStepsForCategory } from "@/components/case/step-editor";
+import { casesApi } from "@/lib/api";
+import { queryKeys } from "@/lib/query";
+import { cn } from "@/lib/utils";
+import type { CaseType, ContentNode, TestStepDraft } from "@/types/domain";
+
+const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
+
+// ---------------------------------------------------------------------------
+// 用例字段校验工具
+// ---------------------------------------------------------------------------
+// 运行期会 `rep_expr` 把 ${var} 替换成参数池里的值，为了让 JSON.parse 不挂，
+// 这里先把 ${...} 暂时替换成一个合法的 JSON 字面量再校验。
+//
+// 历史坑：原来用 '"__placeholder__"'（带引号）替换 —— 假定用户写的是
+//   { "x": ${var} }     ← 裸用作 value
+// 但实际上常见且推荐的写法是字符串内嵌：
+//   { "x": "Bearer ${token}" }
+// 替换之后变成 `{ "x": "Bearer "__placeholder__"" }`，JSON.parse 直接挂。
+// 用户因此被迫把 ${var} 改成 $.{var} / $.var 才能保存，丢失了真正的变量替换语义。
+//
+// 现在改用临时 token：字符串内嵌占位符直接替换 token，裸值占位符替换成
+// 带引号的 token。这样 JSON.parse 和 JSON.stringify 都能跑，格式化后再恢复原文。
+type PlaceholderToken = {
+  token: string;
+  original: string;
+  inString: boolean;
+};
+
+function isInsideJsonString(text: string, index: number): boolean {
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < index; i += 1) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+    }
+  }
+  return inString;
+}
+
+function maskPlaceholdersForParse(text: string): {
+  candidate: string;
+  placeholders: PlaceholderToken[];
+} {
+  const placeholders: PlaceholderToken[] = [];
+  const candidate = text.replace(/\$\{[^}\n]*\}/g, (original, offset: number) => {
+    const inString = isInsideJsonString(text, offset);
+    const token = `__JSON_PLACEHOLDER_${placeholders.length}__`;
+    placeholders.push({ token, original, inString });
+    return inString ? token : `"${token}"`;
+  });
+  return { candidate, placeholders };
+}
+
+function restorePlaceholders(text: string, placeholders: PlaceholderToken[]): string {
+  return placeholders.reduce((next, item) => {
+    if (!item.inString) {
+      return next.replaceAll(`"${item.token}"`, item.original);
+    }
+    return next.replaceAll(item.token, item.original);
+  }, text);
+}
+
+type JsonCheck =
+  | { state: "empty" }
+  | { state: "ok"; pretty: string; parsed: unknown }
+  | { state: "error"; message: string };
+
+function checkJson(text: string | undefined | null): JsonCheck {
+  const s = (text ?? "").trim();
+  if (!s) return { state: "empty" };
+  const { candidate, placeholders } = maskPlaceholdersForParse(s);
+  try {
+    const parsed = JSON.parse(candidate);
+    // pretty：先格式化临时 token，再把 `${var}` 恢复回去。裸占位符仍保持裸值，
+    // 字符串内嵌占位符仍保持字符串的一部分，避免格式化改变运行时替换语义。
+    let pretty = s;
+    try {
+      pretty = restorePlaceholders(JSON.stringify(parsed, null, 2), placeholders);
+    } catch {
+      pretty = s;
+    }
+    return { state: "ok", pretty, parsed };
+  } catch (e) {
+    return { state: "error", message: (e as Error).message || "JSON 解析失败" };
+  }
+}
+
+/** 提取参数：只要求整体是 JSON 对象；值可以是 JSONPath / function，也可以是常量兜底值。 */
+function checkExtract(text: string | undefined | null): JsonCheck {
+  const base = checkJson(text);
+  if (base.state !== "ok") return base;
+  if (typeof base.parsed !== "object" || base.parsed === null || Array.isArray(base.parsed)) {
+    return { state: "error", message: "提取参数必须是一个 JSON 对象" };
+  }
+  for (const k of Object.keys(base.parsed as Record<string, unknown>)) {
+    if (!k.trim()) {
+      return { state: "error", message: "提取参数的 key 不能为空" };
+    }
+  }
+  return base;
+}
+
+/** 断言：只要求整体是 JSON 对象；key 可用 JSONPath / sql，也可用 status_code 等响应字段名。 */
+function checkAssertion(text: string | undefined | null): JsonCheck {
+  const base = checkJson(text);
+  if (base.state !== "ok") return base;
+  if (typeof base.parsed !== "object" || base.parsed === null || Array.isArray(base.parsed)) {
+    return { state: "error", message: "断言必须是一个 JSON 对象" };
+  }
+  for (const k of Object.keys(base.parsed as Record<string, unknown>)) {
+    if (!k.trim()) {
+      return { state: "error", message: "断言的 key 不能为空" };
+    }
+  }
+  return base;
+}
+
+/** Headers：必须是对象，key/value 都是字符串。 */
+function checkHeaders(text: string | undefined | null): JsonCheck {
+  const base = checkJson(text);
+  if (base.state !== "ok") return base;
+  if (typeof base.parsed !== "object" || base.parsed === null || Array.isArray(base.parsed)) {
+    return { state: "error", message: "请求头必须是一个 JSON 对象" };
+  }
+  return base;
+}
+
+const caseSchema = z.object({
+  name: z.string().trim().min(1, "请输入用例名").max(100, "最多 100 字"),
+  description: z.string().max(10000, "最多 10000 字").optional(),
+  method: z.string().optional(),
+  path: z.string().optional(),
+  headers: z.string().optional(),
+  data_type: z.string().optional(),
+  params: z.string().optional(),
+  extract_data: z.string().optional(),
+  assertion: z.string().optional(),
+  sql_query: z.string().optional(),
+  wait_time: z.coerce.number().int().min(0).max(3600).optional(),
+  repeat_count: z.coerce.number().int().min(1).max(100).optional(),
+  skip: z.boolean().optional(),
+  steps: z.array(z.any()).optional(),
+  case_type: z.string().optional(),
+});
+
+export type CaseFormValues = z.infer<typeof caseSchema>;
+
+function parseJsonMap(raw: unknown): Record<string, unknown> | null {
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function extractRulesToConfigText(rules: TestStepDraft["extract"]): string {
+  if (!Array.isArray(rules) || rules.length === 0) return "";
+  const map: Record<string, unknown> = {};
+  for (const rule of rules) {
+    const name = String(rule?.name ?? "").trim();
+    const jsonpath = String(rule?.jsonpath ?? rule?.path ?? "").trim();
+    if (name && jsonpath) map[name] = jsonpath;
+  }
+  return Object.keys(map).length ? JSON.stringify(map, null, 2) : "";
+}
+
+function assertionRulesToConfigText(rules: TestStepDraft["assertion"]): string {
+  if (!Array.isArray(rules) || rules.length === 0) return "";
+  const map: Record<string, unknown> = {};
+  for (const rule of rules) {
+    const target = String(rule?.target ?? "").trim();
+    if (!target) continue;
+    const type = String(rule?.type ?? "").toLowerCase();
+    if (type === "is_not_null" || type === "not_empty" || type === "not_null") {
+      map[target] = "not_empty";
+    } else if (type === "is_null" || type === "null") {
+      map[target] = "is_null";
+    } else {
+      map[target] = rule?.expected;
+    }
+  }
+  return Object.keys(map).length ? JSON.stringify(map, null, 2) : "";
+}
+
+function extractConfigToRules(raw: unknown): TestStepDraft["extract"] {
+  const map = parseJsonMap(raw);
+  if (!map) return [];
+  return Object.entries(map)
+    .map(([name, jsonpath]) => ({
+      name,
+      from: "response.body",
+      jsonpath: String(jsonpath ?? ""),
+    }))
+    .filter((rule) => rule.name.trim() && rule.jsonpath.trim());
+}
+
+function assertionConfigToRules(raw: unknown): TestStepDraft["assertion"] {
+  const map = parseJsonMap(raw);
+  if (!map) return [];
+  const rules: Record<string, unknown>[] = [];
+  for (const [target, expected] of Object.entries(map)) {
+    const key = target.trim();
+    const marker = typeof expected === "string" ? expected.trim().toLowerCase() : "";
+    if (!key) continue;
+    if (["not_empty", "not_null", "notempty", "notnull", "@notempty", "@notnull", "非空"].includes(marker)) {
+      rules.push({ type: "is_not_null", target: key, expected: null });
+    } else if (["is_null", "null", "@null", "为空", "空"].includes(marker)) {
+      rules.push({ type: "is_null", target: key, expected: null });
+    } else {
+      rules.push({
+        type: key.startsWith("$") ? "jsonpath" : "equal",
+        target: key,
+        expected,
+      });
+    }
+  }
+  return rules;
+}
+
+function hydrateHttpStepConfig(step: TestStepDraft): TestStepDraft {
+  if (step.step_type !== "http_request") return step;
+  const config = { ...(step.config || {}) };
+  const extractText = extractRulesToConfigText(step.extract);
+  const assertionText = assertionRulesToConfigText(step.assertion);
+  if (extractText) config.extract_data = extractText;
+  if (assertionText) config.assertion = assertionText;
+  return { ...step, config };
+}
+
+function normalizeHttpStepForSubmit(step: TestStepDraft): TestStepDraft {
+  if (step.step_type !== "http_request") return step;
+  const config = { ...(step.config || {}) };
+  const extract = extractConfigToRules(config.extract_data);
+  const assertion = assertionConfigToRules(config.assertion);
+  delete config.extract_data;
+  delete config.assertion;
+  return {
+    ...step,
+    config,
+    extract,
+    assertion,
+  };
+}
+
+function buildSingleHttpStep(values: CaseFormValues): TestStepDraft {
+  return {
+    step_order: 0,
+    step_name: values.name || "API 请求",
+    step_type: "http_request",
+    skip: false,
+    config: {
+      method: (values.method || "GET").toUpperCase(),
+      path: values.path || "",
+      headers: values.headers || "",
+      data_type: values.data_type || "application/json",
+      params: values.params || "",
+      sql_query: values.sql_query || "",
+    },
+    extract: extractConfigToRules(values.extract_data),
+    assertion: assertionConfigToRules(values.assertion),
+    wait_before: Number(values.wait_time || 0),
+    timeout: 60,
+    retry: 0,
+    on_failure: "stop",
+  };
+}
+
+export function CaseDialog({
+  state,
+  category,
+  onClose,
+  onSubmit,
+  submitting,
+}: {
+  state:
+    | { mode: "create"; moduleId: number; insertAt?: number }
+    | { mode: "edit"; node: ContentNode }
+    | null;
+  category: CaseType;
+  onClose: () => void;
+  onSubmit: (values: CaseFormValues) => void;
+  submitting: boolean;
+}) {
+  const existing = state?.mode === "edit" ? state.node : null;
+
+  const caseDetailQuery = useQuery({
+    queryKey: existing ? queryKeys.case(existing.id) : ["case", -1],
+    queryFn: () => casesApi.get(existing!.id),
+    enabled: !!existing && state?.mode === "edit",
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
+
+  const detail = caseDetailQuery.data;
+
+  const defaults = useMemo<CaseFormValues>(() => {
+    if (existing) {
+      const src = detail ?? (existing as unknown as Record<string, unknown>);
+      const steps = ((detail?.steps as TestStepDraft[] | undefined) ?? []).map(hydrateHttpStepConfig);
+      return {
+        name: (src.name as string) ?? "",
+        description: (src.description as string) ?? "",
+        method: (src.method as string) ?? (category === "api" ? "GET" : ""),
+        path: (src.path as string) ?? "",
+        headers: (src.headers as string) ?? "",
+        data_type: (src.data_type as string) ?? "application/json",
+        params: (src.params as string) ?? "",
+        extract_data: (src.extract_data as string) ?? "",
+        assertion: (src.assertion as string) ?? "",
+        sql_query: (src.sql_query as string) ?? "",
+        wait_time: (src.wait_time as number) ?? 0,
+        repeat_count: (src.repeat_count as number) ?? 1,
+        skip: (src.skip as boolean) ?? false,
+        steps,
+        case_type: (src.case_type as string | undefined) ?? category,
+      };
+    }
+    return {
+      name: "",
+      description: "",
+      method: category === "api" ? "GET" : "",
+      path: "",
+      headers: "",
+      data_type: "application/json",
+      params: "",
+      extract_data: "",
+      assertion: "",
+      sql_query: "",
+      wait_time: 0,
+      repeat_count: 1,
+      skip: false,
+      steps: [],
+      case_type: category,
+    };
+  }, [existing, detail, category]);
+
+  const form = useForm<CaseFormValues>({
+    resolver: zodResolver(caseSchema),
+    defaultValues: defaults,
+    values: defaults,
+  });
+
+  const isApi = category === "api";
+  const isStepEditorCase = category === "web" || category === "android" || category === "ios" || category === "mixed";
+  const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
+  const [apiMode, setApiMode] = useState<"single" | "multi">("single");
+  const detailStepCount = (detail?.steps as TestStepDraft[] | undefined)?.length ?? 0;
+
+  useEffect(() => {
+    if (isApi && detailStepCount > 1) setApiMode("multi");
+  }, [isApi, detailStepCount]);
+
+  const loadingDetail = !!existing && caseDetailQuery.isLoading;
+  const title =
+    state?.mode === "edit"
+      ? "编辑用例"
+      : state?.mode === "create" && state.insertAt !== undefined
+        ? "在此处插入用例"
+        : "新建用例";
+
+  return (
+    <Dialog open={state !== null} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>
+            用例的必填字段是名称。HTTP 相关字段只有 API 项目需要填。
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="space-y-4"
+          onSubmit={form.handleSubmit((values) => {
+            if (isStepEditorCase || (isApi && apiMode === "multi")) {
+              const stepValidationErrors = validateStepsForCategory(
+                category,
+                ((values.steps as TestStepDraft[] | undefined) ?? []),
+              );
+              if (stepValidationErrors.length > 0) {
+                form.setError("steps", { type: "validate", message: stepValidationErrors[0] });
+                return;
+              }
+            }
+
+            if (!isApi) {
+              onSubmit(values);
+              return;
+            }
+
+            const editorSteps = (values.steps as TestStepDraft[] | undefined) ?? [];
+            const normalized = editorSteps.map(normalizeHttpStepForSubmit);
+            const finalSteps = apiMode === "multi" ? normalized : [buildSingleHttpStep(values)];
+            onSubmit({ ...values, steps: finalSteps as unknown as CaseFormValues["steps"] });
+          })}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="case-name">名称</Label>
+            <Input
+              id="case-name"
+              autoFocus
+              maxLength={100}
+              {...form.register("name")}
+            />
+            {form.formState.errors.name ? (
+              <p className="text-xs text-destructive">
+                {form.formState.errors.name.message}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="case-desc">描述</Label>
+            <Textarea
+              id="case-desc"
+              rows={4}
+              className="max-h-48 resize-y"
+              {...form.register("description")}
+            />
+            <div className="text-right text-[11px] text-muted-foreground">
+              {(form.watch("description") ?? "").length}/10000
+            </div>
+            {form.formState.errors.description ? (
+              <p className="text-xs text-destructive">
+                {form.formState.errors.description.message}
+              </p>
+            ) : null}
+          </div>
+
+          {isApi ? (
+            <div className="flex justify-center">
+              <div className="inline-flex rounded-full bg-muted p-0.5">
+                <button
+                  type="button"
+                  onClick={() => setApiMode("single")}
+                  aria-pressed={apiMode === "single"}
+                  className={cn(
+                    "rounded-full px-6 py-1.5 text-sm transition-colors",
+                    apiMode === "single"
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  单请求
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setApiMode("multi")}
+                  aria-pressed={apiMode === "multi"}
+                  className={cn(
+                    "rounded-full px-6 py-1.5 text-sm transition-colors",
+                    apiMode === "multi"
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  多步骤
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {isStepEditorCase || (isApi && apiMode === "multi") ? (
+            <div className="space-y-1.5">
+              <Label htmlFor="case-repeat-standalone">重复次数</Label>
+              <Input
+                id="case-repeat-standalone"
+                type="number"
+                min={1}
+                max={100}
+                className="w-32"
+                {...form.register("repeat_count")}
+              />
+              <p className="text-xs text-muted-foreground">
+                填 N 则整条用例独立重复执行 N 次，每次在报告里各成一条（默认 1，不重复）。
+                各次相互独立、不做跨次对比；需要对比多次请求的结果，请用多步骤用例。
+              </p>
+            </div>
+          ) : null}
+
+          {isApi && apiMode === "multi" ? (
+            loadingDetail ? (
+              <div className="flex items-center gap-2 rounded border border-dashed p-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                正在加载步骤…
+              </div>
+            ) : (
+              <StepEditor
+                category="api"
+                value={currentSteps}
+                error={form.formState.errors.steps?.message}
+                onChange={(next) =>
+                  form.setValue(
+                    "steps",
+                    next as unknown as CaseFormValues["steps"],
+                    { shouldDirty: true },
+                  )
+                }
+              />
+            )
+          ) : isApi ? (
+            <>
+              <div className="grid grid-cols-[140px_1fr] gap-3">
+                <div className="space-y-1.5">
+                  <Label>方法</Label>
+                  <Select
+                    value={form.watch("method") ?? "GET"}
+                    onValueChange={(v) =>
+                      form.setValue("method", v, { shouldDirty: true })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {HTTP_METHODS.map((m) => (
+                        <SelectItem key={m} value={m}>
+                          {m}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="case-path">路径</Label>
+                  <HighlightedInput
+                    id="case-path"
+                    placeholder="/api/login"
+                    {...form.register("path")}
+                    value={form.watch("path") ?? ""}
+                    onChange={(e) =>
+                      form.setValue("path", e.target.value, { shouldDirty: true })
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="case-dtype">Content-Type</Label>
+                  <Input
+                    id="case-dtype"
+                    placeholder="application/json"
+                    {...form.register("data_type")}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="case-wait">等待秒数</Label>
+                    <Input
+                      id="case-wait"
+                      type="number"
+                      min={0}
+                      {...form.register("wait_time")}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="case-repeat">重复次数</Label>
+                    <Input
+                      id="case-repeat"
+                      type="number"
+                      min={1}
+                      max={100}
+                      {...form.register("repeat_count")}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <HighlightedField
+                id="case-headers"
+                label="请求头"
+                hint={
+                  <>
+                    JSON 对象。支持变量 <Code>{"${token}"}</Code>；如
+                    <Code>{'{"Authorization": "Bearer ${token}"}'}</Code>
+                  </>
+                }
+                rows={2}
+                placeholder='{"Authorization": "Bearer ${token}"}'
+                value={form.watch("headers") ?? ""}
+                onChange={(v) =>
+                  form.setValue("headers", v, { shouldDirty: true })
+                }
+                check={checkHeaders}
+                withJsonButton
+              />
+
+              <HighlightedField
+                id="case-params"
+                label="请求体 / 参数"
+                hint={
+                  <>
+                    JSON 对象。支持 <Code>{"${var}"}</Code> 变量占位和
+                    <Code>function:gen_xxx()</Code> 动态值
+                  </>
+                }
+                rows={3}
+                placeholder='{"username": "${user}", "ts": "function:now()"}'
+                value={form.watch("params") ?? ""}
+                onChange={(v) =>
+                  form.setValue("params", v, { shouldDirty: true })
+                }
+                check={checkJson}
+                withJsonButton
+              />
+
+              <div className="grid grid-cols-2 gap-3">
+                <HighlightedField
+                  id="case-extract"
+                  label="提取参数"
+                  hint={
+                    <>
+                      JSON 对象：<Code>{"{ 参数名: $.json.path }"}</Code>。 也可用
+                      <Code>function:xxx</Code>
+                    </>
+                  }
+                  rows={2}
+                  placeholder='{"token": "$.data.token"}'
+                  value={form.watch("extract_data") ?? ""}
+                  onChange={(v) =>
+                    form.setValue("extract_data", v, { shouldDirty: true })
+                  }
+                  check={checkExtract}
+                />
+                <HighlightedField
+                  id="case-assert"
+                  label="断言"
+                  hint={
+                    <>
+                      JSON 对象：<Code>{"{ $.code: 0 }"}</Code>。key 可用
+                      <Code>sql:select ...</Code>
+                    </>
+                  }
+                  rows={2}
+                  placeholder='{"$.code": 0, "$.data.msg": "ok"}'
+                  value={form.watch("assertion") ?? ""}
+                  onChange={(v) =>
+                    form.setValue("assertion", v, { shouldDirty: true })
+                  }
+                  check={checkAssertion}
+                />
+              </div>
+
+              <HighlightedField
+                id="case-sql"
+                label="SQL 校验"
+                hint={
+                  <>
+                    用于在请求前 / 后查库拿数据。支持多条 SQL 用 <Code>;</Code> 分隔，支持
+                    <Code>{"${var}"}</Code>
+                  </>
+                }
+                rows={2}
+                placeholder="select status from orders where id = ${order_id}"
+                value={form.watch("sql_query") ?? ""}
+                onChange={(v) =>
+                  form.setValue("sql_query", v, { shouldDirty: true })
+                }
+              />
+            </>
+          ) : isStepEditorCase ? (
+            loadingDetail ? (
+              <div className="flex items-center gap-2 rounded border border-dashed p-3 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                正在加载步骤…
+              </div>
+            ) : (
+              <StepEditor
+                category={category}
+                value={currentSteps}
+                error={form.formState.errors.steps?.message}
+                onChange={(next) =>
+                  form.setValue(
+                    "steps",
+                    next as unknown as CaseFormValues["steps"],
+                    { shouldDirty: true },
+                  )
+                }
+              />
+            )
+          ) : (
+            <p className="rounded border border-dashed p-3 text-xs text-muted-foreground">
+              当前项目类型未识别，用例只会保留名称 / 描述这些基础字段。
+            </p>
+          )}
+
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onClose}
+              disabled={submitting}
+            >
+              取消
+            </Button>
+            <Button type="submit" disabled={submitting}>
+              {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              保存
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function HighlightedField({
+  id,
+  label,
+  hint,
+  rows,
+  placeholder,
+  value,
+  onChange,
+  check,
+  withJsonButton,
+}: {
+  id: string;
+  label: string;
+  hint?: ReactNode;
+  rows?: number;
+  placeholder?: string;
+  value: string;
+  onChange: (next: string) => void;
+  check?: (text: string) => JsonCheck;
+  withJsonButton?: boolean;
+}) {
+  const result: JsonCheck = check ? check(value) : { state: "empty" };
+  const showError = result.state === "error" && value.trim().length > 0;
+  const showOk = result.state === "ok";
+
+  const handleValidate = () => {
+    const r = check ? check(value) : checkJson(value);
+    if (r.state === "empty") {
+      toast.info("内容为空");
+      return;
+    }
+    if (r.state === "error") {
+      toast.error("JSON 格式错误：" + r.message);
+      return;
+    }
+    if (r.pretty && r.pretty.trim() !== value.trim()) {
+      onChange(r.pretty);
+      toast.success("JSON 格式正确，已自动格式化");
+    } else {
+      toast.success("JSON 格式正确");
+    }
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={id} className="flex items-center gap-1.5">
+          {label}
+          {value.trim().length > 0 && check ? (
+            showOk ? (
+              <Check className="h-3.5 w-3.5 text-emerald-600" />
+            ) : showError ? (
+              <X className="h-3.5 w-3.5 text-destructive" />
+            ) : null
+          ) : null}
+        </Label>
+        {withJsonButton ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={handleValidate}
+          >
+            <Braces className="h-3 w-3" />
+            校验 JSON
+          </Button>
+        ) : null}
+      </div>
+      <HighlightedTextarea
+        id={id}
+        rows={rows}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        invalid={showError}
+      />
+      {showError ? (
+        <p className="flex items-start gap-1 text-[11px] text-destructive">
+          <Info className="mt-[1px] h-3 w-3 shrink-0" />
+          <span>{(result as Extract<JsonCheck, { state: "error" }>).message}</span>
+        </p>
+      ) : hint ? (
+        <p className="flex items-start gap-1 text-[11px] text-muted-foreground">
+          <Info className="mt-[1px] h-3 w-3 shrink-0 opacity-60" />
+          <span>{hint}</span>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function Code({ children }: { children: ReactNode }) {
+  return (
+    <code className="mx-0.5 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-foreground/80">
+      {children}
+    </code>
+  );
+}

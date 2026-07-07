@@ -71,6 +71,7 @@ interface FieldSpec {
   hint?: React.ReactNode;
   required?: boolean;
   options?: { value: string; label: string }[];
+  platforms?: Array<"android" | "ios">;
 }
 
 interface StepTypeSpec {
@@ -84,6 +85,7 @@ interface StepTypeSpec {
   fields: FieldSpec[];
   /** step_name 的默认值（支持函数，能读到当前 config） */
   defaultName: string | ((config: Record<string, unknown>) => string);
+  platforms?: Array<"android" | "ios">;
 }
 
 const BY_OPTIONS: FieldSpec["options"] = [
@@ -120,6 +122,32 @@ const APP_BY_OPTIONS: FieldSpec["options"] = [
   { value: "css_selector", label: "CSS Selector" },
   { value: "name", label: "name 属性" },
 ];
+const ANDROID_APP_BY_VALUES = new Set([
+  "id",
+  "xpath",
+  "accessibility_id",
+  "class_name",
+  "android_uiautomator",
+  "android_viewtag",
+  "android_data_matcher",
+  "android_view_matcher",
+  "image",
+  "link_text",
+  "css_selector",
+  "name",
+]);
+const IOS_APP_BY_VALUES = new Set([
+  "id",
+  "xpath",
+  "accessibility_id",
+  "class_name",
+  "ios_predicate",
+  "ios_class_chain",
+  "image",
+  "link_text",
+  "css_selector",
+  "name",
+]);
 
 // iOS / Android 都能用。留空表示"使用设备默认 automationName"（Android→UiAutomator2、iOS→XCUITest）。
 const APP_AUTOMATION_OPTIONS: FieldSpec["options"] = [
@@ -323,7 +351,7 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     value: "app_launch",
     group: "app",
     label: "启动 App (app_launch)",
-    desc: "Android 填 appPackage + appActivity；iOS 填 bundleId；automationName 留空则按设备平台默认",
+    desc: "按当前用例平台填写启动目标；automationName 留空则按设备平台默认",
     defaultConfig: { appPackage: "", appActivity: "" },
     defaultName: (c) =>
       `启动 ${c.bundleId || c.appPackage || "App"}`,
@@ -334,13 +362,15 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         label: "appPackage (Android)",
         kind: "text",
         placeholder: "com.example.app",
-        hint: <>Android 必填；iOS 请改填下面的 <code>bundleId</code></>,
+        platforms: ["android"],
+        hint: <>Android 必填</>,
       },
       {
         key: "appActivity",
         label: "appActivity (Android)",
         kind: "text",
         placeholder: ".MainActivity",
+        platforms: ["android"],
       },
       // iOS
       {
@@ -348,7 +378,8 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         label: "bundleId (iOS)",
         kind: "text",
         placeholder: "com.apple.mobilesafari",
-        hint: <>iOS 场景使用；与 appPackage 互斥</>,
+        platforms: ["ios"],
+        hint: <>iOS 必填</>,
       },
       // 共用
       {
@@ -375,6 +406,7 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     label: "按键码 (app_press)",
     defaultConfig: { keycode: 4 },
     defaultName: (c) => `press ${c.keycode ?? ""}`,
+    platforms: ["android"],
     fields: [
       { key: "keycode", label: "Android keycode", kind: "number", required: true, placeholder: "4" },
     ],
@@ -414,9 +446,9 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     defaultName: (c) => `卸载 ${c.bundleId || c.appPackage || "App"}`,
     fields: [
       { key: "appPackage", label: "appPackage (Android)", kind: "text",
-        placeholder: "com.example.app" },
+        placeholder: "com.example.app", platforms: ["android"] },
       { key: "bundleId", label: "bundleId (iOS)", kind: "text",
-        placeholder: "com.apple.mobilesafari" },
+        placeholder: "com.apple.mobilesafari", platforms: ["ios"] },
     ],
   },
   {
@@ -428,9 +460,9 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     defaultName: (c) => `激活 ${c.bundleId || c.appPackage || "App"}`,
     fields: [
       { key: "appPackage", label: "appPackage (Android)", kind: "text",
-        placeholder: "com.example.app" },
+        placeholder: "com.example.app", platforms: ["android"] },
       { key: "bundleId", label: "bundleId (iOS)", kind: "text",
-        placeholder: "com.apple.mobilesafari" },
+        placeholder: "com.apple.mobilesafari", platforms: ["ios"] },
     ],
   },
   {
@@ -442,9 +474,9 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     defaultName: (c) => `杀进程 ${c.bundleId || c.appPackage || "App"}`,
     fields: [
       { key: "appPackage", label: "appPackage (Android)", kind: "text",
-        placeholder: "com.example.app" },
+        placeholder: "com.example.app", platforms: ["android"] },
       { key: "bundleId", label: "bundleId (iOS)", kind: "text",
-        placeholder: "com.apple.mobilesafari" },
+        placeholder: "com.apple.mobilesafari", platforms: ["ios"] },
     ],
   },
   {
@@ -482,6 +514,7 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     fields: [
       { key: "key_name", label: "key_name (仅 iOS)", kind: "text",
         placeholder: "Done",
+        platforms: ["ios"],
         hint: <>iOS 上点击哪个键盘按钮收起；Android 留空即可</> },
     ],
   },
@@ -655,6 +688,70 @@ function findSpec(stepType: string | undefined | null): StepTypeSpec | undefined
   return STEP_TYPE_SPECS.find((s) => s.value === stepType);
 }
 
+function platformOf(category: CaseType): "android" | "ios" | null {
+  if (category === "android" || category === "ios") return category;
+  return null;
+}
+
+function isAllowedForPlatform(
+  platforms: Array<"android" | "ios"> | undefined,
+  platform: "android" | "ios" | null,
+) {
+  return !platforms || !platform || platforms.includes(platform);
+}
+
+function fieldsForPlatform(spec: StepTypeSpec, platform: "android" | "ios" | null) {
+  return spec.fields.filter((field) => isAllowedForPlatform(field.platforms, platform));
+}
+
+function defaultConfigForPlatform(
+  spec: StepTypeSpec,
+  platform: "android" | "ios" | null,
+) {
+  const allowedKeys = new Set(fieldsForPlatform(spec, platform).map((field) => field.key));
+  return Object.fromEntries(
+    Object.entries(spec.defaultConfig || {}).filter(([key]) => allowedKeys.size === 0 || allowedKeys.has(key)),
+  );
+}
+
+function hasText(value: unknown) {
+  return typeof value === "string" ? value.trim().length > 0 : value != null && value !== "";
+}
+
+export function validateStepsForCategory(category: CaseType, steps: TestStepDraft[]) {
+  const platform = platformOf(category);
+  if (!platform) return [];
+  const errors: string[] = [];
+  steps.forEach((step, index) => {
+    const order = index + 1;
+    const config = (step.config ?? {}) as Record<string, unknown>;
+    if (step.step_type === "app_launch") {
+      if (platform === "android" && !hasText(config.appPackage)) {
+        errors.push(`步骤 ${order}「启动 App」缺少 appPackage`);
+      }
+      if (platform === "ios" && !hasText(config.bundleId)) {
+        errors.push(`步骤 ${order}「启动 App」缺少 bundleId`);
+      }
+    }
+    if (
+      step.step_type === "app_uninstall" ||
+      step.step_type === "app_activate" ||
+      step.step_type === "app_terminate"
+    ) {
+      if (platform === "android" && !hasText(config.appPackage)) {
+        errors.push(`步骤 ${order}「${step.step_name || step.step_type}」缺少 appPackage`);
+      }
+      if (platform === "ios" && !hasText(config.bundleId)) {
+        errors.push(`步骤 ${order}「${step.step_name || step.step_type}」缺少 bundleId`);
+      }
+    }
+    if (platform === "ios" && step.step_type === "app_press") {
+      errors.push(`步骤 ${order}「按键码」仅适用于 Android`);
+    }
+  });
+  return errors;
+}
+
 // ---------------------------------------------------------------------------
 // 组件
 // ---------------------------------------------------------------------------
@@ -671,6 +768,7 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
   // android / ios 共用同一套 app_* StepRunner；平台差异由 environment.browser_config /
   // step config 里的 caps 决定。
   const isAppFamily = category === "android" || category === "ios";
+  const platform = platformOf(category);
 
   // 新建 step 时，默认选的 step_type 依赖 category：
   const defaultNewType = React.useMemo(() => {
@@ -687,7 +785,9 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
     return new Set(["web", "app", "generic"]); // mixed
   }, [category, isAppFamily]);
 
-  const availableSpecs = STEP_TYPE_SPECS.filter((s) => allowedGroups.has(s.group));
+  const availableSpecs = STEP_TYPE_SPECS.filter(
+    (s) => allowedGroups.has(s.group) && isAllowedForPlatform(s.platforms, platform),
+  );
 
   const setStep = (i: number, next: TestStepDraft) => {
     const arr = value.slice();
@@ -725,7 +825,7 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
   const addStep = () => {
     const spec = findSpec(defaultNewType) ?? availableSpecs[0];
     if (!spec) return;
-    const cfg = { ...(spec.defaultConfig || {}) };
+    const cfg = { ...defaultConfigForPlatform(spec, platform) };
     const newStep: TestStepDraft = {
       step_order: value.length,
       step_type: spec.value,
@@ -774,6 +874,7 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
               total={value.length}
               step={step}
               specs={availableSpecs}
+              platform={platform}
               onChange={(next) => setStep(i, next)}
               onRemove={() => removeStep(i)}
               onMove={(dir) => moveStep(i, dir)}
@@ -805,6 +906,7 @@ function StepRow({
   total,
   step,
   specs,
+  platform,
   onChange,
   onRemove,
   onMove,
@@ -818,6 +920,7 @@ function StepRow({
   total: number;
   step: TestStepDraft;
   specs: StepTypeSpec[];
+  platform: "android" | "ios" | null;
   onChange: (next: TestStepDraft) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
@@ -830,14 +933,16 @@ function StepRow({
   onDropAtEnd: (from: number) => void;
 }) {
   const [expanded, setExpanded] = React.useState(index === 0 || !step.step_type);
-  const spec = findSpec(step.step_type);
+  const spec = specs.find((item) => item.value === step.step_type) ?? findSpec(step.step_type);
+  const visibleFields = spec ? fieldsForPlatform(spec, platform) : [];
 
   const handleTypeChange = (newType: string) => {
     const newSpec = findSpec(newType);
     if (!newSpec) return;
     // 保留已有 config 里与新 spec 共有字段的值；不共有的丢掉
-    const keepKeys = new Set(newSpec.fields.map((f) => f.key));
-    const nextConfig: Record<string, unknown> = { ...(newSpec.defaultConfig || {}) };
+    const newFields = fieldsForPlatform(newSpec, platform);
+    const keepKeys = new Set(newFields.map((f) => f.key));
+    const nextConfig: Record<string, unknown> = { ...defaultConfigForPlatform(newSpec, platform) };
     for (const [k, v] of Object.entries(step.config || {})) {
       if (keepKeys.has(k) && v !== undefined) nextConfig[k] = v;
     }
@@ -1003,12 +1108,13 @@ function StepRow({
             </p>
           ) : null}
 
-          {spec && spec.fields.length > 0 ? (
+          {spec && visibleFields.length > 0 ? (
             <div className="grid grid-cols-2 gap-2">
-              {spec.fields.map((field) => (
+              {visibleFields.map((field) => (
                 <FieldRenderer
                   key={field.key}
                   field={field}
+                  platform={platform}
                   value={step.config?.[field.key]}
                   onChange={(v) => setConfig(field.key, v)}
                 />
@@ -1097,14 +1203,32 @@ function StepRow({
 // ---------------------------------------------------------------------------
 function FieldRenderer({
   field,
+  platform,
   value,
   onChange,
 }: {
   field: FieldSpec;
+  platform: "android" | "ios" | null;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
   const id = `step-field-${field.key}`;
+  const options = React.useMemo(() => {
+    if (!field.options) return field.options;
+    if (field.options === APP_BY_OPTIONS && platform === "android") {
+      return field.options.filter((opt) => ANDROID_APP_BY_VALUES.has(opt.value));
+    }
+    if (field.options === APP_BY_OPTIONS && platform === "ios") {
+      return field.options.filter((opt) => IOS_APP_BY_VALUES.has(opt.value));
+    }
+    if (field.options === APP_AUTOMATION_OPTIONS && platform === "android") {
+      return field.options.filter((opt) => opt.value === "UiAutomator2" || opt.value === "Espresso");
+    }
+    if (field.options === APP_AUTOMATION_OPTIONS && platform === "ios") {
+      return field.options.filter((opt) => opt.value === "XCUITest");
+    }
+    return field.options;
+  }, [field.options, platform]);
   // highlight 可能跨两列
   const wrapperClass = field.kind === "highlight" && (field.rows ?? 1) > 1
     ? "col-span-2 space-y-1"
@@ -1137,7 +1261,7 @@ function FieldRenderer({
           }
         />
       ) : null}
-      {field.kind === "select" && field.options ? (
+      {field.kind === "select" && options ? (
         <Select
           // Radix Select 对空字符串非常敏感 —— 我们把空/undefined 作为"未选"，
           // 给 Select 一个 undefined（而不是 ""）触发 placeholder 状态。
@@ -1148,7 +1272,7 @@ function FieldRenderer({
             <SelectValue placeholder={field.placeholder ?? "请选择"} />
           </SelectTrigger>
           <SelectContent>
-            {field.options.map((opt) => (
+            {options.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
               </SelectItem>
@@ -1178,6 +1302,7 @@ function FieldRenderer({
       {field.kind === "app_package" ? (
         <AppPackagePicker
           id={id}
+          platform={platform}
           placeholder={field.placeholder}
           value={stringify(value)}
           onChange={onChange}
@@ -1212,18 +1337,20 @@ function stringify(v: unknown): string {
 // ---------------------------------------------------------------------------
 function AppPackagePicker({
   id,
+  platform,
   placeholder,
   value,
   onChange,
 }: {
   id: string;
+  platform: "android" | "ios" | null;
   placeholder?: string;
   value: string;
   onChange: (v: unknown) => void;
 }) {
   const pkgQuery = useQuery({
-    queryKey: queryKeys.appPackages(),
-    queryFn: () => appPackagesApi.list(),
+    queryKey: queryKeys.appPackages(platform ? { platform } : undefined),
+    queryFn: () => appPackagesApi.list(platform ? { platform } : undefined),
     staleTime: 30 * 1000,
   });
 
