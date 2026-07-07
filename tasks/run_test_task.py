@@ -30,14 +30,14 @@ def _run_allure_generate(result_path: str, report_path: str) -> None:
     """尽力跑一下 allure generate；binary 没装或命令挂了不要影响主流程。"""
     allure_bin = shutil.which("allure")
     if not allure_bin:
-        print("[run_test_task] allure CLI 未安装，跳过 HTML 报告生成")
+        LOGGER.info("[run_test_task] allure CLI 未安装，跳过 HTML 报告生成")
         return
     try:
         rc = os.system(f"{allure_bin} generate {result_path} -o {report_path} --clean")
         if rc != 0:
-            print(f"[run_test_task] allure generate 退出码 {rc}")
+            LOGGER.warning(f"[run_test_task] allure generate 退出码 {rc}")
     except Exception as exc:  # pragma: no cover
-        print(f"[run_test_task] allure generate 异常: {exc}")
+        LOGGER.warning(f"[run_test_task] allure generate 异常: {exc}")
 
 
 @celery_app.task(name="tasks.run_test_task")
@@ -87,7 +87,7 @@ def run_test_task(t_id, r_id, cases, category):
 
         # exit_code 含义：0=全通过，1=有 fail，2=中断，3=内部错，4=用法错，5=没用例
         # 不直接用它判 success —— sync_allure_to_db + finalize_report 会按 step 结果落盘
-        print(f"[run_test_task] pytest exit_code={exit_code}")
+        LOGGER.info(f"[run_test_task] pytest exit_code={exit_code}")
 
         # HTML 报告：失败不要传染给主流程
         _run_allure_generate(result_path, report_path)
@@ -97,7 +97,7 @@ def run_test_task(t_id, r_id, cases, category):
             sync_allure_to_db(r_id, result_path, db_session)
         except Exception as exc:
             traceback.print_exc()
-            print(f"[run_test_task] sync_allure_to_db 失败: {exc}")
+            LOGGER.warning(f"[run_test_task] sync_allure_to_db 失败: {exc}")
             db_session.rollback()
 
         # 统一 finalize，它自己兜底把 status 写成终态
@@ -108,7 +108,7 @@ def run_test_task(t_id, r_id, cases, category):
         try:
             _auto_clear_ai_flags(r_id, db_session)
         except Exception as exc:  # noqa: BLE001
-            print(f"[run_test_task] 自动清 AI 标记失败（忽略）: {exc}")
+            LOGGER.warning(f"[run_test_task] 自动清 AI 标记失败（忽略）: {exc}")
             try:
                 db_session.rollback()
             except Exception:
@@ -120,7 +120,7 @@ def run_test_task(t_id, r_id, cases, category):
         try:
             force_error_status(r_id, db_session, f"任务执行失败: {exc}")
         except Exception as inner:
-            print(f"[run_test_task] 兜底也失败: {inner}")
+            LOGGER.warning(f"[run_test_task] 兜底也失败: {inner}")
 
     finally:
         try:
@@ -150,7 +150,7 @@ def _auto_clear_ai_flags(report_id: int, db_session) -> None:
         n = auto_clear_on_pass(db_session, passed)
         if n:
             db_session.commit()
-            print(f"[run_test_task] 自动清除 {n} 个 AI 标记（用例已通过）")
+            LOGGER.info(f"[run_test_task] 自动清除 {n} 个 AI 标记（用例已通过）")
 
 
 # ---------------------------------------------------------------------------

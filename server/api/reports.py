@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pydantic
+from utils.logger import LOGGER
 from fastapi import APIRouter, HTTPException, Query
 
 from database.models import (
@@ -122,7 +123,7 @@ def list_reports(
     try:
         _sweep_stale_running(db)
     except Exception as exc:  # 清洗出错不能影响列表读取
-        print(f"[reports.list] sweep stale running 失败: {exc}")
+        LOGGER.warning(f"[reports.list] sweep stale running 失败: {exc}")
 
     query = db.session.query(TestReport, Project.name).outerjoin(
         Project, Project.id == TestReport.project_id

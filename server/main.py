@@ -18,10 +18,20 @@ FastAPI 应用入口。
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# 日志：统一格式 + 级别从 env 读（LOG_LEVEL=DEBUG/INFO/WARNING，默认 INFO）。
+# 业务代码一律 `logger = logging.getLogger(__name__)`，不要用 print()。
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+)
 
 # 把项目根塞到 sys.path，让 `platform / core / database / runners` 这些顶层
 # 包都能直接 import（无论是 `uvicorn platform.main:app` 还是 `python platform/main.py`

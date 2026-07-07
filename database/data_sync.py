@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import json
 import traceback
+from utils.logger import LOGGER
 from datetime import datetime
 
 from sqlalchemy import func, case
@@ -52,11 +53,11 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
         .count()
     )
     if existing > 0:
-        print(f"[sync_allure_to_db] report_id={report_id} 已有 {existing} 条记录，跳过兜底")
+        LOGGER.info(f"[sync_allure_to_db] report_id={report_id} 已有 {existing} 条记录，跳过兜底")
         return
 
     if not result_path or not os.path.isdir(result_path):
-        print(f"[sync_allure_to_db] 结果目录不存在或为空: {result_path}")
+        LOGGER.warning(f"[sync_allure_to_db] 结果目录不存在或为空: {result_path}")
         return
 
     added = 0
@@ -68,7 +69,7 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
                 with open(os.path.join(result_path, file), "r", encoding="utf-8") as f:
                     res = json.load(f)
             except Exception as exc:  # 单个坏文件不能影响整体
-                print(f"[sync_allure_to_db] 跳过坏文件 {file}: {exc}")
+                LOGGER.warning(f"[sync_allure_to_db] 跳过坏文件 {file}: {exc}")
                 continue
 
             status = res.get("status")
@@ -94,11 +95,11 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
 
         db.flush()
     except Exception as exc:
-        print(f"[sync_allure_to_db] 回填步骤失败: {exc}")
+        LOGGER.warning(f"[sync_allure_to_db] 回填步骤失败: {exc}")
         db.rollback()
         raise
     else:
-        print(f"[sync_allure_to_db] 兜底写入 {added} 条 step 记录")
+        LOGGER.info(f"[sync_allure_to_db] 兜底写入 {added} 条 step 记录")
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +184,7 @@ def _finalize_impl(report_id: int, db_session, task_id: str | None) -> None:
     # 4. 写主报告
     report = db_session.query(TestReport).filter(TestReport.id == report_id).first()
     if not report:
-        print(f"[finalize_report] report_id={report_id} 不存在")
+        LOGGER.warning(f"[finalize_report] report_id={report_id} 不存在")
         return
 
     report.scene_name = scene_name or report.scene_name
@@ -199,7 +200,7 @@ def _finalize_impl(report_id: int, db_session, task_id: str | None) -> None:
     report.allure_url = allure_url
 
     db_session.commit()
-    print(f"[finalize_report] report_id={report_id} → {final_status} ({summary})")
+    LOGGER.info(f"[finalize_report] report_id={report_id} → {final_status} ({summary})")
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +223,7 @@ def _force_terminal(report_id: int, db_session, status: str, summary: str) -> No
         report.end_time = datetime.now()
         db_session.commit()
     except Exception as exc:
-        print(f"[_force_terminal] 兜底写入也失败了: {exc}")
+        LOGGER.warning(f"[_force_terminal] 兜底写入也失败了: {exc}")
         try:
             db_session.rollback()
         except Exception:
