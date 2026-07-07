@@ -1,0 +1,36 @@
+# Ruff —— 后端 Python lint（前端已有 eslint --max-warnings 0，这里补齐后端）
+#
+# 用法：
+#   pip install ruff
+#   ruff check .          # lint
+#   ruff check . --fix    # 自动修复（unused import 等）
+#
+# 规则集刻意保守：只开"基本是 bug"的高信号规则，不做风格之争（项目
+# 约定见 AGENTS.md）。以后想收紧再逐步加 E/W/B 等。
+
+target-version = "py310"
+line-length = 120
+
+extend-exclude = [
+    "venv",
+    "frontend",
+    "data",
+    "coding_agent",
+    "database/migrations/versions",  # alembic 自动生成，格式不管
+]
+
+[lint]
+select = [
+    "E7",    # 语句类错误（含 E722 裸 except、E711/E712 与 None/True 比较）
+    "E9",    # 语法/缩进错误
+    "F",     # pyflakes：未定义名字、未用 import/变量、重复定义、f-string 缺占位
+]
+ignore = [
+    "E731",  # lambda 赋值 —— 项目里有惯用写法，不强制
+    "F841",  # 未使用的局部变量 —— 常见于解包/调试残留，噪音偏高，后续再开
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]          # 包导出用 import，不算未使用
+"server/api/deps.py" = ["E402"]   # 文件尾部 import 是刻意的（避免循环依赖）
+"server/main.py" = ["E402"]       # sys.path 注入后才能 import 项目包

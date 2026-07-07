@@ -14,7 +14,7 @@ help:
 	@echo "  make dev      启动本地开发环境（依赖 + API + worker + beat + 前端）"
 	@echo "  make stop     停止本地开发环境的残留进程"
 	@echo "  make migrate  alembic upgrade head"
-	@echo "  make lint     前端 eslint 检查"
+	@echo "  make lint     前端 eslint + 后端 ruff 检查"
 	@echo "  make build    前端构建（tsc -b + vite build）"
 	@echo "  make backfill-flags           历史 AI 诊断回填成用例标记（幂等可重跑）"
 	@echo "  make check-flags [MODULE=20]  AI 标记链路只读诊断"
@@ -62,6 +62,7 @@ check-flags:
 
 lint:
 	cd frontend && npm run lint
+	@command -v ruff >/dev/null 2>&1 && ruff check . || echo "⚠ ruff 未安装（pip install ruff），跳过后端 lint"
 
 build:
 	cd frontend && npm run build
