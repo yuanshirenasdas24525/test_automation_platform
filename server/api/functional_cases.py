@@ -411,6 +411,34 @@ def _discover_spec_url(html: str, base: str) -> Optional[str]:
     return None
 
 
+def _ssrf_check(url: str) -> str | None:
+    """SSRF 防护：解析 host 并拒绝私网 / 环回 / 链路本地 / 保留地址。
+
+    平台部署在内网时，这个接口拿到的是「用户给的任意 URL 由服务端发起请求」，
+    不校验的话可以用来探测内网服务或云 metadata 端点（169.254.169.254）。
+    如果确实需要拉内网文档站，通过环境变量 DOC_FETCH_ALLOW_PRIVATE=1 显式放开。
+    """
+    import ipaddress
+    import os
+    import socket
+    from urllib.parse import urlparse
+
+    if os.getenv("DOC_FETCH_ALLOW_PRIVATE", "").strip() in {"1", "true", "yes"}:
+        return None
+    host = urlparse(url).hostname
+    if not host:
+        return f"（不是合法链接：{url}）"
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return f"（域名解析失败：{host}）"
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if not ip.is_global:
+            return f"（出于安全考虑，禁止拉取内网/保留地址：{host} → {ip}；如需放开请设置 DOC_FETCH_ALLOW_PRIVATE=1）"
+    return None
+
+
 def _fetch_doc_url(url: str, _depth: int = 0, operation_ids: set[str] | None = None) -> str:
     """拉取接口文档链接 → 接口清单/正文文字。支持规范文件直链、Swagger UI、普通文档页。"""
     import requests  # 已在 requirements
@@ -419,8 +447,22 @@ def _fetch_doc_url(url: str, _depth: int = 0, operation_ids: set[str] | None = N
     operation_ids = set(operation_ids or set()) | _operation_ids_from_doc_url(url)
     if not url.lower().startswith(("http://", "https://")):
         return f"（不是合法链接：{url}）"
+    if (deny := _ssrf_check(url)) is not None:
+        return deny
     try:
-        resp = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        # 手动跟随重定向：每一跳都要重新过 SSRF 校验，防止公网 URL 302 到内网
+        for _ in range(4):
+            resp = requests.get(
+                url, timeout=20, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=False
+            )
+            if resp.is_redirect or resp.is_permanent_redirect:
+                from urllib.parse import urljoin
+
+                url = urljoin(url, resp.headers.get("location", ""))
+                if (deny := _ssrf_check(url)) is not None:
+                    return deny
+                continue
+            break
         resp.raise_for_status()
     except Exception as e:  # noqa: BLE001
         return f"（链接拉取失败：{e}）"
