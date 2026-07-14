@@ -47,6 +47,7 @@ import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBad
 import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { AssigneePicker } from "@/components/pickers/AssigneePicker";
 import { AiAnalysisLauncherDialog } from "./requirements/dialogs/AiAnalysisLauncherDialog";
+import { CaseGenerationReviewDialog } from "./requirements/dialogs/CaseGenerationReviewDialog";
 import { AnalysisDocumentListDialog } from "./requirements/dialogs/AnalysisDocumentListDialog";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { cn } from "@/lib/utils";
@@ -122,6 +123,7 @@ export function RequirementsPage() {
   const [aiOpen, setAiOpen] = useState(false);
   const [splittingParent, setSplittingParent] = useState<Requirement | null>(null);
   const [aiLauncherFor, setAiLauncherFor] = useState<Requirement | null>(null);
+  const [caseGenFor, setCaseGenFor] = useState<Requirement | null>(null);
   const [docsListFor, setDocsListFor] = useState<Requirement | null>(null);
   const [detailReq, setDetailReq] = useState<Requirement | null>(null);
 
@@ -382,6 +384,7 @@ export function RequirementsPage() {
                   }}
                   onSplit={(r) => setSplittingParent(r)}
                   onAiAnalyze={(r) => setAiLauncherFor(r)}
+                  onGenCases={(r) => setCaseGenFor(r)}
                   onOpenDocs={(r) => setDocsListFor(r)}
                   onViewDetail={(r) => setDetailReq(r)}
                 />
@@ -441,6 +444,12 @@ export function RequirementsPage() {
         open={!!docsListFor}
         requirement={docsListFor}
         onClose={() => setDocsListFor(null)}
+      />
+
+      <CaseGenerationReviewDialog
+        open={!!caseGenFor}
+        requirement={caseGenFor}
+        onClose={() => setCaseGenFor(null)}
       />
 
       <RequirementDetailDrawer
@@ -512,6 +521,7 @@ function RequirementTreeRows({
   onDelete,
   onSplit,
   onAiAnalyze,
+  onGenCases,
   onOpenDocs,
   onViewDetail,
 }: {
@@ -523,6 +533,7 @@ function RequirementTreeRows({
   onDelete: (r: Requirement) => void;
   onSplit: (r: Requirement) => void;
   onAiAnalyze: (r: Requirement) => void;
+  onGenCases: (r: Requirement) => void;
   onOpenDocs: (r: Requirement) => void;
   onViewDetail: (r: Requirement) => void;
 }) {
@@ -542,6 +553,7 @@ function RequirementTreeRows({
         onDelete={() => onDelete(req)}
         onSplit={() => onSplit(req)}
         onAiAnalyze={() => onAiAnalyze(req)}
+        onGenCases={() => onGenCases(req)}
         onOpenDocs={() => onOpenDocs(req)}
         onViewDetail={() => onViewDetail(req)}
       />
@@ -559,6 +571,7 @@ function RequirementTreeRows({
               onDelete={() => onDelete(c)}
               onSplit={null}
               onAiAnalyze={() => onAiAnalyze(c)}
+              onGenCases={() => onGenCases(c)}
               onOpenDocs={() => onOpenDocs(c)}
               onViewDetail={() => onViewDetail(c)}
             />
@@ -579,6 +592,7 @@ function RequirementTableRow({
   onDelete,
   onSplit,
   onAiAnalyze,
+  onGenCases,
   onOpenDocs,
   onViewDetail,
 }: {
@@ -592,6 +606,7 @@ function RequirementTableRow({
   onDelete: () => void;
   onSplit: (() => void) | null;
   onAiAnalyze: () => void;
+  onGenCases: () => void;
   onOpenDocs: () => void;
   onViewDetail: () => void;
 }) {
@@ -680,6 +695,15 @@ function RequirementTableRow({
             title="AI 分析此需求"
           >
             <Bot className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-emerald-600 hover:text-emerald-700"
+            onClick={onGenCases}
+            title="AI 生成用例（草稿评审）"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
           </Button>
           <Button
             variant="ghost"

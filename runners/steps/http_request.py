@@ -131,6 +131,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         :param session: 可以从外面传一个已经塞好 Cookie 的 session（用例链场景）。
         """
         self._processor = processor
+        self._processor_project_id = None
         self._session = session or requests.Session()
 
     # ---------------------- 惰性构造 processor ----------------------
@@ -141,8 +142,18 @@ class HttpRequestStepRunner(BaseStepRunner):
             self._processor = create_request_data_processor()
         return self._processor
 
+    def _ensure_processor(self, ctx: ExecutionContext) -> None:
+        """按当前用例项目构造配置处理器。"""
+        project_id = ctx.get_var("_project_id")
+        if self._processor is not None and self._processor_project_id == project_id:
+            return
+        from runners.api.factory import create_request_data_processor
+        self._processor = create_request_data_processor(project_id=project_id)
+        self._processor_project_id = project_id
+
     # ---------------------- 主逻辑 ----------------------
     def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
+        self._ensure_processor(ctx)
         config = step.get("config") or {}
 
         method = str(config.get("method") or "GET").upper().strip()

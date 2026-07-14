@@ -75,7 +75,7 @@ def embed_and_persist(
         - 整体不抛；只有 cfg 加载失败 / chunks 为空才会 early-return
     """
     if cfg is None:
-        cfg = load_embedding_config()
+        cfg = load_embedding_config(project_id)
 
     stats = EmbedderStats()
     buffered: list[IndexChunk] = list(chunks)

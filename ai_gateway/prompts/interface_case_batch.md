@@ -3,6 +3,11 @@
 # 接口摘要（digest）
 {{DIGEST}}
 
+# ⚠️ 本项目真实响应结构与 API 约定（写 extract/assertion 的唯一依据）
+{{PROJECT_CONTEXT}}
+
+> **极重要**：下文示例里出现的 `$.data.token`、`$.code` 等只是"格式演示",**不是**本项目的真实结构。写 `extract` / `assertion` 的 JSONPath 时，**必须以上面这段项目真实约定为准**：响应用什么信封（如 `{status, data:{...}}`）、token 在哪个路径（如 `$.data.access_token`）、错误码/文案字段叫什么、是中文还是英文——全部照真实约定写。**上面若明确了结构，就绝不许再凭常识猜路径**。若上面为空/未覆盖某接口，才按最常见约定推断，并把不确定处标进 note。
+
 # 当前项目其它模块（用于交叉考量）
 {{CROSS_MODULE_CONTEXT}}
 
@@ -67,6 +72,11 @@
 
 8.3. **写操作类用例（改密码/删除/改角色等）绝不动 admin 与共享账号**：`admin/root` 是受保护内置账号（改密码会返回 403）。要测"改密码成功"这类，**必须在本用例内先用创建账号接口建一个一次性账号、登录它、再对它改密码**（一条多步 `requests` 闭环），改完可用 `teardown_sql` 删掉。如果系统没有创建账号接口，就生成不了真正的"改密码成功"用例——只保留"改 admin 密码被拒(403)""未带 token 改密码被拒(401)"这类负向用例。
 
+8.3.1. **⚠️ 会话作废类用例必须完全自我隔离（测试污染头号杀手）**：任何**会使 token / 会话失效**的操作——**登出（logout）、登出所有会话（logout-all）、刷新后旧 token 失效（refresh）、改密码导致旧 token 失效、停用/删除账号**——都**绝对不允许作用在共享 `${token}` 或 admin 上**。因为批量按顺序执行，一旦共享 token 被登出，后面所有引用 `${token}` 的用例全部 401「会话已失效」级联失败（连"建一次性账号"这步用共享 token 鉴权也会 401，自我隔离都启动不了）。
+   - **铁律：共享 `${token}` 是只读凭证，任何用例都不得把它登出/刷新/改密/作废。**
+   - 正确写法——**一条多步 `requests` 自带完整生命周期**：① 用创建账号接口建一次性账号（`function:generate_account` / `unique`，密码固定字面量），从响应 `extract` 出真实用户名；② 登录该新账号，`extract` 出**本用例专属的** token（如 `own_token`）；③ 对 `own_token` 执行登出/登出所有/刷新/改密；④ 断言用 `own_token` 再访问受保护接口返回 401（验证"确实失效了"）。**全程只碰 `own_token`，绝不碰 `${token}`。**
+   - 若系统无创建账号接口（无法建一次性号）→ 这类"登出成功后 token 失效"的正向用例**没法安全生成**，只保留"无 token 登出被拒(401)""无效 token 登出被拒"这类**不破坏任何有效会话**的负向用例。
+
 8.4. **登录/认证接口的参数校验别瞎测边界（重要）**：登录接口**只比对凭据、不校验用户名/密码的格式长度类型**。所以**不要**为登录生成"username 长度 1 字符 / 超长 / 纯空格 / 数字类型 / 特殊字符"这类用例——这些非法用户名只会因"查无此用户"返回 401，**测不出任何边界逻辑、而且没有对应账号必定失败、毫无意义**。登录的参数校验**只覆盖**：必填字段缺失、为空、null、密码错误、账号不存在。username/password 的长度/格式/类型/特殊字符边界，**只在"注册/创建用户"接口上测**（那里服务端才真的校验）。
 
 8.5. **总原则：每条负向/边界用例都要"能有意义地失败"**——要么服务端确实对该输入做校验并返回特定错误码，要么有对应的前置数据让它有意义。如果一条用例无论如何都只会撞上同一个泛化错误（如登录一律 401），就不要生成它。
@@ -77,7 +87,12 @@
 10. **场景用例（category=场景）用多步 `requests` 字段**：端到端业务流是**一条用例、多步请求**。给一个 `requests` 数组，每个元素 = 一次接口调用 `{name, method, path, headers, body, extract, assertion, sql}`（字段含义同上）。数组顺序就是执行顺序，前一步 `extract` 的变量后一步可直接 `${变量}` 引用。**有 `requests` 时，顶层的 method/path/headers/body/extract/assertion 全部省略、不要再填**（系统以 `requests` 为准；顶层再填会和步骤打架，导致展示/执行错乱）。非场景/非多步用例不要给 `requests`。
 10.0. **每个 request 必须自洽：method+path+body 都是"这一个接口自己的"**。**绝不能把 A 接口的 path 配上 B 接口的 body**！例如改密码流程：建账号那步是 `POST /api/users` + `{username, password}`；改密码那步是 `PUT /api/auth/password` + `{old_password, new_password}`——**不能写成 `POST /api/users` + `{old_password, new_password}`**（路径是建用户、body 却是改密码，必然 422）。每一步都照着该接口在文档里的真实 path 和字段来。
 
-10.1. **并发/性能/压测类测试点：本平台顺序执行，无法真并发**。**绝不能输出 method/path 全空的"空壳"用例**。遇到"并发多个登录验证稳定性/token 各自有效"这类点，改成**可执行的顺序重复**：用一条多步 `requests` 用例，把同一个登录请求**顺序写若干次**（如 3 次），每次 `extract` 各自的 token（变量名区分，如 `token1`/`token2`/`token3`）、各自断言成功且 token 非空（`{"$.code": 0, "$.data.token": "not_empty"}`）。category 标 `场景`。**每条用例必须有可执行的 method/path 或 requests，不允许两者都空。**
+10.1. **并发/性能/压测类测试点：本平台顺序执行，无法真并发**。**绝不能输出 method/path 全空的"空壳"用例**。遇到"并发多个登录验证稳定性/token 各自有效"这类点，改成**可执行的顺序多步 `requests`**，category 标 `场景`。**但必须尊重会话模型（关键，别写出必然失败的假用例）**：
+    - **⚠️ 不要假设同一账号重复登录后旧 token 仍有效**。很多系统是**单会话模型**：同一账号每次登录都会踢掉上一次的会话，只有**最后一次**登录的 token 有效，之前的全部失效。若你把同一个账号顺序登录 3 次、再断言 `token1`/`token2` 仍能访问受保护接口，在单会话系统里**必然 401**——这是假用例。
+    - **正确写法：用不同账号分别登录**。变量池里通常有多个账号（如 `${qa01_user}`/`${rd01_user}`/`${pm01_user}`/`${dev01_user}` 等），测"多会话各自有效"就让**不同账号各登一次**，每个 `extract` 各自 token（`token_qa`/`token_rd`/…），再各自带自己的 token 访问 `/me` 断言 200。不同账号的会话互不影响，这才是能通过、也真正验证了"多会话独立"的用例。
+    - 若变量池只有一个可用账号、无法用多账号：**只保留"最后一次登录的 token 有效"**（断言最新 token 能访问、旧 token 已失效 401），不要断言旧 token 仍有效。
+    - 若你不确定该系统是单会话还是多会话（项目上下文没写明），**按单会话这种更严格的假设写**（用不同账号，或只认最新 token），宁可保守也不要生成必然 401 的假用例。
+    - **每条用例必须有可执行的 method/path 或 requests，不允许两者都空。**
 
 11. **清理 `teardown`（强烈建议，配合数据治理）**：凡是**成功会在库里留下数据的写操作**（注册/创建/下单等正向用例），都应给 `teardown`——执行完（无论用例成败）自动清理刚建的数据，避免脏数据堆积。两种写法二选一或都给：
     - `teardown_api`：数组，每项是一次清理调用 `{method:"DELETE", path:"/api/orders/${orderId}", headers:{...}}`，引用本用例 `extract` 出的 id；**优先用真实删除接口**（顺带覆盖删除链路）。
@@ -85,6 +100,12 @@
     - 逆向/查询/只读用例不产生残留，`teardown` 留空。
 
 12. **data_safety（写操作用例附带）**：对写操作用例给一个对象，汇报你为数据安全做的处理：`{"policy":"一句话说明","rewritten_fields":["username->function:unique"],"readonly_seed_warnings":["..."],"function_hints":["..."],"cleanup_required":true}`。只读/逆向用例可省略或给 `{}`。
+
+13. **会话隔离 `pre_hook`（登录/认证模块强烈建议）**：如果本批里存在**会作废会话的用例**（登出 / 登出所有会话 / 刷新令牌 / 改密码），那么共享 `${token}` 随时可能被它们杀掉，导致后面引用 `${token}` 的用例连环 401。为彻底免疫，给**每条需要有效登录态的用例**加一个 `pre_hook`：跑用例前先自己登录拿一个专属 token，不依赖共享 token。
+    - 形态（数组，通常一条登录 hook）：`"pre_hook": [{"type":"http_request","config":{"method":"POST","path":"<真实登录路径>","params":{"username":"${my_account}","password":"${my_password}"},"extract_data":{"token":"<按真实响应,如 $.data.access_token>"}}}]`
+    - `extract_data` 提取的变量名（如 `token`）要与本用例请求头 `Authorization: Bearer ${token}` 引用的一致。登录路径、账号变量、token 的 JSONPath 都照真实登录用例填，**不要猜**。
+    - 用了 `pre_hook` 拿 token 的用例，**其请求头直接用 `${token}` 即可**，不必再排在某个登录用例之后（它自带登录，顺序无关）。
+    - 非登录/认证模块、或本批没有会话作废类用例时，**不需要 `pre_hook`**——按常规共享 token 即可，别画蛇添足。
 
 # 输出格式（严格 JSON，只输出一个 ```json``` 代码块，不要任何额外文字）
 
@@ -134,8 +155,23 @@
     "preconditions": ["服务与数据库已启动"],
     "steps": ["注册→登录→下单 串联执行，变量逐步贯通"],
     "expected": ["每步 code=0，最终订单创建成功"]
+  },
+  {
+    "name": "使用有效token访问受保护接口成功",
+    "category": "正常",
+    "after": "",
+    "pre_hook": [{"type": "http_request", "config": {"method": "POST", "path": "/api/auth/login", "params": {"username": "${my_account}", "password": "${my_password}"}, "extract_data": {"token": "$.data.access_token"}}}],
+    "method": "GET",
+    "path": "/api/auth/me",
+    "headers": {"Authorization": "Bearer ${token}"},
+    "assertion": {"status_code": 200, "$.status": "success"},
+    "preconditions": ["pre_hook 已自带登录，不依赖其它用例的 token"],
+    "steps": ["pre_hook 先登录拿专属 token → GET /me 带该 token"],
+    "expected": ["返回 200，能拿到当前用户信息（即使前面有登出用例也不受影响）"]
   }
 ]
 ```
+
+> 上面最后一条演示了 `pre_hook`：它自带登录,所以哪怕前面有"登出/登出所有会话"用例把共享 token 作废了,它照样用自己新登录的 token 访问成功。登录/认证模块里凡是需要有效 token 的用例,都建议这样配。
 
 约束：整个返回值是能被 `json.loads` 解析的合法 JSON 数组；不要在数组外写注释或解释。

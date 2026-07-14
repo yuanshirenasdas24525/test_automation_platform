@@ -1,21 +1,17 @@
 """
-/api/config/* 配置中心 — 支持 per-project 配置 + 全局模板回退。
+/api/config/* 配置中心 — 项目级配置。
 
 接口：
-  - GET  /config/all             查询（可按 category / project_id 筛选）
+  - GET  /config/all             查询（必须传 project_id，可按 category 筛选）
   - GET  /config/schema/{category} 返回推荐配置项清单
   - POST /config/save            upsert（有则改无则增）
   - POST /config/add             insert
   - DELETE /config/delete/{id}   删除
-  - POST /config/copy-from-global 从全局模板导入到项目
   - POST /config/test-ai-model   测试项目级 AI 模型连通性
 
-project_id=None → 全局模板，仅用于拷贝。
-project_id=int → 项目专属配置，查询时自动回退到全局模板未覆盖的项。
+所有配置必须属于具体项目；不再维护全局模板。
 """
 from __future__ import annotations
-
-from typing import Optional
 
 import pydantic
 from fastapi import APIRouter, HTTPException, Query
@@ -31,7 +27,7 @@ router = APIRouter(prefix="/config", tags=["config"])
 # Schema / 推荐配置项
 # ---------------------------------------------------------------------------
 @router.get("/schema/{category}")
-async def get_config_schema(category: str, project_id: int | None = Query(None)):
+async def get_config_schema(category: str):
     from server.api.config_schemas import get_schema
 
     return {"status": "success", "data": get_schema(category)}
@@ -43,34 +39,19 @@ async def get_config_schema(category: str, project_id: int | None = Query(None))
 @router.get("/all")
 async def get_all_configs(
     db: DBDep,
-    category: Optional[str] = Query(None),
+    category: str | None = Query(None),
     project_id: int | None = Query(None),
 ):
-    """查询配置。
+    """查询某个项目的配置。"""
+    if project_id is None:
+        raise HTTPException(status_code=400, detail="project_id 必填")
 
-    project_id 不为 None 时：返回该项目专属配置 + 全局模板中该项目未覆盖的项（去重）。
-    project_id 为 None 时：只返回全局模板（project_id IS NULL）。
-    """
-    if project_id is not None:
-        sql = (
-            "SELECT DISTINCT ON (config_group, config_key) * FROM config_store "
-            "WHERE project_id = :pid"
-            + (" AND category = :cat" if category else "")
-            + " OR (project_id IS NULL AND (config_group, config_key) NOT IN "
-            "   (SELECT config_group, config_key FROM config_store WHERE project_id = :pid))"
-            + (" AND category = :cat" if category else "")
-            + " ORDER BY config_group, config_key, project_id NULLS LAST"
-        )
-        params = {"pid": project_id}
-        if category:
-            params["cat"] = category
-    else:
-        sql = "SELECT * FROM config_store WHERE project_id IS NULL"
-        params = {}
-        if category:
-            sql += " AND category = :cat"
-            params["cat"] = category
-        sql += " ORDER BY config_group"
+    sql = "SELECT * FROM config_store WHERE project_id = :pid"
+    params = {"pid": project_id}
+    if category:
+        sql += " AND category = :cat"
+        params["cat"] = category
+    sql += " ORDER BY config_group, config_key"
 
     data = db.sql.query(sql, params)
     return {"status": "success", "data": data}
@@ -85,6 +66,8 @@ async def save_configs(configs: ConfigUpdateItem, db: DBDep):
         raise HTTPException(status_code=400, detail="category 不能为空")
     if not configs.config_group or not configs.config_key:
         raise HTTPException(status_code=400, detail="Group 和 Key 不能为空")
+    if configs.project_id is None:
+        raise HTTPException(status_code=400, detail="project_id 必填")
 
     db_item = (
         db.session.query(ConfigStore)
@@ -119,6 +102,8 @@ async def save_configs(configs: ConfigUpdateItem, db: DBDep):
 def add_config(item: ConfigUpdateItem, db: DBDep):
     if not item.config_group:
         raise HTTPException(status_code=400, detail="config_group 不能为空")
+    if item.project_id is None:
+        raise HTTPException(status_code=400, detail="project_id 必填")
 
     sql = (
         "INSERT INTO config_store (config_group, config_key, config_value, category, project_id) "
@@ -150,62 +135,6 @@ async def delete_config(config_id: int, db: DBDep):
 
 
 # ---------------------------------------------------------------------------
-# 从全局模板导入到项目
-# ---------------------------------------------------------------------------
-class CopyFromGlobalRequest(pydantic.BaseModel):
-    project_id: int
-    categories: list[str] | None = None
-
-
-@router.post("/copy-from-global", dependencies=[RequireAdmin])
-async def copy_from_global(payload: CopyFromGlobalRequest, db: DBDep):
-    """将全局模板（project_id IS NULL）的配置拷贝到指定项目。
-
-    已经存在的项目配置不会被覆盖。
-    """
-    project_id = payload.project_id
-    categories = payload.categories
-
-    sql = "SELECT * FROM config_store WHERE project_id IS NULL"
-    params = {}
-    if categories:
-        cat_list = ",".join(f"'{c}'" for c in categories)
-        sql += f" AND category IN ({cat_list})"
-
-    global_rows = db.sql.query(sql, params)
-
-    copied = 0
-    for row in global_rows:
-        existing = (
-            db.session.query(ConfigStore)
-            .filter(
-                ConfigStore.config_group == row["config_group"],
-                ConfigStore.config_key == row["config_key"],
-                ConfigStore.category == row["category"],
-                ConfigStore.project_id == project_id,
-            )
-            .first()
-        )
-        if existing:
-            continue
-
-        db.session.add(
-            ConfigStore(
-                config_group=row["config_group"],
-                config_key=row["config_key"],
-                config_value=row["config_value"],
-                category=row["category"],
-                project_id=project_id,
-            )
-        )
-        copied += 1
-
-    db.session.flush()
-    config_center.reload(db.sql)
-    return {"status": "success", "data": {"copied": copied}}
-
-
-# ---------------------------------------------------------------------------
 # 测试项目级 AI 模型连通性
 # ---------------------------------------------------------------------------
 class TestAiModelRequest(pydantic.BaseModel):
@@ -234,14 +163,30 @@ async def test_project_ai_model(payload: TestAiModelRequest, db: DBDep):
         raise HTTPException(status_code=400, detail="模型配置不完整")
 
     try:
-        from ai_gateway.gateway import provider_ping
         from database.schemas.ai_config import AiModelConfig
+        from server.services.cli_case_enhancement_service import (
+            check_cli_agent,
+            is_cli_case_provider,
+        )
 
         cfg = AiModelConfig(
             name=payload.model_name, provider=provider, model=model,
             base_url=kvs.get("base_url") or None, api_key=kvs.get("api_key") or None,
             supports_vision=False, is_default=False, enabled=True, extra={},
         )
+        if is_cli_case_provider(cfg.provider):
+            checked = check_cli_agent(cfg)
+            return {
+                "status": "success",
+                "data": {
+                    "ok": bool(checked["ok"]),
+                    "result": checked.get("sample"),
+                    "error": checked.get("error"),
+                },
+            }
+
+        from ai_gateway.gateway import provider_ping
+
         ping_result = provider_ping(cfg)
         return {"status": "success", "data": {"ok": True, "result": ping_result}}
     except Exception as exc:

@@ -114,6 +114,15 @@ def run_test_task(t_id, r_id, cases, category):
             except Exception:
                 pass
 
+        # api 报告：异步学习「响应结构约定」回流记忆层（带节流，纯增强，失败不传染）。
+        # 让新项目首次跑完后自动"开窍"，下次生成用例直接写对 JSONPath。
+        if str(category or "").strip().lower() == "api":
+            try:
+                from tasks.learn_convention_task import learn_response_convention_task
+                learn_response_convention_task.delay(r_id)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(f"[run_test_task] 派发响应约定学习失败（忽略）: {exc}")
+
     except Exception as exc:
         # 任何没被内层捕获的异常都在这里兜底
         traceback.print_exc()

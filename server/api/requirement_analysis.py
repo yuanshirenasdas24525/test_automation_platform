@@ -154,7 +154,7 @@ def trigger_analysis(
     # 校验所有模型都存在且 enabled
     cfgs = []
     for name in body.model_names:
-        cfg = get_ai_model(db.session, name)
+        cfg = get_ai_model(db.session, name, project_id=req.project_id)
         if cfg is None:
             raise HTTPException(status_code=400, detail=f"模型 {name!r} 不存在")
         if not cfg.enabled:

@@ -417,13 +417,61 @@ def preflight_report_fixes(session: Session, report_id: int, items: list[dict]) 
         if result.get("eligible") and result.get("case_id") in no_touch:
             result["eligible"] = False
             result["request_changed"] = False
-            result["fix"] = {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": []}
+            result["fix"] = {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": [], "pre_hook": []}
             result["dropped"].append({
                 "part": "all",
                 "reason": "用户曾将该用例标记为『无需处理/正常』，跳过自动修复",
             })
         out.append(result)
     return out
+
+
+def _sanitize_pre_hook(raw: Any) -> tuple[list, list[str]]:
+    """规整 fix.pre_hook（会话隔离用的登录前置）。
+
+    期望形态：[{"type":"http_request","config":{"method":"POST","path":"/api/.../login",
+              "params":{...}, "extract_data":{"token":"$.data.access_token"}}}]
+    返回 (规整后的 hook 列表, 提取出的变量名列表)。非法 → ([], [])。
+
+    只做结构校验：必须是 http 登录 hook 且 extract 出至少一个变量;能否真登录成功
+    由应用后的自动重跑验证兜底（绿变红自动回滚）。
+    """
+    if not isinstance(raw, list) or not raw:
+        return [], []
+    out: list = []
+    produced: list[str] = []
+    for hk in raw:
+        if not isinstance(hk, dict):
+            continue
+        cfg = hk.get("config") if isinstance(hk.get("config"), dict) else hk
+        method = str(cfg.get("method") or "").upper()
+        path = str(cfg.get("path") or cfg.get("url") or "")
+        if not path or method not in ("POST", "GET", "PUT"):
+            continue
+        # 提取规则：兼容 extract_data({var:jsonpath}) 与 extract(规则列表)
+        ext = cfg.get("extract_data") or cfg.get("extract") or {}
+        if isinstance(ext, dict):
+            produced.extend(str(k) for k in ext if str(k).strip())
+        elif isinstance(ext, list):
+            produced.extend(
+                str(r.get("name")) for r in ext
+                if isinstance(r, dict) and r.get("name")
+            )
+        out.append({
+            "type": hk.get("type") or "http_request",
+            "config": {
+                "method": method or "POST",
+                "path": path,
+                "data_type": cfg.get("data_type") or "application/json",
+                "params": cfg.get("params") or cfg.get("body") or {},
+                "headers": cfg.get("headers") or {},
+                "extract_data": ext if isinstance(ext, dict) else {},
+            },
+        })
+    if not produced:
+        # 登录 hook 不提取任何变量 = 没意义
+        return [], []
+    return out, produced
 
 
 def _preflight_one(
@@ -447,13 +495,13 @@ def _preflight_one(
     name = str(item.get("name") or "")
     base = {
         "case_id": cid, "name": name, "eligible": False, "request_changed": False,
-        "fix": {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": []},
+        "fix": {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": [], "pre_hook": []},
         "dropped": dropped, "deferred": deferred,
     }
 
     fix = item.get("fix") if isinstance(item.get("fix"), dict) else {}
     has_any_fix = any(
-        fix.get(k) for k in ("extract", "assertion", "params", "headers", "steps")
+        fix.get(k) for k in ("extract", "assertion", "params", "headers", "steps", "pre_hook")
     )
     if cid is None or cid not in case_map:
         if has_any_fix:
@@ -477,6 +525,12 @@ def _preflight_one(
     fp = fix.get("params") if isinstance(fix.get("params"), dict) else {}
     fh = fix.get("headers") if isinstance(fix.get("headers"), dict) else {}
     step_fixes_in = [sf for sf in (fix.get("steps") or []) if isinstance(sf, dict)]
+
+    # ── 会话隔离 pre_hook：给本用例配独立登录,免受前序用例登出/改密污染 ──
+    sanitized_pre_hook, ph_vars = _sanitize_pre_hook(fix.get("pre_hook"))
+    if status == "passed" and sanitized_pre_hook:
+        _drop("pre_hook", "用例本次已通过，不加登录前置（防绿变红）")
+        sanitized_pre_hook, ph_vars = [], []
 
     # ── 已通过的用例：只允许纯增量 extract/assertion（治假通过），不许动请求 ──
     if status == "passed" and (fp or fh or step_fixes_in):
@@ -628,10 +682,12 @@ def _preflight_one(
         "params": sanitized_params,
         "headers": sanitized_headers,
         "steps": sanitized_steps,
+        "pre_hook": sanitized_pre_hook,
     }
     base["request_changed"] = request_changed
     base["eligible"] = bool(
         sanitized_extract or sanitized_assertion or request_changed
+        or sanitized_pre_hook
     )
     return base
 
@@ -730,8 +786,25 @@ def apply_report_fixes(
 
 
 def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
-    """把 sanitize 过的 fix 落到 TestStep。返回实际改动的部分。"""
+    """把 sanitize 过的 fix 落到 TestStep / TestCase。返回实际改动的部分。"""
     parts: list[str] = []
+
+    # 会话隔离 pre_hook：落到 TestCase.pre_hook（用例级前置登录，执行引擎在跑
+    # steps 前先执行，提取出的 token 进 ctx 供本用例 steps 引用）。
+    # 这是"给每条用例配独立登录"的落地点——不受前序用例登出/改密污染。
+    pre_hook = fix.get("pre_hook")
+    if pre_hook:
+        existing = list(case.pre_hook or []) if isinstance(case.pre_hook, list) else []
+        # 幂等：已有等价登录 hook 就不重复加
+        already = any(
+            isinstance(h, dict) and (h.get("config") or h).get("path")
+            == (pre_hook[0].get("config") or pre_hook[0]).get("path")
+            for h in existing
+        )
+        if not already:
+            case.pre_hook = pre_hook + existing
+            parts.append("pre_hook")
+
     steps_sorted = sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id or 0))
     http_steps = [s for s in steps_sorted if s.step_type == "http_request"]
     if not http_steps:

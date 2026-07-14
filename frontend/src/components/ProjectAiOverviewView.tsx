@@ -19,7 +19,10 @@ export function ProjectAiOverviewView({ projectId }: { projectId: number }) {
     queryKey: ["project-ai-overview", projectId],
     queryFn: () => projectsApi.getAiOverview(projectId),
   });
-  const modelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: () => aiModelsApi.list() });
+  const modelsQuery = useQuery({
+    queryKey: ["ai-models", projectId],
+    queryFn: () => aiModelsApi.list(projectId),
+  });
   const models = (modelsQuery.data ?? []).filter((m) => m.enabled);
 
   useEffect(() => {

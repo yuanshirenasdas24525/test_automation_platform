@@ -79,16 +79,128 @@ def update_draft(
     return draft
 
 
-def reject_draft(session: Session, draft_id: int) -> AiCaseDraft:
-    """逻辑删 = status -> rejected。已 accepted 的不允许 reject。"""
+def reject_draft(
+    session: Session, draft_id: int, reason: Optional[str] = None
+) -> AiCaseDraft:
+    """逻辑删 = status -> rejected。已 accepted 的不允许 reject。
+
+    reason 是数据飞轮的关键信号：回填 prompt 反例 + 统计 top 拒因。
+    """
     draft = get_draft(session, draft_id)
     if draft is None:
         raise ValueError(f"草稿 #{draft_id} 不存在")
     if draft.status == AI_CASE_DRAFT_STATUS_ACCEPTED:
         raise ValueError("草稿已入库，不能 reject")
     draft.status = AI_CASE_DRAFT_STATUS_REJECTED
+    if reason and reason.strip():
+        draft.reject_reason = reason.strip()[:500]
     session.flush()
     return draft
+
+
+def _edit_ratio(draft: AiCaseDraft) -> Optional[float]:
+    """编辑相似度 0..1：生成时原始快照 vs 当前字段。1.0 = 原样采纳。
+
+    用 difflib 对拼接文本做序列相似度——不追求学术精确,追求"能横向对比"。
+    没有快照的老草稿返回 None。
+    """
+    import difflib
+
+    orig = draft.original_payload
+    if not isinstance(orig, dict):
+        return None
+
+    def _concat(title, pre, steps, exp) -> str:
+        return "\n".join(str(x or "") for x in (title, pre, steps, exp))
+
+    before = _concat(
+        orig.get("title"), orig.get("preconditions"),
+        orig.get("steps_text"), orig.get("expected"),
+    )
+    after = _concat(
+        draft.title, draft.preconditions, draft.steps_text, draft.expected,
+    )
+    if not before.strip() and not after.strip():
+        return 1.0
+    return round(difflib.SequenceMatcher(None, before, after).ratio(), 4)
+
+
+# ---------------------------------------------------------------------------
+# 评审信号统计（数据飞轮看板）
+# ---------------------------------------------------------------------------
+def draft_review_stats(
+    session: Session,
+    project_id: Optional[int] = None,
+    days: int = 90,
+) -> dict[str, Any]:
+    """采纳率 / 编辑相似度 / top 拒因,按 model_label 与 prompt_version 分组。
+
+    这是"AI 生成质量是否在变好"的唯一事实来源:
+      - adoption_rate = accepted / (accepted + rejected)  （pending 不计入分母）
+      - avg_edit_ratio 只统计 accepted 且有快照的
+    """
+    from datetime import datetime, timedelta
+
+    from database.models import AiRun
+
+    since = datetime.now() - timedelta(days=max(1, days))
+    q = (
+        session.query(AiCaseDraft, AiRun.prompt_version)
+        .outerjoin(AiRun, AiCaseDraft.ai_run_id == AiRun.id)
+        .filter(AiCaseDraft.created_at >= since)
+    )
+    if project_id is not None:
+        q = q.join(
+            Requirement, AiCaseDraft.requirement_id == Requirement.id
+        ).filter(Requirement.project_id == project_id)
+
+    rows = q.all()
+
+    def _bucket() -> dict[str, Any]:
+        return {"total": 0, "accepted": 0, "rejected": 0, "pending": 0,
+                "edit_ratios": []}
+
+    overall = _bucket()
+    by_model: dict[str, dict[str, Any]] = {}
+    by_version: dict[str, dict[str, Any]] = {}
+    reject_reasons: dict[str, int] = {}
+
+    for draft, prompt_version in rows:
+        for bucket in (
+            overall,
+            by_model.setdefault(draft.model_label or "unknown", _bucket()),
+            by_version.setdefault(prompt_version or "unknown", _bucket()),
+        ):
+            bucket["total"] += 1
+            if draft.status == AI_CASE_DRAFT_STATUS_ACCEPTED:
+                bucket["accepted"] += 1
+                if draft.edit_ratio is not None:
+                    bucket["edit_ratios"].append(draft.edit_ratio)
+            elif draft.status == AI_CASE_DRAFT_STATUS_REJECTED:
+                bucket["rejected"] += 1
+            else:
+                bucket["pending"] += 1
+        if draft.status == AI_CASE_DRAFT_STATUS_REJECTED and draft.reject_reason:
+            key = draft.reject_reason.strip()[:100]
+            reject_reasons[key] = reject_reasons.get(key, 0) + 1
+
+    def _finish(b: dict[str, Any]) -> dict[str, Any]:
+        reviewed = b["accepted"] + b["rejected"]
+        ratios = b.pop("edit_ratios")
+        b["adoption_rate"] = round(b["accepted"] / reviewed, 4) if reviewed else None
+        b["avg_edit_ratio"] = round(sum(ratios) / len(ratios), 4) if ratios else None
+        return b
+
+    return {
+        "days": days,
+        "overall": _finish(overall),
+        "by_model": {k: _finish(v) for k, v in by_model.items()},
+        "by_prompt_version": {k: _finish(v) for k, v in by_version.items()},
+        "top_reject_reasons": sorted(
+            ({"reason": k, "count": v} for k, v in reject_reasons.items()),
+            key=lambda x: -x["count"],
+        )[:10],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -227,9 +339,10 @@ def batch_commit(
         session.flush()
         created_ids.append(case.id)
 
-        # 回写草稿
+        # 回写草稿 + 评审信号（编辑相似度）
         d.status = AI_CASE_DRAFT_STATUS_ACCEPTED
         d.committed_case_id = case.id
+        d.edit_ratio = _edit_ratio(d)
 
     session.flush()
     logger.info(

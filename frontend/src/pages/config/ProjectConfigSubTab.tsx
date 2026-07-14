@@ -1,5 +1,5 @@
 /**
- * ProjectConfigSubTab —— 项目配置卡片列表（对齐全局 ConfigPage 样式）。
+ * ProjectConfigSubTab —— 项目配置卡片列表。
  */
 import { useMemo, useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";

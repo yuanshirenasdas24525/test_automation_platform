@@ -73,12 +73,11 @@ def _rows_to_config(name: str, rows: list[ConfigStore]) -> AiModelConfig:
     return AiModelConfig(**data)
 
 
-def list_ai_models(session: Session) -> list[AiModelConfig]:
-    rows = (
-        session.query(ConfigStore)
-        .filter(ConfigStore.category == CATEGORY)
-        .all()
-    )
+def list_ai_models(session: Session, project_id: int | None = None) -> list[AiModelConfig]:
+    query = session.query(ConfigStore).filter(ConfigStore.category == CATEGORY)
+    if project_id is not None:
+        query = query.filter(ConfigStore.project_id == project_id)
+    rows = query.all()
     # 过滤掉旧的扁平 `ai` / `provider` 单 provider 配置（gateway 自己处理）
     by_group: dict[str, list[ConfigStore]] = {}
     for r in rows:
@@ -95,15 +94,18 @@ def list_ai_models(session: Session) -> list[AiModelConfig]:
     return out
 
 
-def get_ai_model(session: Session, name: str) -> AiModelConfig | None:
-    rows = (
-        session.query(ConfigStore)
-        .filter(
-            ConfigStore.category == CATEGORY,
-            ConfigStore.config_group == name,
-        )
-        .all()
+def get_ai_model(
+    session: Session,
+    name: str,
+    project_id: int | None = None,
+) -> AiModelConfig | None:
+    query = session.query(ConfigStore).filter(
+        ConfigStore.category == CATEGORY,
+        ConfigStore.config_group == name,
     )
+    if project_id is not None:
+        query = query.filter(ConfigStore.project_id == project_id)
+    rows = query.all()
     if not rows:
         return None
     if not any(r.config_key == "model" and r.config_value for r in rows):
@@ -111,9 +113,9 @@ def get_ai_model(session: Session, name: str) -> AiModelConfig | None:
     return _rows_to_config(name, rows)
 
 
-def get_default_ai_model(session: Session) -> AiModelConfig | None:
+def get_default_ai_model(session: Session, project_id: int | None = None) -> AiModelConfig | None:
     """返回 is_default=True 且 enabled 的第一个；没有则返回任一 enabled。"""
-    configs = [c for c in list_ai_models(session) if c.enabled]
+    configs = [c for c in list_ai_models(session, project_id=project_id) if c.enabled]
     for c in configs:
         if c.is_default:
             return c

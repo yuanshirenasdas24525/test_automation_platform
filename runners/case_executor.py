@@ -306,11 +306,11 @@ class CaseExecutor:
         现在在 case 启动时把 default_parameters 也铺到 ctx.vars 最底层，env / case
         覆盖优先级保持不变。
         """
-        # 0a) 全局：default_parameters（兜底层）
-        self._inject_default_parameters(ctx)
         project_id = case_dict.get("project_id")
         if project_id is not None:
             ctx.set_var("_project_id", project_id)
+        # 0a) 项目级：default_parameters（兜底层）
+        self._inject_default_parameters(ctx)
         # 0b) sql: 前缀需要的 target DB 连接，从配置中心拿；拿不到不阻塞
         self._inject_target_db(ctx)
         # 1) env.variables
@@ -346,15 +346,16 @@ class CaseExecutor:
             logger.warning("default_parameters 注入失败（import）：%s", exc)
             return
 
-        defaults = config_center.get("default_parameters") or {}
+        project_id = ctx.vars.get("_project_id")
+        defaults = config_center.get("default_parameters", project_id=project_id) or {}
         # 缓存里没有就尝试触发一次 reload（pytest worker 进程冷启动场景）
         if not defaults:
             db = None
             try:
                 from database.db import DB  # 延迟 import：避免在没有 DB 的单测里炸
                 db = DB()
-                config_center.reload(db.sql, category=None)  # 全量，便宜
-                defaults = config_center.get("default_parameters") or {}
+                config_center.reload(db.sql, project_id=project_id, category="api")
+                defaults = config_center.get("default_parameters", project_id=project_id) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("default_parameters 主动 reload 失败（已忽略）：%s", exc)
             finally:
@@ -379,8 +380,8 @@ class CaseExecutor:
         """从配置中心读 `target_db` 配置，开一个 DB 连接塞到 ctx.vars['_db']。
 
         sql: 前缀的 value 需要 ctx.vars['_db']（duck-type：实现 fetchone(query)），
-        没注入的话 value_resolver 会显式抛错。这里跟 v1 ApiClient.factory 行为对齐：
-            db=DB(config_center.get("target_db")) if config_center.get("target_db") else None
+        没注入的话 value_resolver 会显式抛错。这里跟 v1 ApiClient.factory 行为对齐，
+        但配置只从当前项目读取，不再回退全局模板。
 
         - target_db 没配 → 跳过；后续 sql: 步骤会报"未注入 _db"，提示用户去配置中心配
         - 已经注入过 → 跳过（不重复开连接）
@@ -391,7 +392,8 @@ class CaseExecutor:
             return
         try:
             from utils.reload_config import config_center
-            target = config_center.get("target_db") or {}
+            project_id = ctx.vars.get("_project_id")
+            target = config_center.get("target_db", project_id=project_id) or {}
             if not target:
                 return
             from database.db import DB

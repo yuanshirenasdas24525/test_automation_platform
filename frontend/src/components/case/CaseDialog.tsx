@@ -103,8 +103,19 @@ type JsonCheck =
   | { state: "ok"; pretty: string; parsed: unknown }
   | { state: "error"; message: string };
 
-function checkJson(text: string | undefined | null): JsonCheck {
-  const s = (text ?? "").trim();
+function toFieldText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function checkJson(text: unknown): JsonCheck {
+  const s = toFieldText(text).trim();
   if (!s) return { state: "empty" };
   const { candidate, placeholders } = maskPlaceholdersForParse(s);
   try {
@@ -344,18 +355,24 @@ export function CaseDialog({
     if (existing) {
       const src = detail ?? (existing as unknown as Record<string, unknown>);
       const steps = ((detail?.steps as TestStepDraft[] | undefined) ?? []).map(hydrateHttpStepConfig);
+      // API 用例以 steps 为唯一执行来源。只有一个 HTTP step 时，单请求编辑器必须从
+      // 该 step 回填，不能继续依赖可能为空或已过期的用例顶层兼容字段。
+      const singleHttpStep = category === "api" && steps.length === 1 && steps[0].step_type === "http_request"
+        ? steps[0]
+        : null;
+      const singleConfig = singleHttpStep?.config ?? {};
       return {
-        name: (src.name as string) ?? "",
-        description: (src.description as string) ?? "",
-        method: (src.method as string) ?? (category === "api" ? "GET" : ""),
-        path: (src.path as string) ?? "",
-        headers: (src.headers as string) ?? "",
-        data_type: (src.data_type as string) ?? "application/json",
-        params: (src.params as string) ?? "",
-        extract_data: (src.extract_data as string) ?? "",
-        assertion: (src.assertion as string) ?? "",
-        sql_query: (src.sql_query as string) ?? "",
-        wait_time: (src.wait_time as number) ?? 0,
+        name: toFieldText(src.name),
+        description: toFieldText(src.description),
+        method: toFieldText(singleConfig.method ?? src.method) || (category === "api" ? "GET" : ""),
+        path: toFieldText(singleConfig.path ?? src.path),
+        headers: toFieldText(singleConfig.headers ?? src.headers),
+        data_type: toFieldText(singleConfig.data_type ?? src.data_type) || "application/json",
+        params: toFieldText(singleConfig.params ?? src.params),
+        extract_data: toFieldText(singleConfig.extract_data ?? src.extract_data),
+        assertion: toFieldText(singleConfig.assertion ?? src.assertion),
+        sql_query: toFieldText(singleConfig.sql_query ?? src.sql_query),
+        wait_time: singleHttpStep?.wait_before ?? (src.wait_time as number) ?? 0,
         repeat_count: (src.repeat_count as number) ?? 1,
         skip: (src.skip as boolean) ?? false,
         steps,
@@ -392,12 +409,13 @@ export function CaseDialog({
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
   const [apiMode, setApiMode] = useState<"single" | "multi">("single");
   const detailStepCount = (detail?.steps as TestStepDraft[] | undefined)?.length ?? 0;
+  const loadingDetail = !!existing && caseDetailQuery.isLoading;
 
   useEffect(() => {
-    if (isApi && detailStepCount > 1) setApiMode("multi");
-  }, [isApi, detailStepCount]);
+    if (!isApi || loadingDetail) return;
+    setApiMode(detailStepCount > 1 ? "multi" : "single");
+  }, [isApi, loadingDetail, detailStepCount, existing?.id, state?.mode]);
 
-  const loadingDetail = !!existing && caseDetailQuery.isLoading;
   const title =
     state?.mode === "edit"
       ? "编辑用例"
@@ -407,7 +425,7 @@ export function CaseDialog({
 
   return (
     <Dialog open={state !== null} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+      <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-[1120px] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
@@ -545,7 +563,7 @@ export function CaseDialog({
             )
           ) : isApi ? (
             <>
-              <div className="grid grid-cols-[140px_1fr] gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-[140px_1fr]">
                 <div className="space-y-1.5">
                   <Label>方法</Label>
                   <Select
@@ -580,7 +598,7 @@ export function CaseDialog({
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label htmlFor="case-dtype">Content-Type</Label>
                   <Input
@@ -650,7 +668,7 @@ export function CaseDialog({
                 withJsonButton
               />
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <HighlightedField
                   id="case-extract"
                   label="提取参数"

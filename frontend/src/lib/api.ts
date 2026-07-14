@@ -231,13 +231,13 @@ async function refreshAccessToken(): Promise<string | null> {
         body: JSON.stringify({ refresh_token: refreshToken }),
       });
       const payload = (await res.json().catch(() => null)) as
-        | ApiEnvelope<{ access_token?: string; token?: string }>
+        | ApiEnvelope<{ access_token?: string }>
         | null;
       if (!res.ok || !payload || payload.status === "error") {
         notifyAuthExpired();
         return null;
       }
-      const nextToken = payload.data?.access_token || payload.data?.token || null;
+      const nextToken = payload.data?.access_token || null;
       if (!nextToken) {
         notifyAuthExpired();
         return null;
@@ -912,6 +912,28 @@ export const functionalCasesApi = {
       { method: "POST", body },
     );
   },
+  /** 高级补全：用 Codex / Claude Code CLI Agent 审稿并补全当前草稿。 */
+  aiEnhanceCases(body: {
+    module_id: number;
+    agent_model_name: string;
+    digest?: string;
+    requirement_text?: string;
+    cases: AiGeneratedCase[];
+    mode?: "functional" | "interface";
+    target_extra_count?: number;
+  }) {
+    return request<{
+      cases: AiGeneratedCase[];
+      summary: string;
+      issues_found: string[];
+      quality_score?: number | null;
+      agent_model_name: string;
+      run_id: number;
+    }>("/api/functional_cases/ai_enhance_cases", {
+      method: "POST",
+      body,
+    });
+  },
   /** 分析一条接口用例最近一次执行结果：分类 + 原因 + 建议 + （用例问题时）修正。 */
   aiDiagnoseRun(body: { case_id: number; model_name: string }) {
     return request<{
@@ -959,6 +981,21 @@ export const functionalCasesApi = {
       method: "POST",
       body,
     });
+  },
+  /** CLI Agent 查漏补缺：用 Codex CLI / Claude Code 审查当前大纲。 */
+  aiOutlineGapsCli(body: {
+    module_id: number;
+    model_name: string;
+    mode: "functional" | "interface";
+    digest: string;
+    points: AiOutlinePoint[];
+    text?: string;
+    doc_urls?: string;
+  }) {
+    return request<{ points: AiOutlinePoint[]; run_id: number }>(
+      "/api/functional_cases/ai_outline_gaps_cli",
+      { method: "POST", body },
+    );
   },
   /** Excel 导入功能用例。 */
   importExcel(moduleId: number, file: File) {
@@ -1008,7 +1045,7 @@ export interface ConfigItem {
   config_key: string;
   config_value: string;
   category: string;
-  project_id: number | null;
+  project_id: number;
 }
 
 export interface ConfigSchemaItem {
@@ -1022,10 +1059,10 @@ export interface ConfigSchemaItem {
 }
 
 export const configApi = {
-  list(category?: string, projectId?: number | null) {
+  list(category: string | undefined, projectId: number) {
     const qs = new URLSearchParams();
     if (category) qs.set("category", category);
-    if (projectId != null) qs.set("project_id", String(projectId));
+    qs.set("project_id", String(projectId));
     const q = qs.toString();
     return request<ConfigItem[]>(`/api/config/all${q ? `?${q}` : ""}`);
   },
@@ -1034,20 +1071,14 @@ export const configApi = {
       `/api/config/schema/${encodeURIComponent(category)}`,
     );
   },
-  save(body: Omit<ConfigItem, "id" | "project_id"> & { project_id?: number | null }) {
+  save(body: Omit<ConfigItem, "id" | "project_id"> & { project_id: number }) {
     return request<void>("/api/config/save", { method: "POST", body });
   },
-  add(body: Omit<ConfigItem, "id" | "project_id"> & { project_id?: number | null }) {
+  add(body: Omit<ConfigItem, "id" | "project_id"> & { project_id: number }) {
     return request<void>("/api/config/add", { method: "POST", body });
   },
   remove(id: number) {
     return request<void>(`/api/config/delete/${id}`, { method: "DELETE" });
-  },
-  copyFromGlobal(projectId: number, categories?: string[]) {
-    return request<{ copied: number }>("/api/config/copy-from-global", {
-      method: "POST",
-      body: { project_id: projectId, categories },
-    });
   },
   testAiModel(projectId: number, modelName: string) {
     return request<{ ok: boolean; result?: string; error?: string }>(
@@ -1706,7 +1737,7 @@ export const authApi = {
     return request<UserSession[]>("/api/auth/sessions");
   },
   refresh(refreshToken: string) {
-    return request<{ access_token: string; expires_in: number; token?: string }>(
+    return request<{ access_token: string; expires_in: number }>(
       "/api/auth/refresh",
       {
         method: "POST",
@@ -1827,8 +1858,8 @@ export const bugFixApi = {
 // =============================================================================
 
 export const aiModelsApi = {
-  list() {
-    return request<AiModelConfig[]>("/api/ai-models");
+  list(projectId: number) {
+    return request<AiModelConfig[]>(`/api/ai-models?project_id=${projectId}`);
   },
   create(payload: AiModelConfig) {
     return request<AiModelConfig>("/api/ai-models", {
@@ -1975,9 +2006,12 @@ export const aiCaseGenerationApi = {
       body: patch,
     });
   },
-  /** 逻辑删：status → rejected。 */
-  rejectDraft(id: number) {
-    return request<AiCaseDraft>(`/api/ai/case-drafts/${id}`, {
+  /** 逻辑删：status → rejected。reason 是数据飞轮信号（回填 prompt 反例 + 统计），尽量填。 */
+  rejectDraft(id: number, reason?: string) {
+    const qs = reason?.trim()
+      ? `?reason=${encodeURIComponent(reason.trim().slice(0, 500))}`
+      : "";
+    return request<AiCaseDraft>(`/api/ai/case-drafts/${id}${qs}`, {
       method: "DELETE",
     });
   },

@@ -12,8 +12,8 @@ class ConfigStore(Base):
       * 不再有删除限制；
       * `is_system` 列已通过 alembic 删除。
 
-    project_id 为 NULL 表示全局模板（仅用于拷贝，不作为任何项目的实际配置）。
-    project_id 不为 NULL 表示该项目专属配置。
+    project_id 为必填，所有配置都必须归属到具体项目。历史版本允许
+    project_id=NULL 作为全局模板；该模式已移除，旧数据会通过 Alembic 清理。
     """
     __tablename__ = "config_store"
     id = Column(Integer, primary_key=True)
@@ -21,4 +21,4 @@ class ConfigStore(Base):
     config_key = Column(String)
     config_value = Column(String)
     category = Column(String)
-    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, index=True)

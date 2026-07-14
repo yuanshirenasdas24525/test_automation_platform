@@ -3,6 +3,9 @@
 # 接口文档 / 输入信息
 {{REQUIREMENT_TEXT}}
 
+# 项目沉淀上下文（业务规则 / 数据模型 / API 契约；测试点中的接口、字段、状态必须与此一致，**禁止虚构这里和接口文档都没有的 endpoint 或字段**）
+{{PROJECT_CONTEXT}}
+
 # 当前项目其它模块（用于交叉考量）
 {{CROSS_MODULE_CONTEXT}}
 

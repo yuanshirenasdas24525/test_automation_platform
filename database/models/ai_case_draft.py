@@ -9,6 +9,7 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -87,6 +88,15 @@ class AiCaseDraft(Base):
         nullable=True,
     )
 
+    # ── 评审信号埋点（P1 数据飞轮）────────────────────────────
+    # 生成时的原始快照 {title, preconditions, steps_text, expected, priority,
+    # tags, step_template}；accept 时与当前字段比对得 edit_ratio
+    original_payload = Column(JSONType, nullable=True)
+    # 拒绝原因（PM 填写,回填 prompt 反例 + 统计 top 拒因）
+    reject_reason = Column(Text, nullable=True)
+    # 编辑相似度 0..1（1.0=原样采纳,越低说明 AI 初稿越差）,accept 时计算
+    edit_ratio = Column(Float, nullable=True)
+
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime,
@@ -124,6 +134,8 @@ class AiCaseDraft(Base):
             "ui_image_refs": self.ui_image_refs or [],
             "status": self.status,
             "committed_case_id": self.committed_case_id,
+            "reject_reason": self.reject_reason,
+            "edit_ratio": self.edit_ratio,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

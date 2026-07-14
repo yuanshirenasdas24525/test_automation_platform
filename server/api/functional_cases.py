@@ -48,6 +48,12 @@ from server.api.deps import DBDep
 from server.api.auth import _get_optional_user
 from database.models import (
     ALL_RUN_STATUSES,
+    AI_FEATURE_FUNCTIONAL_CASE_ENHANCE,
+    AI_RUN_STATUS_FAILED,
+    AI_RUN_STATUS_PENDING,
+    AI_RUN_STATUS_RUNNING,
+    AI_RUN_STATUS_SUCCESS,
+    AiRun,
     CASE_TYPE_API,
     CASE_TYPE_FUNCTIONAL,
     ConfigStore,
@@ -630,6 +636,38 @@ def _account_setup_endpoints(db, project_id: int) -> str:
     )
 
 
+def _project_context_block(project_id: int, query_text: str) -> str:
+    """检索项目记忆层（project_contexts），渲染为大纲 prompt 可注入的文本。
+
+    失败/为空一律降级为占位文案，绝不阻断大纲生成。
+    """
+    from server.services.context_service import (
+        build_context_summary,
+        retrieve_context,
+    )
+
+    empty = "（项目暂无沉淀上下文）"
+    try:
+        matched = retrieve_context(
+            query_text=(query_text or "")[:800],
+            project_id=project_id,
+            top_k=8,
+            target_types=[
+                "business_rule", "data_model", "api_contract",
+                "term_definition", "process_flow", "constraint",
+            ],
+        )
+        if not matched:
+            return empty
+        text = build_context_summary(matched)
+        return text[:4000] + ("\n…[truncated]" if len(text) > 4000 else "")
+    except Exception:
+        logger.warning(
+            "[outline] project=%s 记忆层检索失败，降级为空", project_id, exc_info=True
+        )
+        return empty
+
+
 def _build_cross_module_context(db, module: "Module") -> str:
     """跨模块上下文：① 项目概览 + 与本模块相关的模块关联关系（来自 project.ai_overview，
     若已生成）；② 同项目其它模块 + 各自最多 8 个功能用例名；③ 建账号接口（供前置链跨模块）。
@@ -745,17 +783,17 @@ _VAR_POOL_DESC = {"my_account": "默认账号", "my_password": "默认密码", "
 
 
 def _variable_pool_block(db, project_id: int) -> str:
-    """读项目 default_parameters 变量池（项目专属覆盖全局），喂给 AI 让接口用例优先用 ${变量}。"""
+    """读项目 default_parameters 变量池，喂给 AI 让接口用例优先用 ${变量}。"""
     rows = (
         db.session.query(ConfigStore)
         .filter(
             ConfigStore.config_group == "default_parameters",
-            (ConfigStore.project_id == project_id) | (ConfigStore.project_id.is_(None)),
+            ConfigStore.project_id == project_id,
         )
         .all()
     )
     seen: dict[str, ConfigStore] = {}
-    for r in sorted(rows, key=lambda x: 0 if x.project_id is None else 1):
+    for r in rows:
         if r.config_key:
             seen[r.config_key] = r
     if not seen:
@@ -800,6 +838,51 @@ def _normalize_jsonpath(expr: Any) -> Any:
         return s
     # 写成 data.token / .data.token 之类的，补成 $.data.token
     return "$." + s.lstrip(".")
+
+
+def _normalize_pre_hook(raw: Any) -> list[dict]:
+    """规整生成用例带的 pre_hook（会话隔离登录）。非法/空 → []。
+
+    统一成 [{type:'http_request', config:{method,path,data_type,params,headers,extract_data}}]，
+    与 runners/case_executor._run_hooks 期望格式对齐。必须 extract 出至少一个变量才算有效。
+    """
+    if not isinstance(raw, list) or not raw:
+        return []
+    out: list[dict] = []
+    for hk in raw:
+        if not isinstance(hk, dict):
+            continue
+        cfg = hk.get("config") if isinstance(hk.get("config"), dict) else hk
+        method = str(cfg.get("method") or "").upper()
+        path = str(cfg.get("path") or cfg.get("url") or "")
+        ext = cfg.get("extract_data") or cfg.get("extract") or {}
+        if not path or method not in ("POST", "GET", "PUT"):
+            continue
+        if not (isinstance(ext, dict) and ext):
+            continue  # 登录 hook 不提取任何变量 = 没意义
+        out.append({
+            "type": "http_request",
+            "config": {
+                "method": method,
+                "path": path,
+                "data_type": cfg.get("data_type") or "application/json",
+                "params": cfg.get("params") or cfg.get("body") or {},
+                "headers": cfg.get("headers") or {},
+                "extract_data": {str(k): str(v) for k, v in ext.items() if str(k).strip()},
+            },
+        })
+    return out
+
+
+def _pre_hook_vars(case: dict) -> set[str]:
+    """pre_hook 登录 hook 提取出的变量名（运行时会进 ctx，供本用例引用）。"""
+    out: set[str] = set()
+    for hk in case.get("pre_hook") or []:
+        cfg = hk.get("config") if isinstance(hk, dict) else {}
+        for k in (cfg.get("extract_data") or {}):
+            if str(k).strip():
+                out.add(str(k))
+    return out
 
 
 def _shape_cases(parsed) -> list[dict]:
@@ -849,6 +932,12 @@ def _shape_cases(parsed) -> list[dict]:
                 reqs.append(rr)
             if reqs:
                 item["requests"] = reqs
+        # 会话隔离 pre_hook：用例级前置登录(免受前序用例登出/改密污染)。
+        # 形态 [{type:'http_request', config:{method,path,params,extract_data}}]
+        norm_pre = _normalize_pre_hook(it.get("pre_hook"))
+        if norm_pre:
+            item["pre_hook"] = norm_pre
+
         # 清理闭环：teardown_api（DELETE 调用数组）/ teardown_sql（删库兜底）
         if isinstance(it.get("teardown_api"), list) and it["teardown_api"]:
             item["teardown_api"] = [t for t in it["teardown_api"] if isinstance(t, dict) and t.get("path")]
@@ -964,6 +1053,50 @@ def _is_login_path(path: str) -> bool:
     return ("login" in lp or "signin" in lp or "sign_in" in lp or lp.endswith("/auth/token") or "/token" in lp) and "register" not in lp
 
 
+def _is_public_auth_path(path: str) -> bool:
+    """公开、无需鉴权就能调的认证类接口：登录 / 注册 / 找回密码等。"""
+    lp = (path or "").lower()
+    return (
+        _is_login_path(lp)
+        or "register" in lp or "signup" in lp or "sign_up" in lp
+        or "forgot" in lp or "reset" in lp or "captcha" in lp or "send_code" in lp
+    )
+
+
+def _req_has_auth(req: dict) -> bool:
+    headers = req.get("headers") or {}
+    if not isinstance(headers, dict):
+        return False
+    return any(str(k).lower() == "authorization" and str(v).strip() for k, v in headers.items())
+
+
+# 管理类写接口路径特征（这些写操作通常需要 admin/登录态鉴权）
+_ADMIN_WRITE_HINTS = ("user", "account", "member", "role", "admin", "permission")
+
+
+def _write_without_auth_reqs(case: dict) -> list[str]:
+    """检测：写操作(POST/PUT/PATCH/DELETE)打到管理类接口、却没带 Authorization。
+
+    这类接口多半需要鉴权,漏 token 会 401「未提供认证 token」——但平台静态不知道
+    哪个接口要鉴权,所以只对"看起来是账号/角色管理"的写接口做启发式提醒(排除注册等公开接口)。
+    返回命中的 "METHOD PATH" 列表。
+    """
+    hits: list[str] = []
+    for req in _case_requests(case):
+        method = str(req.get("method") or "").upper()
+        path = str(req.get("path") or "")
+        lp = path.lower()
+        if method not in ("POST", "PUT", "PATCH", "DELETE"):
+            continue
+        if _is_public_auth_path(lp):
+            continue
+        if not any(h in lp for h in _ADMIN_WRITE_HINTS):
+            continue
+        if not _req_has_auth(req):
+            hits.append(f"{method} {path}")
+    return hits
+
+
 def _login_with_uncreated_unique(case: dict) -> bool:
     """检测：用一个 function:unique 用户名直接登录（该账号没被创建过 → 必然 401）。"""
     for req in _case_requests(case):
@@ -1033,13 +1166,25 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
                 "请改成：先调创建账号接口建号、提取真实用户名再登录；或直接用变量池账号 ${my_account} 登录。"
             )
 
+        # 1.6) 管理类写接口（建/删用户、改角色等）没带 Authorization → 多半 401
+        #      典型：建一次性账号的 POST /api/users 忘了带 admin token（先有鸡先有蛋）
+        noauth = _write_without_auth_reqs(case)
+        if noauth:
+            warnings.append(
+                f"写操作 {('、'.join(noauth))} 没带 Authorization 头——这类管理接口通常需要"
+                "鉴权(admin/登录态),漏 token 会 401「未提供认证 token」。请给该请求补 "
+                "`{\"Authorization\": \"Bearer ${token}\"}`(用管理员/前置链登录后的 token);"
+                "若该接口确实公开无需鉴权,可忽略本提示。"
+            )
+
         # 2) 断言完整性
         if reqs and not any(isinstance(r.get("assertion"), dict) and r["assertion"] for r in reqs):
             warnings.append("缺少断言：至少补一条状态码或业务码断言")
 
         # 3) 变量解析校验（按用例数组顺序累积）
+        #    pre_hook 登录会在跑 steps 前提取变量(如 token)进 ctx，视作本用例可满足
         refs = _referenced_vars({"reqs": reqs})
-        producible = produced_so_far | _produced_vars(case)
+        producible = produced_so_far | _produced_vars(case) | _pre_hook_vars(case)
         for var in sorted(refs):
             base = var.split(".")[0]
             if base not in producible:
@@ -1051,6 +1196,87 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
         if warnings:
             case["warnings"] = warnings
     return cases
+
+
+def _auto_repair_flawed_cases(
+    db,
+    cfg,
+    cases: list[dict],
+    var_pool_keys: set[str],
+    carried_vars: set[str],
+    variable_pool_block: str = "",
+) -> list[dict]:
+    """P0-2 自修回路：把 _harden_generated_cases 标了 warnings 的用例发回给模型修一轮。
+
+    - 只修一轮；修完重新 harden 全量重算 warnings（顺序相关的变量校验必须全量重算）
+    - 修复失败/仍有问题 → 保留原用例和 warnings，行为与没有本函数时一致（绝不丢用例，
+      接口用例由人最终决定去留,与 M7 草稿"丢弃"策略不同——这里用例马上要入库,人看得到）
+    - 修好的标 auto_repaired=true,前端可展示"已自动修复"
+    """
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    flawed = [c for c in cases if c.get("warnings")]
+    if not flawed:
+        return cases
+
+    try:
+        flawed_json = json.dumps(
+            [{"case": {k: v for k, v in c.items() if k != "warnings"},
+              "errors": c["warnings"]} for c in flawed],
+            ensure_ascii=False, indent=2, default=str,
+        )
+        repair_prompt = _render_prompt(
+            _load_prompt("case_repair"),
+            {
+                "FLAWED_ITEMS_JSON": flawed_json[:20000],
+                "REPAIR_CONTEXT": (
+                    "可用变量池：\n" + (variable_pool_block or "（无）")
+                    + "\n\n可用动态函数：function:unique / unique_mobile / unique_email"
+                ),
+            },
+        )
+        raw, _tin, _tout = chat_markdown(
+            repair_prompt, cfg, timeout=120,
+            system_prompt=(
+                "你是结构化 JSON 生成器。只输出一个合法 JSON 数组，"
+                "不要输出任何代码块外文字。"
+            ),
+        )
+        repaired = _shape_cases(_extract_json_list(raw))
+    except Exception:
+        logger.warning("[ai_batch] 自修调用失败,保留原 warnings", exc_info=True)
+        return cases
+
+    if not repaired:
+        return cases
+
+    # 按 name 对应回原列表（repair prompt 要求不改 name）
+    repaired_by_name = {_norm_name(c["name"]): c for c in repaired}
+    merged: list[dict] = []
+    replaced = 0
+    for c in cases:
+        key = _norm_name(c.get("name") or "")
+        if c.get("warnings") and key in repaired_by_name:
+            fixed = repaired_by_name[key]
+            fixed["duplicate"] = c.get("duplicate", False)
+            fixed["auto_repaired"] = True
+            merged.append(fixed)
+            replaced += 1
+        else:
+            merged.append(c)
+
+    if not replaced:
+        return cases
+
+    # 全量重算 warnings（先清掉旧的,harden 只在有问题时才写 warnings）
+    for c in merged:
+        c.pop("warnings", None)
+    merged = _harden_generated_cases(merged, var_pool_keys, carried_vars)
+    logger.info(
+        "[ai_batch] 自修回路: %d 条有 warnings,模型修复 %d 条,修后仍有 warnings %d 条",
+        len(flawed), replaced, sum(1 for c in merged if c.get("warnings")),
+    )
+    return merged
 
 
 def _request_signature(req: dict) -> str:
@@ -1214,12 +1440,12 @@ def _interface_outline_contract(requirement_text: str, coverage: str, dimensions
     return text, target_min, target_max
 
 
-def _resolve_model(db, model_name: str):
+def _resolve_model(db, model_name: str, project_id: int):
     from server.services.ai_model_service import get_ai_model
 
-    cfg = get_ai_model(db.session, model_name)
+    cfg = get_ai_model(db.session, model_name, project_id=project_id)
     if cfg is None:
-        raise HTTPException(status_code=400, detail=f"AI 模型 {model_name!r} 未配置，请先到「配置中心 → AI 模型」添加")
+        raise HTTPException(status_code=400, detail=f"AI 模型 {model_name!r} 未配置，请先到「项目配置 → AI」添加")
     if not cfg.enabled:
         raise HTTPException(status_code=400, detail=f"AI 模型 {model_name!r} 未启用")
     return cfg
@@ -1252,10 +1478,10 @@ def ai_generate_outline(
         model_task_options,
     )
 
-    cfg = _resolve_model(db, model_name)
     module = db.session.query(Module).filter(Module.id == module_id).first()
     if module is None:
         raise HTTPException(status_code=404, detail="模块不存在")
+    cfg = _resolve_model(db, model_name, module.project_id)
 
     has_images = bool(images) and any((im.filename or "") for im in images)
     use_vision = bool(cfg.supports_vision and has_images)
@@ -1297,6 +1523,9 @@ def ai_generate_outline(
         placeholders = {
             "MODULE_NAME": module.name,
             "REQUIREMENT_TEXT": requirement_text,
+            "PROJECT_CONTEXT": _project_context_block(
+                module.project_id, f"{module.name}\n{requirement_text}"
+            ),
             "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
             "EXISTING_CASES": existing_block,
             "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if mode == "interface" else "",
@@ -1462,11 +1691,14 @@ def _run_outline_ai(db, module, mode: str, requirement_text: str, model_name: st
     """复用 outline prompt 跑一次 AI，返回 (digest, points)。供增量重规划用。"""
     from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
 
-    cfg = _resolve_model(db, model_name)
+    cfg = _resolve_model(db, model_name, module.project_id)
     call_options = model_task_options(cfg, "api_outline" if mode == "interface" else "functional_outline")
     placeholders = {
         "MODULE_NAME": module.name,
         "REQUIREMENT_TEXT": requirement_text,
+        "PROJECT_CONTEXT": _project_context_block(
+            module.project_id, f"{module.name}\n{requirement_text}"
+        ),
         "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
         "EXISTING_CASES": "、".join(
             _existing_case_names(
@@ -1685,21 +1917,8 @@ def _run_outline_gap_ai(
     return points
 
 
-@router.post("/ai_outline_gaps")
-def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
-    """查漏补缺：给已有大纲找遗漏的测试点，返回补充点（已去重已有点/已有用例）。"""
-    cfg = _resolve_model(db, payload.model_name)
-    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
-    if module is None:
-        raise HTTPException(status_code=404, detail="模块不存在")
-
-    existing_points = [{"title": p.title, "category": p.category} for p in payload.points]
-    existing = _existing_case_names(
-        db,
-        payload.module_id,
-        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
-    )
-    # 重建与生成大纲同级的原始材料：用户文本 + 接口文档链接（服务端拉取解析）
+def _outline_gap_requirement_text(payload: OutlineGapRequest) -> str:
+    """重建查漏所需的原始需求材料。"""
     req_parts: list[str] = []
     if (payload.text or "").strip():
         req_parts.append(payload.text.strip())
@@ -1713,6 +1932,41 @@ def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
             fetched = ""
         if fetched:
             req_parts.append(f"## 接口文档（链接）：{u}\n{fetched}")
+    return "\n\n".join(req_parts)
+
+
+def _dedupe_gap_points(
+    raw_points: list[dict[str, Any]],
+    *,
+    payload: OutlineGapRequest,
+    existing_case_names: list[str],
+) -> list[dict[str, str]]:
+    """过滤已存在的大纲点和用例名。"""
+    have = {_norm_name(p.title) for p in payload.points} | {_norm_name(n) for n in existing_case_names}
+    points = []
+    for p in raw_points:
+        title = str(p.get("title") or "").strip()
+        if title and _norm_name(title) not in have:
+            have.add(_norm_name(title))
+            points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
+    return points
+
+
+@router.post("/ai_outline_gaps")
+def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
+    """查漏补缺：给已有大纲找遗漏的测试点，返回补充点（已去重已有点/已有用例）。"""
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+    cfg = _resolve_model(db, payload.model_name, module.project_id)
+
+    existing_points = [{"title": p.title, "category": p.category} for p in payload.points]
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    requirement_text = _outline_gap_requirement_text(payload)
     try:
         points_raw = _run_outline_gap_ai(
             db,
@@ -1722,21 +1976,104 @@ def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
             existing_points=existing_points,
             mode=payload.mode,
             contract="请按接口/参数/鉴权/越权/响应校验/数据链路/安全/场景逐项核对，只输出真正缺失的点。",
-            requirement_text="\n\n".join(req_parts),
+            requirement_text=requirement_text,
         )
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
     if points_raw is None:
         raise HTTPException(status_code=502, detail="查漏结果解析失败，请重试或更换模型（不代表没有遗漏）")
 
-    have = {_norm_name(p.title) for p in payload.points} | {_norm_name(n) for n in existing}
-    points = []
-    for p in points_raw:
-        title = str(p.get("title") or "").strip()
-        if title and _norm_name(title) not in have:
-            have.add(_norm_name(title))
-            points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
+    points = _dedupe_gap_points(points_raw, payload=payload, existing_case_names=existing)
     return {"status": "success", "data": {"points": points}}
+
+
+@router.post("/ai_outline_gaps_cli")
+def ai_outline_gaps_cli(payload: OutlineGapRequest, db: DBDep, user: OptionalUserDep = None):
+    """CLI Agent 查漏补缺：用 Codex / Claude Code 审查当前大纲并补测试点。"""
+    from server.services.ai_model_service import get_ai_model
+    from server.services.cli_case_enhancement_service import (
+        build_outline_gap_prompt,
+        is_cli_case_provider,
+        run_cli_case_enhancement,
+    )
+
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    cfg = get_ai_model(db.session, payload.model_name, project_id=module.project_id)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail=f"CLI Agent {payload.model_name!r} 不存在")
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail=f"CLI Agent {payload.model_name!r} 未启用")
+    if not is_cli_case_provider(cfg.provider):
+        raise HTTPException(status_code=400, detail="CLI 查漏请选择 Codex CLI 或 Claude Code 类型的 AI 配置")
+
+    existing_points = [{"title": p.title, "category": p.category} for p in payload.points]
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    prompt = build_outline_gap_prompt(
+        module_name=module.name,
+        mode=payload.mode,
+        digest=payload.digest,
+        requirement_text=_outline_gap_requirement_text(payload),
+        existing_points=existing_points,
+        existing_case_names=existing,
+        target_extra_count=max(5, min(len(payload.points) // 3, 40)),
+    )
+
+    run = AiRun(
+        feature=AI_FEATURE_FUNCTIONAL_CASE_ENHANCE,
+        status=AI_RUN_STATUS_PENDING,
+        project_id=module.project_id,
+        input_payload={
+            "module_id": payload.module_id,
+            "agent_model_name": cfg.name,
+            "mode": payload.mode,
+            "point_count": len(payload.points),
+            "action": "outline_gaps_cli",
+        },
+        operator=_operator_name(user),
+        provider=cfg.provider,
+        model=cfg.model,
+    )
+    db.session.add(run)
+    db.session.flush()
+
+    run.status = AI_RUN_STATUS_RUNNING
+    run.started_at = datetime.now()
+    try:
+        result = run_cli_case_enhancement(
+            cfg=cfg,
+            prompt=prompt,
+            timeout=int((cfg.extra or {}).get("timeout_seconds") or 900),
+        )
+        parsed = result["parsed"]
+        raw_points = parsed.get("points") if isinstance(parsed.get("points"), list) else []
+        points = _dedupe_gap_points(raw_points, payload=payload, existing_case_names=existing)
+        output = {
+            "points": points,
+            "agent_model_name": cfg.name,
+            "summary": str(parsed.get("summary") or "").strip(),
+        }
+        run.output_payload = output
+        run.prompt_hash = result["prompt_hash"]
+        run.prompt_version = "cli_outline_gap_v1"
+        run.status = AI_RUN_STATUS_SUCCESS
+        run.ended_at = datetime.now()
+        return {"status": "success", "data": {**output, "run_id": run.id}}
+    except Exception as exc:  # noqa: BLE001
+        run.status = AI_RUN_STATUS_FAILED
+        run.error = f"{type(exc).__name__}: {exc}"[:2000]
+        run.ended_at = datetime.now()
+        return {
+            "status": "error",
+            "message": f"CLI 查漏失败：{exc}",
+            "data": {"run_id": run.id},
+        }
 
 
 class AiBatchRequest(pydantic.BaseModel):
@@ -1750,6 +2087,16 @@ class AiBatchRequest(pydantic.BaseModel):
     carried_vars: list[str] = []
     # 用户直接提供的"账号准备/注册"接口信息（文本），供前置链跨模块建账号用
     setup_doc: str = ""
+
+
+class AiCaseEnhanceRequest(pydantic.BaseModel):
+    module_id: int
+    agent_model_name: str
+    digest: str = ""
+    requirement_text: str = ""
+    cases: list[dict[str, Any]]
+    mode: str = "functional"
+    target_extra_count: int = 5
 
 
 def _available_functions_block() -> str:
@@ -1782,12 +2129,12 @@ def _available_functions_block() -> str:
 
 
 def _variable_pool_keys(db, project_id: int) -> set[str]:
-    """项目可用变量池的 key 集合（项目专属 + 全局）。"""
+    """项目可用变量池的 key 集合。"""
     rows = (
         db.session.query(ConfigStore.config_key)
         .filter(
             ConfigStore.config_group == "default_parameters",
-            (ConfigStore.project_id == project_id) | (ConfigStore.project_id.is_(None)),
+            ConfigStore.project_id == project_id,
         )
         .all()
     )
@@ -1830,10 +2177,10 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
     if not payload.points:
         raise HTTPException(status_code=400, detail="本批没有测试点")
 
-    cfg = _resolve_model(db, payload.model_name)
     module = db.session.query(Module).filter(Module.id == payload.module_id).first()
     if module is None:
         raise HTTPException(status_code=404, detail="模块不存在")
+    cfg = _resolve_model(db, payload.model_name, module.project_id)
 
     batch_points = "\n".join(
         f"- [{p.category or '未分类'}] {p.title}" for p in payload.points
@@ -1870,6 +2217,11 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         "EXISTING_ORDERED": existing_ordered,
         "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if payload.mode == "interface" else "",
         "AVAILABLE_FUNCTIONS": _available_functions_block() if payload.mode == "interface" else "",
+        # 真实响应结构 / API 约定（从记忆层 api_contract 检索）——这是写对
+        # extract/assertion JSONPath 的关键:没它模型只能照 prompt 示例猜路径
+        "PROJECT_CONTEXT": _project_context_block(
+            module.project_id, f"{module.name}\n{payload.digest}\n{batch_points}"
+        ) if payload.mode == "interface" else "",
     }
     template = _load_prompt(
         "interface_case_batch" if payload.mode == "interface" else "functional_case_batch"
@@ -1958,8 +2310,128 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
         var_pool_keys = _variable_pool_keys(db, module.project_id)
         carried = set(payload.carried_vars or []) | _module_produced_vars(db, payload.module_id)
         cases = _harden_generated_cases(cases, var_pool_keys, carried)
+        # P0-2: 有 warnings 的用例先让模型自修一轮，仍有问题的保留 warnings 给人看
+        cases = _auto_repair_flawed_cases(
+            db, cfg, cases, var_pool_keys, carried,
+            variable_pool_block=placeholders["VARIABLE_POOL"],
+        )
 
     return {"status": "success", "data": {"cases": cases, "model": payload.model_name}}
+
+
+@router.post("/ai_enhance_cases")
+def ai_enhance_cases(payload: AiCaseEnhanceRequest, db: DBDep, user: OptionalUserDep = None):
+    """高级补全：用 Codex / Claude Code CLI Agent 审稿并补充当前草稿。
+
+    这是一个低频高价值的同步入口：平台准备 prompt，CLI Agent 只输出结构化建议；
+    服务端校验/规整后返回给前端继续人工审核，绝不直接入库。
+    """
+    from server.services.ai_model_service import get_ai_model
+    from server.services.cli_case_enhancement_service import (
+        build_case_enhancement_prompt,
+        is_cli_case_provider,
+        run_cli_case_enhancement,
+    )
+
+    if not payload.cases:
+        raise HTTPException(status_code=400, detail="当前没有可补全的草稿用例")
+
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    cfg = get_ai_model(db.session, payload.agent_model_name, project_id=module.project_id)
+    if cfg is None:
+        raise HTTPException(status_code=400, detail=f"CLI Agent {payload.agent_model_name!r} 不存在")
+    if not cfg.enabled:
+        raise HTTPException(status_code=400, detail=f"CLI Agent {payload.agent_model_name!r} 未启用")
+    if not is_cli_case_provider(cfg.provider):
+        raise HTTPException(status_code=400, detail="高级补全请选择 Codex CLI 或 Claude Code 类型的 AI 配置")
+
+    existing = _existing_case_names(
+        db,
+        payload.module_id,
+        case_type=CASE_TYPE_API if payload.mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    prompt = build_case_enhancement_prompt(
+        module_name=module.name,
+        mode=payload.mode,
+        digest=payload.digest,
+        requirement_text=payload.requirement_text,
+        existing_case_names=existing,
+        cases=payload.cases,
+        target_extra_count=max(1, min(int(payload.target_extra_count or 5), 20)),
+    )
+
+    run = AiRun(
+        feature=AI_FEATURE_FUNCTIONAL_CASE_ENHANCE,
+        status=AI_RUN_STATUS_PENDING,
+        project_id=module.project_id,
+        input_payload={
+            "module_id": payload.module_id,
+            "agent_model_name": cfg.name,
+            "mode": payload.mode,
+            "case_count": len(payload.cases),
+            "target_extra_count": payload.target_extra_count,
+        },
+        operator=_operator_name(user),
+        provider=cfg.provider,
+        model=cfg.model,
+    )
+    db.session.add(run)
+    db.session.flush()
+
+    run.status = AI_RUN_STATUS_RUNNING
+    run.started_at = datetime.now()
+    try:
+        result = run_cli_case_enhancement(
+            cfg=cfg,
+            prompt=prompt,
+            timeout=int((cfg.extra or {}).get("timeout_seconds") or 900),
+        )
+        parsed = result["parsed"]
+        shaped = _shape_cases(parsed.get("cases") or [])
+        if not shaped:
+            raise ValueError("CLI Agent 没有返回有效 cases")
+
+        existing_norm = {_norm_name(n) for n in existing}
+        seen: set[str] = set()
+        cases: list[dict] = []
+        for c in shaped:
+            key = _norm_name(c["name"])
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            c["duplicate"] = key in existing_norm
+            cases.append(c)
+
+        if payload.mode == "interface":
+            cases = _merge_response_check_cases(cases)
+            var_pool_keys = _variable_pool_keys(db, module.project_id)
+            cases = _harden_generated_cases(cases, var_pool_keys, _module_produced_vars(db, payload.module_id))
+
+        output = {
+            "cases": cases,
+            "summary": str(parsed.get("summary") or "").strip(),
+            "issues_found": parsed.get("issues_found") if isinstance(parsed.get("issues_found"), list) else [],
+            "quality_score": parsed.get("quality_score"),
+            "agent_model_name": cfg.name,
+        }
+        run.output_payload = output
+        run.prompt_hash = result["prompt_hash"]
+        run.prompt_version = "cli_enhance_v1"
+        run.status = AI_RUN_STATUS_SUCCESS
+        run.ended_at = datetime.now()
+        return {"status": "success", "data": {**output, "run_id": run.id}}
+    except Exception as exc:  # noqa: BLE001
+        run.status = AI_RUN_STATUS_FAILED
+        run.error = f"{type(exc).__name__}: {exc}"[:2000]
+        run.ended_at = datetime.now()
+        return {
+            "status": "error",
+            "message": f"高级补全失败：{exc}",
+            "data": {"run_id": run.id},
+        }
 
 
 class DiagnoseRunRequest(pydantic.BaseModel):
@@ -1973,8 +2445,6 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
     用例问题给出修正后的 extract/assertion 供「一键修复」。"""
     from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
 
-    cfg = _resolve_model(db, payload.model_name)
-    call_options = model_task_options(cfg, "api_run_diagnose")
     case = (
         db.session.query(TestCase)
         .options(selectinload(TestCase.steps))
@@ -1983,6 +2453,11 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
     )
     if case is None:
         raise HTTPException(status_code=404, detail="用例不存在")
+    module = db.session.query(Module).filter(Module.id == case.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="用例所属模块不存在")
+    cfg = _resolve_model(db, payload.model_name, module.project_id)
+    call_options = model_task_options(cfg, "api_run_diagnose")
     if case.case_type != CASE_TYPE_API:
         raise HTTPException(status_code=400, detail="只支持分析接口(API)用例")
 
@@ -2092,12 +2567,14 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
     )
     from tasks.ai_tasks import dispatch_ai_task
 
-    # 早校验模型，给前端明确报错（handler 里还会再 resolve 一次）
-    _resolve_model(db, payload.model_name)
-
     report = db.session.query(TestReport).filter(TestReport.id == payload.report_id).first()
     if report is None:
         raise HTTPException(status_code=404, detail="报告不存在")
+    if report.project_id is None:
+        raise HTTPException(status_code=400, detail="报告缺少 project_id，无法解析项目级 AI 模型")
+
+    # 早校验模型，给前端明确报错（handler 里还会再 resolve 一次）
+    _resolve_model(db, payload.model_name, report.project_id)
 
     run = AiRun(
         feature=AI_FEATURE_API_REPORT_FIX,

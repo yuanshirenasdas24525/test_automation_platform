@@ -1138,7 +1138,7 @@ def _attach_ai_summary(session, output: dict[str, Any], model_name: str) -> None
         from ai_gateway.gateway import chat_markdown
         from server.services.ai_model_service import get_ai_model
 
-        cfg = get_ai_model(session, model_name)
+        cfg = get_ai_model(session, model_name, project_id=output.get("project_id"))
         if cfg is None or not cfg.enabled:
             output["ai_error"] = f"AI 模型 {model_name!r} 未配置或未启用，已返回规则分析结果"
             return

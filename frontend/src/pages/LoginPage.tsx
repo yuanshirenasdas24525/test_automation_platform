@@ -123,7 +123,7 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       const resp = await authApi.login(values);
-      setToken(resp.access_token || resp.token);
+      setToken(resp.access_token);
       setRefreshToken(resp.refresh_token);
       setUser(resp.user);
       toast.success(`欢迎，${resp.user.full_name || resp.user.username}`);

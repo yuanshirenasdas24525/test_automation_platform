@@ -468,6 +468,10 @@ export interface AiGeneratedCase {
   teardown_sql?: string;
   /** 后端生成校验给出的提示（变量找不到来源、缺断言等），引导用户/下一轮 AI 修正。 */
   warnings?: string[];
+  /** 后端静态校验发现问题后由 AI 自修成功（P0-2 自修回路），前端展示"已自动修复"。 */
+  auto_repaired?: boolean;
+  /** 会话隔离登录前置：跑用例前先登录拿一个专属 token，免受前序用例登出/改密污染。 */
+  pre_hook?: Array<{ type?: string; config?: Record<string, unknown> }>;
   data_safety?: {
     namespace?: string;
     policy?: string;
@@ -1002,7 +1006,6 @@ export interface LoginResponse {
   access_token: string;
   refresh_token: string;
   expires_in: number;
-  token: string;
   user: User;
 }
 
@@ -1255,7 +1258,9 @@ export type AiProvider =
   | "deepseek"
   | "zai"
   | "azure"
-  | "custom";
+  | "custom"
+  | "codex_cli"
+  | "claude_code";
 
 export interface AiModelConfig {
   name: string;
@@ -1380,6 +1385,11 @@ export interface AiCaseDraft {
 
   status: AiCaseDraftStatus;
   committed_case_id?: number | null;
+
+  /** 拒绝原因（数据飞轮信号）。 */
+  reject_reason?: string | null;
+  /** 编辑相似度 0..1（1.0=原样采纳），accept 时后端计算。 */
+  edit_ratio?: number | null;
 
   created_at?: string | null;
   updated_at?: string | null;

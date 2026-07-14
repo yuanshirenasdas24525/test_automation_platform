@@ -290,9 +290,12 @@ def verify_ai_fix_task(
         # ── 4. 下一轮：带新证据只重诊断 still_red 用例 ──────────────
         from server.api.functional_cases import diagnose_report_items
         from server.services.ai_model_service import get_ai_model
+        from database.models import TestReport
 
         model_name = str((run.input_payload or {}).get("model_name") or "").strip()
-        cfg = get_ai_model(session, model_name) if model_name else None
+        model_report = session.query(TestReport).filter(TestReport.id == verify_report_id).first()
+        model_project_id = model_report.project_id if model_report else None
+        cfg = get_ai_model(session, model_name, project_id=model_project_id) if model_name and model_project_id else None
         if cfg is None or not cfg.enabled:
             return {"status": "success",
                     **_finalize(session, db, run, payload,
@@ -323,9 +326,7 @@ def verify_ai_fix_task(
                                 final_report_id=verify_report_id,
                                 note="新一轮诊断没有产出能通过预检的修复，停止")}
 
-        report = None
-        from database.models import TestReport
-        report = session.query(TestReport).filter(TestReport.id == verify_report_id).first()
+        report = model_report
         prepared = prepare_verification_run(
             session,
             project_id=report.project_id,

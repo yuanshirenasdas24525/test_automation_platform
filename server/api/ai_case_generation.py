@@ -39,6 +39,7 @@ from database.schemas.ai_case_draft import (
 from server.api.deps import CurrentUserDep, DBDep
 from server.services.ai_case_draft_service import (
     batch_commit,
+    draft_review_stats,
     get_draft,
     list_drafts,
     reject_draft,
@@ -82,7 +83,7 @@ def trigger_case_generation(
     # 校验模型都启用
     model_configs = []
     for name in payload.model_names:
-        cfg = get_ai_model(db.session, name)
+        cfg = get_ai_model(db.session, name, project_id=reqs[0].project_id if reqs else None)
         if cfg is None:
             raise HTTPException(status_code=400, detail=f"模型 {name!r} 不存在")
         if not cfg.enabled:
@@ -176,12 +177,31 @@ def api_update_draft(draft_id: int, body: AiCaseDraftUpdate, db: DBDep):
 
 
 @router.delete("/case-drafts/{draft_id}")
-def api_reject_draft(draft_id: int, db: DBDep):
+def api_reject_draft(
+    draft_id: int,
+    db: DBDep,
+    reason: Optional[str] = Query(None, max_length=500, description="拒绝原因（数据飞轮信号,强烈建议填写）"),
+):
     try:
-        draft = reject_draft(db.session, draft_id)
+        draft = reject_draft(db.session, draft_id, reason=reason)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "success", "data": draft.to_dict()}
+
+
+# ---------------------------------------------------------------------------
+# 评审信号统计（数据飞轮看板:采纳率 / 编辑相似度 / top 拒因）
+# ---------------------------------------------------------------------------
+@router.get("/case-drafts-stats")
+def api_draft_review_stats(
+    db: DBDep,
+    project_id: Optional[int] = Query(None),
+    days: int = Query(90, ge=1, le=365),
+):
+    return {
+        "status": "success",
+        "data": draft_review_stats(db.session, project_id=project_id, days=days),
+    }
 
 
 # ---------------------------------------------------------------------------

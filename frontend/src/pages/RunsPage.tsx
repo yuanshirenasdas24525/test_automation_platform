@@ -515,9 +515,9 @@ function DetailDialog({
     enabled: reportId !== null,
   });
   const modelsQuery = useQuery({
-    queryKey: ["ai-models"],
-    queryFn: () => aiModelsApi.list(),
-    enabled: reportId !== null,
+    queryKey: ["ai-models", query.data?.project_id ?? "none"],
+    queryFn: () => aiModelsApi.list(query.data!.project_id as number),
+    enabled: reportId !== null && query.data?.project_id != null,
     staleTime: 60_000,
   });
   const analysisQuery = useQuery({

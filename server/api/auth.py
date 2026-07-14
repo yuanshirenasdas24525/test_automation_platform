@@ -268,7 +268,6 @@ class LoginResponse(pydantic.BaseModel):
     access_token: str
     refresh_token: str
     expires_in: int
-    token: str
     user: dict
 
 
@@ -319,8 +318,6 @@ def login(payload: LoginRequest, request: Request, db: DBDep):
             "access_token": access_token,
             "refresh_token": refresh_token,
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            # 兼容旧前端字段名。
-            "token": access_token,
             "user": user.to_dict(),
         },
     }
@@ -387,7 +384,6 @@ def refresh_token(payload: RefreshRequest, db: DBDep):
         "data": {
             "access_token": access_token,
             "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-            "token": access_token,
         },
     }
 

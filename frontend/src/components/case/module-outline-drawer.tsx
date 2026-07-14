@@ -48,10 +48,12 @@ function errMsg(e: unknown) {
 /** 可嵌入的模块大纲面板（不含抽屉外壳）。 */
 export function ModuleOutlinePanel({
   moduleId,
+  projectId,
   mode = "interface",
   onApplied,
 }: {
   moduleId: number | null;
+  projectId: number;
   mode?: string;
   onApplied?: () => void;
 }) {
@@ -72,8 +74,8 @@ export function ModuleOutlinePanel({
   const outline = outlineQuery.data ?? null;
 
   const modelsQuery = useQuery({
-    queryKey: ["ai-models"],
-    queryFn: () => aiModelsApi.list(),
+    queryKey: ["ai-models", projectId],
+    queryFn: () => aiModelsApi.list(projectId),
     enabled: replanOpen,
   });
   const models = useMemo(() => (modelsQuery.data ?? []).filter((m) => m.enabled), [modelsQuery.data]);

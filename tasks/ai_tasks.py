@@ -506,9 +506,9 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
     if not model_name:
         raise ValueError("input_payload.model_name 必填")
 
-    cfg = get_ai_model(session, model_name)
+    cfg = get_ai_model(session, model_name, project_id=run.project_id)
     if cfg is None:
-        raise ValueError(f"AI 模型 {model_name!r} 未配置（请到配置中心 → AI 添加）")
+        raise ValueError(f"AI 模型 {model_name!r} 未配置（请到项目配置 → AI 添加）")
     if not cfg.enabled:
         raise ValueError(f"AI 模型 {model_name!r} 未启用")
 
@@ -608,6 +608,33 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
     session.add(version)
     session.flush()
 
+    # ── 6. 回流记忆层（增强项：提取文档中的事实条目写 project_contexts；
+    #        失败绝不阻断文档产出）────────────────────────────────
+    context_ids: list = []
+    try:
+        from database.models import Requirement as _Req
+        from server.services.context_extraction import extract_and_save_contexts
+
+        _proj_id = (
+            session.query(_Req.project_id)
+            .filter(_Req.id == int(requirement_id))
+            .scalar()
+        )
+        if _proj_id:
+            context_ids = extract_and_save_contexts(
+                session,
+                markdown=markdown,
+                project_id=int(_proj_id),
+                cfg=cfg,
+                source_file=title,
+                ai_run_id=run.id,
+            )
+    except Exception:
+        LOGGER.warning(
+            "[ai_task] 分析文档回流记忆层失败（不影响文档产出）doc=%s",
+            doc.id, exc_info=True,
+        )
+
     summary_excerpt = markdown.strip()[:200]
     return {
         "output": {
@@ -618,6 +645,7 @@ def _handle_requirement_analyze(run: "AiRun", session) -> dict:
             "image_count": len(image_paths),
             "model_label": model_label,
             "analysis_type": analysis_type,
+            "context_items_count": len(context_ids),
         },
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,
@@ -692,7 +720,7 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
     if not batch_id:
         raise ValueError("input_payload.batch_id 必填")
 
-    cfg = get_ai_model(session, model_name)
+    cfg = get_ai_model(session, model_name, project_id=run.project_id)
     if cfg is None:
         raise ValueError(f"AI 模型 {model_name!r} 未配置")
     if not cfg.enabled:
@@ -772,10 +800,58 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
     if not isinstance(parsed, list):
         raise ValueError(f"LLM 输出顶层不是数组：{type(parsed).__name__}")
 
+    # ── 5.5 静态校验 + 一轮自修（P0-2：结构不合格的草稿不进评审页）──
+    from server.services.draft_validation import partition_drafts
+
+    valid_items, flawed = partition_drafts(parsed)
+    repaired_count = 0
+    dropped_count = 0
+    if flawed:
+        LOGGER.info(
+            "[ai_task m7] %d 条草稿未过静态校验，尝试自修：%s",
+            len(flawed),
+            [(str(i.get("title") or "?")[:30], e) for i, e in flawed],
+        )
+        try:
+            flawed_json = json.dumps(
+                [{"case": i, "errors": e} for i, e in flawed],
+                ensure_ascii=False, indent=2,
+            )
+            repair_prompt = _render_prompt(
+                _load_prompt("case_repair"),
+                {
+                    "FLAWED_ITEMS_JSON": flawed_json,
+                    "REPAIR_CONTEXT": "（功能用例结构修复，无额外上下文）",
+                },
+            )
+            repair_raw, r_in, r_out = chat_markdown(
+                repair_prompt, cfg, timeout=120,
+            )
+            tokens_in += r_in
+            tokens_out += r_out
+            repaired = _extract_case_json(repair_raw) or []
+            if isinstance(repaired, list):
+                re_ok, re_bad = partition_drafts(repaired)
+                valid_items.extend(re_ok)
+                repaired_count = len(re_ok)
+                dropped_count = len(flawed) - len(re_ok)
+                if re_bad:
+                    LOGGER.warning(
+                        "[ai_task m7] 自修后仍不合格,丢弃 %d 条: %s",
+                        len(re_bad),
+                        [(str(i.get('title') or '?')[:30], e) for i, e in re_bad],
+                    )
+            else:
+                dropped_count = len(flawed)
+        except Exception:
+            # 自修失败不阻断主流程：合格的照常入库，不合格的丢弃
+            dropped_count = len(flawed)
+            LOGGER.warning("[ai_task m7] 自修调用失败,丢弃不合格草稿", exc_info=True)
+
     # ── 6. 落 ai_case_drafts ─────────────────────────────────
     model_label = f"{cfg.provider} / {cfg.model}"
     created_ids: list[int] = []
-    for item in parsed:
+    for item in valid_items:
         if not isinstance(item, dict):
             continue
         title = str(item.get("title") or "").strip()
@@ -791,6 +867,17 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
             )
         )
 
+        # 评审信号埋点：留生成时的原始快照,accept 时比对得 edit_ratio
+        original_payload = {
+            "title": title[:200],
+            "preconditions": str(item.get("preconditions") or "").strip() or None,
+            "steps_text": str(item.get("steps_text") or "").strip() or None,
+            "expected": str(item.get("expected") or "").strip() or None,
+            "priority": _clamp_priority(item.get("priority")),
+            "tags": list(item.get("tags") or []),
+            "step_template": step_template,
+        }
+
         draft = AiCaseDraft(
             requirement_id=int(requirement_id),
             analysis_document_id=ctx.analysis_document_id,
@@ -804,6 +891,7 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
             priority=_clamp_priority(item.get("priority")),
             tags=list(item.get("tags") or []),
             step_template=step_template,
+            original_payload=original_payload,
             needs_ui_detail=needs_ui,
             ui_image_refs=list(ui_image_attachment_ids),
             status=AI_CASE_DRAFT_STATUS_PENDING,
@@ -822,6 +910,11 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
             "batch_id": batch_id,
             "draft_count": len(created_ids),
             "draft_ids": created_ids,
+            "validation": {
+                "flawed": len(flawed),
+                "repaired": repaired_count,
+                "dropped": dropped_count,
+            },
             "image_strategy": image_strategy,
             "ui_image_count": len(image_paths),
             "model_label": model_label,
@@ -833,7 +926,9 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
         "provider": cfg.provider,
         "model": cfg.model,
         "prompt_hash": prompt_hash,
-        "prompt_version": "v1",
+        # v2: 注入记忆层 PROJECT_CONTEXT + few-shot EXEMPLAR_CASES,
+        #     已有用例范围同需求 → 同模块（2026-07,详见 docs/方案-用例生成上下文注入.md）
+        "prompt_version": "v2",
     }
 
 
@@ -902,7 +997,7 @@ def _handle_api_report_fix(run: "AiRun", session) -> dict:
     if not model_name:
         raise ValueError("input_payload.model_name 必填")
 
-    cfg = get_ai_model(session, model_name)
+    cfg = get_ai_model(session, model_name, project_id=run.project_id)
     if cfg is None:
         raise ValueError(f"AI 模型 {model_name!r} 未配置")
     if not cfg.enabled:
@@ -1034,6 +1129,7 @@ _AI_FEATURE_LABELS: dict[str, str] = {
     "requirement_analyze": "AI 生成测试分析文档",
     "test_plan": "AI 生成测试计划",
     "functional_case_gen": "AI 生成测试用例",
+    "functional_case_enhance": "AI 高级补全用例",
     "functional_case_review": "AI 用例质量检查",
     "api_case_gen": "AI 生成 API 用例",
     "test_result_analysis": "AI 执行结果体检",
@@ -1051,6 +1147,7 @@ _AI_FEATURE_ICONS: dict[str, str] = {
     "requirement_analyze": "FileText",
     "test_plan": "ClipboardList",
     "functional_case_gen": "Sparkles",
+    "functional_case_enhance": "Sparkles",
     "functional_case_review": "SearchCheck",
     "api_case_gen": "Globe",
     "test_result_analysis": "SearchCheck",

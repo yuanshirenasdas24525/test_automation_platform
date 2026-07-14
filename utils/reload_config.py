@@ -1,11 +1,10 @@
-"""配置热更新。支持 per-project 配置加载和全局模板回退。
+"""配置热更新。只加载项目级配置。
 
 使用：
-    config_center.reload(db, project_id=1)
+    config_center.reload(db)
     val = config_center.get("host", "url", project_id=1, default="http://localhost")
 
-project_id=None 表示全局模板。
-get() 优先查 project_id 对应配置，查不到的 key 回退到全局模板。
+get() 指定 project_id 时只查该项目配置；未指定 project_id 时返回默认值。
 """
 from __future__ import annotations
 
@@ -21,7 +20,6 @@ class ConfigCenter:
     def __init__(self):
         if not hasattr(self, "_stores"):
             self._stores: dict[int, dict[str, dict[str, str]]] = {}
-            self._global_store: dict[str, dict[str, str]] = {}
 
     def __new__(cls):
         if cls._instance is None:
@@ -42,13 +40,17 @@ class ConfigCenter:
         else:
             LOGGER.info(f"[ConfigCenter] 全量重载 project_id={project_id}")
 
-        rows = db.query(
+        params: dict[str, int] = {}
+        sql = (
             "SELECT config_group, config_key, config_value, category, project_id "
             "FROM config_store"
         )
+        if project_id is not None:
+            sql += " WHERE project_id = :pid"
+            params["pid"] = project_id
+        rows = db.query(sql, params)
 
-        # 按 project_id 分组
-        new_global: dict[str, dict[str, str]] = {}
+        # 按 project_id 分组；project_id 为空的历史全局模板行不再加载。
         new_stores: dict[int, dict[str, dict[str, str]]] = {}
 
         for row in rows:
@@ -62,17 +64,15 @@ class ConfigCenter:
             val = row["config_value"]
 
             if pid is None:
-                store = new_global
-            else:
-                if pid not in new_stores:
-                    new_stores[pid] = {}
-                store = new_stores[pid]
+                continue
+            if pid not in new_stores:
+                new_stores[pid] = {}
+            store = new_stores[pid]
 
             if group not in store:
                 store[group] = {}
             store[group][key] = val
 
-        self._global_store = new_global
         self._stores = new_stores
 
     # ------------------------------------------------------------------
@@ -102,32 +102,17 @@ class ConfigCenter:
     ) -> Any:
         """读取配置。
 
-        project_id=int  → 优先读项目配置，缺失的 key 回退到全局模板。
-        project_id=None → 读全局模板；若空则遍历所有项目 store 做兼容回退。
+        project_id=int  → 只读项目配置。
+        project_id=None → 返回 default；不再回退任意项目或全局模板。
         """
         self._ensure_loaded()
 
-        # 1. 指定了 project_id → 只查该项目 + 全局回退
         if project_id is not None:
             project_store = self._stores.get(project_id, {})
             val = self._resolve(project_store, group, key)
             if val is not None:
                 return val
-            # 回退到全局模板
-            val = self._resolve(self._global_store, group, key)
-            if val is not None:
-                return val
             return default if key is not None else (default if default is not None else {})
-
-        # 2. 未指定 project_id → 全局模板优先，再遍历所有项目做兼容
-        val = self._resolve(self._global_store, group, key)
-        if val is not None:
-            return val
-
-        for _pid, store in self._stores.items():
-            val = self._resolve(store, group, key)
-            if val is not None:
-                return val
 
         if key is None:
             return default if default is not None else {}

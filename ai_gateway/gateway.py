@@ -143,8 +143,10 @@ MODE_MAX_TOKENS_MAP = {"quick": 4096, "standard": 16384, "deep": 32768, "multi_m
 # ---------------------------------------------------------------------------
 
 
-def _load_ai_config() -> dict:
-    """加载 AI 配置。优先新格式（多 provider），回退旧格式。"""
+def _load_ai_config(project_id: Optional[int]) -> dict:
+    """加载项目级 AI 配置。"""
+    if project_id is None:
+        raise NoProviderConfiguredError("project_id 必填：全局 AI 模型配置已移除，请使用项目配置 → AI。")
     from utils.reload_config import config_center
     from database.db import DB
 
@@ -154,38 +156,25 @@ def _load_ai_config() -> dict:
     finally:
         db.close()
 
-    # 优先：新格式多 provider，取第一个启用的
-    providers = _get_provider_configs()
+    providers = _get_provider_configs(project_id)
     if providers:
-        for name, cfg in providers.items():
+        for _name, cfg in providers.items():
             if cfg.get("enabled") and cfg.get("model"):
                 return {
-                    "provider": name,
+                    "provider": cfg.get("provider", ""),
                     "api_key": cfg.get("api_key", ""),
                     "model": cfg.get("model", ""),
                     "base_url": cfg.get("base_url") or "",
                     "max_tokens": cfg.get("max_tokens", 4096),
                 }
 
-    # 回退：旧扁平格式 config_group=ai
-    cfg = config_center.get("ai") or {}
-    if cfg.get("provider") and cfg.get("model"):
-        return {
-            "provider": cfg.get("provider", ""),
-            "api_key": cfg.get("api_key", ""),
-            "model": cfg.get("model", ""),
-            "base_url": cfg.get("base_url") or "",
-            "max_tokens": int(cfg.get("max_tokens") or 4096),
-        }
-
     raise NoProviderConfiguredError(
-        "配置中心 'ai' 分组为空。请在前端配置中心 → AI Tab 添加至少一个模型。\n"
-        "格式：config_group=模型名, config_key=model, config_value=模型标识, category=ai"
+        "项目 AI 模型配置为空。请在项目配置 → AI 添加至少一个启用模型。"
     )
 
 
-def _get_provider_configs() -> dict:
-    """从配置中心读多 provider 配置。
+def _get_provider_configs(project_id: Optional[int]) -> dict:
+    """从项目配置读多 provider 配置。
 
     新的直观配置格式：
       config_group=deepseek, config_key=model, config_value=deepseek-chat, category=ai
@@ -198,14 +187,17 @@ def _get_provider_configs() -> dict:
     第三方模型额外加一条 config_key=enabled, config_value=true 来启用；没有 enabled 的
     config_group 只会被有 provider/model/api_key 的检测到并自动推断为 enabled。
     """
-    from utils.reload_config import config_center
     from database.db import DB
+
+    if project_id is None:
+        return {}
 
     db = DB()
     try:
         rows = db.sql.query(
             "SELECT config_group, config_key, config_value FROM config_store "
-            "WHERE category = 'ai' ORDER BY config_group, config_key"
+            "WHERE category = 'ai' AND project_id = :pid ORDER BY config_group, config_key",
+            {"pid": project_id},
         )
     finally:
         db.close()
@@ -234,25 +226,13 @@ def _get_provider_configs() -> dict:
             continue  # 没有 model 的不算 provider
 
         result[name] = {
+            "provider": (cfg.get("provider") or "").strip().lower(),
             "enabled": str(cfg.get("enabled", "true")).lower() != "false",
             "api_key": (cfg.get("api_key") or "").strip(),
             "model": (cfg.get("model") or "").strip(),
             "base_url": (cfg.get("base_url") or "").strip() or None,
             "max_tokens": int(cfg.get("max_tokens") or 0) or 4096,
         }
-
-    # 如果没有新格式，回退旧的扁平单 provider
-    if not result:
-        cfg = config_center.get("ai") or {}
-        provider = (cfg.get("provider") or "").strip().lower()
-        if provider:
-            result[provider] = {
-                "enabled": True,
-                "api_key": (cfg.get("api_key") or "").strip(),
-                "base_url": (cfg.get("base_url") or "").strip() or None,
-                "model": (cfg.get("model") or "").strip(),
-                "max_tokens": int(cfg.get("max_tokens") or 4096),
-            }
 
     return result
 
@@ -312,7 +292,7 @@ def chat_json(
     if analysis_mode == "multi_model":
         return _chat_json_multi(feature, user_input, project_id, timeout, context_text)
 
-    cfg = _load_ai_config()
+    cfg = _load_ai_config(project_id)
     provider_name = (cfg.get("provider") or "").strip().lower()
     model = (cfg.get("model") or "").strip() or _default_model(provider_name, analysis_mode)
     api_key = (cfg.get("api_key") or "").strip()
@@ -358,11 +338,11 @@ def _chat_json_multi(
     context_text: str,
 ) -> dict:
     """多模型集成模式：并行调用 2-3 个模型，聚合结果。"""
-    providers_cfg = _get_provider_configs()
+    providers_cfg = _get_provider_configs(project_id)
     enabled = {
         name: cfg for name, cfg in providers_cfg.items()
         if cfg.get("enabled") and cfg.get("model")
-        and (cfg.get("api_key") or name == "ollama")
+        and (cfg.get("api_key") or cfg.get("provider") == "ollama")
     }
 
     if len(enabled) < 2:
@@ -390,12 +370,13 @@ def _chat_json_multi(
 
     def _call_one(name: str, cfg: dict) -> Optional[dict]:
         try:
+            provider = (cfg.get("provider") or "").strip().lower()
             raw, ti, to = _call_provider(
-                name, cfg.get("api_key", ""), cfg["model"], prompt,
+                provider, cfg.get("api_key", ""), cfg["model"], prompt,
                 cfg.get("base_url"), cfg.get("max_tokens", 16384), timeout
             )
             output = _parse_json_output(raw)
-            cost = _estimate_cost(name, cfg["model"], ti, to)
+            cost = _estimate_cost(provider, cfg["model"], ti, to)
             return {"name": name, "model": cfg["model"], "output": output, "ti": ti, "to": to, "cost": cost}
         except Exception as e:
             logger.warning("multi_model: provider %s 调用失败: %s", name, e)

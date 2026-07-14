@@ -89,10 +89,11 @@ export function AiAnalysisLauncherDialog({
   onTriggered,
 }: Props) {
   const qc = useQueryClient();
+  const projectId = requirement?.project_id;
   const modelsQuery = useQuery({
-    queryKey: queryKeys.aiModels(),
-    queryFn: () => aiModelsApi.list(),
-    enabled: open,
+    queryKey: projectId ? queryKeys.aiModels(projectId) : ["ai-models", "none"],
+    queryFn: () => aiModelsApi.list(projectId as number),
+    enabled: open && projectId != null,
   });
 
   const enabledModels = useMemo(
@@ -198,7 +199,7 @@ export function AiAnalysisLauncherDialog({
           </div>
         ) : enabledModels.length === 0 ? (
           <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800">
-            没有启用的 AI 模型。请到「配置中心 → AI」添加并启用至少一个模型。
+            没有启用的 AI 模型。请到「项目配置 → AI」添加并启用至少一个模型。
           </div>
         ) : (
           <div className="space-y-3">

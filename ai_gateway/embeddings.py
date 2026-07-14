@@ -33,15 +33,19 @@ class EmbeddingConfig:
     dim: int = DEFAULT_EMBEDDING_DIM
 
 
-def load_embedding_config() -> EmbeddingConfig:
+def load_embedding_config(project_id: int | None = None) -> EmbeddingConfig:
     """从 config_store 加载 RAG embedding 配置；缺失抛 ``NoProviderConfiguredError``。"""
     from database.db import DB
+
+    if project_id is None:
+        raise NoProviderConfiguredError("project_id 必填：全局 Embedding 配置已移除，请在项目配置 → AI 配置 rag_embedding。")
 
     db = DB()
     try:
         rows = db.sql.query(
             "SELECT config_key, config_value FROM config_store "
-            "WHERE category = 'ai' AND config_group = 'rag_embedding'"
+            "WHERE category = 'ai' AND config_group = 'rag_embedding' AND project_id = :pid",
+            {"pid": project_id},
         )
     finally:
         db.close()

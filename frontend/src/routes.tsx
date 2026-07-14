@@ -5,7 +5,6 @@ import { AppLayout } from "@/components/AppLayout";
 
 const AppPackagesPage = lazy(() => import("@/pages/AppPackagesPage").then((m) => ({ default: m.AppPackagesPage })));
 const ChangePasswordPage = lazy(() => import("@/pages/ChangePasswordPage").then((m) => ({ default: m.ChangePasswordPage })));
-const ConfigPage = lazy(() => import("@/pages/ConfigPage").then((m) => ({ default: m.ConfigPage })));
 const DevicesPage = lazy(() => import("@/pages/DevicesPage").then((m) => ({ default: m.DevicesPage })));
 const FunctionalCasesPage = lazy(() => import("@/pages/FunctionalCasesPage").then((m) => ({ default: m.FunctionalCasesPage })));
 const HomePage = lazy(() => import("@/pages/HomePage").then((m) => ({ default: m.HomePage })));
@@ -41,7 +40,6 @@ function lazyPage(element: ReactNode) {
  * - /projects/:id/functional 是功能用例（人工执行）独立编辑器
  * - /runs 执行记录
  * - /devices 设备池（App 自动化）
- * - /config 配置中心
  * - /scripts 全局脚本库
  */
 export const router = createBrowserRouter([
@@ -68,7 +66,7 @@ export const router = createBrowserRouter([
       { path: "runs", element: lazyPage(<RunsPage />) },
       { path: "devices", element: lazyPage(<DevicesPage />) },
       { path: "app-packages", element: lazyPage(<AppPackagesPage />) },
-      { path: "config", element: lazyPage(<ConfigPage />) },
+      { path: "config", element: <Navigate to="/projects" replace /> },
       { path: "scripts", element: lazyPage(<ScriptLibraryPage />) },
       { path: "projects/:id/scripts", element: lazyPage(<ScriptLibraryPage />) },
       { path: "change-password", element: lazyPage(<ChangePasswordPage />) },

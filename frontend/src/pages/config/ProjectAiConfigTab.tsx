@@ -1,5 +1,5 @@
 /**
- * ProjectAiConfigTab —— 项目级 AI 模型配置（样式对齐全局 AiModelConfigTab）。
+ * ProjectAiConfigTab —— 项目级 AI 模型配置。
  *
  * 数据来源：configApi.list('ai', projectId)（按 config_group 聚合为模型对象）。
  */
@@ -47,6 +47,22 @@ interface AiModelLike {
   supports_vision: boolean;
   is_default: boolean;
   enabled: boolean;
+}
+
+const AI_PROVIDERS = [
+  { value: "openai", label: "OpenAI" },
+  { value: "anthropic", label: "Anthropic" },
+  { value: "ollama", label: "Ollama" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "zai", label: "Z.AI（智谱）" },
+  { value: "azure", label: "Azure OpenAI" },
+  { value: "custom", label: "Custom" },
+  { value: "codex_cli", label: "Codex CLI（会员登录）" },
+  { value: "claude_code", label: "Claude Code（会员登录）" },
+];
+
+function isCliProvider(provider: string) {
+  return provider === "codex_cli" || provider === "claude_code";
 }
 
 interface EmbeddingConfigLike {
@@ -125,13 +141,14 @@ export function ProjectAiConfigTab({ projectId }: { projectId: number }) {
     qc.invalidateQueries({ queryKey: ["project-config", projectId, "ai"] });
 
   const handleSave = async (m: AiModelLike) => {
+    const isCli = isCliProvider(m.provider);
     // 写入各 key-value 行
     const rows: Omit<ConfigItem, "id">[] = [
       { config_group: m.name, config_key: "provider", config_value: m.provider, category: "ai", project_id: projectId },
       { config_group: m.name, config_key: "model", config_value: m.model, category: "ai", project_id: projectId },
-      { config_group: m.name, config_key: "base_url", config_value: m.base_url, category: "ai", project_id: projectId },
-      { config_group: m.name, config_key: "api_key", config_value: m.api_key, category: "ai", project_id: projectId },
-      { config_group: m.name, config_key: "supports_vision", config_value: m.supports_vision ? "true" : "false", category: "ai", project_id: projectId },
+      { config_group: m.name, config_key: "base_url", config_value: isCli ? "" : m.base_url, category: "ai", project_id: projectId },
+      { config_group: m.name, config_key: "api_key", config_value: isCli ? "" : m.api_key, category: "ai", project_id: projectId },
+      { config_group: m.name, config_key: "supports_vision", config_value: !isCli && m.supports_vision ? "true" : "false", category: "ai", project_id: projectId },
       { config_group: m.name, config_key: "is_default", config_value: m.is_default ? "true" : "false", category: "ai", project_id: projectId },
       { config_group: m.name, config_key: "enabled", config_value: m.enabled ? "true" : "false", category: "ai", project_id: projectId },
     ];
@@ -441,7 +458,7 @@ export function ProjectAiConfigTab({ projectId }: { projectId: number }) {
 }
 
 // ---------------------------------------------------------------------------
-// 模型表单弹窗（简化版，对齐 AiModelConfigTab 的 ModelFormDialog）
+// 模型表单弹窗
 // ---------------------------------------------------------------------------
 function AiModelFormDialog({
   open, onClose, title, initial, submitting, onSubmit,
@@ -461,6 +478,7 @@ function AiModelFormDialog({
   const [supportsVision, setSupportsVision] = useState(false);
   const [isDefault, setIsDefault] = useState(false);
   const [enabled, setEnabled] = useState(true);
+  const isCliAgent = isCliProvider(provider);
 
   useEffect(() => {
     if (open) {
@@ -490,33 +508,55 @@ function AiModelFormDialog({
               <select
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
                 value={provider}
-                onChange={(e) => setProvider(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setProvider(next);
+                  if (isCliProvider(next)) {
+                    setBaseUrl("");
+                    setApiKey("");
+                    setSupportsVision(false);
+                  }
+                }}
               >
-                <option value="openai">OpenAI</option>
-                <option value="anthropic">Anthropic</option>
-                <option value="ollama">Ollama</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="zai">Z.AI（智谱）</option>
-                <option value="azure">Azure OpenAI</option>
-                <option value="custom">Custom</option>
+                {AI_PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
               </select>
             </div>
             <div>
               <Label>Model</Label>
-              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o / deepseek-chat / glm-5.2" />
+              <Input
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder={isCliAgent ? "gpt-5.5 / opus / sonnet" : "gpt-4o / deepseek-chat / glm-5.2"}
+              />
             </div>
           </div>
-          <div>
-            <Label>Base URL（可选）</Label>
-            <Input value={base_url} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.z.ai/api/paas/v4" />
-          </div>
-          <div>
-            <Label>API Key</Label>
-            <Input value={api_key} onChange={(e) => setApiKey(e.target.value)} type="password" placeholder="sk-..." autoComplete="off" />
-          </div>
+          {isCliAgent ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50/60 px-3 py-2 text-xs text-amber-800">
+              CLI Agent 不需要 API Key。请先在运行后端的机器上完成登录：
+              {provider === "codex_cli" ? " codex" : " claude"}。测试按钮会执行一次最小非交互调用，同时验证登录态和模型权限。
+            </div>
+          ) : (
+            <>
+              <div>
+                <Label>Base URL（可选）</Label>
+                <Input value={base_url} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.z.ai/api/paas/v4" />
+              </div>
+              <div>
+                <Label>API Key</Label>
+                <Input value={api_key} onChange={(e) => setApiKey(e.target.value)} type="password" placeholder="sk-..." autoComplete="off" />
+              </div>
+            </>
+          )}
           <div className="flex flex-wrap gap-4 pt-2 text-sm">
             <label className="inline-flex items-center gap-2">
-              <input type="checkbox" checked={supportsVision} onChange={(e) => setSupportsVision(e.target.checked)} />
+              <input
+                type="checkbox"
+                checked={supportsVision}
+                disabled={isCliAgent}
+                onChange={(e) => setSupportsVision(e.target.checked)}
+              />
               支持 vision
             </label>
             <label className="inline-flex items-center gap-2">
@@ -532,7 +572,14 @@ function AiModelFormDialog({
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>取消</Button>
           <Button disabled={submitting || !name.trim() || !model.trim()} onClick={() => onSubmit({
-            name, provider, model, base_url, api_key, supports_vision: supportsVision, is_default: isDefault, enabled,
+            name,
+            provider,
+            model,
+            base_url: isCliAgent ? "" : base_url,
+            api_key: isCliAgent ? "" : api_key,
+            supports_vision: isCliAgent ? false : supportsVision,
+            is_default: isDefault,
+            enabled,
           })}>
             保存
           </Button>

@@ -157,6 +157,7 @@ async def run_test(req: RunTestRequest, db: DBDep):
                 ConfigStore.category == "web",
                 ConfigStore.config_group == "browser",
                 ConfigStore.config_key == "sync_mode",
+                ConfigStore.project_id == req.project,
             )
             .first()
         )

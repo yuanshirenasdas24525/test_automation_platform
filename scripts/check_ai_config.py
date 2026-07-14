@@ -7,8 +7,8 @@
     python scripts/check_ai_config.py
 
 会按顺序检查：
-    1) DB 里 config_store 表有没有 category='ai' 的条目
-    2) config_center.get('ai') 能不能读到（含 reload 一遍）
+    1) DB 里指定项目有没有 category='ai' 的条目
+    2) config_center.get('ai', project_id=xxx) 能不能读到（含 reload 一遍）
     3) ai_gateway 模块能不能 import
     4) prompt 模板文件存在 + 能 render
     5) 如果你加 --live 参数，就真的发一次最简调用到 LLM
@@ -44,12 +44,18 @@ def main() -> int:
         action="store_true",
         help="真的发一次最简调用到 LLM，验证整个链路（会消耗几个 token）",
     )
+    parser.add_argument(
+        "--project-id",
+        type=int,
+        required=True,
+        help="要检查的项目 ID；AI 配置已不支持全局模板",
+    )
     args = parser.parse_args()
 
     failures = 0
 
     # ---------- 1. DB 直查 ----------
-    print("\n[1/5] 检查 config_store 表里 category='ai' 的条目")
+    print(f"\n[1/5] 检查项目 {args.project_id} 的 config_store AI 配置")
     try:
         from database.db import DB
 
@@ -57,15 +63,15 @@ def main() -> int:
         try:
             rows = db.sql.execute_query(
                 "SELECT config_group, config_key, config_value FROM config_store "
-                "WHERE category = :c",
-                {"c": "ai"},
+                "WHERE category = :c AND project_id = :pid",
+                {"c": "ai", "pid": args.project_id},
             ) if hasattr(db.sql, "execute_query") else db.sql.query(
                 "SELECT config_group, config_key, config_value FROM config_store "
-                "WHERE category = :c",
-                {"c": "ai"},
+                "WHERE category = :c AND project_id = :pid",
+                {"c": "ai", "pid": args.project_id},
             )
             if not rows:
-                _fail("DB 里 0 条 ai 配置 —— 进配置中心 → AI Tab 把 provider/api_key/model 填好")
+                _fail("DB 里 0 条项目 AI 配置 —— 进项目配置 → AI 把 provider/api_key/model 填好")
                 failures += 1
             else:
                 _ok(f"DB 里有 {len(rows)} 条 ai 配置：")
@@ -84,20 +90,20 @@ def main() -> int:
         failures += 1
         return _summary(failures)
 
-    # ---------- 2. config_center.get('ai') ----------
-    print("\n[2/5] config_center.get('ai') 能否读到")
+    # ---------- 2. config_center.get('ai', project_id=xxx) ----------
+    print("\n[2/5] config_center.get('ai', project_id=xxx) 能否读到")
     try:
         from utils.reload_config import config_center
 
-        cfg = config_center.get("ai") or {}
+        cfg = config_center.get("ai", project_id=args.project_id) or {}
         if not cfg:
             # 强制 reload 一次
             db = DB()
             try:
-                config_center.reload(db.sql, category=None)
+                config_center.reload(db.sql, project_id=args.project_id, category=None)
             finally:
                 db.close()
-            cfg = config_center.get("ai") or {}
+            cfg = config_center.get("ai", project_id=args.project_id) or {}
 
         if not cfg:
             _fail("config_center 读不到 ai 配置（缓存 + reload 都空）")
@@ -161,7 +167,7 @@ def main() -> int:
                     "text": "用户需要能够通过邮箱或手机号登录系统，"
                             "登录失败 5 次后账号锁定 30 分钟。"
                 },
-                project_id=None,
+                project_id=args.project_id,
                 timeout=120,
                 analysis_mode="quick",
             )

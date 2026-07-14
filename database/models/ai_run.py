@@ -34,6 +34,7 @@ ALL_AI_RUN_STATUSES = {
 AI_FEATURE_REQUIREMENT_PARSE = "requirement_parse"   # 需求文本 → 结构化需求点
 AI_FEATURE_TEST_PLAN = "test_plan"                   # 需求 + 项目 → markdown 测试计划
 AI_FEATURE_FUNCTIONAL_CASE_GEN = "functional_case_gen"  # 需求 → functional 用例批量
+AI_FEATURE_FUNCTIONAL_CASE_ENHANCE = "functional_case_enhance"  # CLI Agent → 用例高级补全
 AI_FEATURE_FUNCTIONAL_CASE_REVIEW = "functional_case_review"  # 检查现有 functional 用例质量
 AI_FEATURE_API_CASE_GEN = "api_case_gen"             # OpenAPI → API 用例
 AI_FEATURE_REPORT_SUMMARY = "report_summary"         # 报告 → 自然语言摘要

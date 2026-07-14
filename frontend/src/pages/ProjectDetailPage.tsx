@@ -52,9 +52,9 @@ const STACK_LABELS: Record<ProjectStack, string> = {
 };
 
 /** URL 上的 ?stack=xxx 解析；非法值兜回 "api"。 */
-function parseStackParam(raw: string | null): ProjectStack {
+function parseStackParam(raw: unknown): ProjectStack {
   if (!raw) return "api";
-  const v = raw.trim().toLowerCase();
+  const v = String(Array.isArray(raw) ? raw[0] ?? "" : raw).trim().toLowerCase();
   if ((ALL_PROJECT_STACKS as readonly string[]).includes(v)) {
     return v as ProjectStack;
   }

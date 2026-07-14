@@ -74,6 +74,7 @@ import {
   modulesApi,
   projectsApi,
   requirementsApi,
+  runsApi,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import type {
@@ -2353,6 +2354,11 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
   // 清理闭环（数据治理#2）：teardown_api / teardown_sql → post_hook（执行后无论成败都跑）
   const postHook = buildTeardownHooks(generated);
 
+  // 会话隔离：pre_hook 登录前置（跑 steps 前先登录拿专属 token，免受前序用例登出/改密污染）
+  const preHook = (generated.pre_hook ?? [])
+    .filter((h) => h && (h.config as Record<string, unknown> | undefined)?.path)
+    .map((h) => ({ type: h.type || "http_request", config: h.config }));
+
   // warnings：变量找不到来源 / 缺断言等提示，写进 description 引导用户/下一轮 AI 修正
   const warningLines = (generated.warnings ?? []).map((w) => `⚠️ ${w}`);
 
@@ -2369,6 +2375,7 @@ function toInterfaceCase(moduleId: number, generated: AiGeneratedCase) {
       .join("\n"),
     case_type: "api" as const,
     priority: 3,
+    ...(preHook.length ? { pre_hook: preHook } : {}),
     ...(postHook.length ? { post_hook: postHook } : {}),
     steps,
   };
@@ -2577,8 +2584,11 @@ type AiGenerateDraft = {
   mode: "functional" | "interface";
   coverage: "standard" | "full" | "exhaustive";
   docUrls: string;
+  setupDoc?: string;
+  dimensions?: string[];
   smartInsert: boolean;
   modelName: string;
+  gapModelName?: string;
   stage: "input" | "outline" | "cases";
   digest: string;
   points: AiOutlinePoint[];
@@ -2726,6 +2736,15 @@ export function AiGenerateDialog({
   const [smartInsert, setSmartInsert] = useState(true);
   const [gapFilling, setGapFilling] = useState(false);
   const [modelName, setModelName] = useState("");
+  const [gapModelName, setGapModelName] = useState("");
+  const [enhanceAgentName, setEnhanceAgentName] = useState("");
+  const [enhancing, setEnhancing] = useState(false);
+  const [enhanceSummary, setEnhanceSummary] = useState<{
+    summary: string;
+    issues: string[];
+    qualityScore?: number | null;
+    runId?: number;
+  } | null>(null);
   const [images, setImages] = useState<File[]>([]);
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
@@ -2745,6 +2764,8 @@ export function AiGenerateDialog({
   const [failedBatches, setFailedBatches] = useState<AiBatchFailure[]>([]);
   const outlineAbortRef = useRef<AbortController | null>(null);
   const draftReadyRef = useRef(false);
+  const initializedDraftKeyRef = useRef("");
+  const wasOpenRef = useRef(false);
   const stopRef = useRef(false);
   const dragCaseRef = useRef<number | null>(null);
   const insertingRef = useRef(false);
@@ -2755,11 +2776,16 @@ export function AiGenerateDialog({
   const [writtenNames, setWrittenNames] = useState<Set<string>>(new Set()); // 已写入的用例名（防重复、支持分次写）
 
   const modelsQuery = useQuery({
-    queryKey: ["ai-models"],
-    queryFn: () => aiModelsApi.list(),
+    queryKey: ["ai-models", projectId],
+    queryFn: () => aiModelsApi.list(projectId),
     enabled: open,
   });
   const models = (modelsQuery.data ?? []).filter((m) => m.enabled);
+  const isCliProvider = (provider: string) =>
+    provider === "codex_cli" || provider === "claude_code";
+  const apiModels = models.filter((m) => !isCliProvider(String(m.provider)));
+  const cliAgents = models.filter((m) => isCliProvider(String(m.provider)));
+  const gapModels = models;
 
   // 从需求池导入：选需求 → 选其分析文档 → 填入下方需求文本
   const [reqPickId, setReqPickId] = useState<number | null>(null);
@@ -2818,7 +2844,7 @@ export function AiGenerateDialog({
 
   useEffect(() => {
     if (!moduleId || !localTaskTypeKey) return;
-    const running = outlining || gapFilling || batchRunning;
+    const running = outlining || gapFilling || batchRunning || enhancing;
     if (!running) {
       removeLocalInProgressTask(localTaskTypeKey);
       return;
@@ -2828,7 +2854,9 @@ export function AiGenerateDialog({
       ? "规划测试点"
       : gapFilling
         ? "查漏补缺"
-        : `生成详细用例 ${cursor}/${genQueue.length || points.length || 0}`;
+        : enhancing
+          ? "高级补全"
+          : `生成详细用例 ${cursor}/${genQueue.length || points.length || 0}`;
     updateLocalInProgressTask({
       id: aiGenerateTaskId(projectId, moduleId, mode),
       type_key: localTaskTypeKey,
@@ -2852,6 +2880,7 @@ export function AiGenerateDialog({
     outlining,
     gapFilling,
     batchRunning,
+    enhancing,
     cursor,
     genQueue.length,
     points.length,
@@ -2869,6 +2898,7 @@ export function AiGenerateDialog({
       setOutlining(false);
       setGapFilling(false);
       setBatchRunning(false);
+      setEnhancing(false);
       setStoppingGeneration(false);
       setOutlineError("已从任务列表终止生成");
       toast.info("已终止 AI 用例生成");
@@ -2878,68 +2908,66 @@ export function AiGenerateDialog({
   }, [moduleId, localTaskTypeKey]);
 
   useEffect(() => {
-    if (open) {
-      const draft = moduleId ? readAiGenerateDraft(projectId, moduleId, initialMode) : null;
-      if (draft) {
-        setSavedDraft(draft);
-        setDraftNotice(`发现 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿，点击恢复数据`);
-        setText("");
-        setMode(initialMode);
-        setCoverage("full");
-        setDocUrls("");
-        setSmartInsert(true);
-        setStage("input");
-        setOutlineError("");
-        setDigest("");
-        setPoints([]);
-        setPickedPoints(new Set());
-        setGenQueue([]);
-        setCursor(0);
-        setFailedBatches([]);
-        setStoppingGeneration(false);
-        setCases([]);
-        casesRef.current = [];
-        setPicked(new Set());
-        setWrittenNames(new Set());
-      } else {
-        setSavedDraft(null);
-        setText("");
-        setMode(initialMode);
-        setCoverage("full");
-        setDocUrls("");
-        setSmartInsert(true);
-        setStage("input");
-        setOutlineError("");
-        setDigest("");
-        setPoints([]);
-        setPickedPoints(new Set());
-        setGenQueue([]);
-        setCursor(0);
-        setFailedBatches([]);
-        setStoppingGeneration(false);
-        setCases([]);
-        casesRef.current = [];
-        setPicked(new Set());
-        setWrittenNames(new Set());
-        setDraftNotice("");
-      }
-      setView("generate");
-      setReqPickId(null);
-      setDocPickId(null);
-      setImages([]);
-      setDocs([]);
-      stopRef.current = false;
-      setStoppingGeneration(false);
-      outlineAbortRef.current?.abort();
-      outlineAbortRef.current = null;
-      draftReadyRef.current = true;
-    } else {
-      draftReadyRef.current = false;
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
     }
-  }, [open, initialMode, moduleId, projectId]);
+    const identity = moduleId ? aiGenerateDraftKey(projectId, moduleId, initialMode) : "";
+    if (identity && initializedDraftKeyRef.current === identity) {
+      // 抽屉关闭只隐藏 UI，不重置或中止正在运行的生成任务。重新打开时回到最新产物。
+      if (!wasOpenRef.current) {
+        if (casesRef.current.length > 0 || genQueue.length > 0) setStage("cases");
+        else if (points.length > 0 || digest) setStage("outline");
+      }
+      wasOpenRef.current = true;
+      return;
+    }
+
+    const draft = moduleId ? readAiGenerateDraft(projectId, moduleId, initialMode) : null;
+    const restoredCases = draft?.cases ?? [];
+    setSavedDraft(null);
+    setText(draft?.text ?? "");
+    setMode(draft?.mode ?? initialMode);
+    setCoverage(draft?.coverage ?? "full");
+    setDimensions(new Set(draft?.dimensions ?? []));
+    setDocUrls(draft?.docUrls ?? "");
+    setSetupDoc(draft?.setupDoc ?? "");
+    setSmartInsert(draft?.smartInsert ?? true);
+    setModelName(draft?.modelName ?? "");
+    setGapModelName(draft?.gapModelName ?? draft?.modelName ?? "");
+    setStage(restoredCases.length || (draft?.genQueue.length ?? 0) > 0
+      ? "cases"
+      : (draft?.points.length ?? 0) > 0 || draft?.digest
+        ? "outline"
+        : "input");
+    setOutlineError("");
+    setDigest(draft?.digest ?? "");
+    setPoints(draft?.points ?? []);
+    setPickedPoints(new Set(draft?.pickedPoints ?? []));
+    setGenQueue(draft?.genQueue ?? []);
+    setCursor(draft?.cursor ?? 0);
+    setFailedBatches(draft?.failedBatches ?? []);
+    setCases(restoredCases);
+    casesRef.current = restoredCases;
+    setPicked(new Set(draft?.picked ?? []));
+    setWrittenNames(new Set(draft?.writtenNames ?? []));
+    setDraftNotice(draft ? `已自动恢复 ${formatDraftTime(draft.savedAt)} 保存的未写入草稿` : "");
+    setView("generate");
+    setReqPickId(null);
+    setDocPickId(null);
+    setImages([]);
+    setDocs([]);
+    stopRef.current = false;
+    setStoppingGeneration(false);
+    setEnhanceSummary(null);
+    setEnhancing(false);
+    initializedDraftKeyRef.current = identity;
+    wasOpenRef.current = true;
+    draftReadyRef.current = true;
+  }, [open, initialMode, moduleId, projectId, digest, points.length, genQueue.length]);
 
   useEffect(() => {
-    if (!open || !moduleId || !draftReadyRef.current) return;
+    if (!moduleId || !draftReadyRef.current) return;
     const hasUsefulDraft =
       text.trim() ||
       digest ||
@@ -2955,9 +2983,17 @@ export function AiGenerateDialog({
       mode,
       coverage,
       docUrls,
+      setupDoc,
+      dimensions: [...dimensions],
       smartInsert,
       modelName,
-      stage,
+      gapModelName,
+      // 导航回大纲/编辑需求不应覆盖可恢复节点；始终记录现有的最高完成阶段。
+      stage: cases.length > 0 || genQueue.length > 0
+        ? "cases"
+        : points.length > 0 || digest
+          ? "outline"
+          : stage,
       digest,
       points,
       pickedPoints: [...pickedPoints],
@@ -2969,7 +3005,6 @@ export function AiGenerateDialog({
       writtenNames: [...writtenNames],
     });
   }, [
-    open,
     moduleId,
     projectId,
     initialMode,
@@ -2977,8 +3012,11 @@ export function AiGenerateDialog({
     mode,
     coverage,
     docUrls,
+    setupDoc,
+    dimensions,
     smartInsert,
     modelName,
+    gapModelName,
     stage,
     digest,
     points,
@@ -2992,10 +3030,25 @@ export function AiGenerateDialog({
   ]);
 
   useEffect(() => {
-    if (open && !modelName && models.length) setModelName(models[0].name);
-  }, [open, models, modelName]);
+    if (open && apiModels.length && !apiModels.some((m) => m.name === modelName)) {
+      setModelName(apiModels[0].name);
+    }
+  }, [open, apiModels, modelName]);
 
-  const selectedModel = models.find((m) => m.name === modelName);
+  useEffect(() => {
+    if (!open || !gapModels.length) return;
+    if (gapModels.some((m) => m.name === gapModelName)) return;
+    const fallback = gapModels.find((m) => m.name === modelName) ?? gapModels[0];
+    setGapModelName(fallback.name);
+  }, [open, gapModels, gapModelName, modelName]);
+
+  useEffect(() => {
+    if (open && cliAgents.length && !cliAgents.some((m) => m.name === enhanceAgentName)) {
+      setEnhanceAgentName(cliAgents[0].name);
+    }
+  }, [open, cliAgents, enhanceAgentName]);
+
+  const selectedModel = apiModels.find((m) => m.name === modelName);
   const visionWarn = images.length > 0 && selectedModel && !selectedModel.supports_vision;
 
   // 第一步：出测试点大纲 + 需求摘要
@@ -3143,6 +3196,7 @@ export function AiGenerateDialog({
     setPicked(new Set());
     setWrittenNames(new Set());
     setFailedBatches([]);
+    setEnhanceSummary(null);
     setStage("cases");
     setStoppingGeneration(false);
     void runBatches(q, 0, []);
@@ -3173,9 +3227,12 @@ export function AiGenerateDialog({
     setText(draft.text ?? "");
     setMode(draft.mode ?? initialMode);
     setCoverage(draft.coverage ?? "full");
+    setDimensions(new Set(draft.dimensions ?? []));
     setDocUrls(draft.docUrls ?? "");
+    setSetupDoc(draft.setupDoc ?? "");
     setSmartInsert(draft.smartInsert ?? true);
     setModelName(draft.modelName ?? "");
+    setGapModelName(draft.gapModelName ?? draft.modelName ?? "");
     setStage(draft.stage ?? "input");
     setOutlineError("");
     setDigest(draft.digest ?? "");
@@ -3205,7 +3262,9 @@ export function AiGenerateDialog({
     setText("");
     setMode(initialMode);
     setCoverage("full");
+    setDimensions(new Set());
     setDocUrls("");
+    setSetupDoc("");
     setSmartInsert(true);
     setStage("input");
     setOutlineError("");
@@ -3215,6 +3274,7 @@ export function AiGenerateDialog({
     setGenQueue([]);
     setCursor(0);
     setFailedBatches([]);
+    setEnhanceSummary(null);
     setCases([]);
     casesRef.current = [];
     setPicked(new Set());
@@ -3270,6 +3330,26 @@ export function AiGenerateDialog({
             merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
           );
         }
+        // P0-2 试跑：写入成功后一键回归本批，跑绿=已验证，跑挂=真 bug 或用例要修
+        if (createdIds.length) {
+          toast.success(`已写入 ${createdIds.length} 条接口用例`, {
+            duration: 15000,
+            description: "建议立即试跑本批：跑通即验证可用，失败尽早暴露问题",
+            action: {
+              label: `试跑本批（${createdIds.length}）`,
+              onClick: () => {
+                void runsApi
+                  .trigger({ project: projectId, category: "api", case_ids: createdIds })
+                  .then((r) =>
+                    toast.success(
+                      `试跑已提交（${r.case_number ?? createdIds.length} 条），到「执行记录」查看报告`,
+                    ),
+                  )
+                  .catch((e) => handleApiError(e));
+              },
+            },
+          });
+        }
       } else {
         // AI 智能插入：先取现有有序用例，创建后按每条 after 合并重排
         const existing =
@@ -3301,7 +3381,10 @@ export function AiGenerateDialog({
         }
       }
       setWrittenNames((prev) => new Set([...prev, ...chosen.map((c) => c.name)]));
-      toast.success(`已写入 ${chosen.length} 条用例（可继续生成后再写新增的）`);
+      if (mode !== "interface") {
+        // interface 分支已在上面弹带「试跑本批」动作的 toast，这里避免重复
+        toast.success(`已写入 ${chosen.length} 条用例（可继续生成后再写新增的）`);
+      }
       onInserted();
     } catch (e) {
       handleApiError(e);
@@ -3330,23 +3413,28 @@ export function AiGenerateDialog({
   // 查漏补缺：给已有大纲找遗漏的测试点，追加并默认勾选
   const fillGaps = async () => {
     if (!moduleId || points.length === 0) return;
-    if (!modelName) {
+    if (!gapModelName) {
       toast.error("请先选择 AI 模型");
       return;
     }
+    const gapModel = gapModels.find((m) => m.name === gapModelName);
+    const useCli = gapModel ? isCliProvider(String(gapModel.provider)) : false;
     stopRef.current = false;
     setGapFilling(true);
     try {
-      const res = await functionalCasesApi.aiOutlineGaps({
+      const body = {
         module_id: moduleId,
-        model_name: modelName,
+        model_name: gapModelName,
         mode,
         digest,
         points,
         // 带上生成大纲时的原始材料：查漏只有 digest 会信息不对称，模型找不出字段级遗漏
         text,
         doc_urls: docUrls,
-      });
+      };
+      const res = useCli
+        ? await functionalCasesApi.aiOutlineGapsCli(body)
+        : await functionalCasesApi.aiOutlineGaps(body);
       if (stopRef.current) return;
       const have = new Set(points.map((p) => p.title.replace(/\s+/g, "")));
       const added = res.points.filter((p) => p.title && !have.has(p.title.replace(/\s+/g, "")));
@@ -3368,6 +3456,44 @@ export function AiGenerateDialog({
       handleApiError(e);
     } finally {
       setGapFilling(false);
+    }
+  };
+
+  const enhanceCases = async () => {
+    if (!moduleId || cases.length === 0) return;
+    if (!enhanceAgentName) {
+      toast.error("请先在项目配置 → AI 添加并启用 Codex CLI 或 Claude Code");
+      return;
+    }
+    setEnhancing(true);
+    try {
+      const res = await functionalCasesApi.aiEnhanceCases({
+        module_id: moduleId,
+        agent_model_name: enhanceAgentName,
+        digest,
+        requirement_text: text,
+        cases,
+        mode,
+        target_extra_count: Math.max(3, Math.ceil(cases.length * 0.3)),
+      });
+      setCases(res.cases);
+      casesRef.current = res.cases;
+      setPicked(
+        new Set(
+          res.cases.map((c, i) => (c.duplicate ? -1 : i)).filter((i) => i >= 0),
+        ),
+      );
+      setEnhanceSummary({
+        summary: res.summary,
+        issues: res.issues_found ?? [],
+        qualityScore: res.quality_score,
+        runId: res.run_id,
+      });
+      toast.success(`高级补全完成，返回 ${res.cases.length} 条候选用例`);
+    } catch (e) {
+      handleApiError(e);
+    } finally {
+      setEnhancing(false);
     }
   };
 
@@ -3428,7 +3554,7 @@ export function AiGenerateDialog({
         <Button variant="outline" onClick={onClose}>
           关闭
         </Button>
-        <Button onClick={insert} disabled={inserting || batchRunning || pendingInsertCount === 0}>
+        <Button onClick={insert} disabled={inserting || batchRunning || enhancing || pendingInsertCount === 0}>
           {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {pendingInsertCount === 0 && writtenNames.size > 0
             ? "已全部写入"
@@ -3459,7 +3585,7 @@ export function AiGenerateDialog({
           <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>模块大纲</button>
         </div>
         {view === "outline" ? (
-          <ModuleOutlinePanel moduleId={moduleId} mode={mode} onApplied={onInserted} />
+          <ModuleOutlinePanel moduleId={moduleId} projectId={projectId} mode={mode} onApplied={onInserted} />
         ) : (
         <>
         <p className="text-xs text-muted-foreground">
@@ -3684,10 +3810,10 @@ export function AiGenerateDialog({
                 onChange={(e) => setModelName(e.target.value)}
                 className="h-9 w-64 rounded-md border border-input bg-background px-3 text-sm"
               >
-                {models.length === 0 ? (
-                  <option value="">（无可用模型，请先到配置中心 → AI 模型 添加）</option>
+                {apiModels.length === 0 ? (
+                  <option value="">（无可用模型，请先到项目配置 → AI 添加）</option>
                 ) : null}
-                {models.map((m) => (
+                {apiModels.map((m) => (
                   <option key={m.name} value={m.name}>
                     {m.name}（{m.provider}/{m.model}）{m.supports_vision ? " · 视觉" : ""}
                   </option>
@@ -3758,24 +3884,25 @@ export function AiGenerateDialog({
               </span>
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <select
-                  value={modelName}
-                  onChange={(e) => setModelName(e.target.value)}
+                  value={gapModelName}
+                  onChange={(e) => setGapModelName(e.target.value)}
                   disabled={gapFilling || batchRunning}
-                  className="h-8 max-w-[220px] rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
-                  title="查漏补缺和后续生成使用的 AI 模型"
+                  className="h-8 max-w-[260px] rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                  title="查漏补缺使用的 AI 模型；Codex CLI / Claude Code 只用于查漏，不用于后续批量生成"
                 >
-                  {models.length === 0 ? (
+                  {gapModels.length === 0 ? (
                     <option value="">（无可用模型）</option>
                   ) : null}
-                  {models.map((m) => (
+                  {gapModels.map((m) => (
                     <option key={m.name} value={m.name}>
-                      {m.name}（{m.provider}/{m.model}）{m.supports_vision ? " · 视觉" : ""}
+                      {m.name}（{m.provider}/{m.model}）
+                      {isCliProvider(String(m.provider)) ? " · CLI" : m.supports_vision ? " · 视觉" : ""}
                     </option>
                   ))}
                 </select>
                 <button
                   className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
-                  disabled={gapFilling || points.length === 0 || !modelName}
+                  disabled={gapFilling || points.length === 0 || !gapModelName}
                   onClick={fillGaps}
                   title="让 AI 再查一遍遗漏的测试点并补上，可反复点"
                 >
@@ -3875,6 +4002,65 @@ export function AiGenerateDialog({
                 />
               </div>
             ) : null}
+            {cases.length > 0 && !batchRunning ? (
+              <div className="rounded-md border bg-muted/20 p-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-muted-foreground">
+                    高级补全
+                  </span>
+                  <select
+                    value={enhanceAgentName}
+                    onChange={(e) => setEnhanceAgentName(e.target.value)}
+                    disabled={enhancing}
+                    className="h-8 max-w-[260px] rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
+                  >
+                    {cliAgents.length === 0 ? (
+                      <option value="">（先配置 Codex CLI / Claude Code）</option>
+                    ) : null}
+                    {cliAgents.map((m) => (
+                      <option key={m.name} value={m.name}>
+                        {m.name}（{m.provider}/{m.model}）
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={enhanceCases}
+                    disabled={enhancing || !enhanceAgentName || cases.length === 0}
+                    className="h-8"
+                  >
+                    {enhancing ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    一键补全
+                  </Button>
+                  <span className="text-[11px] text-muted-foreground">
+                    用会员 CLI Agent 审稿、补边界/异常/安全场景，结果仍需勾选后写入。
+                  </span>
+                </div>
+                {enhanceSummary ? (
+                  <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                    <div>
+                      {enhanceSummary.qualityScore != null ? (
+                        <span className="mr-2 rounded bg-primary/10 px-1.5 py-0.5 text-primary">
+                          评分 {String(enhanceSummary.qualityScore)}
+                        </span>
+                      ) : null}
+                      {enhanceSummary.summary || "高级补全已完成"}
+                      {enhanceSummary.runId ? (
+                        <span className="ml-2">Run #{enhanceSummary.runId}</span>
+                      ) : null}
+                    </div>
+                    {enhanceSummary.issues.length ? (
+                      <div>发现：{enhanceSummary.issues.slice(0, 5).join("；")}</div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             {failedBatches.length > 0 && !batchRunning ? (
               <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/60 p-2 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3963,6 +4149,22 @@ export function AiGenerateDialog({
                         {c.duplicate ? (
                           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700">
                             已存在
+                          </span>
+                        ) : null}
+                        {c.auto_repaired ? (
+                          <span
+                            className="ml-2 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-normal text-emerald-700"
+                            title="静态校验发现问题后已由 AI 自动修复"
+                          >
+                            已自动修复
+                          </span>
+                        ) : null}
+                        {c.warnings?.length ? (
+                          <span
+                            className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700"
+                            title={c.warnings.join("\n")}
+                          >
+                            ⚠️ {c.warnings.length} 处提醒
                           </span>
                         ) : null}
                       </div>

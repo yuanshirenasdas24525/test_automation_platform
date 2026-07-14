@@ -214,7 +214,7 @@ def _coerce_web_config_value(key: str, raw: Any) -> Any:
         return None
 
 
-def _load_web_config_from_store() -> dict[str, Any]:
+def _load_web_config_from_store(project_id: int | None = None) -> dict[str, Any]:
     """从 config_store (category="web", config_group="browser") 读所有已知键，返回类型已转好的 dict。
     任何异常都吞掉，改成空 dict —— 不能让配置读失败阻塞用例执行。
     """
@@ -228,7 +228,7 @@ def _load_web_config_from_store() -> dict[str, Any]:
     db = None
     try:
         db = DB()
-        config_center.reload(db.sql, category="web")
+        config_center.reload(db.sql, project_id=project_id, category="web")
     except Exception as exc:  # noqa: BLE001
         logger.warning("config_center.reload(category=web) 失败，改用默认：%s", exc)
         try:
@@ -239,7 +239,7 @@ def _load_web_config_from_store() -> dict[str, Any]:
         return {}
 
     try:
-        raw = config_center.get("browser") or {}
+        raw = config_center.get("browser", project_id=project_id) or {}
     finally:
         try:
             db.close()
@@ -402,8 +402,9 @@ def acquire_session_for_case(
 
     config: dict = {}
 
-    # ---- 层 4：config_store 全局默认 ----
-    store_cfg = _load_web_config_from_store()
+    # ---- 层 4：config_store 项目默认 ----
+    project_id = case_dict.get("project_id")
+    store_cfg = _load_web_config_from_store(project_id=project_id)
     if store_cfg:
         logger.info("[WebSession] 从 config_store 读到 web.browser.*: %s", list(store_cfg.keys()))
         print(f"[WebSession] 配置中心 web.browser.*: {store_cfg}")

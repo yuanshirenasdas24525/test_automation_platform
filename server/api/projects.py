@@ -196,9 +196,9 @@ def gen_ai_overview(project_id: int, payload: AiOverviewGenRequest, db: DBDep):
     if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
 
-    cfg = get_ai_model(db.session, payload.model_name)
+    cfg = get_ai_model(db.session, payload.model_name, project_id=project_id)
     if cfg is None:
-        raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 未配置，请先到「配置中心 → AI 模型」添加")
+        raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 未配置，请先到「项目配置 → AI」添加")
     if not cfg.enabled:
         raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 未启用")
 

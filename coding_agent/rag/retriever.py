@@ -81,7 +81,7 @@ def retrieve_relevant(
         return _retrieve_hybrid(session, project_id, query, top_k, cfg, git_sha)
 
     if cfg is None:
-        cfg = load_embedding_config()
+        cfg = load_embedding_config(project_id)
 
     vectors, _tokens = embed_texts([query], cfg=cfg)
     if not vectors:
@@ -220,7 +220,7 @@ def _retrieve_hybrid(
 
     # 2. Embedding 检索
     if cfg is None:
-        cfg = load_embedding_config()
+        cfg = load_embedding_config(project_id)
     vectors, _tokens = embed_texts([query], cfg=cfg)
     if not vectors:
         logger.warning("retrieve_hybrid: query embedding 为空 — query=%r", query[:100])

@@ -307,13 +307,17 @@ export function AutomationCasesPage({
   const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
   const [renumbering, setRenumbering] = useState(false);
 
-  const aiModelsQuery = useQuery({ queryKey: ["ai-models"], queryFn: () => aiModelsApi.list() });
+  const aiModelsQuery = useQuery({
+    queryKey: ["ai-models", projectId],
+    queryFn: () => aiModelsApi.list(projectId),
+    enabled: Number.isFinite(projectId),
+  });
   const firstModel = (aiModelsQuery.data ?? []).find((m) => m.enabled)?.name ?? "";
   const enabledModels = (aiModelsQuery.data ?? []).filter((m) => m.enabled).map((m) => m.name);
 
   const handleDiagnose = async (row: ApiCase) => {
     if (!firstModel) {
-      toast.error("请先在配置中心添加可用 AI 模型");
+      toast.error("请先在项目配置 → AI 添加可用 AI 模型");
       return;
     }
     setDiagnose({ row, loading: true, result: null });

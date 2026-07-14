@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   Package,
   PlayCircle,
-  Settings,
   Smartphone,
 } from "lucide-react";
 
@@ -31,7 +30,6 @@ const NAV: NavItem[] = [
   { to: "/runs", label: "执行记录", icon: PlayCircle },
   { to: "/devices", label: "设备池", icon: Smartphone },
   { to: "/app-packages", label: "App 包管理", icon: Package },
-  { to: "/config", label: "全局模板", icon: Settings },
   { to: "/scripts", label: "脚本库", icon: Code2 },
 ];
 

@@ -13,7 +13,7 @@ from database.db import DB
 from sqlalchemy import text
 
 
-def create_request_data_processor(db=None):
+def create_request_data_processor(db=None, project_id: int | None = None):
     """构造 v2 http_request step 用的 RequestDataProcessor。
 
     Celery prefork 环境下 DB 连接可能因 fork 变 stale，这里显式 dispose engine
@@ -28,14 +28,15 @@ def create_request_data_processor(db=None):
         except Exception:
             db = DB()
 
-    config_center.reload(db=db.sql, category="api")
-    host = config_center.get("host")
+    config_center.reload(db=db.sql, project_id=project_id, category="api")
+    host = config_center.get("host", project_id=project_id)
     LOGGER.info(f"[factory] config_center host={host}")
+    target_db = config_center.get("target_db", project_id=project_id)
 
     return RequestDataProcessor(
-        header_key=config_center.get("header"),
+        header_key=config_center.get("header", project_id=project_id),
         host_key=host,
-        default_parameters=config_center.get("default_parameters"),
-        ed=config_center.get("encryption_decryption"),
-        db=DB(config_center.get("target_db")) if config_center.get("target_db") else None,
+        default_parameters=config_center.get("default_parameters", project_id=project_id),
+        ed=config_center.get("encryption_decryption", project_id=project_id),
+        db=DB(target_db) if target_db else None,
     )
