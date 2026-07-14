@@ -16,8 +16,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from database.models import (
+    CASE_TYPE_ANDROID,
     CASE_TYPE_API,
     CASE_TYPE_FUNCTIONAL,
+    CASE_TYPE_IOS,
+    CASE_TYPE_MIXED,
+    CASE_TYPE_WEB,
     ModuleOutline,
     ModuleOutlinePoint,
     TestCase,
@@ -28,13 +32,32 @@ from database.models import (
 
 
 def _case_type_for_mode(mode: str) -> str:
-    return CASE_TYPE_API if (mode or "").lower() == "interface" else CASE_TYPE_FUNCTIONAL
+    normalized = (mode or "").lower()
+    return {
+        "interface": CASE_TYPE_API,
+        CASE_TYPE_API: CASE_TYPE_API,
+        CASE_TYPE_WEB: CASE_TYPE_WEB,
+        CASE_TYPE_ANDROID: CASE_TYPE_ANDROID,
+        CASE_TYPE_IOS: CASE_TYPE_IOS,
+        CASE_TYPE_MIXED: CASE_TYPE_MIXED,
+    }.get(normalized, CASE_TYPE_FUNCTIONAL)
 
 
-def get_outline(session, module_id: int) -> ModuleOutline | None:
+def _outline_mode_for_mode(mode: str) -> str:
+    """统一大纲域名称；历史 API 大纲沿用 interface，其他域使用 case_type。"""
+    case_type = _case_type_for_mode(mode)
+    return "interface" if case_type == CASE_TYPE_API else case_type
+
+
+def get_outline(session, module_id: int, mode: str) -> ModuleOutline | None:
+    """按模块和用例类型读取大纲，避免功能/API 大纲相互串用。"""
+    effective_mode = _outline_mode_for_mode(mode)
     return (
         session.query(ModuleOutline)
-        .filter(ModuleOutline.module_id == module_id)
+        .filter(
+            ModuleOutline.module_id == module_id,
+            ModuleOutline.mode == effective_mode,
+        )
         .first()
     )
 
@@ -52,10 +75,10 @@ def _current_cases(session, module_id: int, mode: str) -> list[TestCase]:
 def compute_align_changes(session, module_id: int, mode: str) -> dict[str, Any]:
     """比对大纲 ↔ 当前用例，返回 changes（不落库）。
 
-    mode 优先取已存在大纲的 mode，其次用入参。
+    功能与接口大纲按 mode 隔离，只与同类型用例对齐。
     """
-    outline = get_outline(session, module_id)
-    effective_mode = (outline.mode if outline else None) or mode or "functional"
+    effective_mode = _outline_mode_for_mode(mode)
+    outline = get_outline(session, module_id, effective_mode)
     points: list[ModuleOutlinePoint] = list(outline.points) if outline else []
     cases = _current_cases(session, module_id, effective_mode)
 
@@ -148,7 +171,7 @@ def apply_align(session, module_id: int, mode: str) -> dict[str, Any]:
     result = compute_align_changes(session, module_id, mode)
     effective_mode = result["mode"]
 
-    outline = get_outline(session, module_id)
+    outline = get_outline(session, module_id, effective_mode)
     if outline is None:
         outline = ModuleOutline(module_id=module_id, mode=effective_mode)
         session.add(outline)
@@ -192,13 +215,13 @@ def apply_align(session, module_id: int, mode: str) -> dict[str, Any]:
     return outline.to_dict()
 
 
-def purge_unlinked_points(session, module_id: int) -> dict[str, Any]:
+def purge_unlinked_points(session, module_id: int, mode: str) -> dict[str, Any]:
     """清理垃圾：删掉没有关联用例的测试点（gap / 未 link），只保留"同步自真实用例"的点。
 
     用于清掉历史上"生成大纲自动落库"灌进来的、没有对应用例的 gap 点。
     返回 {removed, outline}。
     """
-    outline = get_outline(session, module_id)
+    outline = get_outline(session, module_id, mode)
     if outline is None:
         return {"removed": 0, "outline": None}
     removed = 0
@@ -211,13 +234,13 @@ def purge_unlinked_points(session, module_id: int) -> dict[str, Any]:
     return {"removed": removed, "outline": outline.to_dict()}
 
 
-def diff_ai_points(session, module_id: int, ai_points: list[dict]) -> dict[str, Any]:
+def diff_ai_points(session, module_id: int, mode: str, ai_points: list[dict]) -> dict[str, Any]:
     """把 AI 增量重规划产出的测试点和现有大纲比对，返回 diff（不落库）。
 
     只产出 `added`（标题在现有大纲里不存在的新点）。obsolete 不自动判定（见设计文档 §9），
     交由人工在大纲里删除。用于「AI 重新规划」的预览。
     """
-    outline = get_outline(session, module_id)
+    outline = get_outline(session, module_id, mode)
     existing_titles = {
         (p.title or "").strip() for p in (outline.points if outline else [])
     }
@@ -260,13 +283,14 @@ def upsert_outline_from_ai(
     points: [{"title": ..., "category": ...}, ...]
     已存在大纲则更新 digest/mode/model 并追加尚不存在的点（按标题去重），不清空已有点。
     """
-    outline = get_outline(session, module_id)
+    effective_mode = _outline_mode_for_mode(mode)
+    outline = get_outline(session, module_id, effective_mode)
     if outline is None:
-        outline = ModuleOutline(module_id=module_id, mode=mode or "functional")
+        outline = ModuleOutline(module_id=module_id, mode=effective_mode)
         session.add(outline)
         session.flush()
     outline.digest = digest or outline.digest
-    outline.mode = mode or outline.mode
+    outline.mode = effective_mode
     if model_name:
         outline.model_name = model_name
 

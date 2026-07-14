@@ -1639,11 +1639,15 @@ class BatchPoint(pydantic.BaseModel):
 # 模块大纲：长期保存 + 刷新对齐（大纲 ↔ 当前用例）。设计见 docs/module_outline_design.md
 # ---------------------------------------------------------------------------
 @router.get("/module_outline")
-def get_module_outline(db: DBDep, module_id: int = Query(...)):
+def get_module_outline(
+    db: DBDep,
+    module_id: int = Query(...),
+    mode: str = Query("functional"),
+):
     """读某模块的大纲（digest + 测试点 + 覆盖统计）。没有则返回 null。"""
     from server.services.module_outline_service import get_outline
 
-    outline = get_outline(db.session, module_id)
+    outline = get_outline(db.session, module_id, mode)
     return {"status": "success", "data": outline.to_dict() if outline else None}
 
 
@@ -1675,7 +1679,7 @@ def module_outline_purge_gaps(payload: OutlineAlignRequest, db: DBDep):
     """清理没有关联用例的测试点（缺口垃圾），只保留同步自真实用例的点。"""
     from server.services.module_outline_service import purge_unlinked_points
 
-    data = purge_unlinked_points(db.session, payload.module_id)
+    data = purge_unlinked_points(db.session, payload.module_id, payload.mode)
     return {"status": "success", "data": data, "message": f"已清理 {data['removed']} 个未覆盖测试点"}
 
 
@@ -1772,7 +1776,7 @@ def module_outline_replan_preview(payload: OutlineReplanRequest, db: DBDep):
         raise HTTPException(status_code=404, detail="模块不存在")
 
     # 增量模式：把现有测试点作为上下文，让 AI 只针对变更补新点、不重复已有。
-    outline = get_outline(db.session, payload.module_id)
+    outline = get_outline(db.session, payload.module_id, payload.mode)
     parts = []
     if payload.change_text.strip():
         parts.append("## 本次新增 / 变更的需求\n" + payload.change_text.strip())
@@ -1789,7 +1793,7 @@ def module_outline_replan_preview(payload: OutlineReplanRequest, db: DBDep):
     requirement_text = "\n\n".join(parts) or "（未提供变更说明，请基于模块名与跨模块信息推断需要补充的测试点）"
 
     digest, points = _run_outline_ai(db, module, payload.mode, requirement_text, payload.model_name)
-    diff = diff_ai_points(db.session, payload.module_id, points)
+    diff = diff_ai_points(db.session, payload.module_id, payload.mode, points)
     diff["digest"] = digest
     diff["points"] = points  # 回传给 apply（避免再跑一次 AI）
     return {"status": "success", "data": diff}

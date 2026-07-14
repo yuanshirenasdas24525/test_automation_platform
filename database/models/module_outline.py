@@ -1,6 +1,6 @@
 """ModuleOutline / ModuleOutlinePoint —— 模块级"测试点大纲"长期保存。
 
-替代原来存在浏览器 localStorage 的临时草稿。一个模块一份大纲（digest + 测试点），
+替代原来存在浏览器 localStorage 的临时草稿。一个模块的每种用例类型各有一份大纲（digest + 测试点），
 测试点可关联到具体用例，据此区分"已覆盖 / 缺口"。
 
 - 初次：AI 规划产出 → 落库（source=ai，status=gap）。
@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 
 from database.base import Base
@@ -37,19 +37,22 @@ ALL_OUTLINE_POINT_SOURCES = {
 
 
 class ModuleOutline(Base):
-    """一个模块一份大纲。"""
+    """一个模块按用例类型各保存一份大纲。"""
     __tablename__ = "module_outlines"
+    __table_args__ = (
+        UniqueConstraint("module_id", "mode", name="uq_module_outlines_module_mode"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
-    # 一模块一份：module_id 唯一
+    # 功能/API/Web/Android/iOS 等用例域相互独立，唯一性由 (module_id, mode) 保证。
     module_id = Column(
         Integer,
         ForeignKey("modules.id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
         index=True,
     )
-    mode = Column(String(20), nullable=False, default="functional")  # functional | interface
+    # functional | interface(API) | web | android | ios | mixed
+    mode = Column(String(20), nullable=False, default="functional")
     # AI 产出的需求摘要，供分批生成 / 增量规划复用
     digest = Column(Text, nullable=True)
     model_name = Column(String(100), nullable=True)

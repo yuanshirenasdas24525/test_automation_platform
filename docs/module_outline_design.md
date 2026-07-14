@@ -24,7 +24,7 @@
 
 ## 2. 概念模型
 
-- **大纲（Outline）**：一个模块一份，包含一段需求摘要 `digest` 和一组**测试点**。
+- **大纲（Outline）**：一个模块的每种用例类型各一份，包含一段需求摘要 `digest` 和一组**测试点**。
 - **测试点（Point）**：一条“应该测什么”，可关联到一条具体用例。
 - **覆盖状态**：
   - `covered`：该测试点已关联到一条存在的用例。
@@ -45,8 +45,8 @@
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | Integer PK | |
-| `module_id` | Integer FK→modules.id, **unique**, index | 一模块一份大纲 |
-| `mode` | String(20) | `functional` / `interface` |
+| `module_id` | Integer FK→modules.id, index | 与 `mode` 组成唯一键，同一模块的功能/API 大纲相互独立 |
+| `mode` | String(20) | `functional` / `interface`（API）/ `web` / `android` / `ios` / `mixed` |
 | `digest` | Text | AI 产出的需求摘要，供后续分批生成 / 增量规划复用 |
 | `model_name` | String(100) nullable | 最近一次生成/规划用的模型 |
 | `last_aligned_at` | DateTime nullable | 最近一次“刷新对齐”时间 |
@@ -124,7 +124,7 @@
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `GET` | `/module_outline?module_id=` | 读某模块大纲（digest + points + 覆盖统计）。无则返回空。 |
+| `GET` | `/module_outline?module_id=&mode=` | 按用例类型读某模块大纲（digest + points + 覆盖统计）。无则返回空。 |
 | `POST` | `/module_outline/align_preview` | 入参 `module_id`。**只算** 大纲↔用例 diff，不落库。返回 `changes[]`。 |
 | `POST` | `/module_outline/apply` | 入参 `module_id` + 用户确认后的 `changes[]`（或 diff token）。**落库**。 |
 | `POST` | `/ai_generate_outline` | **扩展**：新增 `incremental`、`existing_points`、`change_text` 入参；`incremental=true` 时基于现有大纲产出增量（供增量重规划的 diff）。 |

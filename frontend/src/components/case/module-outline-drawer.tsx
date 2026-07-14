@@ -65,10 +65,10 @@ export function ModuleOutlinePanel({
   const [incremental, setIncremental] = useState(true);
   const [modelName, setModelName] = useState("");
 
-  const outlineKey = ["module-outline", moduleId] as const;
+  const outlineKey = ["module-outline", moduleId, mode] as const;
   const outlineQuery = useQuery({
     queryKey: outlineKey,
-    queryFn: () => moduleOutlineApi.get(moduleId as number),
+    queryFn: () => moduleOutlineApi.get(moduleId as number, mode),
     enabled: moduleId != null,
   });
   const outline = outlineQuery.data ?? null;

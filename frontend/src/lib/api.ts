@@ -579,9 +579,9 @@ export const casesApi = {
 // -------------------------------------------------------------------------
 export const moduleOutlineApi = {
   /** 读某模块大纲；没有则返回 null。 */
-  get(moduleId: number) {
+  get(moduleId: number, mode: string = "functional") {
     return request<ModuleOutline | null>(
-      `/api/functional_cases/module_outline?module_id=${moduleId}`,
+      `/api/functional_cases/module_outline?module_id=${moduleId}&mode=${encodeURIComponent(mode)}`,
     );
   },
   /** 算大纲 ↔ 当前用例的 diff（不落库）。 */
