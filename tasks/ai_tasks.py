@@ -848,6 +848,20 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
             dropped_count = len(flawed)
             LOGGER.warning("[ai_task m7] 自修调用失败,丢弃不合格草稿", exc_info=True)
 
+    # ── 5.6 去重：剔除与同模块已有用例近乎重复的草稿（防越攒越冗余）──
+    from server.services.draft_validation import dedup_against_existing
+
+    valid_items, dup_items = dedup_against_existing(
+        valid_items, ctx.existing_case_titles
+    )
+    dedup_dropped = len(dup_items)
+    if dedup_dropped:
+        LOGGER.info(
+            "[ai_task m7] 去重剔除 %d 条(与已有用例重复): %s",
+            dedup_dropped,
+            [str(i.get("title") or "?")[:30] for i in dup_items],
+        )
+
     # ── 6. 落 ai_case_drafts ─────────────────────────────────
     model_label = f"{cfg.provider} / {cfg.model}"
     created_ids: list[int] = []
@@ -914,6 +928,7 @@ def _handle_functional_case_gen(run: "AiRun", session) -> dict:
                 "flawed": len(flawed),
                 "repaired": repaired_count,
                 "dropped": dropped_count,
+                "dedup_dropped": dedup_dropped,
             },
             "image_strategy": image_strategy,
             "ui_image_count": len(image_paths),

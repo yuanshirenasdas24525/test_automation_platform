@@ -1445,6 +1445,34 @@ export interface CaseGenerationRun extends AiRun {
   model_name?: string | null;
 }
 
+/** 用例覆盖率（GET /api/requirements/coverage）。 */
+export interface CoverageRequirementRow {
+  requirement_id: number;
+  title: string;
+  priority: number | null;
+  module: string | null;
+  status: string | null;
+  case_count: number;
+  pending_draft_count: number;
+  coverage: "covered" | "has_drafts" | "gap";
+}
+export interface CoverageResult {
+  by_requirement: {
+    project_id: number;
+    total: number;
+    covered: number;
+    uncovered: number;
+    coverage_rate: number | null;
+    requirements: CoverageRequirementRow[];
+  };
+  by_module: Array<{
+    module_id: number;
+    name: string;
+    total: number;
+    by_type: Record<string, number>;
+  }>;
+}
+
 /** Requirements 列表过滤参数（GET /api/requirements）。 */
 export interface RequirementListFilters {
   status?: RequirementStatus;

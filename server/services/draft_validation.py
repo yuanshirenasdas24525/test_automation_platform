@@ -73,6 +73,51 @@ def validate_functional_draft(item: dict) -> list[str]:
     return errors
 
 
+def _norm_title(s: str) -> str:
+    """标题归一化：去场景前缀标记、标点、空白，转小写，便于比相似度。"""
+    import re
+    t = str(s or "")
+    t = re.sub(r"^[【\[（(]?(正向|异常|边界|安全|参数校验|鉴权|越权|场景|前置链)[】\]）)]?[:：]?", "", t)
+    t = re.sub(r"[\s\-_、，,。.；;：:（）()【】\[\]]+", "", t)
+    return t.lower()
+
+
+def dedup_against_existing(
+    items: list[dict], existing_titles: list[str], threshold: float = 0.88,
+) -> tuple[list[dict], list[dict]]:
+    """把与已有用例近乎重复的草稿剔除。返回 (保留, 判为重复)。
+
+    先批内互相去重（同批别产两条几乎一样的），再与已入库用例比。
+    用 difflib 序列相似度（词法），不依赖 embedding 配置——先跑起来，
+    需要更强语义去重再接 embeddings。
+    """
+    import difflib
+
+    existing_norm = [_norm_title(t) for t in (existing_titles or []) if t]
+    kept: list[dict] = []
+    dups: list[dict] = []
+    seen_norm: list[str] = []
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        nt = _norm_title(item.get("title") or "")
+        if not nt:
+            kept.append(item)
+            continue
+        pool = existing_norm + seen_norm
+        is_dup = any(
+            nt == e or difflib.SequenceMatcher(None, nt, e).ratio() >= threshold
+            for e in pool
+        )
+        if is_dup:
+            dups.append(item)
+        else:
+            kept.append(item)
+            seen_norm.append(nt)
+    return kept, dups
+
+
 def partition_drafts(items: list) -> tuple[list[dict], list[tuple[dict, list[str]]]]:
     """把解析出的草稿分成（合格, 不合格+错误原因）两组。非 dict 项直接丢弃。"""
     ok: list[dict] = []

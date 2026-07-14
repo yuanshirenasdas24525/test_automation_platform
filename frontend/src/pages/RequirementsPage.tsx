@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeft,
+  BarChart3,
   Bot,
   Check,
   ChevronDown,
@@ -48,6 +49,7 @@ import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { AssigneePicker } from "@/components/pickers/AssigneePicker";
 import { AiAnalysisLauncherDialog } from "./requirements/dialogs/AiAnalysisLauncherDialog";
 import { CaseGenerationReviewDialog } from "./requirements/dialogs/CaseGenerationReviewDialog";
+import { CoverageDialog } from "./requirements/dialogs/CoverageDialog";
 import { AnalysisDocumentListDialog } from "./requirements/dialogs/AnalysisDocumentListDialog";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { cn } from "@/lib/utils";
@@ -124,6 +126,7 @@ export function RequirementsPage() {
   const [splittingParent, setSplittingParent] = useState<Requirement | null>(null);
   const [aiLauncherFor, setAiLauncherFor] = useState<Requirement | null>(null);
   const [caseGenFor, setCaseGenFor] = useState<Requirement | null>(null);
+  const [coverageOpen, setCoverageOpen] = useState(false);
   const [docsListFor, setDocsListFor] = useState<Requirement | null>(null);
   const [detailReq, setDetailReq] = useState<Requirement | null>(null);
 
@@ -277,6 +280,10 @@ export function RequirementsPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setCoverageOpen(true)}>
+            <BarChart3 className="h-4 w-4" />
+            覆盖率
+          </Button>
           <Button variant="outline" size="sm" onClick={() => setEditing({ mode: "create" })}>
             <Plus className="h-4 w-4" />
             新建需求
@@ -450,6 +457,24 @@ export function RequirementsPage() {
         open={!!caseGenFor}
         requirement={caseGenFor}
         onClose={() => setCaseGenFor(null)}
+      />
+
+      <CoverageDialog
+        open={coverageOpen}
+        projectId={projectId}
+        onClose={() => setCoverageOpen(false)}
+        onGenerateFor={(reqId) => {
+          const flat: Requirement[] = [];
+          for (const r of listQuery.data ?? []) {
+            flat.push(r);
+            for (const c of r.children ?? []) flat.push(c);
+          }
+          const target = flat.find((r) => r.id === reqId) ?? null;
+          if (target) {
+            setCoverageOpen(false);
+            setCaseGenFor(target);
+          }
+        }}
       />
 
       <RequirementDetailDrawer

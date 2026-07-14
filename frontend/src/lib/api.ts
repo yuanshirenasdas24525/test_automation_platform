@@ -69,6 +69,7 @@ import type {
   RequirementCreate,
   RequirementEditHistory,
   RequirementListFilters,
+  CoverageResult,
   RequirementRollbackPayload,
   RequirementRollbackResult,
   RequirementSplitItem,
@@ -1526,6 +1527,9 @@ export const requirementsApi = {
   },
   get(id: number) {
     return request<Requirement>(`/api/requirements/${id}`);
+  },
+  coverage(projectId: number) {
+    return request<CoverageResult>(`/api/requirements/coverage?project_id=${projectId}`);
   },
   create(payload: RequirementCreate) {
     return request<Requirement>("/api/requirements", {

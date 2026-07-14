@@ -316,6 +316,24 @@ def create_requirement(payload: RequirementCreate, db: DBDep):
     return {"status": "success", "data": _serialize(req)}
 
 
+@router.get("/coverage")
+def get_coverage(
+    db: DBDep,
+    project_id: int = Query(..., description="项目 id 必填"),
+):
+    """用例覆盖率：按需求列出用例数/待评审草稿数/缺口分级 + 按模块的用例分布。
+    缺口(gap，0 用例)且高优先级的需求排在最前，是最该优先补的地方。"""
+    from server.services.coverage_service import module_coverage, requirement_coverage
+
+    return {
+        "status": "success",
+        "data": {
+            "by_requirement": requirement_coverage(db.session, project_id),
+            "by_module": module_coverage(db.session, project_id),
+        },
+    }
+
+
 @router.get("")
 def list_requirements(
     db: DBDep,
