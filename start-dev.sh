@@ -24,6 +24,28 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_ROOT"
 
+# ---- 读取 .env（若存在）----
+# DB_PASSWORD / JWT_SECRET_KEY 等敏感量都从这里来，导出后本地 app / alembic /
+# celery 与 docker compose 起的 postgres 共用同一套口令。缺 .env 时给出明确提示，
+# 而不是让 docker compose 抛一句难懂的 interpolation 报错。
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+else
+  warn_env() { printf "\033[1;33m! %s\033[0m\n" "$*"; }
+  warn_env "未找到 .env —— 现在 DB_PASSWORD / JWT_SECRET_KEY 为必填（fail-closed）。"
+  echo "    在项目根建 .env，至少包含："
+  echo "        DB_HOST=127.0.0.1"
+  echo "        DB_USER=tap"
+  echo "        DB_PASSWORD=<随机口令>"
+  echo "        DB_NAME=tap"
+  echo "        JWT_SECRET_KEY=<≥32位随机串>"
+  echo "    生成随机值： python -c 'import secrets;print(secrets.token_urlsafe(48))'"
+  exit 1
+fi
+
 # ---- 可调参数（环境变量覆盖）----
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-54351}"
@@ -102,10 +124,31 @@ if [[ "$START_INFRA" == "1" ]]; then
   fi
 fi
 
-# ---- 3. 数据库迁移 ----
+# ---- 2.5 起服务前自动备份（安全网，best-effort，不阻塞启动）----
+# 每次起服务前把当前库 dump 到 data/backups/，只保留最近 10 份。
+# 关掉：AUTO_BACKUP=0 ./start-dev.sh
+AUTO_BACKUP="${AUTO_BACKUP:-1}"
+if [[ "$AUTO_BACKUP" == "1" ]] && command -v docker >/dev/null 2>&1; then
+  if docker ps --format '{{.Names}}' | grep -q '^tap_postgres$'; then
+    mkdir -p data/backups
+    _bk="data/backups/tap_autostart_$(date +%Y%m%d_%H%M%S).sql"
+    if docker exec -t tap_postgres pg_dump -U "${DB_USER:-tap}" -d "${DB_NAME:-tap}" > "$_bk" 2>/dev/null && [[ -s "$_bk" ]]; then
+      log "已自动备份数据库 → $_bk"
+      ls -1t data/backups/tap_autostart_*.sql 2>/dev/null | tail -n +11 | xargs -r rm -f
+    else
+      rm -f "$_bk"   # 空库/失败不留空文件
+    fi
+  fi
+fi
+
+# ---- 3. 数据库初始化 / 迁移 ----
+# 注意：本项目的核心表（projects 等）由 ORM create_all 建，alembic 只管增量。
+# 所以空库不能裸跑 `alembic upgrade head`（第一条迁移就会因 projects 不存在而挂）。
+# init_fresh_db.py 幂等处理两种情况：空库→建表+seed角色+stamp head；已有库→增量 upgrade。
+# 与 docker-entrypoint.sh 的行为保持一致。
 if [[ "$RUN_MIGRATIONS" == "1" ]]; then
-  log "alembic upgrade head"
-  "$PYBIN" -m alembic upgrade head
+  log "初始化/迁移数据库（scripts/init_fresh_db.py）"
+  "$PYBIN" scripts/init_fresh_db.py
 fi
 
 # ---- 4. 后端 API ----

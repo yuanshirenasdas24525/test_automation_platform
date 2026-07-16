@@ -1,7 +1,7 @@
 # 测试自动化平台 —— 常用本地命令入口
 # 用法：make dev / make stop / make migrate / make lint / make build
 
-.PHONY: help venv setup dev stop migrate lint build backfill-flags check-flags
+.PHONY: help venv setup dev stop migrate db-backup db-restore lint build backfill-flags check-flags
 
 # PIP_TRUSTED=1 时跳过 pip 的 SSL 证书校验（公司网络做 SSL 检查 / 证书装不全时用）
 PIP_TRUSTED ?= 0
@@ -13,7 +13,9 @@ help:
 	@echo "  make setup    安装后端(venv) + 前端依赖（首次必跑）"
 	@echo "  make dev      启动本地开发环境（依赖 + API + worker + beat + 前端）"
 	@echo "  make stop     停止本地开发环境的残留进程"
-	@echo "  make migrate  alembic upgrade head"
+	@echo "  make migrate  初始化/迁移数据库（空库建表+stamp，已有库增量）"
+	@echo "  make db-backup            pg_dump 备份到 data/backups/"
+	@echo "  make db-restore FILE=xxx  从备份文件恢复"
 	@echo "  make lint     前端 eslint + 后端 ruff 检查"
 	@echo "  make build    前端构建（tsc -b + vite build）"
 	@echo "  make backfill-flags           历史 AI 诊断回填成用例标记（幂等可重跑）"
@@ -46,8 +48,31 @@ migrate:
 	if ! $$PY -c "import alembic" >/dev/null 2>&1; then \
 		echo "✗ 当前 Python 没装 alembic。先跑： make setup（或 source venv/bin/activate 后再 make migrate）"; exit 1; \
 	fi; \
-	echo "▶ $$PY -m alembic upgrade head"; \
-	$$PY -m alembic upgrade head
+	echo "▶ $$PY scripts/init_fresh_db.py（空库建表+stamp / 已有库增量 upgrade）"; \
+	$$PY scripts/init_fresh_db.py
+
+# 备份数据库到 data/backups/（用 docker exec 进 postgres 容器 pg_dump，免装本机 pg 客户端）
+db-backup:
+	@mkdir -p data/backups
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	if ! docker ps --format '{{.Names}}' | grep -q '^tap_postgres$$'; then \
+		echo "✗ 找不到运行中的 tap_postgres 容器，先 make dev 或 docker compose up -d postgres"; exit 1; \
+	fi; \
+	ts=$$(date +%Y%m%d_%H%M%S); f=data/backups/tap_$$ts.sql; \
+	docker exec -t tap_postgres pg_dump -U $${DB_USER:-tap} -d $${DB_NAME:-tap} > $$f \
+		&& echo "✓ 已备份到 $$f （$$(du -h $$f | cut -f1)）" \
+		|| (echo "✗ 备份失败"; rm -f $$f; exit 1)
+
+# 从备份恢复： make db-restore FILE=data/backups/tap_YYYYmmdd_HHMMSS.sql
+db-restore:
+	@test -n "$(FILE)" || (echo "用法： make db-restore FILE=data/backups/xxx.sql"; exit 1)
+	@test -f "$(FILE)" || (echo "✗ 文件不存在： $(FILE)"; exit 1)
+	@set -a; [ -f .env ] && . ./.env; set +a; \
+	if ! docker ps --format '{{.Names}}' | grep -q '^tap_postgres$$'; then \
+		echo "✗ 找不到运行中的 tap_postgres 容器，先 make dev 或 docker compose up -d postgres"; exit 1; \
+	fi; \
+	docker exec -i tap_postgres psql -U $${DB_USER:-tap} -d $${DB_NAME:-tap} < "$(FILE)" \
+		&& echo "✓ 已从 $(FILE) 恢复"
 
 # 历史 AI 诊断（ai_runs.feature=api_report_fix）→ 用例标记；幂等，可重复跑
 backfill-flags:

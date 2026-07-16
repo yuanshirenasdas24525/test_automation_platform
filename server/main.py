@@ -45,6 +45,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+
+class _DownloadStaticFiles(StaticFiles):
+    """给用户上传的附件强制加安全响应头，杜绝内联渲染带来的存储型 XSS。
+
+    - ``Content-Disposition: attachment`` → 浏览器下载而非内联执行（含 SVG/HTML）
+    - ``X-Content-Type-Options: nosniff`` → 关闭 MIME 嗅探，防止 .png 里塞 HTML 被当页面
+    - ``Content-Security-Policy: sandbox`` → 即便被打开也运行在受限沙箱
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Content-Disposition"] = "attachment"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
+        return resp
+
 from server.api import (
     ai_router,
     ai_case_generation_router,
@@ -111,8 +127,14 @@ async def lifespan(_app: FastAPI):
 # 生产环境设 BACKEND_CORS_ORIGINS="https://foo.com,https://bar.com"
 # ---------------------------------------------------------------------------
 def _cors_origins() -> list[str]:
-    raw = os.getenv("BACKEND_CORS_ORIGINS", "*").strip()
-    if raw == "*" or not raw:
+    # 默认收紧为空（不放开任何跨域来源）。需要跨域时显式设置：
+    #   BACKEND_CORS_ORIGINS="https://foo.com,https://bar.com"
+    # 开发期要全放开，显式设 BACKEND_CORS_ORIGINS="*"。
+    # 之所以不再默认 "*"：一旦将来改用 cookie 认证，通配来源就是 CSRF/跨域读取口子。
+    raw = os.getenv("BACKEND_CORS_ORIGINS", "").strip()
+    if not raw:
+        return []
+    if raw == "*":
         return ["*"]
     return [o.strip() for o in raw.split(",") if o.strip()]
 
@@ -202,7 +224,11 @@ app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 # 需求附件：用户上传到 data/attachments/req_{id}/，前端用 /attachments/req_{id}/{name} 访问。
 # StaticFiles 要求 import 时目录就存在，所以这里先 mkdir 一次（lifespan 里还会再 ensure）。
 ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/attachments", StaticFiles(directory=str(ATTACHMENTS_DIR)), name="attachments")
+app.mount(
+    "/attachments",
+    _DownloadStaticFiles(directory=str(ATTACHMENTS_DIR)),
+    name="attachments",
+)
 
 # React 前端 dist：开发期可能还没 build，mount 前先判一下
 if (FRONTEND_DIST / "assets").is_dir():
@@ -237,8 +263,11 @@ def spa_fallback(full_path: str = ""):
 
     # 命中 dist 里的真实静态文件就直接返回（favicon.ico、manifest.json 之类）
     if full_path:
-        candidate = FRONTEND_DIST / full_path
-        if candidate.is_file():
+        candidate = (FRONTEND_DIST / full_path).resolve()
+        dist_root = FRONTEND_DIST.resolve()
+        # 防目录穿越：resolve() 后必须仍落在 FRONTEND_DIST 内，
+        # 否则 ../ 或 ..%2f 之类可读到 dist 外的任意文件。
+        if candidate.is_file() and (candidate == dist_root or dist_root in candidate.parents):
             return FileResponse(candidate)
 
     return FileResponse(FRONTEND_DIST / "index.html")

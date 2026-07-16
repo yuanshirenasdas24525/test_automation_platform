@@ -24,6 +24,9 @@ x-app-common: &app-common
     PYTHONUNBUFFERED: "1"
     # 生产环境必须设置（≥32 位随机串）；不设则回退到配置中心/默认值
     JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+    # CORS 允许来源，默认空（收紧）。api 容器同源托管前端时无需设置；
+    # 前后端分域部署时填 "https://foo.com,https://bar.com"。
+    BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
     # 探活
     REDIS_HOST: redis
@@ -37,8 +40,9 @@ x-app-common: &app-common
     DB_HOST: postgres
     DB_PORT: "5432"
     DB_USER: ${DB_USER:-tap}
-    # 生产部署请在 .env 或环境里覆盖 DB_PASSWORD，不要用默认值
-    DB_PASSWORD: ${DB_PASSWORD:-tap_pass}
+    # DB_PASSWORD 无默认值：未在 .env / 环境变量里显式设置时，compose 直接报错拒绝启动，
+    # 避免全网复用同一个 git 里就能看到的弱口令。
+    DB_PASSWORD: ${DB_PASSWORD:?请在 .env 或环境变量中设置 DB_PASSWORD}
     DB_NAME: ${DB_NAME:-tap}
   volumes: &app-vols
     # 数据 / 日志 / 报告 / app 包都挂出来，container 重建不丢数据
@@ -80,7 +84,7 @@ services:
     container_name: tap_postgres
     environment:
       POSTGRES_USER: ${DB_USER:-tap}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-tap_pass}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?请在 .env 或环境变量中设置 DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME:-tap}
     ports:
       - "127.0.0.1:5432:5432"
@@ -162,8 +166,12 @@ services:
     image: appium/appium:latest
     platform: linux/amd64
     container_name: tap_appium
+    # Appium 无鉴权，暴露到 0.0.0.0 等于把连接设备/宿主机的任意操作（装 APK、
+    # adb shell、文件读写）开放给同网段任何人。只绑本机回环；worker/api 通过
+    # compose 内部网络用服务名 appium:4723 互访，不受此影响。
+    # 确需跨机访问时，请在前面加带鉴权的反向代理，不要直接放开这个端口。
     ports:
-      - "4723:4723"
+      - "127.0.0.1:4723:4723"
     volumes:
       # adb key 持久化（Android 设备授权）
       - appium_adb_keys:/home/androidusr/.android

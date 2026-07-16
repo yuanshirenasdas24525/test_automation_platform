@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import hashlib
 import hmac
@@ -169,14 +170,73 @@ def list_script_names(kind: str, project_id: int | None = None) -> list[str]:
                 pass
 
 
+# 限 builtins 之所以不构成沙箱，是因为攻击者可以通过任意对象的 dunder 属性
+# （__class__ / __mro__ / __subclasses__ / __globals__ 等）爬到 os、subprocess。
+# 因此在编译前用 AST 静态拦掉所有 dunder 属性/名称访问，堵死经典逃逸链。
+# 说明：这仍是「加固的 exec」，不是真正的进程级沙箱；对不可信来源脚本，
+# 仍建议进程隔离（子进程 + seccomp / nsjail / 容器）。这里作为纵深防御。
+_FORBIDDEN_DUNDERS = {
+    "__class__", "__bases__", "__base__", "__subclasses__", "__mro__",
+    "__globals__", "__builtins__", "__import__", "__code__", "__closure__",
+    "__dict__", "__getattribute__", "__getattr__", "__subclasshook__",
+    "__reduce__", "__reduce_ex__", "__init_subclass__", "__loader__",
+    "__spec__", "__self__", "__func__", "__wrapped__", "__module__",
+}
+
+
+class _ScriptSecurityError(ValueError):
+    """脚本包含被禁止的危险构造。"""
+
+
+class _SandboxGuard(ast.NodeVisitor):
+    """静态拒绝任何 dunder 属性访问、dunder 名称引用及 import 语句。"""
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+        attr = node.attr
+        if attr.startswith("__") and attr.endswith("__"):
+            raise _ScriptSecurityError(f"脚本禁止访问 dunder 属性：{attr}")
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+        name = node.id
+        if name in _FORBIDDEN_DUNDERS or (name.startswith("__") and name.endswith("__")):
+            raise _ScriptSecurityError(f"脚本禁止引用名称：{name}")
+        self.generic_visit(node)
+
+    # import 走 _safe_import 白名单即可，这里额外静态提示更友好
+    def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        for alias in node.names:
+            root = alias.name.split(".", 1)[0]
+            if root not in ALLOWED_MODULES:
+                raise _ScriptSecurityError(f"脚本不允许导入模块：{alias.name}")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        root = (node.module or "").split(".", 1)[0]
+        if root not in ALLOWED_MODULES:
+            raise _ScriptSecurityError(f"脚本不允许导入模块：{node.module}")
+        self.generic_visit(node)
+
+
+def _validate_script_ast(code: str) -> ast.AST:
+    tree = ast.parse(code, "<script_store>", "exec")
+    _SandboxGuard().visit(tree)
+    return tree
+
+
 def compile_script(code: str) -> dict[str, Any]:
-    """编译脚本并返回命名空间。"""
+    """编译脚本并返回命名空间。
+
+    编译前做一次 AST 安全校验：禁止 dunder 属性/名称访问和非白名单 import，
+    避免通过 ``().__class__.__subclasses__()`` 之类的经典链逃逸到 os/subprocess。
+    """
+    tree = _validate_script_ast(code)
     globals_dict: dict[str, Any] = {
         "__builtins__": {**SAFE_BUILTINS, "__import__": _safe_import},
         **ALLOWED_MODULES,
     }
     locals_dict: dict[str, Any] = {}
-    exec(compile(code, "<script_store>", "exec"), globals_dict, locals_dict)  # noqa: S102
+    exec(compile(tree, "<script_store>", "exec"), globals_dict, locals_dict)  # noqa: S102
     return {**globals_dict, **locals_dict}
 
 

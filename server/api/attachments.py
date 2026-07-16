@@ -20,11 +20,11 @@ from typing import Optional
 import pydantic
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from server.api.deps import DBDep
+from server.api.deps import CurrentUserDep, DBDep
+from server.api.authz import assert_requirement_access
 from database.models import (
     Attachment,
     Requirement,
-    User,
     ATTACHMENT_KIND_FILE,
     ATTACHMENT_KIND_LINK,
     ALL_ATTACHMENT_KINDS,
@@ -37,9 +37,11 @@ ATTACHMENTS_DIR = _PROJECT_ROOT / "data" / "attachments"
 
 ATTACHMENT_MAX_BYTES = 20 * 1024 * 1024  # 20 MB
 
-# 白名单后缀（小写）；空集合表示不允许
+# 白名单后缀（小写）；空集合表示不允许。
+# 注意：.svg 已移除——SVG 可内嵌 <script>，附件以静态资源原样返回时会造成存储型 XSS。
+# 如需展示矢量图，请改用 png/webp，或经过服务端消毒后再允许。
 ALLOWED_EXTS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
     ".pdf",
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".txt", ".md", ".csv", ".log", ".json", ".xml",
@@ -76,8 +78,9 @@ def _require_requirement(session, req_id: int) -> Requirement:
 
 
 @router.get("/requirements/{req_id}/attachments")
-def list_attachments(req_id: int, db: DBDep):
-    _require_requirement(db.session, req_id)
+def list_attachments(req_id: int, db: DBDep, current_user: CurrentUserDep):
+    req = _require_requirement(db.session, req_id)
+    assert_requirement_access(db, current_user, req)
     rows = (
         db.session.query(Attachment)
         .filter(Attachment.requirement_id == req_id)
@@ -91,13 +94,14 @@ def list_attachments(req_id: int, db: DBDep):
 async def create_attachment(
     req_id: int,
     db: DBDep,
+    current_user: CurrentUserDep,
     kind: str = Form(...),
     name: Optional[str] = Form(None),
     url: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
-    uploaded_by_id: Optional[int] = Form(None),
 ):
     req = _require_requirement(db.session, req_id)
+    assert_requirement_access(db, current_user, req)
 
     if kind not in ALL_ATTACHMENT_KINDS:
         raise HTTPException(
@@ -105,10 +109,9 @@ async def create_attachment(
             detail=f"非法 kind，仅 {sorted(ALL_ATTACHMENT_KINDS)}",
         )
 
-    if uploaded_by_id is not None:
-        u = db.session.query(User).filter(User.id == uploaded_by_id).first()
-        if u is None:
-            raise HTTPException(status_code=404, detail="上传用户不存在")
+    # 安全：上传者一律取自认证身份，绝不接受前端传入的 uploaded_by_id（可伪造，
+    # 会污染审计信息）。
+    uploaded_by_id = current_user.id
 
     if kind == ATTACHMENT_KIND_LINK:
         if not (name and url):
@@ -168,10 +171,14 @@ async def create_attachment(
 
 
 @router.delete("/attachments/{att_id}")
-def delete_attachment(att_id: int, db: DBDep):
+def delete_attachment(att_id: int, db: DBDep, current_user: CurrentUserDep):
     att = db.session.query(Attachment).filter(Attachment.id == att_id).first()
     if att is None:
         raise HTTPException(status_code=404, detail="附件不存在")
+
+    # 对象级授权：解析附件所属需求→项目，校验当前用户可访问，杜绝凭 id 越权删除。
+    req = db.session.query(Requirement).filter(Requirement.id == att.requirement_id).first()
+    assert_requirement_access(db, current_user, req)
 
     if att.kind == ATTACHMENT_KIND_FILE:
         # url 形如 /attachments/req_{rid}/{stored}

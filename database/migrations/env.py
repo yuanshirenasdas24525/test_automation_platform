@@ -2,11 +2,12 @@
 Alembic 运行环境。
 
 设计要点：
-1. DB URL 不在 alembic.ini 里硬编码，而是在这里动态组装（从 config/object_conf.ini 读取），
-   保证 Alembic 和业务代码共用同一个数据库。
-2. 通过环境变量 ALEMBIC_DB_URL 或 ALEMBIC_DB_SECTION 可临时切换数据源：
+1. DB URL 不在 alembic.ini 里硬编码，而是在这里从**环境变量**动态组装
+   （与 database/db.py 同源，本地走 .env，容器走 compose env），保证 Alembic
+   和业务代码共用同一个数据库。
+2. 通过环境变量 ALEMBIC_DB_URL 或 DB_HOST 等切换数据源：
       ALEMBIC_DB_URL=postgresql+psycopg2://user:pwd@host:5432/db alembic upgrade head
-      ALEMBIC_DB_SECTION=postgres_local alembic upgrade head
+      DB_HOST=127.0.0.1 DB_USER=tap DB_PASSWORD=... alembic upgrade head
 3. 导入所有 model 让 autogenerate 能扫到（from src.database.models import *）。
 """
 from __future__ import annotations
@@ -30,16 +31,16 @@ if str(ROOT) not in sys.path:
 from database import models  # noqa: F401
 from database.base import Base
 
-# ---------- 从 object_conf.ini 组装 DB URL ----------
+# ---------- 组装 DB URL（纯环境变量驱动）----------
 def _resolve_db_url() -> str:
     from database.engine import build_db_url
 
-    # 优先级 1：环境变量 ALEMBIC_DB_URL
+    # 优先级 1：环境变量 ALEMBIC_DB_URL（完整连接串）
     env_url = os.getenv("ALEMBIC_DB_URL")
     if env_url:
         return env_url
 
-    # 优先级 2：Docker 环境变量 DB_HOST 等 → 自动拼 postgresql URL
+    # 优先级 2：DB_HOST 等离散变量（本地 .env / 容器 compose 注入）→ 拼 postgresql URL
     db_host = os.getenv("DB_HOST")
     if db_host:
         return build_db_url({
@@ -47,16 +48,22 @@ def _resolve_db_url() -> str:
             "host": db_host,
             "port": os.getenv("DB_PORT", "5432"),
             "user": os.getenv("DB_USER", "tap"),
-            "password": os.getenv("DB_PASSWORD", "tap_pass"),
+            "password": os.getenv("DB_PASSWORD", ""),
             "database": os.getenv("DB_NAME", "tap"),
         })
 
-    # 优先级 3：从 object_conf.ini 读取某个 section
-    section = os.getenv("ALEMBIC_DB_SECTION", "postgres_local")
-    from utils.read_conf import read_conf
+    # 优先级 3（可选）：ALEMBIC_DB_SECTION 指向自备 ini 的某节；默认无此文件。
+    section = os.getenv("ALEMBIC_DB_SECTION")
+    if section:
+        from utils.read_conf import read_conf
 
-    db_conf = read_conf.get_dict(section)
-    return build_db_url(db_conf)
+        db_conf = read_conf.get_dict(section)
+        if db_conf:
+            return build_db_url(db_conf)
+
+    raise RuntimeError(
+        "无法解析数据库 URL：请设置 ALEMBIC_DB_URL，或 DB_HOST 等环境变量（见 .env）。"
+    )
 
 
 config = context.config

@@ -29,6 +29,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+# 先加载 .env，保证在任意终端直跑都能连到与 app 一致的库（DB 连接纯 env 驱动）。
+from scripts._env import load_dotenv  # noqa: E402
+
+load_dotenv()
+
 from sqlalchemy import inspect  # noqa: E402
 
 from database import models  # noqa: F401,E402  —— import 触发所有 model 注册到 metadata

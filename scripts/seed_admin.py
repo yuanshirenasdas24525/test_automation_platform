@@ -11,10 +11,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import bcrypt
+# 先加载 .env，保证在任意终端直跑都能连到与 app 一致的库（DB 连接纯 env 驱动）。
+from scripts._env import load_dotenv  # noqa: E402
 
-from database.db import DB
-from database.models import Role, User
+load_dotenv()
+
+import bcrypt  # noqa: E402
+
+from database.db import DB  # noqa: E402
+from database.models import Role, User  # noqa: E402
 
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "Test#123"

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -27,8 +29,9 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 # 密码 & JWT 基础设施
 # ---------------------------------------------------------------------------
 bearer_scheme = HTTPBearer(auto_error=False)
+# 已知的公开占位符。任何环境都绝不允许用它签发 JWT——否则谁都能伪造任意用户 token。
 DEFAULT_SECRET_KEY = "change-me-to-a-random-string-at-least-32-chars"
-PRODUCTION_ENVS = {"prod", "production"}
+MIN_SECRET_KEY_LEN = 32
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
@@ -39,36 +42,103 @@ def _hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
-def _is_production_env() -> bool:
-    raw = (
-        os.getenv("APP_ENV")
-        or os.getenv("ENVIRONMENT")
-        or os.getenv("FASTAPI_ENV")
-        or ""
-    )
-    return raw.strip().lower() in PRODUCTION_ENVS
+def _resolve_secret_key() -> str:
+    """解析 JWT 密钥并做 fail-closed 校验（不区分环境）。
 
-
-def _get_secret_key() -> str:
+    历史实现只在 ``APP_ENV in {prod,production}`` 时才强制校验，导致大量「其实是
+    生产但没标 APP_ENV」的部署静默用公开默认密钥签 JWT——等于任何人可伪造 token。
+    现在无论什么环境：缺失 / 等于公开默认值 / 长度不足一律拒绝，逼使用者显式配置。
+    """
     key = os.getenv("JWT_SECRET_KEY")
     if key:
         secret = key.strip()
     else:
         from utils.reload_config import config_center
 
-        secret = str(config_center.get("auth", "jwt_secret_key", default=DEFAULT_SECRET_KEY)).strip()
+        secret = str(
+            config_center.get("auth", "jwt_secret_key", default="")
+        ).strip()
 
-    if _is_production_env() and (secret == DEFAULT_SECRET_KEY or len(secret) < 32):
-        raise RuntimeError("生产环境必须配置长度不少于 32 位的 JWT_SECRET_KEY")
-
+    if not secret or secret == DEFAULT_SECRET_KEY or len(secret) < MIN_SECRET_KEY_LEN:
+        raise RuntimeError(
+            "必须配置 JWT 密钥：设置环境变量 JWT_SECRET_KEY 或配置中心 auth.jwt_secret_key，"
+            f"长度不少于 {MIN_SECRET_KEY_LEN} 位的随机串，且不得使用默认占位值。"
+        )
     return secret
 
 
-SECRET_KEY = _get_secret_key()
+_SECRET_KEY_CACHE: str | None = None
+
+
+def _secret_key() -> str:
+    """惰性获取并缓存密钥。
+
+    改为惰性求值（而非模块导入期），这样单测/工具链 import 本模块不会触发读配置、
+    连库或直接 RuntimeError；只有真正签发/校验 token 时才要求密钥就位。
+    """
+    global _SECRET_KEY_CACHE
+    if _SECRET_KEY_CACHE is None:
+        _SECRET_KEY_CACHE = _resolve_secret_key()
+    return _SECRET_KEY_CACHE
+
+
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 REFRESH_TOKEN_EXPIRE_DAYS = 14
 PROTECTED_ADMIN_USERNAME = "admin"
 MULTI_SESSION_CLIENT_TYPES = {"api"}
+
+
+# ---------------------------------------------------------------------------
+# 登录失败节流：按 (username, ip) 计数，短时间内多次失败即临时锁定。
+#
+# 说明：这是进程内实现，多 worker 下各自计数，不是全局强一致；作为在线爆破的
+# 第一道减速带足够，若要严格全局限速请接入 Redis。锁定只针对失败尝试，成功登录
+# 立即清零。
+# ---------------------------------------------------------------------------
+LOGIN_MAX_FAILURES = 5           # 窗口内允许的最大失败次数
+LOGIN_FAILURE_WINDOW = 300       # 计数窗口（秒）
+LOGIN_LOCKOUT_SECONDS = 300      # 触发后的锁定时长（秒）
+
+_login_attempts: dict[str, tuple[int, float, float]] = {}  # key -> (fails, window_start, locked_until)
+_login_attempts_lock = threading.Lock()
+
+
+def _login_throttle_key(username: str, ip: str | None) -> str:
+    return f"{username}\x00{ip or '-'}"
+
+
+def _check_login_locked(username: str, ip: str | None) -> int:
+    """返回剩余锁定秒数；0 表示未锁定。"""
+    key = _login_throttle_key(username, ip)
+    now = time.monotonic()
+    with _login_attempts_lock:
+        entry = _login_attempts.get(key)
+        if not entry:
+            return 0
+        _, _, locked_until = entry
+        if locked_until > now:
+            return int(locked_until - now) + 1
+    return 0
+
+
+def _register_login_failure(username: str, ip: str | None) -> None:
+    key = _login_throttle_key(username, ip)
+    now = time.monotonic()
+    with _login_attempts_lock:
+        fails, window_start, locked_until = _login_attempts.get(key, (0, now, 0.0))
+        # 窗口过期则重新计数
+        if now - window_start > LOGIN_FAILURE_WINDOW:
+            fails, window_start = 0, now
+        fails += 1
+        if fails >= LOGIN_MAX_FAILURES:
+            locked_until = now + LOGIN_LOCKOUT_SECONDS
+            fails, window_start = 0, now
+        _login_attempts[key] = (fails, window_start, locked_until)
+
+
+def _clear_login_failures(username: str, ip: str | None) -> None:
+    with _login_attempts_lock:
+        _login_attempts.pop(_login_throttle_key(username, ip), None)
 
 
 def _now_utc() -> datetime:
@@ -94,7 +164,7 @@ def _create_access_token(user_id: int, session_id: int | None = None) -> str:
     }
     if session_id is not None:
         payload["sid"] = str(session_id)
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return jwt.encode(payload, _secret_key(), algorithm="HS256")
 
 
 def _create_refresh_token(user_id: int, session_id: int, jti: str) -> str:
@@ -107,12 +177,12 @@ def _create_refresh_token(user_id: int, session_id: int, jti: str) -> str:
         "jti": jti,
         "type": "refresh",
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+    return jwt.encode(payload, _secret_key(), algorithm="HS256")
 
 
 def _decode_token(token: str, expected_type: str) -> dict[str, Any]:
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
+        payload = jwt.decode(token, _secret_key(), algorithms=["HS256"])
     except JWTError:
         raise HTTPException(status_code=401, detail="token 无效或已过期")
     if payload.get("type") != expected_type:
@@ -276,6 +346,15 @@ class LoginResponse(pydantic.BaseModel):
 # ---------------------------------------------------------------------------
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, db: DBDep):
+    ip = _client_ip(request)
+
+    locked_for = _check_login_locked(payload.username, ip)
+    if locked_for > 0:
+        raise HTTPException(
+            status_code=429,
+            detail=f"登录失败次数过多，请 {locked_for} 秒后再试",
+        )
+
     user = (
         db.session.query(User)
         .options(selectinload(User.roles))
@@ -283,11 +362,14 @@ def login(payload: LoginRequest, request: Request, db: DBDep):
         .first()
     )
     if user is None or not user.is_active:
+        _register_login_failure(payload.username, ip)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
     if not user.password_hash or not _verify_password(payload.password, user.password_hash):
+        _register_login_failure(payload.username, ip)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
 
+    _clear_login_failures(payload.username, ip)
     client = _normalize_client(payload.client)
     _revoke_same_client_type_sessions(
         db,

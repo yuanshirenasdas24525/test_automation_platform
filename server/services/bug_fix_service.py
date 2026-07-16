@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -207,13 +208,21 @@ class CliBugFixAgent:
             )
 
         prompt = self._build_prompt(bug)
-        cmd = self.command.replace("{{prompt}}", prompt)
-        logger.info(f"[bug_fix] running CLI agent: {cmd[:200]}...")
+        # 安全：不要把用户可控的 prompt 拼进 shell 字符串（bug 标题/描述/复现步骤
+        # 都是用户可控内容，含 $(...)、反引号、; 时会造成命令注入）。
+        # 做法：先按 shell 词法把命令模板拆成 argv（此时 {{prompt}} 是独立 token 或
+        # 某个 token 的子串），再把占位符整体替换成 prompt 字符串——它始终是单个
+        # argv 元素，shell=False 不会对其做任何解释。
+        try:
+            argv = self._build_argv(prompt)
+        except ValueError as exc:
+            return AgentResult(fix_description=f"CLI Agent {self.name} 命令模板无效：{exc}")
+        logger.info("[bug_fix] running CLI agent: %s", " ".join(shlex.quote(a) for a in argv)[:200])
 
         try:
             result = subprocess.run(
-                cmd,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=str(repo_dir),
                 capture_output=True,
                 text=True,
@@ -231,6 +240,17 @@ class CliBugFixAgent:
             files_changed=[],  # CLI 改了什么不好追踪
             diff="",
         )
+
+    def _build_argv(self, prompt: str) -> list[str]:
+        """把命令模板安全地展开成 argv 列表。
+
+        模板里的 ``{{prompt}}`` 占位符会被替换为完整 prompt，且始终作为单一
+        argv 元素传入（shell=False），因此 prompt 内容不会被 shell 解释。
+        """
+        parts = shlex.split(self.command)
+        if not parts:
+            raise ValueError("命令为空")
+        return [p.replace("{{prompt}}", prompt) for p in parts]
 
     def _build_prompt(self, bug: Task) -> str:
         lines = [

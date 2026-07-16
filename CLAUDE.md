@@ -111,13 +111,14 @@ POST /api/run_test  (server/api/runs.py)
 3. **Playwright 浏览器内核要单独装**：`pip install playwright` 后还得 `playwright install`。Dockerfile 默认注释了这一步以缩小镜像。
 4. **路径锚点用 `_PROJECT_ROOT = Path(__file__).resolve().parent.parent`**，不要写 `Path.cwd()` 或硬编码 —— uvicorn 从不同 cwd 启动会让相对路径全错位。
 5. **报告 / 静态资源**：`data/reports/<task_id>` 是 Allure HTML 产物（FastAPI 挂在 `/reports`）；`data/results/<task_id>` 是 allure 原始结果（pytest `--alluredir`）；`frontend/dist` 是 SPA 产物，没构建时 `/` 会返回 503 提示。
-6. **`config/object_conf.ini` 是平台业务配置**（DB 连接、Appium、设备等），通过 `utils/read_conf.read_conf` 读取；不是 pytest / alembic 配置。
-7. **Alembic DB URL 不在 `alembic.ini`**，在 `database/migrations/env.py` 里从 `object_conf.ini` 读，可用 `ALEMBIC_DB_URL` env 临时覆盖。
+6. **DB 连接是纯环境变量驱动**（`config/object_conf.ini` 已删除）。本地开发把 `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `JWT_SECRET_KEY` 放 `.env`（`start-dev.sh` 会 `source`）；容器走 compose env 注入。`database/db.py::_resolve_db_conf` 与 `alembic/env.py` 同源解析：`DB_URL` > `DB_SECTION`(可选自备 ini) > `DB_HOST` 等；都没有直接报错（fail-closed），不再隐式回落到本地文件。
+7. **Alembic DB URL 不在 `alembic.ini`**，在 `database/migrations/env.py` 里从环境变量（`ALEMBIC_DB_URL` 或 `DB_HOST` 等）组装，可用 `ALEMBIC_DB_URL` 临时覆盖。
 8. **没有 Python lint/format 配置**。代码质量纯靠 review；不要因为"项目没装 ruff"就在新代码里引入风格不一致的写法 —— 跟着已有文件走。
 
 ## When Modifying...
 
 - **加新 step type**：在 `runners/steps/` 里写 Runner，声明 `step_types`，到 `StepDispatcher.default()` 注册。**不要**自己实现 retry。
 - **加新 REST 资源**：在 `server/api/<name>.py` 写 router，到 `server/api/__init__.py` 导出，`server/main.py` 的 `for router in (...)` 循环里加进去（自动挂 `/api` 前缀）。
+- **对象级授权（防 IDOR）**：凡是按 id 读/改/删属于某个项目的资源，路由里拿到 `project_id` 后调用一次 `server.api.authz.assert_project_access(db, current_user, project_id)`；嵌套资源（附件→需求→项目）用 `assert_requirement_access(db, current_user, requirement)`。**不要**在各路由里自己写归属判断。当前"所有成员可访问所有项目"，该函数对 active 用户放行；等加了项目成员表，只改 `authz._member_can_access_project` 一处即可全局生效。全局 `Depends(get_current_user)` 只保证"登录了"，**不等于**"能访问这个资源"。
 - **改数据库 schema**：编辑 `database/models/`，跑 `alembic revision --autogenerate -m "..."`，**review 自动生成的迁移**（autogenerate 经常漏 server_default / index 改动）。
 - **加 Celery 任务**：在 `tasks/` 加文件，并在 `celery_app.py` 底部 `import tasks.xxx  # noqa: F401` 注册。
