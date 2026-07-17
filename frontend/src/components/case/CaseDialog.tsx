@@ -27,7 +27,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { HighlightedInput, HighlightedTextarea } from "@/components/ui/highlighted-textarea";
 import { StepEditor, validateStepsForCategory } from "@/components/case/step-editor";
-import { casesApi } from "@/lib/api";
+import { casesApi, configApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import type { CaseType, ContentNode, TestStepDraft } from "@/types/domain";
@@ -185,6 +185,7 @@ const caseSchema = z.object({
   extract_data: z.string().optional(),
   assertion: z.string().optional(),
   sql_query: z.string().optional(),
+  target_db_group: z.string().optional(),
   wait_time: z.coerce.number().int().min(0).max(3600).optional(),
   repeat_count: z.coerce.number().int().min(1).max(100).optional(),
   skip: z.boolean().optional(),
@@ -313,6 +314,7 @@ function buildSingleHttpStep(values: CaseFormValues): TestStepDraft {
       data_type: values.data_type || "application/json",
       params: values.params || "",
       sql_query: values.sql_query || "",
+      target_db_group: values.target_db_group || "",
     },
     extract: extractConfigToRules(values.extract_data),
     assertion: assertionConfigToRules(values.assertion),
@@ -324,12 +326,14 @@ function buildSingleHttpStep(values: CaseFormValues): TestStepDraft {
 }
 
 export function CaseDialog({
+  projectId,
   state,
   category,
   onClose,
   onSubmit,
   submitting,
 }: {
+  projectId: number;
   state:
     | { mode: "create"; moduleId: number; insertAt?: number }
     | { mode: "edit"; node: ContentNode }
@@ -350,6 +354,16 @@ export function CaseDialog({
   });
 
   const detail = caseDetailQuery.data;
+
+  const databaseConnectionsQuery = useQuery({
+    queryKey: ["database-connections", projectId],
+    queryFn: () => configApi.databaseConnections(projectId),
+    enabled: state !== null && category === "api",
+  });
+  const databaseConnections = useMemo(
+    () => databaseConnectionsQuery.data ?? [],
+    [databaseConnectionsQuery.data],
+  );
 
   const defaults = useMemo<CaseFormValues>(() => {
     if (existing) {
@@ -372,6 +386,7 @@ export function CaseDialog({
         extract_data: toFieldText(singleConfig.extract_data ?? src.extract_data),
         assertion: toFieldText(singleConfig.assertion ?? src.assertion),
         sql_query: toFieldText(singleConfig.sql_query ?? src.sql_query),
+        target_db_group: toFieldText(singleConfig.target_db_group),
         wait_time: singleHttpStep?.wait_before ?? (src.wait_time as number) ?? 0,
         repeat_count: (src.repeat_count as number) ?? 1,
         skip: (src.skip as boolean) ?? false,
@@ -390,6 +405,7 @@ export function CaseDialog({
       extract_data: "",
       assertion: "",
       sql_query: "",
+      target_db_group: "",
       wait_time: 0,
       repeat_count: 1,
       skip: false,
@@ -405,6 +421,15 @@ export function CaseDialog({
   });
 
   const isApi = category === "api";
+
+  useEffect(() => {
+    if (!isApi || databaseConnectionsQuery.isLoading) return;
+    const current = form.getValues("target_db_group") || "";
+    const stillExists = databaseConnections.some((item) => item.name === current);
+    const next = stillExists ? current : (databaseConnections[0]?.name ?? "");
+    if (next !== current) form.setValue("target_db_group", next);
+  }, [databaseConnections, databaseConnectionsQuery.isLoading, form, isApi, existing?.id]);
+
   const isStepEditorCase = category === "web" || category === "android" || category === "ios" || category === "mixed";
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
   const [apiMode, setApiMode] = useState<"single" | "multi">("single");
@@ -452,7 +477,18 @@ export function CaseDialog({
             }
 
             const editorSteps = (values.steps as TestStepDraft[] | undefined) ?? [];
-            const normalized = editorSteps.map(normalizeHttpStepForSubmit);
+            const normalized = editorSteps.map(normalizeHttpStepForSubmit).map((step) => {
+              if (step.step_type !== "http_request") return step;
+              const selected = String(step.config?.target_db_group ?? "");
+              const valid = databaseConnections.some((item) => item.name === selected);
+              return {
+                ...step,
+                config: {
+                  ...step.config,
+                  target_db_group: valid ? selected : (databaseConnections[0]?.name ?? ""),
+                },
+              };
+            });
             const finalSteps = apiMode === "multi" ? normalized : [buildSingleHttpStep(values)];
             onSubmit({ ...values, steps: finalSteps as unknown as CaseFormValues["steps"] });
           })}
@@ -550,6 +586,7 @@ export function CaseDialog({
             ) : (
               <StepEditor
                 category="api"
+                databaseConnections={databaseConnections}
                 value={currentSteps}
                 error={form.formState.errors.steps?.message}
                 onChange={(next) =>
@@ -708,6 +745,30 @@ export function CaseDialog({
               <HighlightedField
                 id="case-sql"
                 label="SQL 校验"
+                labelAddon={
+                  <Select
+                    disabled={databaseConnections.length <= 1}
+                    value={form.watch("target_db_group") || undefined}
+                    onValueChange={(value) =>
+                      form.setValue("target_db_group", value, { shouldDirty: true })
+                    }
+                  >
+                    <SelectTrigger className="h-7 w-56 text-xs">
+                      <SelectValue placeholder={
+                        databaseConnectionsQuery.isLoading
+                          ? "正在加载数据库配置…"
+                          : "未配置DB链接方式"
+                      } />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {databaseConnections.map((connection) => (
+                        <SelectItem key={connection.name} value={connection.name}>
+                          {connection.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                }
                 hint={
                   <>
                     用于在请求前 / 后查库拿数据。支持多条 SQL 用 <Code>;</Code> 分隔，支持
@@ -731,6 +792,7 @@ export function CaseDialog({
             ) : (
               <StepEditor
                 category={category}
+                databaseConnections={databaseConnections}
                 value={currentSteps}
                 error={form.formState.errors.steps?.message}
                 onChange={(next) =>
@@ -771,6 +833,7 @@ export function CaseDialog({
 function HighlightedField({
   id,
   label,
+  labelAddon,
   hint,
   rows,
   placeholder,
@@ -781,6 +844,7 @@ function HighlightedField({
 }: {
   id: string;
   label: string;
+  labelAddon?: ReactNode;
   hint?: ReactNode;
   rows?: number;
   placeholder?: string;
@@ -814,16 +878,19 @@ function HighlightedField({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label htmlFor={id} className="flex items-center gap-1.5">
-          {label}
-          {value.trim().length > 0 && check ? (
-            showOk ? (
-              <Check className="h-3.5 w-3.5 text-emerald-600" />
-            ) : showError ? (
-              <X className="h-3.5 w-3.5 text-destructive" />
-            ) : null
-          ) : null}
-        </Label>
+        <div className="flex items-center gap-2">
+          <Label htmlFor={id} className="flex items-center gap-1.5">
+            {label}
+            {value.trim().length > 0 && check ? (
+              showOk ? (
+                <Check className="h-3.5 w-3.5 text-emerald-600" />
+              ) : showError ? (
+                <X className="h-3.5 w-3.5 text-destructive" />
+              ) : null
+            ) : null}
+          </Label>
+          {labelAddon}
+        </div>
         {withJsonButton ? (
           <Button
             type="button"

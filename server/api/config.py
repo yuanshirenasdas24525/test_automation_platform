@@ -18,10 +18,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.api.deps import DBDep, RequireAdmin
 from database.models import ConfigStore, ConfigUpdateItem
-from utils.reload_config import config_center
+from utils.reload_config import config_center, is_database_config
 
 router = APIRouter(prefix="/config", tags=["config"])
-
 
 # ---------------------------------------------------------------------------
 # Schema / 推荐配置项
@@ -36,6 +35,39 @@ async def get_config_schema(category: str):
 # ---------------------------------------------------------------------------
 # 查询
 # ---------------------------------------------------------------------------
+@router.get("/database-connections")
+async def get_database_connections(
+    db: DBDep,
+    project_id: int = Query(...),
+):
+    """返回项目 API 配置中的数据库连接组，按首次配置时间排序。
+
+    只返回组名和展示信息，不返回账号、密码等连接明细。
+    """
+    rows = db.sql.query(
+        "SELECT id, config_group, config_key, config_value FROM config_store "
+        "WHERE project_id = :pid AND category = 'api' ORDER BY id ASC",
+        {"pid": project_id},
+    )
+    grouped: dict[str, dict[str, object]] = {}
+    for row in rows:
+        group = str(row["config_group"] or "").strip()
+        if not group:
+            continue
+        current = grouped.setdefault(group, {"first_id": row["id"], "values": {}})
+        values = current["values"]
+        if isinstance(values, dict):
+            values[str(row["config_key"] or "").strip().lower()] = row["config_value"]
+
+    connections = [
+        {"name": group, "label": group, "first_config_id": item["first_id"]}
+        for group, item in grouped.items()
+        if isinstance(item["values"], dict) and is_database_config(group, item["values"])
+    ]
+    connections.sort(key=lambda item: item["first_config_id"])
+    return {"status": "success", "data": connections}
+
+
 @router.get("/all")
 async def get_all_configs(
     db: DBDep,

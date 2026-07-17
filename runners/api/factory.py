@@ -7,10 +7,26 @@ v1 时期的 `ApiClient` + `create_api_client` 已删除——v1 的"一条 case
 HTTP 请求"入口在 v2 改造完成后没有用户路径。
 """
 from runners.api.request_data_processor import RequestDataProcessor
-from utils.reload_config import config_center
+from utils.reload_config import config_center, is_database_config
 from utils.logger import LOGGER
 from database.db import DB
 from sqlalchemy import text
+
+
+def create_target_db(target_db: dict | None) -> DB | None:
+    """仅在目标数据库配置有效时创建连接。
+
+    配置中心允许用户逐项保存 ``target_db``。只保存了空的主机、账号等字段时，
+    取出的 dict 虽然非空，但并不代表已经配置数据库；普通 HTTP 请求不能因此失败。
+    """
+    if not isinstance(target_db, dict) or not target_db:
+        return None
+
+    if not is_database_config("target_db", target_db):
+        LOGGER.warning("target_db 配置不完整，已跳过数据库连接")
+        return None
+
+    return DB({**target_db, "password": target_db.get("password", "")})
 
 
 def create_request_data_processor(db=None, project_id: int | None = None):
@@ -38,5 +54,5 @@ def create_request_data_processor(db=None, project_id: int | None = None):
         host_key=host,
         default_parameters=config_center.get("default_parameters", project_id=project_id),
         ed=config_center.get("encryption_decryption", project_id=project_id),
-        db=DB(target_db) if target_db else None,
+        db=create_target_db(target_db),
     )

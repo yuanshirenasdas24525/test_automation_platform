@@ -731,7 +731,7 @@ export function AutomationCasesPage({
         </div>
       )}
 
-      <CaseDialog state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
+      <CaseDialog projectId={projectId} state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
       <RecordsDialog
         open={recordsOpen}
         quickEdit={quickEdit}

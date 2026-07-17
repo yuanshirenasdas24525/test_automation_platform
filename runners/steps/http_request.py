@@ -155,6 +155,7 @@ class HttpRequestStepRunner(BaseStepRunner):
     def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
         self._ensure_processor(ctx)
         config = step.get("config") or {}
+        self._select_target_db(config.get("target_db_group"), ctx)
 
         method = str(config.get("method") or "GET").upper().strip()
         path = str(config.get("path") or "")
@@ -692,6 +693,33 @@ class HttpRequestStepRunner(BaseStepRunner):
         except Exception:  # noqa: BLE001
             pass
         add_allure_step("SQL Query", {"sql": sql_text, "results": results})
+
+    @staticmethod
+    def _select_target_db(raw_group: Any, ctx: ExecutionContext) -> None:
+        """按 HTTP 步骤选择目标数据库；同一用例内按配置组复用连接。"""
+        group = str(raw_group or "").strip()
+        if not group or group == ctx.vars.get("_db_group"):
+            return
+
+        project_id = ctx.vars.get("_project_id")
+        from utils.reload_config import config_center
+
+        target = config_center.get(group, project_id=project_id) or {}
+        if not target:
+            raise ValueError(f"数据库连接配置组 {group!r} 不存在或没有配置项")
+
+        connections = ctx.vars.get("_db_connections")
+        if not isinstance(connections, dict):
+            connections = {}
+            ctx.set_var("_db_connections", connections)
+        connection = connections.get(group)
+        if connection is None:
+            from database.db import DB
+            connection = DB({**target, "password": target.get("password", "")})
+            connections[group] = connection
+        ctx.set_var("_db", connection)
+        ctx.set_var("_db_group", group)
+        LOGGER.info("HTTP 步骤已切换目标数据库配置组：%s", group)
 
     def _resolve_sql_text(self, raw_sql: Any, ctx: ExecutionContext) -> str:
         if isinstance(raw_sql, str) and raw_sql.strip().startswith("function:"):

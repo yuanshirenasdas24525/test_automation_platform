@@ -2794,13 +2794,13 @@ export function AiGenerateDialog({
   const reqListQuery = useQuery({
     queryKey: ["aigen-requirements", projectId],
     queryFn: () => requirementsApi.list(projectId),
-    enabled: open,
+    enabled: open && mode === "functional",
   });
   const reqOptions = reqListQuery.data ?? [];
   const analysisDocsQuery = useQuery({
     queryKey: ["aigen-analysis-docs", reqPickId],
     queryFn: () => analysisDocsApi.listByRequirement(reqPickId as number),
-    enabled: open && reqPickId != null,
+    enabled: open && mode === "functional" && reqPickId != null,
   });
   const analysisDocs = analysisDocsQuery.data ?? [];
 
@@ -3624,6 +3624,7 @@ export function AiGenerateDialog({
                 ))}
               </div>
             ) : null}
+            {mode === "functional" ? (
             <div className="space-y-2 rounded-md border bg-muted/20 p-3">
               <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <FileText className="h-3.5 w-3.5" /> 从需求池导入（可选）
@@ -3691,6 +3692,7 @@ export function AiGenerateDialog({
                 选需求会填入其描述 + 验收标准；选分析文档会填入 AI 分析后的完整内容到下方需求框，可再手动编辑。
               </p>
             </div>
+            ) : null}
             <div className="space-y-1">
               <Label className="text-xs">{mode === "interface" ? "接口说明 / 需求" : "需求 / 描述"}</Label>
               <Textarea

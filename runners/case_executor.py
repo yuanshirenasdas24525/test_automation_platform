@@ -130,6 +130,7 @@ class CaseExecutor:
             # 刚建的测试数据，避免脏数据堆积。post_hook 失败只 warn、不影响用例结论。
             # 放在会话关闭之前，确保 sql:/http DELETE 清理仍能用到 ctx 里已提取的变量。
             self._run_hooks(case_dict.get("post_hook"), ctx, label="post_hook")
+            self._close_target_dbs(ctx)
             if app_session is not None:
                 if app_session_owned:
                     try:
@@ -393,14 +394,38 @@ class CaseExecutor:
         try:
             from utils.reload_config import config_center
             project_id = ctx.vars.get("_project_id")
-            target = config_center.get("target_db", project_id=project_id) or {}
+            groups = config_center.database_groups(project_id)
+            group = groups[0] if groups else "target_db"
+            target = config_center.get(group, project_id=project_id) or {}
             if not target:
                 return
             from database.db import DB
-            ctx.set_var("_db", DB(target))
-            logger.info("已注入 target_db 到 ctx._db (sql: 前缀可用)")
+            connection = DB({**target, "password": target.get("password", "")})
+            ctx.set_var("_db", connection)
+            ctx.set_var("_db_group", group)
+            ctx.set_var("_db_connections", {group: connection})
+            logger.info("已注入数据库配置组 %s 到 ctx._db (sql: 前缀可用)", group)
         except Exception as exc:  # noqa: BLE001
             logger.warning("target_db 注入失败（已忽略）：%s", exc)
+
+    @staticmethod
+    def _close_target_dbs(ctx: ExecutionContext) -> None:
+        """关闭本用例按需创建的所有目标数据库会话。"""
+        connections = ctx.vars.get("_db_connections")
+        if not isinstance(connections, dict):
+            return
+        ctx.vars.pop("_db_connections", None)
+        seen: set[int] = set()
+        for connection in connections.values():
+            if connection is None or id(connection) in seen:
+                continue
+            seen.add(id(connection))
+            try:
+                connection.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("目标数据库连接关闭失败（已忽略）：%s", exc)
+        ctx.vars.pop("_db", None)
+        ctx.vars.pop("_db_group", None)
 
     def _run_hooks(self, hooks: Any, ctx: ExecutionContext, label: str) -> None:
         """hooks = [{type:'sql'|'http'|'script', ...}, ...]；失败只 log，不中断主流程。"""

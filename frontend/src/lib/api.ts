@@ -1080,7 +1080,18 @@ export interface ConfigSchemaItem {
   applies_to: string[];
 }
 
+export interface DatabaseConnectionOption {
+  name: string;
+  label: string;
+  first_config_id: number;
+}
+
 export const configApi = {
+  databaseConnections(projectId: number) {
+    return request<DatabaseConnectionOption[]>(
+      `/api/config/database-connections?project_id=${projectId}`,
+    );
+  },
   list(category: string | undefined, projectId: number) {
     const qs = new URLSearchParams();
     if (category) qs.set("category", category);

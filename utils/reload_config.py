@@ -13,6 +13,27 @@ from typing import Any
 from utils.logger import LOGGER
 
 
+def is_database_config(group: str, values: dict[str, str]) -> bool:
+    """判断配置组是否构成一套可用的数据库连接。"""
+    normalized = group.strip().lower()
+    normalized_values = {
+        str(key).strip().lower(): "" if value is None else str(value).strip()
+        for key, value in values.items()
+    }
+    looks_like_database = (
+        normalized == "target_db"
+        or "db" in normalized
+        or "database" in normalized
+        or bool(normalized_values.get("type"))
+    )
+    if not looks_like_database:
+        return False
+    if normalized_values.get("url"):
+        return True
+    required = ("type", "host", "port", "user", "database")
+    return all(normalized_values.get(key) for key in required)
+
+
 class ConfigCenter:
     _instance = None
     _loaded: bool = False
@@ -20,6 +41,7 @@ class ConfigCenter:
     def __init__(self):
         if not hasattr(self, "_stores"):
             self._stores: dict[int, dict[str, dict[str, str]]] = {}
+            self._group_order: dict[int, list[str]] = {}
 
     def __new__(cls):
         if cls._instance is None:
@@ -42,16 +64,18 @@ class ConfigCenter:
 
         params: dict[str, int] = {}
         sql = (
-            "SELECT config_group, config_key, config_value, category, project_id "
+            "SELECT id, config_group, config_key, config_value, category, project_id "
             "FROM config_store"
         )
         if project_id is not None:
             sql += " WHERE project_id = :pid"
             params["pid"] = project_id
+        sql += " ORDER BY id ASC"
         rows = db.query(sql, params)
 
         # 按 project_id 分组；project_id 为空的历史全局模板行不再加载。
         new_stores: dict[int, dict[str, dict[str, str]]] = {}
+        new_group_order: dict[int, list[str]] = {}
 
         for row in rows:
             pid = row["project_id"]  # int or None
@@ -67,13 +91,16 @@ class ConfigCenter:
                 continue
             if pid not in new_stores:
                 new_stores[pid] = {}
+                new_group_order[pid] = []
             store = new_stores[pid]
 
             if group not in store:
                 store[group] = {}
+                new_group_order[pid].append(group)
             store[group][key] = val
 
         self._stores = new_stores
+        self._group_order = new_group_order
 
     # ------------------------------------------------------------------
     # 读取
@@ -117,6 +144,18 @@ class ConfigCenter:
         if key is None:
             return default if default is not None else {}
         return default
+
+    def database_groups(self, project_id: int | None) -> list[str]:
+        """按首次配置顺序返回当前项目的数据库连接配置组。"""
+        self._ensure_loaded()
+        if project_id is None:
+            return []
+        store = self._stores.get(project_id, {})
+        result: list[str] = []
+        for group in self._group_order.get(project_id, []):
+            if is_database_config(group, store.get(group, {})):
+                result.append(group)
+        return result
 
     # ------------------------------------------------------------------
     # 内部

@@ -646,6 +646,9 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
       { key: "assertion", label: "断言", kind: "highlight", rows: 2,
         placeholder: '{"status_code": 200, "$.data.token": "not_empty"}',
         hint: <>JSON 对象 <code>{"{ $.code: 0 }"}</code>；非空写 <code>not_empty</code></> },
+      { key: "target_db_group", label: "数据库连接", kind: "select", options: [],
+        placeholder: "未配置DB链接方式",
+        hint: <>SQL 校验及 <code>sql:</code> 表达式使用的数据库连接</> },
       { key: "sql_query", label: "SQL 校验", kind: "highlight", rows: 2,
         placeholder: "select status from orders where id = ${order_id}",
         hint: <>可选。请求前 / 后查库，多条用 <code>;</code> 分隔</> },
@@ -762,9 +765,10 @@ export interface StepEditorProps {
   onChange: (next: TestStepDraft[]) => void;
   /** 从父组件传下来的错误提示（比如必填为空，父表单用 form.setError 填进来） */
   error?: string | null;
+  databaseConnections?: Array<{ name: string; label: string }>;
 }
 
-export function StepEditor({ category, value, onChange, error }: StepEditorProps) {
+export function StepEditor({ category, value, onChange, error, databaseConnections = [] }: StepEditorProps) {
   // android / ios 共用同一套 app_* StepRunner；平台差异由 environment.browser_config /
   // step config 里的 caps 决定。
   const isAppFamily = category === "android" || category === "ios";
@@ -826,6 +830,9 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
     const spec = findSpec(defaultNewType) ?? availableSpecs[0];
     if (!spec) return;
     const cfg = { ...defaultConfigForPlatform(spec, platform) };
+    if (spec.value === "http_request" && databaseConnections[0]) {
+      cfg.target_db_group = databaseConnections[0].name;
+    }
     const newStep: TestStepDraft = {
       step_order: value.length,
       step_type: spec.value,
@@ -875,6 +882,7 @@ export function StepEditor({ category, value, onChange, error }: StepEditorProps
               step={step}
               specs={availableSpecs}
               platform={platform}
+              databaseConnections={databaseConnections}
               onChange={(next) => setStep(i, next)}
               onRemove={() => removeStep(i)}
               onMove={(dir) => moveStep(i, dir)}
@@ -907,6 +915,7 @@ function StepRow({
   step,
   specs,
   platform,
+  databaseConnections,
   onChange,
   onRemove,
   onMove,
@@ -921,6 +930,7 @@ function StepRow({
   step: TestStepDraft;
   specs: StepTypeSpec[];
   platform: "android" | "ios" | null;
+  databaseConnections: Array<{ name: string; label: string }>;
   onChange: (next: TestStepDraft) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
@@ -934,7 +944,17 @@ function StepRow({
 }) {
   const [expanded, setExpanded] = React.useState(index === 0 || !step.step_type);
   const spec = specs.find((item) => item.value === step.step_type) ?? findSpec(step.step_type);
-  const visibleFields = spec ? fieldsForPlatform(spec, platform) : [];
+  const visibleFields = spec ? fieldsForPlatform(spec, platform).map((field) => (
+    field.key === "target_db_group"
+      ? {
+          ...field,
+          options: databaseConnections.map((connection) => ({
+            value: connection.name,
+            label: connection.label,
+          })),
+        }
+      : field
+  )) : [];
 
   const handleTypeChange = (newType: string) => {
     const newSpec = findSpec(newType);
@@ -1115,7 +1135,17 @@ function StepRow({
                   key={field.key}
                   field={field}
                   platform={platform}
-                  value={step.config?.[field.key]}
+                  value={
+                    field.key === "target_db_group"
+                      ? (
+                          databaseConnections.some(
+                            (connection) => connection.name === step.config?.[field.key],
+                          )
+                            ? step.config?.[field.key]
+                            : databaseConnections[0]?.name
+                        )
+                      : step.config?.[field.key]
+                  }
                   onChange={(v) => setConfig(field.key, v)}
                 />
               ))}
