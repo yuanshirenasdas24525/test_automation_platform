@@ -256,6 +256,27 @@ type RequestInitJSON = Omit<RequestInit, "body"> & {
   body?: unknown;
 };
 
+async function fetchWithAuth(
+  path: string,
+  init: RequestInit = {},
+  retryOnAuth = true,
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = getToken();
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+
+  const res = await fetch(path, { ...init, headers });
+  if (res.status === 401 && retryOnAuth) {
+    const refreshed = await refreshAccessToken();
+    if (refreshed) {
+      return fetchWithAuth(path, init, false);
+    }
+  }
+  return res;
+}
+
 async function request<T>(
   path: string,
   init: RequestInitJSON = {},
@@ -536,7 +557,7 @@ export const casesApi = {
       opts.caseTypes.filter(Boolean).join(",") || "api",
     );
     const url = `/api/projects/${opts.projectId}/export_cases?${params.toString()}`;
-    const resp = await fetch(url, { method: "GET" });
+    const resp = await fetchWithAuth(url, { method: "GET" });
     if (!resp.ok) {
       // 错误响应是 JSON envelope，复用与 request() 类似的解析
       let detail = `导出失败 ${resp.status}`;
@@ -1012,7 +1033,7 @@ export const functionalCasesApi = {
     const qs = new URLSearchParams({ project_id: String(opts.projectId) });
     if (opts.moduleId != null) qs.set("module_id", String(opts.moduleId));
     const url = `/api/functional_cases/export?${qs}`;
-    const res = await fetch(url);
+    const res = await fetchWithAuth(url);
     if (!res.ok) throw new ApiError("导出失败", res.status);
     const blob = await res.blob();
     const contentDisposition = res.headers.get("Content-Disposition") ?? "";

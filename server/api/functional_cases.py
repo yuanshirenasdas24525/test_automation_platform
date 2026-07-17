@@ -3658,13 +3658,31 @@ _IMPORT_COLUMNS = [
 
 
 def _split_lines(value: Any) -> list[str]:
-    """Excel 单元格里的多行文本（"\n" 分隔）→ 列表，去空行。"""
+    """Excel 单元格里的多行文本转列表，并去掉导出时添加的有序序号。"""
     if value is None:
         return []
     text = str(value).strip()
     if not text:
         return []
-    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+    lines = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        lines.append(re.sub(r"^\d+[.)、]\s+", "", line).strip())
+    return [line for line in lines if line]
+
+
+def _join_numbered_lines(values: Any) -> str:
+    """把列表或多行字符串格式化为 Excel 单元格中的有序文本。"""
+    if isinstance(values, list):
+        raw_lines = values
+    elif isinstance(values, str):
+        raw_lines = values.splitlines()
+    else:
+        raw_lines = []
+    lines = [str(value).strip() for value in raw_lines if str(value).strip()]
+    return "\n".join(f"{index}. {line}" for index, line in enumerate(lines, start=1))
 
 
 def _split_csv(value: Any) -> list[str]:
@@ -3719,12 +3737,12 @@ async def import_functional_cases(
             if not name:
                 errors.append({"row": int(idx) + 2, "error": "name 为空"})
                 continue
+            expected_raw = row.get("expected")
+            expected_lines = _split_lines(expected_raw) if pd.notna(expected_raw) else []
             spec = {
                 "preconditions": _split_lines(row.get("preconditions")),
                 "steps": _split_lines(row.get("steps")),
-                "expected": (str(row.get("expected")).strip()
-                             if pd.notna(row.get("expected")) and str(row.get("expected")).strip()
-                             else None),
+                "expected": "\n".join(expected_lines) or None,
             }
             priority_raw = row.get("priority")
             try:
@@ -3817,9 +3835,9 @@ def _export_functional_cases_impl(
             "module_name": module_name or "",       # 只读
             "name": case.name or "",
             "description": case.description or "",
-            "preconditions": "\n".join(spec.get("preconditions") or []),
-            "steps": "\n".join(spec.get("steps") or []),
-            "expected": spec.get("expected") or "",
+            "preconditions": _join_numbered_lines(spec.get("preconditions")),
+            "steps": _join_numbered_lines(spec.get("steps")),
+            "expected": _join_numbered_lines(spec.get("expected")),
             "priority": case.priority if case.priority is not None else "",
             "tags": ", ".join(case.tags or []),
             # 只读的执行情况列：导入侧不识别，导出仅供查看
