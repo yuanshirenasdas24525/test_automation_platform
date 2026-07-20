@@ -45,3 +45,7 @@ unidiff>=0.7.5
 # pgvector 向量列 + 检索（PostgreSQL only）；第 3 批 RAG 链路实施时使用，
 # 第 1 批迁移先用 sa.JSON() 占位，待该批切到 PG 后再做类型迁移
 pgvector>=0.2.5
+
+# ---- MCP server（M1 PoC）----
+# 把平台执行/报告/用例能力暴露给 coding agent；mcp_server/ 用（stdio 模式）
+mcp>=1.2
