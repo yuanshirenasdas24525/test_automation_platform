@@ -35,6 +35,7 @@ class Device(Base):
     pool = Column(String(64), default="default", index=True)  # 设备池标签
     status = Column(String(20), default=DEVICE_STATUS_OFFLINE, index=True)
     owner_execution_id = Column(Integer, nullable=True, index=True)  # 占用锁：当前被哪个 execution 持有
+    busy_since = Column(DateTime, nullable=True)  # 租约起点：acquire 时刻；超时由 probe_devices 强制释放
 
     # 扩展字段
     capabilities = Column(JSONType)                   # 额外 Appium capabilities

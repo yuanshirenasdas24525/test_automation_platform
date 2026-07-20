@@ -24,6 +24,7 @@ from database.models import (
     AI_RUN_STATUS_PENDING,
     AI_RUN_STATUS_SUCCESS,
     Project,
+    TestCase,
     TestReport,
     TestStepReport,
 )
@@ -174,6 +175,60 @@ def get_report(report_id: int, db: DBDep):
         "data": {
             **_serialize_report(report, project_name),
             "steps": [_serialize_step(s) for s in steps],
+        },
+    }
+
+
+@router.get("/{report_id}/failures")
+def get_report_failures(report_id: int, db: DBDep):
+    """失败明细最小集 —— 给 coding agent（MCP）自愈回路用的精简读接口。
+
+    只返回失败/错误步骤的决策必需字段（action / target / status_code / error_message），
+    按用例分组并带用例名。完整报告仍走 GET /api/reports/{id}。
+    """
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    rows = (
+        db.session.query(TestStepReport, TestCase.name)
+        .outerjoin(TestCase, TestCase.id == TestStepReport.case_id)
+        .filter(
+            TestStepReport.report_id == report_id,
+            TestStepReport.status.notin_(("passed", "skipped")),
+        )
+        .order_by(TestStepReport.create_time.asc().nullslast())
+        .all()
+    )
+
+    by_case: dict[int, dict] = {}
+    for step, case_name in rows:
+        entry = by_case.setdefault(
+            step.case_id,
+            {"case_id": step.case_id, "case_name": case_name, "failed_steps": []},
+        )
+        entry["failed_steps"].append(
+            {
+                "step_name": step.step_name,
+                "step_type": step.step_type,
+                "action": step.action,
+                "target": step.target,
+                "status": step.status,
+                "status_code": step.status_code,
+                "error_message": step.error_message,
+            }
+        )
+
+    return {
+        "status": "success",
+        "data": {
+            "report_id": report.id,
+            "report_status": report.status,
+            "total_count": report.total_count or 0,
+            "pass_count": report.pass_count or 0,
+            "fail_count": report.fail_count or 0,
+            "error_count": report.error_count or 0,
+            "failed_cases": list(by_case.values()),
         },
     }
 

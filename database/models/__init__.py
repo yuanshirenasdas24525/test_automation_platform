@@ -20,6 +20,10 @@ from .project import (
 from .module import Module
 from .user import User
 from .user_session import UserSession
+from .api_key import (
+    ApiKey,
+    API_KEY_SCOPE_READ, API_KEY_SCOPE_EXECUTE, API_KEY_SCOPE_AI, ALL_API_KEY_SCOPES,
+)
 from .role import (
     Role,
     user_roles,
@@ -479,4 +483,7 @@ __all__ = [
     "ALL_OUTLINE_POINT_STATUSES",
     "OUTLINE_POINT_SOURCE_AI", "OUTLINE_POINT_SOURCE_MANUAL",
     "ALL_OUTLINE_POINT_SOURCES",
+    # API Key（MCP / CI 等机器调用方的长效 service token）
+    "ApiKey",
+    "API_KEY_SCOPE_READ", "API_KEY_SCOPE_EXECUTE", "API_KEY_SCOPE_AI", "ALL_API_KEY_SCOPES",
 ]

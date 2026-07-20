@@ -34,7 +34,7 @@
 
 ```bash
 pip install -r requirements.txt
-playwright install                 # 装 chromium 内核；Dockerfile 默认注释，本地需手动跑
+playwright install                 # 装 chromium 内核；本地需手动跑（Docker 镜像已内置 chromium）
 
 python server/main.py              # FastAPI，127.0.0.1:54351
 celery -A celery_app worker --loglevel=info
@@ -348,7 +348,7 @@ import type { AiDialogueSession } from "@/types/domain";
 ## 重点 trap（踩过坑的地方）
 
 1. **包名 `server/` 不是 `platform/`**：`platform` 会遮蔽 stdlib，SQLAlchemy import 时 `platform.python_implementation()` 直接挂。文档 / 历史代码出现 `platform.xxx` 都按 `server.xxx` 读。
-2. **Playwright 内核要单独装**：`pip install playwright` 后还得 `playwright install`。Dockerfile 默认注释了，本地手动跑。
+2. **Playwright 内核要单独装**：`pip install playwright` 后还得 `playwright install`（本地）。Docker 镜像已内置 chromium，容器内无需再装。
 3. **Celery EAGER 是排查首选**：`CELERY_TASK_ALWAYS_EAGER=1` → `.delay()` 在当前进程同步跑，print 落 uvicorn 终端。报告卡在 running 99% 是 worker 没起 / Redis 没连上 —— 先 EAGER 验证链路本身。
 4. **路径锚点用 `_PROJECT_ROOT`**：`Path.cwd()` 在 uvicorn 不同 cwd 启动时会全错位。
 5. **Alembic autogenerate 经常漏迁移**：`server_default`、`index` 改动需要手动补。每次 `alembic revision --autogenerate` 后必须 review 文件。

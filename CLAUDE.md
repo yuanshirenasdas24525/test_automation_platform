@@ -108,7 +108,7 @@ POST /api/run_test  (server/api/runs.py)
 
 1. **包名是 `server/`，不是 `platform/`**。`platform` 会遮蔽 stdlib 的 `platform` 模块，SQLAlchemy import 期就会调 `platform.python_implementation()` 直接挂掉。任何文档 / 历史代码看到 `platform.xxx` 都该当作 `server.xxx` 读。
 2. **Celery broker / backend 读环境变量**。docker-compose 默认注入 `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`；本地直跑时没配则回退到 `redis://127.0.0.1:6379`。
-3. **Playwright 浏览器内核要单独装**：`pip install playwright` 后还得 `playwright install`。Dockerfile 默认注释了这一步以缩小镜像。
+3. **Playwright 浏览器内核要单独装**：`pip install playwright` 后还得 `playwright install`（本地开发环境）。Docker 镜像已内置 chromium（Dockerfile 里 `playwright install --with-deps chromium`），容器内无需再装。
 4. **路径锚点用 `_PROJECT_ROOT = Path(__file__).resolve().parent.parent`**，不要写 `Path.cwd()` 或硬编码 —— uvicorn 从不同 cwd 启动会让相对路径全错位。
 5. **报告 / 静态资源**：`data/reports/<task_id>` 是 Allure HTML 产物（FastAPI 挂在 `/reports`）；`data/results/<task_id>` 是 allure 原始结果（pytest `--alluredir`）；`frontend/dist` 是 SPA 产物，没构建时 `/` 会返回 503 提示。
 6. **DB 连接是纯环境变量驱动**（`config/object_conf.ini` 已删除）。本地开发把 `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` / `JWT_SECRET_KEY` 放 `.env`（`start-dev.sh` 会 `source`）；容器走 compose env 注入。`database/db.py::_resolve_db_conf` 与 `alembic/env.py` 同源解析：`DB_URL` > `DB_SECTION`(可选自备 ini) > `DB_HOST` 等；都没有直接报错（fail-closed），不再隐式回落到本地文件。
