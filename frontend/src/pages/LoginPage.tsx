@@ -301,6 +301,7 @@ export function LoginPage() {
                   <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <Input
                     id="username"
+                    data-testid="login-username"
                     autoComplete="username"
                     className="h-11 rounded-md border-slate-200 bg-white pl-9 shadow-sm transition focus-visible:ring-2 focus-visible:ring-blue-500"
                     {...form.register("username")}
@@ -321,6 +322,7 @@ export function LoginPage() {
                   <LockKeyhole className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <Input
                     id="password"
+                    data-testid="login-password"
                     type="password"
                     autoComplete="current-password"
                     className="h-11 rounded-md border-slate-200 bg-white pl-9 shadow-sm transition focus-visible:ring-2 focus-visible:ring-blue-500"
@@ -336,6 +338,7 @@ export function LoginPage() {
 
               <Button
                 type="submit"
+                data-testid="login-submit"
                 className="h-11 w-full gap-2 rounded-md bg-slate-950 text-white shadow-sm transition hover:bg-slate-800"
                 disabled={submitting}
               >

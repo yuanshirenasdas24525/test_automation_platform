@@ -1,12 +1,17 @@
 """平台 MCP server 入口 —— M1 工具集（stdio）。
 
-工具清单（对照 docs/方案-MCP-server草案.md 第三节）：
-  - list_projects    → GET  /api/projects/list
-  - list_modules     → GET  /api/modules
-  - list_cases       → GET  /api/content/{project_id}（自动化）/ GET /api/functional_cases（功能）
-  - run_tests        → POST /api/run_test
-  - get_report       → GET  /api/reports/{id}（默认只回失败/错误步骤，做字段裁剪）
-  - get_coverage     → GET  /api/requirements/coverage
+工具清单（对照 docs/方案-MCP-server草案.md 第三节；M1 + M2 写工具）：
+  - list_projects        → GET  /api/projects/list
+  - list_modules         → GET  /api/modules
+  - list_cases           → GET  /api/content/{project_id}（自动化）/ GET /api/functional_cases（功能）
+  - run_tests            → POST /api/run_test
+  - get_report           → GET  /api/reports/{id}（默认只回失败/错误步骤，做字段裁剪）
+  - get_report_failures  → GET  /api/reports/{id}/failures（失败明细最小集）
+  - get_coverage         → GET  /api/requirements/coverage
+  - list_ai_models       → GET  /api/ai-models
+  - diagnose_report      → POST /api/functional_cases/ai_diagnose_report（异步，返回 ai_run_id）
+  - get_ai_run           → GET  /api/ai/runs/{id}
+  - apply_report_fixes   → POST /api/functional_cases/ai_report_fix/apply（写用例，需用户确认）
 
 约束（草案第二节"边界"）：只读多、写少；不暴露删除 / 配置 / 用户管理。
 """
@@ -155,9 +160,62 @@ def get_report(report_id: int, include_passed_steps: bool = False) -> dict[str, 
 
 
 @mcp.tool()
+def get_report_failures(report_id: int) -> dict[str, Any]:
+    """读一份报告的失败明细最小集（按用例分组，含 action/target/状态码/错误信息）。
+
+    比 get_report 更精简，是"分析失败原因 → 修代码或修用例"的首选输入。
+    """
+    return _api().get_data(f"/api/reports/{report_id}/failures") or {}
+
+
+@mcp.tool()
 def get_coverage(project_id: int) -> dict[str, Any]:
     """查需求-用例覆盖率：按需求 / 按模块两个维度，返回覆盖缺口（该补用例的地方）。"""
     return _api().get_data("/api/requirements/coverage", params={"project_id": project_id}) or {}
+
+
+@mcp.tool()
+def list_ai_models() -> Any:
+    """列出平台配置的 AI 模型（diagnose_report 的 model_name 参数从这里选）。"""
+    return _api().get_data("/api/ai-models") or []
+
+
+@mcp.tool()
+def diagnose_report(report_id: int, model_name: str) -> dict[str, Any]:
+    """对一份报告的失败用例发起 AI 诊断（异步），返回 ai_run_id。
+
+    用 get_ai_run 轮询到 status=success 后，诊断结果在 output_payload.items；
+    确认要应用修复时再调 apply_report_fixes。model_name 用 list_ai_models 里的名称。
+    """
+    body = _api().request(
+        "POST",
+        "/api/functional_cases/ai_diagnose_report",
+        json_body={"report_id": report_id, "model_name": model_name},
+    )
+    return body.get("data") or body
+
+
+@mcp.tool()
+def get_ai_run(run_id: int) -> dict[str, Any]:
+    """查一个 AI 任务（诊断/生成等）的状态与结果。status=success 时读 output_payload。"""
+    return _api().get_data(f"/api/ai/runs/{run_id}") or {}
+
+
+@mcp.tool()
+def apply_report_fixes(ai_run_id: int, verify: bool = True, max_rounds: int = 1) -> dict[str, Any]:
+    """【写操作，会修改用例】把 AI 诊断结果应用到用例，并触发闭环验证。
+
+    平台侧自带三重保护：应用前 preflight 预检（坏修复直接拦掉不落库）、
+    每用例独立编辑事件可精准回滚、verify=True 时自动重跑原报告且"绿变红"自动回滚。
+    仍属于会改动用例库的操作 —— 调用前必须先向用户确认，未经确认不要调用。
+    max_rounds>1 表示仍失败的用例会带新证据自动再诊断再修。
+    """
+    body = _api().request(
+        "POST",
+        "/api/functional_cases/ai_report_fix/apply",
+        json_body={"ai_run_id": ai_run_id, "verify": verify, "max_rounds": max_rounds},
+    )
+    return body.get("data") or body
 
 
 if __name__ == "__main__":

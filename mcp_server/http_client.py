@@ -1,12 +1,15 @@
 """平台 REST API 的 HTTP 客户端封装（MCP server 专用）。
 
-鉴权策略（M1 固定 token 打通，API Key 机制是 M2）：
-  - `TAP_TOKEN` 存在 → 直接当 Bearer token 用；
-  - 否则用 `TAP_USERNAME` / `TAP_PASSWORD` 调 /api/auth/login 换 access_token，
-    收到 401 时自动重新登录一次再重试（access_token 短期过期是常态）。
+鉴权策略（按优先级）：
+  1. `TAP_API_KEY` → 走 X-API-Key 头（推荐：长效、scope 受限，平台端
+     POST /api/api-keys 签发，见 server/api/api_keys.py）；
+  2. `TAP_TOKEN` → 直接当 Bearer access_token 用（临时调试）；
+  3. `TAP_USERNAME` / `TAP_PASSWORD` → 调 /api/auth/login 换 access_token，
+     收到 401 时自动重新登录一次再重试。
 
 环境变量：
   - TAP_BASE_URL   平台地址，默认 http://127.0.0.1:54351
+  - TAP_API_KEY    长效 API Key（tap_ 开头，推荐）
   - TAP_TOKEN      固定 access_token（可选）
   - TAP_USERNAME   平台账号（可选，与 TAP_PASSWORD 成对）
   - TAP_PASSWORD   平台密码
@@ -31,6 +34,7 @@ class PlatformClient:
 
     def __init__(self) -> None:
         self.base_url = os.environ.get("TAP_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
+        self._api_key = os.environ.get("TAP_API_KEY") or None
         self._fixed_token = os.environ.get("TAP_TOKEN") or None
         self._username = os.environ.get("TAP_USERNAME") or None
         self._password = os.environ.get("TAP_PASSWORD") or None
@@ -60,6 +64,8 @@ class PlatformClient:
         self._access_token = token
 
     def _headers(self) -> dict[str, str]:
+        if self._api_key:
+            return {"X-API-Key": self._api_key}
         if self._access_token is None:
             self._login()
         return {"Authorization": f"Bearer {self._access_token}"}
@@ -85,7 +91,7 @@ class PlatformClient:
         resp = self._http.request(
             method, path, params=clean_params, json=json_body, headers=self._headers()
         )
-        if resp.status_code == 401 and self._fixed_token is None:
+        if resp.status_code == 401 and self._api_key is None and self._fixed_token is None:
             self._access_token = None  # 过期，重登后重试一次
             resp = self._http.request(
                 method, path, params=clean_params, json=json_body, headers=self._headers()

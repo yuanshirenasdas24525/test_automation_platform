@@ -83,7 +83,8 @@ class DevicePool:
             updated = sess.execute(
                 text(
                     "UPDATE devices "
-                    "SET status = :busy, owner_execution_id = :execution_id "
+                    "SET status = :busy, owner_execution_id = :execution_id, "
+                    "    busy_since = CURRENT_TIMESTAMP "
                     "WHERE id = :id AND status = :idle"
                 ),
                 {
@@ -152,7 +153,8 @@ class DevicePool:
             updated = sess.execute(
                 text(
                     "UPDATE devices "
-                    "SET status = :busy, owner_execution_id = :execution_id "
+                    "SET status = :busy, owner_execution_id = :execution_id, "
+                    "    busy_since = CURRENT_TIMESTAMP "
                     "WHERE id = :id AND status = :idle"
                 ),
                 {
@@ -195,7 +197,7 @@ class DevicePool:
             })
             result = sess.execute(
                 text(
-                    f"UPDATE devices SET status = :idle, owner_execution_id = NULL "
+                    f"UPDATE devices SET status = :idle, owner_execution_id = NULL, busy_since = NULL "
                     f"WHERE {where} AND status = :busy"
                 ),
                 params,

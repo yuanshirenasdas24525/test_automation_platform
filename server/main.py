@@ -67,6 +67,7 @@ from server.api import (
     ai_dialogue_router,
     ai_models_router,
     ai_requirements_router,
+    api_keys_router,
     app_packages_router,
     attachments_router,
     auth_router,
@@ -208,6 +209,7 @@ for router in (
     users_router,
     version_summaries_router,
     bug_fix_router,
+    api_keys_router,
 ):
     app.include_router(router, prefix="/api", dependencies=[Depends(get_current_user)])
 

@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import os
+from datetime import datetime, timedelta
 from typing import List
 
 from celery_app import celery_app
@@ -36,6 +37,39 @@ logger = logging.getLogger(__name__)
 
 # 连续失败多少次才判 offline。写死在代码里，后续要可调可以挪进 celery env。
 OFFLINE_THRESHOLD = 2
+
+# 设备租约超时（分钟）：busy 超过这个时长视为持有方已死（worker 崩溃 / 任务丢失），
+# 由本任务强制释放，避免设备永久卡 busy。0 或负数 = 关闭该机制。
+# 默认 120 分钟 —— 大于最长的正常执行（web/app 大批量回归），小于"人工发现再手工修库"的代价。
+DEVICE_LEASE_TIMEOUT_MINUTES = int(os.environ.get("DEVICE_LEASE_TIMEOUT_MINUTES", "120"))
+
+
+def _reclaim_expired_leases(db) -> List[str]:
+    """强制释放租约超时的 busy 设备，返回被回收的 udid 列表（审计走 warning 日志）。"""
+    if DEVICE_LEASE_TIMEOUT_MINUTES <= 0:
+        return []
+    deadline = datetime.now() - timedelta(minutes=DEVICE_LEASE_TIMEOUT_MINUTES)
+    expired = (
+        db.session.query(Device)
+        .filter(
+            Device.status == DEVICE_STATUS_BUSY,
+            Device.busy_since.isnot(None),
+            Device.busy_since < deadline,
+        )
+        .all()
+    )
+    reclaimed: List[str] = []
+    for dev in expired:
+        logger.warning(
+            "[lease] 强制释放设备 udid=%s：busy 自 %s 起已超 %d 分钟（owner_execution_id=%s），"
+            "判定持有方已死",
+            dev.udid, dev.busy_since, DEVICE_LEASE_TIMEOUT_MINUTES, dev.owner_execution_id,
+        )
+        dev.status = DEVICE_STATUS_IDLE
+        dev.owner_execution_id = None
+        dev.busy_since = None
+        reclaimed.append(dev.udid)
+    return reclaimed
 
 
 def _probe_one(db, dev: Device) -> None:
@@ -128,6 +162,9 @@ def probe_devices_task() -> dict:
         #
         # 现在改成全量遍历：appium_port 缺省的设备也试着用 4723（Appium 默认端口）
         # 探一次。探不通就累计失败、最终翻 offline，行为对用户来说是可见、可排障的。
+        # 先回收租约超时的 busy 设备（worker 崩溃兜底），再做常规心跳探测
+        reclaimed = _reclaim_expired_leases(db)
+
         devices = db.session.query(Device).all()
         total = len(devices)
         for dev in devices:
@@ -155,7 +192,8 @@ def probe_devices_task() -> dict:
         "fail": fail_count,
         "turned_offline": turned_offline,
         "recovered": recovered,
+        "lease_reclaimed": reclaimed,
     }
-    if turned_offline or recovered:
+    if turned_offline or recovered or reclaimed:
         logger.info("probe_devices_task 完成: %s", summary)
     return summary

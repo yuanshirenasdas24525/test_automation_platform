@@ -16,11 +16,14 @@ from typing import Any
 import bcrypt
 import pydantic
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import selectinload
 
-from database.models import User, UserSession
+from database.models import ApiKey, User, UserSession
+from database.models import (
+    API_KEY_SCOPE_AI, API_KEY_SCOPE_EXECUTE, API_KEY_SCOPE_READ,
+)
 from server.api.deps import DBDep
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -273,12 +276,75 @@ def _get_session_or_401(db: DBDep, session_id: int, token_hash: str | None = Non
 
 
 # ---------------------------------------------------------------------------
-# 依赖：从 Bearer Token 获取当前用户（给其他路由用的）
+# API Key 鉴权（长效 service token，给 MCP server / CI 等机器调用方）
+# ---------------------------------------------------------------------------
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+# API Key 一律摸不到的资源（无论 scope）：认证、密钥管理、用户与角色管理
+_API_KEY_DENY_PREFIXES = ("/api/auth", "/api/api-keys", "/api/users", "/api/roles")
+
+
+def _check_api_key_scope(key: ApiKey, method: str, path: str) -> None:
+    """scope 白名单校验：read=全部 GET；非 GET 只放行显式列出的路径。"""
+    for deny in _API_KEY_DENY_PREFIXES:
+        if path.startswith(deny):
+            raise HTTPException(status_code=403, detail="API Key 不允许访问该资源")
+
+    scopes = set(key.scopes or [])
+    if method == "GET":
+        if API_KEY_SCOPE_READ not in scopes:
+            raise HTTPException(status_code=403, detail="该 API Key 缺少 read scope")
+        return
+
+    allowed: list[tuple[str, str]] = []
+    if API_KEY_SCOPE_EXECUTE in scopes:
+        allowed.append(("POST", "/api/run_test"))
+    if API_KEY_SCOPE_AI in scopes:
+        allowed.append(("POST", "/api/functional_cases/ai_diagnose_report"))
+        allowed.append(("POST", "/api/functional_cases/ai_report_fix/apply"))
+    if (method, path) not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"该 API Key 的 scope 不允许 {method} {path}",
+        )
+
+
+def _authenticate_api_key(db: DBDep, request: Request, raw_key: str) -> User:
+    """X-API-Key 鉴权：哈希查表 → 有效性/过期/scope 校验 → 以签发人身份执行。"""
+    key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+    key = db.session.query(ApiKey).filter(ApiKey.key_hash == key_hash).first()
+    if key is None or not key.is_active:
+        raise HTTPException(status_code=401, detail="API Key 无效或已吊销")
+    if key.expires_at and key.expires_at < datetime.now():
+        raise HTTPException(status_code=401, detail="API Key 已过期")
+
+    _check_api_key_scope(key, request.method, request.url.path)
+
+    user = (
+        db.session.query(User)
+        .options(selectinload(User.roles))
+        .filter(User.id == key.created_by)
+        .first()
+    )
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="API Key 签发人不存在或已停用")
+
+    key.last_used_at = datetime.now()   # commit 由 get_db 兜底
+    request.state.api_key_id = key.id   # 给下游审计用
+    return user
+
+
+# ---------------------------------------------------------------------------
+# 依赖：从 Bearer Token / X-API-Key 获取当前用户（给其他路由用的）
 # ---------------------------------------------------------------------------
 def get_current_user(
     db: DBDep,
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    api_key: str | None = Depends(api_key_scheme),
 ) -> User:
+    if api_key:
+        return _authenticate_api_key(db, request, api_key)
     if creds is None:
         raise HTTPException(status_code=401, detail="未提供认证 token")
     payload = _decode_token(creds.credentials, "access")
@@ -304,10 +370,12 @@ def get_current_user(
 
 def _get_optional_user(
     db: DBDep,
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    api_key: str | None = Depends(api_key_scheme),
 ) -> User | None:
     try:
-        return get_current_user(db, creds)
+        return get_current_user(db, request, creds, api_key)
     except HTTPException:
         return None
 
