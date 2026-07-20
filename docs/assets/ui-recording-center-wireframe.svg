@@ -1,0 +1,178 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="900" viewBox="0 0 1440 900">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <style>
+      .title { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #0f172a; }
+      .h2 { font: 600 15px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #0f172a; }
+      .body { font: 400 13px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #334155; }
+      .small { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #64748b; }
+      .tiny { font: 400 10px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; fill: #64748b; }
+      .button { font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif; }
+    </style>
+  </defs>
+
+  <rect width="1440" height="900" fill="#f8fafc"/>
+
+  <!-- 左侧应用导航 -->
+  <rect x="0" y="0" width="196" height="900" fill="#0f172a"/>
+  <circle cx="30" cy="31" r="13" fill="#2563eb"/>
+  <text x="52" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="15" font-weight="700" fill="#ffffff">自动化测试平台</text>
+  <text x="20" y="86" class="small" fill="#94a3b8">测试工作台</text>
+  <rect x="10" y="102" width="176" height="38" rx="6" fill="#1e293b"/>
+  <rect x="22" y="114" width="14" height="14" rx="3" fill="#60a5fa"/>
+  <text x="46" y="127" class="body" fill="#f8fafc">UI录制中心</text>
+  <text x="46" y="169" class="body" fill="#cbd5e1">自动化用例</text>
+  <text x="46" y="209" class="body" fill="#cbd5e1">设备管理</text>
+  <text x="46" y="249" class="body" fill="#cbd5e1">App包管理</text>
+  <text x="46" y="289" class="body" fill="#cbd5e1">执行报告</text>
+  <line x1="20" y1="320" x2="176" y2="320" stroke="#334155"/>
+  <text x="20" y="350" class="small" fill="#94a3b8">管理</text>
+  <text x="46" y="386" class="body" fill="#cbd5e1">项目配置</text>
+  <text x="46" y="426" class="body" fill="#cbd5e1">AI模型</text>
+
+  <!-- 顶部标题与状态 -->
+  <rect x="196" y="0" width="1244" height="78" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="226" y="34" class="title">UI录制中心</text>
+  <text x="226" y="57" class="small">录制页面快照、可访问性树、用户动作和页面跳转</text>
+  <rect x="806" y="20" width="190" height="38" rx="7" fill="#fef2f2" stroke="#fecaca"/>
+  <circle cx="827" cy="39" r="6" fill="#ef4444"/>
+  <text x="841" y="44" class="button" fill="#b91c1c">录制中 00:02:18</text>
+  <rect x="1008" y="20" width="76" height="38" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="1034" y="44" class="button" fill="#334155">暂停</text>
+  <rect x="1094" y="20" width="126" height="38" rx="7" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="1118" y="44" class="button" fill="#334155">保存快照</text>
+  <rect x="1230" y="20" width="178" height="38" rx="7" fill="#ef4444"/>
+  <text x="1275" y="44" class="button" fill="#ffffff">停止并保存</text>
+
+  <!-- 平台切换 -->
+  <rect x="216" y="94" width="270" height="38" rx="8" fill="#e2e8f0"/>
+  <rect x="219" y="97" width="86" height="32" rx="6" fill="#ffffff" filter="url(#shadow)"/>
+  <text x="249" y="118" class="button" fill="#2563eb">Web</text>
+  <text x="338" y="118" class="button" fill="#64748b">Android</text>
+  <text x="429" y="118" class="button" fill="#64748b">iOS</text>
+  <text x="510" y="117" class="small">环境：测试环境</text>
+  <text x="630" y="117" class="small">版本：web-2026.07.17</text>
+
+  <!-- 左：录制会话 -->
+  <g filter="url(#shadow)">
+    <rect x="216" y="148" width="245" height="520" rx="9" fill="#ffffff" stroke="#e2e8f0"/>
+  </g>
+  <text x="236" y="177" class="h2">录制会话</text>
+  <rect x="236" y="193" width="205" height="34" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="249" y="215" class="small">搜索会话或页面</text>
+  <rect x="228" y="241" width="221" height="86" rx="7" fill="#eff6ff" stroke="#93c5fd"/>
+  <circle cx="245" cy="260" r="5" fill="#ef4444"/>
+  <text x="258" y="265" class="h2">登录与用户管理</text>
+  <text x="244" y="289" class="small">Web · 5个快照 · 8个动作</text>
+  <text x="244" y="309" class="tiny">正在录制</text>
+  <rect x="228" y="338" width="221" height="70" rx="7" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="244" y="361" class="body">订单流程探索</text>
+  <text x="244" y="383" class="small">Android · 12个快照</text>
+  <rect x="228" y="419" width="221" height="70" rx="7" fill="#ffffff" stroke="#e2e8f0"/>
+  <text x="244" y="442" class="body">个人中心回归</text>
+  <text x="244" y="464" class="small">iOS · 7个快照</text>
+  <line x1="236" y1="509" x2="441" y2="509" stroke="#e2e8f0"/>
+  <text x="236" y="539" class="h2">当前页面</text>
+  <rect x="236" y="553" width="205" height="92" rx="7" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="249" y="578" class="body">登录页</text>
+  <text x="249" y="600" class="small">快照 03 · 12个元素</text>
+  <text x="249" y="622" class="small">结构相似度 98%</text>
+
+  <!-- 中：实时画面 -->
+  <g filter="url(#shadow)">
+    <rect x="477" y="148" width="565" height="520" rx="9" fill="#ffffff" stroke="#e2e8f0"/>
+  </g>
+  <text x="497" y="177" class="h2">实时画面</text>
+  <rect x="812" y="160" width="94" height="24" rx="12" fill="#eff6ff"/>
+  <text x="835" y="176" class="tiny" fill="#2563eb">快照 03</text>
+  <rect x="914" y="160" width="108" height="24" rx="12" fill="#f1f5f9"/>
+  <text x="935" y="176" class="tiny">自动采集中</text>
+  <rect x="497" y="194" width="525" height="445" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+  <rect x="497" y="194" width="525" height="30" rx="6" fill="#e2e8f0"/>
+  <circle cx="515" cy="209" r="4" fill="#f87171"/>
+  <circle cx="529" cy="209" r="4" fill="#fbbf24"/>
+  <circle cx="543" cy="209" r="4" fill="#4ade80"/>
+  <rect x="570" y="201" width="344" height="16" rx="5" fill="#ffffff"/>
+  <text x="583" y="213" class="tiny">https://test.example.com/login</text>
+  <rect x="511" y="238" width="497" height="387" fill="#ffffff"/>
+  <rect x="626" y="280" width="270" height="293" rx="10" fill="#ffffff" stroke="#e2e8f0" filter="url(#shadow)"/>
+  <text x="714" y="318" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="20" font-weight="700" fill="#0f172a">欢迎登录</text>
+  <text x="654" y="351" class="small">用户名</text>
+  <rect x="654" y="361" width="214" height="38" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="668" y="385" class="small">test_user</text>
+  <text x="654" y="425" class="small">密码</text>
+  <rect x="654" y="435" width="214" height="38" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="668" y="459" class="small">••••••••</text>
+  <rect x="648" y="493" width="226" height="50" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="2" stroke-dasharray="5 3"/>
+  <rect x="654" y="499" width="214" height="38" rx="6" fill="#2563eb"/>
+  <text x="748" y="523" class="button" fill="#ffffff">登录</text>
+  <rect x="862" y="477" width="112" height="26" rx="5" fill="#1e3a8a"/>
+  <text x="874" y="494" class="tiny" fill="#ffffff">button · 98%</text>
+  <path d="M 891 475 L 881 488 L 896 488 Z" fill="#1e3a8a"/>
+  <path d="M 844 537 L 857 555 L 850 557 L 855 568 L 849 571 L 844 560 L 837 565 Z" fill="#0f172a" stroke="#ffffff"/>
+
+  <!-- 右：元素树 -->
+  <g filter="url(#shadow)">
+    <rect x="1058" y="148" width="350" height="520" rx="9" fill="#ffffff" stroke="#e2e8f0"/>
+  </g>
+  <text x="1078" y="177" class="h2">元素树</text>
+  <rect x="1288" y="158" width="100" height="28" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="1311" y="176" class="tiny">12个元素</text>
+  <rect x="1078" y="195" width="310" height="32" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="1091" y="216" class="small">搜索文本、role、id</text>
+  <text x="1084" y="254" class="body">▾ document  “登录页”</text>
+  <text x="1103" y="286" class="body">▾ form  “登录表单”</text>
+  <text x="1125" y="318" class="body">textbox  “用户名”</text>
+  <text x="1125" y="350" class="body">textbox  “密码”</text>
+  <rect x="1116" y="364" width="260" height="36" rx="5" fill="#dbeafe"/>
+  <text x="1125" y="387" class="body" fill="#1d4ed8">button  “登录”</text>
+  <line x1="1078" y1="420" x2="1388" y2="420" stroke="#e2e8f0"/>
+  <text x="1078" y="450" class="h2">元素详情</text>
+  <text x="1078" y="478" class="small">语义名称</text>
+  <text x="1190" y="478" class="body">登录按钮</text>
+  <text x="1078" y="506" class="small">推荐定位</text>
+  <text x="1190" y="506" class="body">data-testid</text>
+  <rect x="1078" y="519" width="310" height="34" rx="5" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="1090" y="541" class="small">login-button</text>
+  <text x="1078" y="579" class="small">置信度</text>
+  <rect x="1190" y="571" width="132" height="8" rx="4" fill="#e2e8f0"/>
+  <rect x="1190" y="571" width="128" height="8" rx="4" fill="#22c55e"/>
+  <text x="1332" y="582" class="small">98%</text>
+  <rect x="1078" y="604" width="147" height="34" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="1112" y="625" class="button" fill="#334155">验证定位器</text>
+  <rect x="1236" y="604" width="152" height="34" rx="6" fill="#2563eb"/>
+  <text x="1273" y="625" class="button" fill="#ffffff">加入元素库</text>
+
+  <!-- 底部动作时间线 -->
+  <g filter="url(#shadow)">
+    <rect x="216" y="686" width="1192" height="188" rx="9" fill="#ffffff" stroke="#e2e8f0"/>
+  </g>
+  <text x="236" y="717" class="h2">动作时间线</text>
+  <text x="1324" y="717" class="small">8个动作</text>
+  <line x1="277" y1="772" x2="1348" y2="772" stroke="#cbd5e1" stroke-width="2"/>
+  <circle cx="292" cy="772" r="8" fill="#2563eb"/>
+  <circle cx="512" cy="772" r="8" fill="#2563eb"/>
+  <circle cx="732" cy="772" r="8" fill="#2563eb"/>
+  <circle cx="952" cy="772" r="9" fill="#ef4444"/>
+  <circle cx="1172" cy="772" r="8" fill="#8b5cf6"/>
+  <rect x="244" y="793" width="120" height="48" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="259" y="814" class="body">页面快照</text>
+  <text x="259" y="832" class="tiny">登录页 · 01</text>
+  <rect x="454" y="793" width="130" height="48" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="468" y="814" class="body">输入用户名</text>
+  <text x="468" y="832" class="tiny">textbox</text>
+  <rect x="674" y="793" width="130" height="48" rx="6" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="688" y="814" class="body">输入密码</text>
+  <text x="688" y="832" class="tiny">值已脱敏</text>
+  <rect x="889" y="793" width="142" height="48" rx="6" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="904" y="814" class="body" fill="#b91c1c">点击 登录按钮</text>
+  <text x="904" y="832" class="tiny">button · 98%</text>
+  <rect x="1114" y="793" width="130" height="48" rx="6" fill="#f5f3ff" stroke="#ddd6fe"/>
+  <text x="1128" y="814" class="body">页面快照</text>
+  <text x="1128" y="832" class="tiny">首页 · 03</text>
+  <rect x="1260" y="793" width="120" height="48" rx="6" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="1277" y="814" class="body" fill="#1d4ed8">生成用例</text>
+  <text x="1277" y="832" class="tiny">5个步骤</text>
+</svg>
