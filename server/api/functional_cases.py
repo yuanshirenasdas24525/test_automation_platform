@@ -2593,6 +2593,10 @@ def ai_diagnose_run(payload: DiagnoseRunRequest, db: DBDep):
 class ReportDiagnoseRequest(pydantic.BaseModel):
     report_id: int
     model_name: str
+    # L1 确定性分诊先分掉能算的（变量悬空、限流、5xx…），只把判不了的交给 LLM。
+    # 实测报告 8：126 条失败里 121 条规则可定性，送模型的从 126 降到 5，省 96% token。
+    # 关掉则退回全量送模型（老行为）。
+    skip_l1_triaged: bool = True
 
 
 @router.post("/ai_diagnose_report")
@@ -2627,6 +2631,7 @@ def ai_diagnose_report(payload: ReportDiagnoseRequest, db: DBDep):
         input_payload={
             "report_id": payload.report_id,
             "model_name": payload.model_name,
+            "skip_l1_triaged": payload.skip_l1_triaged,
         },
     )
     db.session.add(run)

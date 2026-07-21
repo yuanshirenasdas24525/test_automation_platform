@@ -8,7 +8,7 @@
 （业务规则是否符合预期、断言是否合理），既省 token 又更准。
 
 分类与 ai_gateway/prompts/api_report_diagnose.md 的四分类保持一致：
-  用例问题 / 接口问题 / 环境或其他 / 待定（L1 判不了，交给 L2）
+  用例问题 / 接口问题 / 环境/其他 / 待定（L1 判不了，交给 L2）
 
 每条结论都带 evidence（为什么这么判），不做无依据的猜测。
 """
@@ -25,7 +25,7 @@ from database.models import TestCase, TestReport, TestStepReport
 # 分类
 CLS_CASE = "用例问题"
 CLS_API = "接口问题"
-CLS_ENV = "环境或其他"
+CLS_ENV = "环境/其他"
 CLS_UNKNOWN = "待定"
 
 # 未解析变量字面量：请求里出现 ${xxx} 说明变量池里没有它
@@ -280,3 +280,56 @@ def triage_report(session: Session, report_id: int) -> dict:
         "by_classification": by_class,
         "cases": cases,
     }
+
+
+# ---------------------------------------------------------------------------
+# 供 AI 诊断链路（L2）使用：L1 先分掉能算的，LLM 只看剩下的
+# ---------------------------------------------------------------------------
+def undetermined_case_ids(triage: dict) -> set[int]:
+    """L1 判不了、需要 LLM 语义判断的用例 id。"""
+    return {
+        int(c["case_id"])
+        for c in triage.get("cases") or []
+        if c.get("classification") == CLS_UNKNOWN and c.get("case_id") is not None
+    }
+
+
+def as_diagnosis_items(triage: dict, module_ids: dict[int, Optional[int]] | None = None) -> list[dict]:
+    """把 L1 结论转成 AI 诊断 item 的形态，好和 LLM 结果合并成一份完整结果。
+
+    字段与 functional_cases._normalize_report_diagnosis_item 的输出对齐，
+    这样下游（前端展示、ai_flag_service 打标、preflight 应用）不用区分来源。
+    额外带一个 `source` 字段标明是规则判的还是 AI 判的。
+
+    只有 wrong_jsonpath 这类"规则能直接算出正确值"的才给 fix；
+    其余（缺前置步骤、环境问题）给空 fix —— 规则不该猜怎么改。
+    """
+    module_ids = module_ids or {}
+    items: list[dict] = []
+    for c in triage.get("cases") or []:
+        if c.get("classification") == CLS_UNKNOWN:
+            continue          # 留给 LLM，别在这里占位
+        cid = c.get("case_id")
+        hint = c.get("fix_hint") or {}
+        findings = [c.get("summary") or "", f"依据：{c.get('evidence') or ''}"]
+        if c.get("suggestion"):
+            findings.append(f"建议：{c['suggestion']}")
+        items.append({
+            "case_id": cid,
+            "module_id": module_ids.get(cid),
+            "name": c.get("case_name") or "",
+            "classification": c.get("classification"),
+            "findings": [f for f in findings if f.strip()],
+            "fix": {
+                "extract": hint.get("extract") or {},
+                "assertion": {},
+                "params": {},
+                "headers": {},
+                "steps": [],
+                "pre_hook": [],
+                "reorder": {},
+            },
+            "source": "L1",
+            "subtype": c.get("subtype"),
+        })
+    return items

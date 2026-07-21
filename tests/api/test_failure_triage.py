@@ -123,3 +123,46 @@ def test_dangling_var_takes_priority_over_runtime_error():
     """变量悬空的归因优先于"没有响应"的兜底，避免抢走更准确的结论。"""
     v = _triage(_step(target="http://h/api/x/${oid}", error="some failure"))
     assert v["subtype"] == "dangling_var"
+
+
+# ===================================================================
+# L1 → L2 衔接：L1 分掉能算的，LLM 只看剩下的
+# ===================================================================
+def _fake_triage():
+    return {
+        "cases": [
+            {"case_id": 1, "case_name": "A", "classification": CLS_CASE, "subtype": "dangling_var",
+             "summary": "变量无人产出：token", "evidence": "残留 ${token}", "suggestion": "补登录步骤"},
+            {"case_id": 2, "case_name": "B", "classification": CLS_CASE, "subtype": "wrong_jsonpath",
+             "summary": "路径写错", "evidence": "提取失败", "suggestion": "改路径",
+             "fix_hint": {"extract": {"token": "$.data.access_token"}}},
+            {"case_id": 3, "case_name": "C", "classification": "待定", "subtype": None,
+             "summary": "需 AI 判断", "evidence": "断言不符", "suggestion": "用 AI 分析"},
+        ]
+    }
+
+
+def test_undetermined_ids_are_the_ones_sent_to_llm():
+    from server.services.failure_triage import undetermined_case_ids
+    assert undetermined_case_ids(_fake_triage()) == {3}
+
+
+def test_l1_items_exclude_undetermined_and_match_diagnosis_shape():
+    """L1 项不占位待定用例，且字段与 AI 诊断项对齐（下游无需区分来源）。"""
+    from server.services.failure_triage import as_diagnosis_items
+    items = as_diagnosis_items(_fake_triage(), {1: 10, 2: 20})
+    assert [i["case_id"] for i in items] == [1, 2]        # 待定的不产出
+    required = {"case_id", "module_id", "name", "classification", "findings", "fix", "source"}
+    assert required <= set(items[0])
+    assert items[0]["module_id"] == 10 and items[0]["source"] == "L1"
+    # findings 要把归因链条讲清楚：结论 + 依据 + 建议
+    assert any("依据" in f for f in items[0]["findings"])
+    assert any("建议" in f for f in items[0]["findings"])
+
+
+def test_only_rule_computable_fixes_are_emitted():
+    """规则算得出正确值的才给 fix；缺前置这类给空 fix —— 不猜怎么改。"""
+    from server.services.failure_triage import as_diagnosis_items
+    items = {i["case_id"]: i for i in as_diagnosis_items(_fake_triage())}
+    assert items[1]["fix"]["extract"] == {}                                   # dangling_var 不猜
+    assert items[2]["fix"]["extract"] == {"token": "$.data.access_token"}     # jsonpath 可算

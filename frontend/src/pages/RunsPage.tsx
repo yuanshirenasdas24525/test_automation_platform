@@ -717,7 +717,7 @@ function DetailBody({
 const TRIAGE_STYLE: Record<string, string> = {
   用例问题: "bg-amber-100 text-amber-800",
   接口问题: "bg-red-100 text-red-800",
-  环境或其他: "bg-sky-100 text-sky-800",
+  "环境/其他": "bg-sky-100 text-sky-800",
   待定: "bg-slate-100 text-slate-600",
 };
 

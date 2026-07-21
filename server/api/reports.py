@@ -183,7 +183,7 @@ def get_report(report_id: int, db: DBDep):
 def get_report_triage(report_id: int, db: DBDep):
     """L1 确定性失败分诊：不调 LLM，按规则给每条失败用例定性。
 
-    分类与 AI 诊断保持一致（用例问题 / 接口问题 / 环境或其他 / 待定），每条都带 evidence。
+    分类与 AI 诊断保持一致（用例问题 / 接口问题 / 环境/其他 / 待定），每条都带 evidence。
     "待定" 表示规则判不了，需要 AI 做语义判断。
     """
     from server.services.failure_triage import triage_report

@@ -1018,16 +1018,59 @@ def _handle_api_report_fix(run: "AiRun", session) -> dict:
     if not cfg.enabled:
         raise ValueError(f"AI 模型 {model_name!r} 未启用")
 
-    result = diagnose_report_items(session, report_id, cfg)
+    # L1 确定性分诊先分掉能算的，LLM 只看剩下的（省 token 且更准）。
+    # L1 结论与 LLM 结论合并成一份完整结果，下游无需区分来源。
+    only_ids: set[int] | None = None
+    l1_items: list[dict] = []
+    l1_stats: dict = {}
+    if payload.get("skip_l1_triaged", True):
+        from server.services.failure_triage import (
+            as_diagnosis_items, triage_report, undetermined_case_ids,
+        )
+        from database.models import TestCase as _TestCase
+        try:
+            triage = triage_report(session, report_id)
+            only_ids = undetermined_case_ids(triage)
+            done_ids = [
+                c["case_id"] for c in triage["cases"]
+                if c["case_id"] is not None and c["case_id"] not in only_ids
+            ]
+            module_ids = {
+                c.id: c.module_id
+                for c in session.query(_TestCase).filter(_TestCase.id.in_(done_ids or [0])).all()
+            }
+            l1_items = as_diagnosis_items(triage, module_ids)
+            l1_stats = {
+                "total_failed": triage["total_failed"],
+                "l1_triaged": triage["triaged"],
+                "sent_to_llm": len(only_ids),
+            }
+            LOGGER.info(
+                "[ai_task] L1 分诊：失败 %d 条，规则定性 %d 条，送模型 %d 条",
+                triage["total_failed"], triage["triaged"], len(only_ids),
+            )
+            if not only_ids:
+                # 全部由规则定性 —— 一次 LLM 都不用调
+                return {
+                    "output": {"items": l1_items, "total": len(l1_items), "l1": l1_stats},
+                    "model": cfg.model, "provider": cfg.provider, "prompt_version": "v1+L1",
+                }
+        except Exception:  # noqa: BLE001
+            # 分诊失败不能挡住主流程：退回全量送模型（老行为）
+            LOGGER.warning("[ai_task] L1 分诊失败，退回全量诊断", exc_info=True)
+            only_ids, l1_items, l1_stats = None, [], {}
+
+    result = diagnose_report_items(session, report_id, cfg, only_case_ids=only_ids)
+    merged = l1_items + (result.get("items") or [])
     LOGGER.info(
-        "[ai_task] api_report_fix report=%s model=%s items=%d",
-        report_id, model_name, result.get("total") or 0,
+        "[ai_task] api_report_fix report=%s model=%s items=%d（L1 %d + LLM %d）",
+        report_id, model_name, len(merged), len(l1_items), len(result.get("items") or []),
     )
     return {
-        "output": result,
+        "output": {"items": merged, "total": len(merged), **({"l1": l1_stats} if l1_stats else {})},
         "model": cfg.model,
         "provider": cfg.provider,
-        "prompt_version": "v1",
+        "prompt_version": "v1+L1" if l1_stats else "v1",
     }
 
 
