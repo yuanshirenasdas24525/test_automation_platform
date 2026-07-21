@@ -1122,18 +1122,25 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
     produced_so_far = set(var_pool_keys) | set(carried_vars)
     for case in cases:
         warnings: list[str] = []
+        # blocking：执行必挂类问题（不是"写得不够好"，是"跑起来一定失败"）。
+        # 有实测依据：项目 1 的 163 条用例中，被变量校验标记的 95 条运行通过率为 0。
+        # 这类会置 case["needs_fix"]=True，评审页默认不勾选，避免一键批量入库。
+        blocking: list[str] = []
         negative = _is_negative_case(case.get("name") or "")
         reqs = _case_requests(case)
 
         # 0) 空壳用例兜底：没有任何可执行请求（常见于并发/性能/压测类——平台顺序执行
         #    引擎无法表达，AI 往往只给了名字、结构化字段全空）。打警告，不让它静默空白。
         if not reqs:
-            warnings.append(
+            msg = (
                 "该用例没有可执行的请求（method/path 为空）。若是并发/性能/压测类需求，"
                 "本平台顺序执行无法表达——建议改成「连续多次重复提交」的顺序多步用例，或用专门的压测工具；"
                 "否则请手工补全请求或删除本用例。"
             )
+            warnings.append(msg)
+            blocking.append(msg)
             case["warnings"] = warnings
+            case["needs_fix"] = True
             continue
 
         # 1) 命名空间加固（仅正向写入用例）
@@ -1154,17 +1161,21 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
         # 1.4) 引用了不存在的动态函数（AI 瞎编函数名）→ 执行必报错
         bad_funcs = _unknown_functions(case)
         if bad_funcs:
-            warnings.append(
+            msg = (
                 f"用到了平台不存在的动态函数：{', '.join(sorted('function:' + n for n in bad_funcs))}。"
                 "动态值只能用已注册的函数（如 function:unique / unique_mobile / unique_email），不要自己造名字。"
             )
+            warnings.append(msg)
+            blocking.append(msg)          # 未注册函数 → 执行期直接报错
 
         # 1.5) 用没创建过的 function:unique 账号登录 → 必然 401
         if _login_with_uncreated_unique(case):
-            warnings.append(
+            msg = (
                 "登录步骤用了 function:unique 用户名，但该账号没有先被创建——登录会 401。"
                 "请改成：先调创建账号接口建号、提取真实用户名再登录；或直接用变量池账号 ${my_account} 登录。"
             )
+            warnings.append(msg)
+            blocking.append(msg)          # 登录必 401
 
         # 1.6) 管理类写接口（建/删用户、改角色等）没带 Authorization → 多半 401
         #      典型：建一次性账号的 POST /api/users 忘了带 admin token（先有鸡先有蛋）
@@ -1197,15 +1208,17 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
                 later = base in _produced_vars(case)
                 where = f"第 {idx + 1} 步" if len(reqs) > 1 else "本用例"
                 if later:
-                    warnings.append(
+                    msg = (
                         f"{where}引用了 ${{{var}}}，但它要到本用例后面的步骤才 extract 出来——"
                         "执行时按步骤顺序解析，这一步取不到值。请把产出它的步骤调到前面。"
                     )
                 else:
-                    warnings.append(
+                    msg = (
                         f"{where}引用的变量 ${{{var}}} 找不到来源：请补充能 extract 出它的"
                         "前置步骤/前置用例，或确认变量池里是否有该变量"
                     )
+                warnings.append(msg)
+                blocking.append(msg)      # 变量悬空 → 实测通过率 0
             ex = req.get("extract")
             if isinstance(ex, dict):
                 # 本步骤产出的变量，从下一步起才可用
@@ -1214,6 +1227,14 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
         produced_so_far |= _produced_vars(case)
         if warnings:
             case["warnings"] = warnings
+        # needs_fix 只由"执行必挂"类问题触发；缺断言、疑似缺鉴权头这类提示不影响勾选，
+        # 因为它们未必真的失败（如接口本就公开），拦下来反而干扰用户。
+        if blocking:
+            case["needs_fix"] = True
+            case["blocking_warnings"] = blocking
+        else:
+            case.pop("needs_fix", None)
+            case.pop("blocking_warnings", None)
     return cases
 
 

@@ -483,6 +483,10 @@ export interface AiGeneratedCase {
   teardown_sql?: string;
   /** 后端生成校验给出的提示（变量找不到来源、缺断言等），引导用户/下一轮 AI 修正。 */
   warnings?: string[];
+  /** 存在"执行必挂"级问题（变量悬空、未注册函数等）：评审页默认不勾选，需人工确认。 */
+  needs_fix?: boolean;
+  /** needs_fix 的具体原因（warnings 的子集，只含阻断执行的那些）。 */
+  blocking_warnings?: string[];
   /** 后端静态校验发现问题后由 AI 自修成功（P0-2 自修回路），前端展示"已自动修复"。 */
   auto_repaired?: boolean;
   /** 会话隔离登录前置：跑用例前先登录拿一个专属 token，免受前序用例登出/改密污染。 */

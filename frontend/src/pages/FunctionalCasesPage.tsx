@@ -3155,8 +3155,12 @@ export function AiGenerateDialog({
           setFailedBatches((prev) => prev.filter((item) => item.id !== options.retryFailureId));
         }
         setCases(acc);
-        // 默认全选，但与现有用例重名的（duplicate）不勾
-        setPicked(new Set(acc.map((c, i) => (c.duplicate ? -1 : i)).filter((i) => i >= 0)));
+        // 默认全选，但两类不勾：与现有用例重名的（duplicate）、
+        // 以及静态校验判定"执行必挂"的（needs_fix，如变量悬空——实测这类通过率为 0）。
+        // 不勾≠丢弃：用例仍在列表里，用户确认后可手动勾选入库。
+        setPicked(
+          new Set(acc.map((c, i) => (c.duplicate || c.needs_fix ? -1 : i)).filter((i) => i >= 0)),
+        );
       } catch (e) {
         if (stopRef.current) break;
         failedCount += 1;
@@ -4093,6 +4097,13 @@ export function AiGenerateDialog({
                 </div>
               </div>
             ) : null}
+            {cases.length > 0 && !batchRunning && cases.some((c) => c.needs_fix) ? (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                ⛔ 有 <span className="font-semibold">{cases.filter((c) => c.needs_fix).length}</span> 条用例
+                存在执行必挂的问题（变量找不到来源、引用顺序颠倒等），已默认不勾选。
+                悬停红色徽标看具体原因；确认没问题也可以手动勾选后入库。
+              </div>
+            ) : null}
             {cases.length > 0 && !batchRunning ? (
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span>已按执行依赖排序；可拖动左侧手柄调整顺序</span>
@@ -4161,9 +4172,17 @@ export function AiGenerateDialog({
                             已自动修复
                           </span>
                         ) : null}
-                        {c.warnings?.length ? (
+                        {c.needs_fix ? (
                           <span
                             className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700"
+                            title={`执行必挂，已默认不勾选：\n${(c.blocking_warnings ?? c.warnings ?? []).join("\n")}`}
+                          >
+                            ⛔ 需修复（默认不入库）
+                          </span>
+                        ) : null}
+                        {c.warnings?.length ? (
+                          <span
+                            className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700"
                             title={c.warnings.join("\n")}
                           >
                             ⚠️ {c.warnings.length} 处提醒

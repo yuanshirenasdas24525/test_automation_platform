@@ -154,3 +154,57 @@ def test_dotted_reference_without_producer_is_flagged():
         "requests": [_req("用点号引用", "/api/users/${data.token}", method="GET")],
     }
     assert any("data.token" in w for w in _var_warns(_warns(case)))
+
+
+# ===================================================================
+# needs_fix：执行必挂 → 评审页默认不勾选
+# ===================================================================
+def _harden_one(case, var_pool=(), carried=()):
+    return _harden_generated_cases([case], set(var_pool), set(carried))[0]
+
+
+def test_dangling_variable_sets_needs_fix():
+    """变量悬空是执行必挂类（实测通过率 0）→ 必须置 needs_fix。"""
+    case = {
+        "name": "0004 【前置链】创建超级用户并登录获取admin_token",
+        "requests": [_req("创建超级用户", "/api/users",
+                          headers={"Authorization": "Bearer ${admin_token_pre353}"})],
+    }
+    out = _harden_one(case)
+    assert out.get("needs_fix") is True
+    assert any("admin_token_pre353" in w for w in out.get("blocking_warnings") or [])
+
+
+def test_empty_case_sets_needs_fix():
+    """空壳用例（没有可执行请求）也是执行必挂。"""
+    out = _harden_one({"name": "0999 【场景】1000 并发下单", "requests": []})
+    assert out.get("needs_fix") is True
+
+
+def test_missing_assertion_alone_does_not_set_needs_fix():
+    """缺断言是质量问题、不是执行必挂 —— 只提醒，不影响默认勾选。"""
+    case = {
+        "name": "0005 【正常】合法账号密码登录成功",
+        "requests": [{
+            "step_name": "登录", "path": "/api/auth/login", "method": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": {"username": "${user_admin}", "password": "${password_admin}"},
+            "extract": {}, "assertion": {},          # 故意没断言
+        }],
+    }
+    out = _harden_one(case, var_pool={"user_admin", "password_admin"})
+    assert out.get("warnings"), "缺断言应当有提醒"
+    assert not out.get("needs_fix"), "缺断言不应拦住入库"
+
+
+def test_clean_case_has_no_needs_fix():
+    """完全合格的用例不带任何标记。"""
+    case = {
+        "name": "0005 【正常】合法账号密码登录成功",
+        "requests": [_req("登录", "/api/auth/login",
+                          body={"username": "${user_admin}", "password": "${password_admin}"},
+                          extract={"token": "$.data.access_token"})],
+    }
+    out = _harden_one(case, var_pool={"user_admin", "password_admin"})
+    assert not out.get("warnings")
+    assert not out.get("needs_fix")
