@@ -1181,16 +1181,35 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
         if reqs and not any(isinstance(r.get("assertion"), dict) and r["assertion"] for r in reqs):
             warnings.append("缺少断言：至少补一条状态码或业务码断言")
 
-        # 3) 变量解析校验（按用例数组顺序累积）
-        #    pre_hook 登录会在跑 steps 前提取变量(如 token)进 ctx，视作本用例可满足
-        refs = _referenced_vars({"reqs": reqs})
-        producible = produced_so_far | _produced_vars(case) | _pre_hook_vars(case)
-        for var in sorted(refs):
-            base = var.split(".")[0]
-            if base not in producible:
-                warnings.append(
-                    f"变量 ${{{var}}} 找不到来源：请补充能 extract 出它的前置用例，或确认变量池里是否有该变量"
-                )
+        # 3) 变量解析校验（用例间按数组顺序累积，用例内**再按步骤顺序累积**）
+        #    pre_hook 登录会在跑 steps 前提取变量(如 token)进 ctx，视作本用例开始时即可用。
+        #
+        #    为什么必须按步骤顺序：整条用例粒度会把"第 3 步才 extract 出来的变量"也算成
+        #    第 1 步可用，于是「step0 引用 ${admin_token} → step2 才产出它」这种用例能过
+        #    校验、运行时却必然 401。实测中最坑的一类正是它的极端形态——用例声称去拿
+        #    admin_token，第一步却先要 admin_token 才能建号（鸡生蛋），无人产出。
+        available = produced_so_far | _pre_hook_vars(case)
+        for idx, req in enumerate(reqs):
+            for var in sorted(_referenced_vars(req)):
+                base = var.split(".")[0]
+                if base in available:
+                    continue
+                later = base in _produced_vars(case)
+                where = f"第 {idx + 1} 步" if len(reqs) > 1 else "本用例"
+                if later:
+                    warnings.append(
+                        f"{where}引用了 ${{{var}}}，但它要到本用例后面的步骤才 extract 出来——"
+                        "执行时按步骤顺序解析，这一步取不到值。请把产出它的步骤调到前面。"
+                    )
+                else:
+                    warnings.append(
+                        f"{where}引用的变量 ${{{var}}} 找不到来源：请补充能 extract 出它的"
+                        "前置步骤/前置用例，或确认变量池里是否有该变量"
+                    )
+            ex = req.get("extract")
+            if isinstance(ex, dict):
+                # 本步骤产出的变量，从下一步起才可用
+                available |= {str(k) for k in ex if str(k).strip()}
 
         produced_so_far |= _produced_vars(case)
         if warnings:
