@@ -23,15 +23,25 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from typing import Any
 
+from runners.context.auth_cache import (
+    RunAuthCache,
+    build_auth_request_signature,
+    extract_hook_values,
+)
 from runners.context.execution_context import ExecutionContext
 from runners.dispatcher import StepDispatcher
 from runners.protocol import CaseResult, StepResult, StepStatus
 
 logger = logging.getLogger(__name__)
+
+# ${var} 引用（用于扫描用例里的悬空鉴权变量）
+_VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class CaseExecutor:
@@ -94,6 +104,8 @@ class CaseExecutor:
         web_session = None
         try:
             self._inject_variables(case_dict, ctx)
+            # 悬空鉴权变量自动补齐：必须排在 pre_hook 前面（pre_hook 自己也可能要用 token）
+            self._ensure_auth_vars(case_dict, ctx)
             self._run_hooks(case_dict.get("pre_hook"), ctx, label="pre_hook")
 
             steps = case_dict.get("steps") or []
@@ -376,6 +388,123 @@ class CaseExecutor:
             ", ".join(list(defaults.keys())[:8]),
         )
 
+    # ------------------------------------------------------------------
+    # 悬空鉴权变量自动补齐（auth_provider）
+    # ------------------------------------------------------------------
+    def _ensure_auth_vars(self, case_dict: dict, ctx: ExecutionContext) -> None:
+        """用例引用了 ${admin_token} 这类鉴权变量、但变量池里没有时，自动登录补齐。
+
+        动机：AI 生成的用例常常引用一个"约定俗成"的 token 变量，却没有任何步骤产出它
+        （典型：前置链用例自己就需要 admin 权限建号，形成鸡生蛋）。这类用例 100% 401。
+        与其逐条改用例，不如在执行链路上补一次：项目在配置中心配一遍
+        `auth_provider`（登录接口 + 凭据 + 提取规则），平台按需自动登录。
+
+        边界（重要）：
+        - **只补执行前提，不改验证内容** —— 只产出变量，绝不碰用例的断言/参数；
+        - 只补 `auth_provider.extract` 里**显式声明**能产出的变量，不做语义猜测；
+        - 没配 `auth_provider` 就完全不生效（默认关闭，零侵入）；
+        - 登录失败不中断用例（非 strict），让用例带着自己的真实错误失败，
+          避免"自动鉴权失败"这层噪音盖住真实问题。
+
+        为什么不会把接口刷爆：`_RUN_SHARED_VARS` 会把产出的变量带给后续用例，
+        所以整轮通常只登录一次；RunAuthCache 是第二层兜底。
+        """
+        provider = self._load_auth_provider(ctx)
+        if not provider:
+            return
+        providable = self._hook_extract_vars(provider)
+        if not providable:
+            logger.warning("auth_provider 未声明 extract，无法确定能产出哪些变量，跳过自动补齐")
+            return
+
+        referenced = self._referenced_vars(case_dict.get("steps") or [])
+        dangling = {name for name in referenced if ctx.vars.get(name) is None}
+        needed = dangling & providable
+        if not needed:
+            return
+
+        names = ", ".join(sorted(needed))
+        logger.info("自动鉴权补齐：本用例悬空变量 [%s]，触发 auth_provider 登录", names)
+        hook = {"step_name": f"自动鉴权补齐（{names}）", "config": provider}
+        self._run_hooks([hook], ctx, label="auto_auth")
+
+        still_missing = sorted(n for n in needed if ctx.vars.get(n) is None)
+        if still_missing:
+            logger.warning(
+                "自动鉴权补齐未能产出 %s —— 请检查配置中心 auth_provider 的 path/params/extract",
+                ", ".join(still_missing),
+            )
+        else:
+            ctx.record("auto_auth_vars", sorted(needed))
+
+    @staticmethod
+    def _load_auth_provider(ctx: ExecutionContext) -> dict | None:
+        """从配置中心读 `auth_provider` 组，拼成一个 http_request step config。
+
+        配置中心的一组配置是扁平 key→str，所以 params / headers / extract 用 JSON 字符串存。
+        缺 path 或 extract 视为没配（返回 None，功能整体不生效）。
+        """
+        try:
+            from utils.reload_config import config_center
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auth_provider 读取失败（import）：%s", exc)
+            return None
+
+        project_id = ctx.vars.get("_project_id")
+        if project_id is None:
+            return None
+        try:
+            raw = config_center.get("auth_provider", project_id=project_id) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("auth_provider 读取失败：%s", exc)
+            return None
+        if not isinstance(raw, dict) or not raw:
+            return None
+
+        enabled = str(raw.get("enabled", "true")).strip().lower()
+        if enabled in ("0", "false", "no", "off"):
+            return None
+
+        path = str(raw.get("path") or "").strip()
+        extract = CaseExecutor._loads_dict(raw.get("extract"))
+        if not path or not extract:
+            return None
+
+        headers = CaseExecutor._loads_dict(raw.get("headers")) or {
+            "Content-Type": "application/json"
+        }
+        return {
+            "method": str(raw.get("method") or "POST").upper(),
+            "path": path,
+            "headers": headers,
+            "params": CaseExecutor._loads_dict(raw.get("params")),
+            "data_type": str(raw.get("data_type") or "application/json"),
+            "extract_data": extract,
+        }
+
+    @staticmethod
+    def _loads_dict(value: Any) -> dict:
+        """配置中心存的是字符串；容忍已经是 dict 的情况（测试直接塞对象）。"""
+        if isinstance(value, dict):
+            return value
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(str(value))
+        except Exception:  # noqa: BLE001
+            logger.warning("auth_provider 配置不是合法 JSON，已忽略：%.80s", value)
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    @staticmethod
+    def _referenced_vars(steps: list) -> set[str]:
+        """扫出用例所有步骤里引用的 ${var} 变量名。"""
+        try:
+            blob = json.dumps(steps, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            return set()
+        return set(_VAR_REF_RE.findall(blob))
+
     @staticmethod
     def _inject_target_db(ctx: ExecutionContext) -> None:
         """从配置中心读 `target_db` 配置，开一个 DB 连接塞到 ctx.vars['_db']。
@@ -428,9 +557,16 @@ class CaseExecutor:
         ctx.vars.pop("_db_group", None)
 
     def _run_hooks(self, hooks: Any, ctx: ExecutionContext, label: str) -> None:
-        """hooks = [{type:'sql'|'http'|'script', ...}, ...]；失败只 log，不中断主流程。"""
+        """执行用例前后置 hook。
+
+        ``pre_hook`` 是主步骤的硬依赖，尤其是 AI 参数修复生成的“重新登录并提取
+        token”hook：执行失败或没有提取到声明变量时必须中断用例，绝不能继续使用
+        ``ctx`` 里从共享参数池带进来的旧 token。``post_hook`` 仍是尽力清理，失败只
+        记录日志，不改变用例结论。
+        """
         if not hooks or not isinstance(hooks, list):
             return
+        strict = label == "pre_hook"
         for i, hk in enumerate(hooks):
             if not isinstance(hk, dict):
                 continue
@@ -440,16 +576,102 @@ class CaseExecutor:
                 hook_step = {
                     "id": None,
                     "step_order": -1,
-                    "step_name": f"{label}#{i}",
+                    "step_name": hk.get("step_name") or f"{label}#{i + 1}",
                     "step_type": hk.get("type", "http_request"),
                     "config": hk.get("config") or hk,
-                    "skip": False,
-                    "retry": 0,
-                    "on_failure": "continue",
+                    "skip": bool(hk.get("skip") or False),
+                    "wait_before": float(hk.get("wait_before") or 0),
+                    "timeout": int(hk.get("timeout") or 30),
+                    "retry": int(hk.get("retry") or 0),
+                    "on_failure": hk.get("on_failure") or "stop",
+                    "_is_hook": True,
                 }
-                self.dispatcher.dispatch(hook_step, ctx)
+                expected_vars = self._hook_extract_vars(hook_step["config"])
+                # 本用例前置步骤声明要产出的变量不能沿用共享池旧值。用户即使选择
+                # “跳过”该步骤，也只会得到明确的未解析变量/鉴权失败，不会悄悄复用
+                # 已过期 token。
+                for var_name in expected_vars:
+                    ctx.vars.pop(var_name, None)
+                if hook_step["skip"]:
+                    self.dispatcher.dispatch(hook_step, ctx)
+                    continue
+                cache = ctx.get_var("_run_auth_cache")
+                signature = build_auth_request_signature(hook_step["config"], ctx)
+                if isinstance(cache, RunAuthCache) and signature:
+                    cached_response = cache.get(signature)
+                    cached_extracts = extract_hook_values(hook_step["config"], cached_response)
+                    if cached_response is not None and expected_vars <= set(cached_extracts):
+                        for key, value in cached_extracts.items():
+                            ctx.set_var(key, value)
+                        logger.info(
+                            "%s 命中单轮认证缓存，复用登录响应并映射变量：%s",
+                            hook_step["step_name"],
+                            ", ".join(sorted(cached_extracts)),
+                        )
+                        continue
+                result = self.dispatcher.dispatch(hook_step, ctx)
+
+                # AI 可能把 $.data.access_token 猜成 $.access_token。登录已成功时，
+                # 根据真实响应中的唯一同名叶子键纠偏，避免 200 响应仍空提取。
+                #
+                # 纠偏必须排在下面的 strict 判定**之前**：http_request runner 对 hook 的
+                # 提取失败会直接把步骤判 FAILED（见 steps/http_request.py 的 _is_hook 分支），
+                # 若先判 strict 就永远走不到这里 —— 这段补救对它本该服务的场景是死代码。
+                recovered = extract_hook_values(hook_step["config"], result.output_data)
+                result.extracted = dict(result.extracted or {})
+                for key, value in recovered.items():
+                    if key not in result.extracted:
+                        result.extracted[key] = value
+                        ctx.set_var(key, value)
+                if isinstance(cache, RunAuthCache) and signature and result.status == StepStatus.PASSED:
+                    cache.put(signature, result.output_data)
+
+                missing_vars = sorted(expected_vars - set(result.extracted or {}))
+                hook_failed = result.status in (StepStatus.FAILED, StepStatus.ERROR)
+                if strict and hook_failed and missing_vars:
+                    raise RuntimeError(
+                        f"{hook_step['step_name']} 执行失败："
+                        f"{result.error_message or result.status.value}"
+                    )
+                if strict and missing_vars:
+                    raise RuntimeError(
+                        f"{hook_step['step_name']} 未提取到声明变量："
+                        f"{', '.join(missing_vars)}；已阻止回退使用共享参数池旧值"
+                    )
+                if hook_failed and not missing_vars:
+                    # 步骤被判失败、但声明变量已靠纠偏拿全：放行并留痕，便于用户回头
+                    # 把用例里写错的 JSONPath 改对。
+                    logger.warning(
+                        "%s 步骤判定为 %s，但已通过响应纠偏取到全部声明变量 %s —— "
+                        "建议修正该 hook 的 JSONPath",
+                        hook_step["step_name"], result.status.value, sorted(expected_vars),
+                    )
             except Exception as exc:  # noqa: BLE001
+                if strict:
+                    raise
                 logger.warning("%s 执行失败（已忽略）: %s", label, exc)
+
+    @staticmethod
+    def _hook_extract_vars(config: Any) -> set[str]:
+        """读取 hook 声明的提取变量名，兼容 v1 字典与 v2 规则列表。"""
+        if not isinstance(config, dict):
+            return set()
+        raw = config.get("extract_data") or config.get("extract") or {}
+        if isinstance(raw, str):
+            try:
+                import json
+                raw = json.loads(raw)
+            except Exception:  # noqa: BLE001
+                return set()
+        if isinstance(raw, dict):
+            return {str(key) for key in raw if str(key).strip()}
+        if isinstance(raw, list):
+            return {
+                str(rule.get("name"))
+                for rule in raw
+                if isinstance(rule, dict) and rule.get("name")
+            }
+        return set()
 
     def _run_steps(self, steps: list[dict], ctx: ExecutionContext) -> list[StepResult]:
         """按顺序跑所有 step，遇到 FAILED/ERROR 时按 on_failure 决定是否继续。"""
@@ -459,7 +681,13 @@ class CaseExecutor:
             if step.get("step_order") is None:
                 step["step_order"] = idx
 
-            transient_record_keys = ("status_code", "assertion_results", "extract_values", "page_info")
+            transient_record_keys = (
+                "status_code",
+                "assertion_results",
+                "extract_values",
+                "extract_errors",
+                "page_info",
+            )
             for key in transient_record_keys:
                 getattr(ctx, "records", {}).pop(key, None)
             result = self.dispatcher.dispatch(step, ctx)

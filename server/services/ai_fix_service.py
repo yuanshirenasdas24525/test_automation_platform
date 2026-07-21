@@ -128,6 +128,30 @@ def _step_extract_vars(step_extract: Any) -> list[str]:
     return out
 
 
+def _effective_extract(step: Any) -> Any:
+    """返回 Runner 真正会使用的提取配置。
+
+    快速编辑器把规则保存在 ``config.extract_data``，而结构化步骤保存在
+    ``step.extract``。HTTP Runner 明确以前者优先，诊断与修复也必须使用同一优先级。
+    """
+    config = step.config if isinstance(step.config, dict) else {}
+    raw = config.get("extract_data")
+    if raw not in (None, "", {}, []):
+        parsed = _parse_json_loose(raw)
+        return parsed if parsed else raw
+    return step.extract or []
+
+
+def _effective_assertion(step: Any) -> Any:
+    """返回 Runner 真正会使用的断言配置。"""
+    config = step.config if isinstance(step.config, dict) else {}
+    raw = config.get("assertion")
+    if raw not in (None, "", {}, []):
+        parsed = _parse_json_loose(raw)
+        return parsed if parsed else raw
+    return step.assertion or []
+
+
 def _build_producer_positions(
     ordered_cases: list[TestCase],
     rows_by_case: dict[int, list[TestStepReport]],
@@ -138,10 +162,7 @@ def _build_producer_positions(
     for pos, case in enumerate(ordered_cases):
         case_pos[case.id] = pos
         for step in case.steps or []:
-            for var in _step_extract_vars(step.extract):
-                producers.setdefault(var, pos)
-            cfg = step.config if isinstance(step.config, dict) else {}
-            for var in _step_extract_vars(_parse_json_loose(cfg.get("extract_data"))):
+            for var in _step_extract_vars(_effective_extract(step)):
                 producers.setdefault(var, pos)
         # 实际执行提取到的变量也算（比定义更真实）
         for r in rows_by_case.get(case.id, []):
@@ -526,11 +547,15 @@ def _preflight_one(
     fh = fix.get("headers") if isinstance(fix.get("headers"), dict) else {}
     step_fixes_in = [sf for sf in (fix.get("steps") or []) if isinstance(sf, dict)]
 
-    # ── 会话隔离 pre_hook：给本用例配独立登录,免受前序用例登出/改密污染 ──
-    sanitized_pre_hook, ph_vars = _sanitize_pre_hook(fix.get("pre_hook"))
-    if status == "passed" and sanitized_pre_hook:
-        _drop("pre_hook", "用例本次已通过，不加登录前置（防绿变红）")
-        sanitized_pre_hook, ph_vars = [], []
+    # AI 不得再向用户不可见的执行区写入前置步骤。现有 pre_hook 已通过用例编辑器
+    # 开放给用户维护；模型若建议新增登录准备，只保留为诊断建议，不自动落库。
+    sanitized_pre_hook: list[dict] = []
+    pre_hook_vars: list[str] = []
+    if fix.get("pre_hook"):
+        _drop(
+            "pre_hook",
+            "已禁止 AI 自动写入前置步骤；请在用例编辑器的「前置步骤」区域人工确认后添加",
+        )
 
     # ── 已通过的用例：只允许纯增量 extract/assertion（治假通过），不许动请求 ──
     if status == "passed" and (fp or fh or step_fixes_in):
@@ -542,12 +567,14 @@ def _preflight_one(
     original_refs = _referenced_vars(
         [{"config": s.config, "extract": s.extract, "assertion": s.assertion} for s in (case.steps or [])]
     )
+    pre_hook_var_names = set(pre_hook_vars)
 
     def _vars_ok(obj: Any, part: str) -> bool:
         new_vars = _referenced_vars(obj) - original_refs
         bad = [
             v for v in new_vars
-            if producers.get(v.split(".")[0], 1 << 31) > my_pos
+            if v.split(".")[0] not in pre_hook_var_names
+            and producers.get(v.split(".")[0], 1 << 31) > my_pos
         ]
         if bad:
             _drop(part, f"引用的变量 {sorted(bad)} 没有排在本用例之前的产出方，运行时无法解析")
@@ -614,9 +641,15 @@ def _preflight_one(
     sanitized_extract: dict = {}
     existing_extract = {}
     if first_http is not None:
-        for rule in first_http.extract or []:
-            if isinstance(rule, dict) and rule.get("name"):
-                existing_extract[str(rule["name"])] = str(rule.get("jsonpath") or rule.get("path") or "")
+        effective_extract = _effective_extract(first_http)
+        if isinstance(effective_extract, dict):
+            existing_extract = {str(k): str(v) for k, v in effective_extract.items()}
+        else:
+            for rule in effective_extract or []:
+                if isinstance(rule, dict) and rule.get("name"):
+                    existing_extract[str(rule["name"])] = str(
+                        rule.get("jsonpath") or rule.get("path") or ""
+                    )
     for var, jp in (fe or {}).items():
         var, jp = str(var), str(jp)
         if first_http is None:
@@ -638,11 +671,23 @@ def _preflight_one(
         sanitized_extract[var] = jp
 
     sanitized_assertion: dict = {}
+    existing_assertion: dict[str, Any] = {}
+    if first_http is not None:
+        effective_assertion = _effective_assertion(first_http)
+        if isinstance(effective_assertion, dict):
+            existing_assertion = {str(k): v for k, v in effective_assertion.items()}
+        else:
+            for rule in effective_assertion or []:
+                if isinstance(rule, dict) and rule.get("target"):
+                    existing_assertion[str(rule["target"])] = rule.get("expected")
     for target, expected in (fa or {}).items():
         target = str(target)
         if first_http is None:
             _drop("assertion", "用例没有 http_request 步骤")
             break
+        if target in existing_assertion and existing_assertion[target] == expected:
+            _drop("assertion", f"{target} 已是 {expected!r}（no-op）")
+            continue
         if target.startswith("sql:") or str(expected).startswith("sql:"):
             _drop("assertion", f"{target}: SQL 断言无法预检，请人工确认后手动添加")
             continue
@@ -789,22 +834,6 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
     """把 sanitize 过的 fix 落到 TestStep / TestCase。返回实际改动的部分。"""
     parts: list[str] = []
 
-    # 会话隔离 pre_hook：落到 TestCase.pre_hook（用例级前置登录，执行引擎在跑
-    # steps 前先执行，提取出的 token 进 ctx 供本用例 steps 引用）。
-    # 这是"给每条用例配独立登录"的落地点——不受前序用例登出/改密污染。
-    pre_hook = fix.get("pre_hook")
-    if pre_hook:
-        existing = list(case.pre_hook or []) if isinstance(case.pre_hook, list) else []
-        # 幂等：已有等价登录 hook 就不重复加
-        already = any(
-            isinstance(h, dict) and (h.get("config") or h).get("path")
-            == (pre_hook[0].get("config") or pre_hook[0]).get("path")
-            for h in existing
-        )
-        if not already:
-            case.pre_hook = pre_hook + existing
-            parts.append("pre_hook")
-
     steps_sorted = sorted(case.steps or [], key=lambda s: (int(s.step_order or 0), s.id or 0))
     http_steps = [s for s in steps_sorted if s.step_type == "http_request"]
     if not http_steps:
@@ -813,11 +842,24 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
     step_by_id = {s.id: s for s in http_steps}
 
     for var, jp in (fix.get("extract") or {}).items():
-        first_http.extract = _upsert_extract_rule(first_http.extract, str(var), str(jp))
+        name = str(var)
+        jsonpath = str(jp)
+        first_http.extract = _upsert_extract_rule(first_http.extract, name, jsonpath)
+        cfg = dict(first_http.config or {})
+        config_extract = _parse_json_loose(cfg.get("extract_data"))
+        if cfg.get("extract_data") not in (None, "", {}, []) or config_extract:
+            cfg["extract_data"] = {**config_extract, name: jsonpath}
+            first_http.config = cfg
         if "extract" not in parts:
             parts.append("extract")
     for target, expected in (fix.get("assertion") or {}).items():
-        first_http.assertion = _upsert_assertion_rule(first_http.assertion, str(target), expected)
+        target_name = str(target)
+        first_http.assertion = _upsert_assertion_rule(first_http.assertion, target_name, expected)
+        cfg = dict(first_http.config or {})
+        config_assertion = _parse_json_loose(cfg.get("assertion"))
+        if cfg.get("assertion") not in (None, "", {}, []) or config_assertion:
+            cfg["assertion"] = {**config_assertion, target_name: expected}
+            first_http.config = cfg
         if "assertion" not in parts:
             parts.append("assertion")
 

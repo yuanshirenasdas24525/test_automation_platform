@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -28,7 +29,7 @@ from runners.api.request_data_processor import RequestDataProcessor
 from runners.case_executor import CaseExecutor
 from runners.context.execution_context import ExecutionContext
 from runners.dispatcher import StepDispatcher
-from runners.protocol import StepStatus
+from runners.protocol import StepResult, StepStatus
 from runners.steps.http_request import HttpRequestStepRunner
 from utils.encrypt import decrypt_text, encrypt_text
 
@@ -89,6 +90,51 @@ def _build_dispatcher(http_runner):
     d.register(SleepStepRunner())
     d.register(AssertStepRunner())
     return d
+
+
+def test_dispatcher_marks_failed_result_in_allure_context(monkeypatch):
+    """Runner 返回失败结果时，Dispatcher 必须让 Allure 上下文观察到异常。"""
+    observed = []
+
+    @contextmanager
+    def fake_allure_step(name):
+        try:
+            yield
+        except Exception as exc:  # noqa: BLE001
+            observed.append((name, type(exc).__name__, str(exc)))
+            raise
+
+    class _FailedRunner:
+        step_types = ("fake_failed",)
+
+        @staticmethod
+        def execute(step, ctx):
+            return StepResult(
+                step_id=step.get("id"),
+                step_order=0,
+                step_name="提取 token",
+                step_type="fake_failed",
+                status=StepStatus.FAILED,
+                error_message="参数提取失败：token ($.data.token)",
+            )
+
+    monkeypatch.setattr("runners.dispatcher.allure_step", fake_allure_step)
+    dispatcher = StepDispatcher()
+    dispatcher.register(_FailedRunner())
+
+    result = dispatcher.dispatch({
+        "id": 1,
+        "step_order": 0,
+        "step_name": "提取 token",
+        "step_type": "fake_failed",
+    }, ExecutionContext())
+
+    assert result.status == StepStatus.FAILED
+    assert observed == [(
+        "[0] 提取 token (fake_failed)",
+        "_AllureReportedFailure",
+        "参数提取失败：token ($.data.token)",
+    )]
 
 
 # ===================================================================
@@ -215,6 +261,39 @@ def test_failed_extract_does_not_overwrite_existing_variable(monkeypatch):
     assert result.steps[0].extracted == {}
     assert ctx.get_var("token") == "old-token"
     assert http_runner.processor.extra_pool.get("token") is None
+    assert ctx.records["extract_errors"] == [{
+        "变量名": "token",
+        "来源": "response.body",
+        "表达式": "$.data.token",
+        "原因": "未匹配到值（JSONPath 无效、响应结构变化或接口返回失败）",
+    }]
+
+
+def test_pre_hook_extract_failure_contains_actionable_error(monkeypatch):
+    """前置参数提取失败必须带变量、路径、状态码和接口错误。"""
+    resp = _FakeResponse(401, {"detail": "会话已失效"})
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])
+    ctx = ExecutionContext()
+    step = {
+        "id": None,
+        "step_order": -1,
+        "step_name": "pre_hook#1",
+        "step_type": "http_request",
+        "_is_hook": True,
+        "config": {
+            "method": "POST",
+            "path": "/api/users",
+            "extract_data": {"test_username": "$.username"},
+        },
+    }
+
+    result = _build_dispatcher(http_runner).dispatch(step, ctx)
+
+    assert result.status == StepStatus.FAILED
+    assert "test_username ($.username)" in str(result.error_message)
+    assert "HTTP 401" in str(result.error_message)
+    assert "接口返回：会话已失效" in str(result.error_message)
+    assert ctx.records["extract_errors"][0]["变量名"] == "test_username"
 
 
 def test_http_step_signs_headers_by_configured_order(monkeypatch):

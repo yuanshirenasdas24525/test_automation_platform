@@ -14,6 +14,10 @@ import allure
 import pytest
 
 
+class _AllureFailureMarker(AssertionError):
+    """只用于把详情节点标成失败，调用方捕获后不改变执行控制流。"""
+
+
 def set_allure_project(project: str) -> None:
     """设置 Allure 报告中的项目名称 (epic 级别)"""
     allure.dynamic.epic(project)
@@ -27,6 +31,11 @@ def set_allure_module(module: str) -> None:
 def set_allure_case(case: str) -> None:
     """设置 Allure 报告中的用例名称 (story 级别)"""
     allure.dynamic.story(case)
+
+
+def set_allure_case_id(case_id: int) -> None:
+    """写入稳定的用例 id，供报告落库兜底按 case 精准补缺。"""
+    allure.dynamic.label("case_id", str(case_id))
 
 
 def set_allure_suites(parent: Optional[str] = None, suite: Optional[str] = None,
@@ -86,6 +95,27 @@ def add_allure_step(
                 attachment_name or step_name,
                 allure.attachment_type.JSON
             )
+
+
+def add_allure_failed_step(
+    step_name: str,
+    error_message: str,
+    content: Optional[Any] = None,
+    attachment_name: str | None = None,
+) -> None:
+    """添加红色失败步骤并附带结构化错误详情，但不直接终止用例。"""
+    try:
+        with allure.step(step_name):
+            if content is not None:
+                allure.attach(
+                    json.dumps(content, ensure_ascii=False, indent=4),
+                    attachment_name or step_name,
+                    allure.attachment_type.JSON,
+                )
+            raise _AllureFailureMarker(error_message)
+    except _AllureFailureMarker:
+        # Allure 已在退出 step 上下文时记录失败；真实执行结果仍由 StepResult 决定。
+        pass
 
 
 def add_allure_attachment(name: str, content: Any, attachment_type: allure.attachment_type = None) -> None:

@@ -550,6 +550,7 @@ export function AutomationCasesPage({
       repeat_count: values.repeat_count ?? 1,
       skip: values.skip,
       case_type: caseType,
+      pre_hook: values.pre_hook as TestCaseCreate["pre_hook"],
       // API 单请求和多步骤都由 CaseDialog 归一化为 steps；后端不再兜底生成步骤。
     };
     // API 用例统一以 steps 为唯一执行来源：CaseDialog 已把「单请求合成的 1 步」或

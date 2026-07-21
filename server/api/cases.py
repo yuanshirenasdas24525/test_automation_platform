@@ -497,6 +497,9 @@ def _serialize_case(c: TestCase, *, include_steps: bool = False, db=None) -> dic
         "wait_time": c.wait_time,
         "repeat_count": getattr(c, "repeat_count", 1) or 1,
         "sort_order": c.sort_order,
+        # 前/后置步骤属于真实执行定义，必须在编辑详情中公开，不能成为隐藏逻辑。
+        "pre_hook": c.pre_hook or [],
+        "post_hook": c.post_hook or [],
     }
     if include_steps:
         # 优先用关系上的 steps；如果没 joinload 过就兜底查一次

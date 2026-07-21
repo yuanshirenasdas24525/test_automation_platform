@@ -2735,15 +2735,6 @@ def ai_report_fix_apply(payload: ReportFixApplyRequest, db: DBDep, user: Optiona
     }
 
 
-# 会改动共享数据 / 状态的 HTTP 方法
-_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-# 用例名/路径里命中这些词，说明它很可能改了某个共享账号/资源的状态
-_STATE_MUTATION_HINTS = (
-    "修改密码", "改密", "重置密码", "password", "改用户名", "改资料", "更新资料",
-    "删除", "delete", "禁用", "注销", "锁定", "logout", "登出", "吊销", "revoke",
-)
-
-
 def _parse_json_loose(text):
     """尽力把字符串解析成 dict；失败返回 {}。"""
     if isinstance(text, dict):
@@ -2764,6 +2755,8 @@ def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
         if step.step_type != "http_request":
             continue
         config = step.config if isinstance(step.config, dict) else {}
+        config_extract = _parse_json_loose(config.get("extract_data"))
+        config_assertion = _parse_json_loose(config.get("assertion"))
         steps.append(
             {
                 "step_id": step.id,
@@ -2773,8 +2766,9 @@ def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
                 "headers": config.get("headers") or {},
                 "data_type": config.get("data_type") or "application/json",
                 "params": config.get("params") or {},
-                "extract": step.extract or [],
-                "assertion": step.assertion or [],
+                # 与 HttpRequestStepRunner 的真实优先级一致：快速编辑器字段优先。
+                "extract": config_extract or step.extract or [],
+                "assertion": config_assertion or step.assertion or [],
             }
         )
     first = steps[0] if steps else {}
@@ -2787,105 +2781,312 @@ def _serialize_api_case_definition(case: TestCase) -> dict[str, Any]:
         "extract_data": first.get("extract") or [],
         "assertion": first.get("assertion") or [],
         "steps": steps,
+        "pre_hook": case.pre_hook or [],
         "note": "params 是平台实际发送的请求体/请求参数模板；修请求参数时请返回完整 fix.params。",
     }
 
 
-def _build_report_dependency_context(items_ordered: list[dict], case_map: dict) -> tuple[str, dict[str, str]]:
-    """构建"全局执行上下文"，让 AI 修复时能看清接口的**上下依赖**与**参数产出/引用关系**。
+def _extract_rule_map(raw: Any) -> dict[str, str]:
+    """把提取规则统一成 ``变量名 -> JSONPath``。"""
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if str(k).strip()}
+    for rule in raw or []:
+        if isinstance(rule, dict) and rule.get("name"):
+            out[str(rule["name"])] = str(rule.get("jsonpath") or rule.get("path") or "")
+    return out
 
-    每个 chunk 都会带上这段（哪怕分块调用），所以即使 0005 改密码、0025 重登录被切到
-    不同 chunk，模型也能看到完整链路。包含四部分：
-      1. 按执行顺序的用例清单（顺序 + method + path）；
-      2. 变量产出表：每个变量最早由哪条用例 extract 出来（token/test_token01/id …）；
-      3. 变量引用表：每个变量被哪些用例 ${var} 引用；
-      4. 状态变更用例：会改共享账号/资源的用例（改密码、删除等）——下游若复用同一账号
-         却仍引用旧值（如 ${my_password}），会失败。
 
-    返回 (context_text, producers)；producers 供程序化线索（hints）复用。
+def _auth_subject_signature(step: dict) -> str | None:
+    """按登录请求里的账号字段生成会话主体签名；不包含密码和真实值。"""
+    params = step.get("params")
+    if not isinstance(params, dict):
+        return None
+    subject_keys = {
+        "username", "user_name", "account", "email", "mobile", "phone", "user_id", "userid",
+    }
+    subjects = {
+        str(k).lower(): str(v)
+        for k, v in params.items()
+        if str(k).lower() in subject_keys and v not in (None, "")
+    }
+    if not subjects:
+        return None
+    return json.dumps(subjects, ensure_ascii=False, sort_keys=True)
+
+
+def _result_is_success(result: dict) -> bool:
+    """判断状态变更请求是否实际成功，避免 401/422 负向请求误作废变量。"""
+    if str(result.get("status") or "").lower() in {"failed", "error", "broken"}:
+        return False
+    try:
+        status_code = int(result.get("status_code"))
+    except (TypeError, ValueError):
+        return False
+    if status_code < 200 or status_code >= 400:
+        return False
+    body = _parse_json_loose(result.get("response"))
+    if body.get("success") is False:
+        return False
+    if str(body.get("status") or "").lower() in {"error", "failed", "failure"}:
+        return False
+    return True
+
+
+def _expects_auth_rejection(case_name: str, step: dict) -> bool:
+    """识别“故意拿失效 token 验证 401/403”的负向步骤，避免把它误判成流转错误。"""
+    expected_codes: set[int] = set()
+    assertion = step.get("assertion")
+    if isinstance(assertion, dict):
+        values = [assertion.get("status_code")]
+    else:
+        values = [
+            rule.get("expected")
+            for rule in assertion or []
+            if isinstance(rule, dict) and rule.get("target") == "status_code"
+        ]
+    for value in values:
+        try:
+            expected_codes.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    negative_name = any(hint in case_name.lower() for hint in ("失效", "过期", "无效", "登出后", "作废"))
+    return bool(expected_codes & {401, 403}) and negative_name
+
+
+def _mutation_kind(case_name: str, step_name: str, path: str) -> str | None:
+    hay = f"{case_name} {step_name} {path}".lower()
+    if any(h in hay for h in ("logout-all", "logout_all", "全部登出", "登出所有", "revoke-all")):
+        return "all_sessions"
+    if any(h in hay for h in ("logout", "signout", "sign-out", "登出", "退出登录", "revoke", "吊销")):
+        return "current_session"
+    if any(h in hay for h in ("password", "修改密码", "改密", "重置密码", "注销账号", "注销账户")):
+        return "account_state"
+    if any(h in hay for h in ("删除", "delete", "禁用", "停用")):
+        return "resource_state"
+    return None
+
+
+def _build_report_dependency_context(
+    items_ordered: list[dict],
+    case_map: dict,
+) -> tuple[str, dict[str, str], dict[int, list[str]]]:
+    """按真实 HTTP 步骤构建变量生命周期，而不是只记录“最早产出方”。
+
+    返回 ``(上下文文本, 最早产出表, 用例级确定性线索)``。生命周期会区分：
+    实际提取成功、同账号后续登录带来的单会话替换风险、登出/改密后的明确作废，
+    从而让 token1/token2/token3 不再被视为三个同等可用的字符串。
     """
-    producers: dict[str, str] = {}          # var -> "0002 登录测试账号 (extract $.data.token)"
-    consumers: dict[str, set[str]] = {}     # var -> {引用它的用例名}
+    del case_map  # 保留参数兼容调用方；所需定义已在 items_ordered.def 中。
+    producers: dict[str, str] = {}
+    production_lines: dict[str, list[str]] = {}
+    consumers: dict[str, list[str]] = {}
+    issues_by_case: dict[int, list[str]] = {}
+    token_states: dict[str, dict[str, Any]] = {}
+    latest_by_subject: dict[str, str] = {}
     order_lines: list[str] = []
-    mutations: list[str] = []
+    mutation_lines: list[str] = []
+    sequence = 0
 
-    for idx, it in enumerate(items_ordered, start=1):
-        name = str(it.get("name") or f"case#{it.get('case_id')}")
-        d = it.get("def") or {}
-        results = it.get("result") or []
-        # method / path：def 优先，缺了就从执行请求里兜底
-        method = str(d.get("method") or "").upper()
-        path = str(d.get("path") or "")
-        if (not method or not path) and results:
-            req = _parse_json_loose(results[0].get("request"))
-            method = method or str(req.get("请求方法") or req.get("method") or "").upper()
-            path = path or str(req.get("请求地址") or req.get("url") or req.get("path") or "")
-        order_lines.append(f"{idx}. {name}  [{method or '?'} {path or '?'}]")
+    for case_index, item in enumerate(items_ordered, start=1):
+        case_id = int(item.get("case_id") or 0)
+        case_name = str(item.get("name") or f"case#{case_id}")
+        definition = item.get("def") or {}
+        results = item.get("result") or []
+        steps = [s for s in (definition.get("steps") or []) if isinstance(s, dict)]
+        if not steps:
+            steps = [{
+                "step_id": None,
+                "step_name": case_name,
+                "method": definition.get("method"),
+                "path": definition.get("path"),
+                "headers": definition.get("headers") or {},
+                "params": definition.get("params") or {},
+                "extract": definition.get("extract_data") or [],
+                "assertion": definition.get("assertion") or [],
+            }]
+        result_by_step = {
+            r.get("step_id"): r for r in results
+            if isinstance(r, dict) and r.get("step_id") is not None
+        }
+        endpoint_labels: list[str] = []
 
-        # —— 产出：extract 定义 + 实际 extract_values ——
-        produced_here: dict[str, str] = {}
-        extract_def = d.get("extract_data")
-        if isinstance(extract_def, dict):
-            for var, jp in extract_def.items():
-                produced_here[str(var)] = str(jp)
-        elif isinstance(extract_def, list):
-            for rule in extract_def:
-                if isinstance(rule, dict) and rule.get("name"):
-                    produced_here[str(rule.get("name"))] = str(rule.get("jsonpath") or rule.get("path") or "")
-        for step_def in d.get("steps") or []:
-            if not isinstance(step_def, dict):
-                continue
-            ex = step_def.get("extract")
-            if isinstance(ex, dict):
-                for var, jp in ex.items():
-                    produced_here.setdefault(str(var), str(jp))
-            elif isinstance(ex, list):
-                for rule in ex:
-                    if isinstance(rule, dict) and rule.get("name"):
-                        produced_here.setdefault(
-                            str(rule.get("name")),
-                            str(rule.get("jsonpath") or rule.get("path") or ""),
+        for step_index, step in enumerate(steps, start=1):
+            sequence += 1
+            step_id = step.get("step_id")
+            result = result_by_step.get(step_id)
+            if result is None and step_index <= len(results):
+                result = results[step_index - 1]
+            result = result if isinstance(result, dict) else {}
+            method = str(step.get("method") or "").upper()
+            path = str(step.get("path") or "")
+            step_name = str(step.get("step_name") or f"步骤{step_index}")
+            label = f"{case_name} / {step_name} [{method or '?'} {path or '?'}]"
+            endpoint_labels.append(f"{method or '?'} {path or '?'}")
+
+            refs = {
+                str(var).split(".")[0]
+                for var in _referenced_vars({
+                    "path": path,
+                    "headers": step.get("headers") or {},
+                    "params": step.get("params") or {},
+                })
+            }
+            intentional_stale_check = _expects_auth_rejection(case_name, step)
+            auth_failed = str(result.get("status_code") or "") in {"401", "403"}
+            for var in sorted(refs):
+                consumers.setdefault(var, []).append(label)
+                state = token_states.get(var)
+                if state is None or intentional_stale_check:
+                    continue
+                if state["status"] == "invalid" and auth_failed:
+                    latest = latest_by_subject.get(state.get("subject") or "")
+                    replacement = (
+                        f"；同账号当前最新候选是 ${{{latest}}}" if latest and latest != var
+                        and token_states.get(latest, {}).get("status") == "valid"
+                        else "；需要在用例编辑器中人工添加可见的登录前置步骤并覆盖该变量"
+                    )
+                    issues_by_case.setdefault(case_id, []).append(
+                        f"本步骤引用 ${{{var}}}，但它已被「{state['reason']}」明确作废{replacement}。"
+                    )
+                elif state["status"] == "superseded_risk" and auth_failed:
+                    latest = latest_by_subject.get(state.get("subject") or "")
+                    if latest and latest != var:
+                        issues_by_case.setdefault(case_id, []).append(
+                            f"本步骤引用 ${{{var}}}，同一账号后来又登录并产出 ${{{latest}}}；"
+                            f"单会话系统只有最后一个 token 可用，应优先改用 ${{{latest}}}，"
+                            "或在用例编辑器中人工添加可见的登录前置步骤。"
                         )
-        for r in results:
-            for var in _parse_json_loose(r.get("extract_values")).keys():
-                produced_here.setdefault(str(var), "")
-        for var, jp in produced_here.items():
-            if var and var not in producers:   # 只记最早的产出方
-                tail = f" (extract {jp})" if jp else ""
-                producers[var] = f"{name}{tail}"
 
-        # —— 引用：扫描 def + 实际请求里的 ${var} ——
-        ref_blob = json.dumps(d, ensure_ascii=False, default=str)
-        for r in results:
-            ref_blob += " " + str(r.get("request") or "")
-        for var in set(_VAR_REF_RE.findall(ref_blob)):
-            consumers.setdefault(str(var).split(".")[0], set()).add(name)
+            defined_extracts = _extract_rule_map(step.get("extract"))
+            actual_extracts = _parse_json_loose(result.get("extract_values"))
+            for var, jsonpath in defined_extracts.items():
+                actual_ok = var in actual_extracts and actual_extracts.get(var) not in (None, "", [], {})
+                produced_desc = f"{label} (extract {jsonpath or '?'}, {'成功' if actual_ok else '未提取到值'})"
+                production_lines.setdefault(var, []).append(produced_desc)
+                producers.setdefault(var, produced_desc)
+                if "token" not in var.lower() or "refresh" in var.lower() or not actual_ok:
+                    continue
 
-        # —— 状态变更标记 ——
-        hay = f"{name} {path}".lower()
-        if method in _MUTATING_METHODS and any(h.lower() in hay for h in _STATE_MUTATION_HINTS):
-            mutations.append(f"- {name} [{method} {path}] —— 会改共享账号/资源状态")
+                subject = _auth_subject_signature(step) if _is_login_path(path) else None
+                if subject:
+                    for previous, previous_state in token_states.items():
+                        if previous == var or previous_state.get("subject") != subject:
+                            continue
+                        if previous_state.get("status") != "invalid":
+                            previous_state["status"] = "superseded_risk"
+                            previous_state["reason"] = f"同账号后续登录产出 ${{{var}}}"
+                    latest_by_subject[subject] = var
+                token_states[var] = {
+                    "status": "valid",
+                    "reason": "",
+                    "subject": subject,
+                    "produced_at": sequence,
+                    "producer": label,
+                }
 
-    lines: list[str] = []
-    lines.append("## 全局执行上下文（本报告所有用例，按执行顺序；用于判断接口上下依赖与参数关系）")
-    lines.append("### 执行顺序")
-    lines.extend(order_lines)
-    lines.append("### 变量产出表（变量 → 最早产出它的用例；下游要用某变量，必须有产出方且排在它前面）")
-    if producers:
-        for var in sorted(producers):
-            lines.append(f"- ${{{var}}} ← {producers[var]}")
-    else:
-        lines.append("- （无用例 extract 出任何变量）")
-    lines.append("### 变量引用表（变量 → 引用它的用例）")
-    if consumers:
-        for var in sorted(consumers):
-            who = "、".join(sorted(consumers[var])[:8])
-            lines.append(f"- ${{{var}}}: {who}")
-    else:
-        lines.append("- （无用例引用 ${变量}）")
-    lines.append("### 状态变更用例（会改共享数据；其后再用同一账号的旧密码/旧 token 等会失败）")
-    lines.extend(mutations or ["- （无）"])
-    return "\n".join(lines), producers
+            mutation = _mutation_kind(case_name, step_name, path)
+            if mutation and _result_is_success(result):
+                referenced_tokens = [
+                    var for var in refs
+                    if var in token_states and "token" in var.lower()
+                    and mutation != "resource_state"
+                ]
+                invalidated: set[str] = set(referenced_tokens)
+                if mutation in {"all_sessions", "account_state"}:
+                    subjects = {token_states[var].get("subject") for var in referenced_tokens}
+                    for var, state in token_states.items():
+                        if state.get("subject") and state.get("subject") in subjects:
+                            invalidated.add(var)
+                for var in invalidated:
+                    token_states[var]["status"] = "invalid"
+                    token_states[var]["reason"] = label
+                suffix = f"，作废 {', '.join('${' + v + '}' for v in sorted(invalidated))}" if invalidated else ""
+                mutation_lines.append(f"- {label}{suffix}")
+
+        order_lines.append(
+            f"{case_index}. {case_name}  " + " → ".join(endpoint_labels[:4])
+            + (" → …" if len(endpoint_labels) > 4 else "")
+        )
+
+    lifecycle_lines: list[str] = []
+    for var in sorted(production_lines):
+        state = token_states.get(var)
+        state_text = ""
+        if state:
+            if state["status"] == "valid":
+                state_text = "；当前候选=有效"
+            elif state["status"] == "invalid":
+                state_text = f"；当前候选=已作废（{state['reason']}）"
+            else:
+                state_text = f"；当前候选=有单会话替换风险（{state['reason']}）"
+        sources = "；".join(production_lines[var][:3])
+        lifecycle_lines.append(f"- ${{{var}}}: {sources}{state_text}")
+
+    issue_lines = [
+        f"- case_id={case_id}: {issue}"
+        for case_id, issues in issues_by_case.items()
+        for issue in issues[:4]
+    ]
+    consumer_lines = [
+        f"- ${{{var}}}: " + "；".join(labels[:6])
+        for var, labels in sorted(consumers.items())
+    ]
+    lines = [
+        "## 全局执行上下文（按真实 HTTP 步骤推导的参数生命周期）",
+        "### 确定性参数冲突（优先处理）",
+        *(issue_lines or ["- （未发现明确的失效参数复用）"]),
+        "### 状态变更与会话作废步骤",
+        *(mutation_lines or ["- （无）"]),
+        "### 变量生命周期（不是普通字符串池）",
+        *(lifecycle_lines or ["- （无用例 extract 出变量）"]),
+        "### 变量引用",
+        *(consumer_lines or ["- （无用例引用 ${变量}）"]),
+        "### 执行顺序（多步用例按箭头展开）",
+        *order_lines,
+    ]
+    return "\n".join(lines), producers, issues_by_case
+
+
+def _normalize_report_diagnosis_item(raw: dict, case_map: dict[int, TestCase]) -> dict:
+    """规整模型返回的一条报告诊断，并保留所有可执行修复字段。"""
+    fix = raw.get("fix") if isinstance(raw.get("fix"), dict) else {}
+    try:
+        case_id = int(raw.get("case_id"))
+    except (TypeError, ValueError):
+        case_id = None
+    reorder = fix.get("reorder") if isinstance(fix.get("reorder"), dict) else {}
+    pre_hook = fix.get("pre_hook") if isinstance(fix.get("pre_hook"), list) else []
+    step_fixes = []
+    for step_fix in fix.get("steps") or []:
+        if not isinstance(step_fix, dict):
+            continue
+        try:
+            step_id = int(step_fix.get("step_id"))
+        except (TypeError, ValueError):
+            continue
+        params = step_fix.get("params") if isinstance(step_fix.get("params"), dict) else {}
+        headers = step_fix.get("headers") if isinstance(step_fix.get("headers"), dict) else {}
+        if params or headers:
+            step_fixes.append({"step_id": step_id, "params": params, "headers": headers})
+    return {
+        "case_id": case_id,
+        "module_id": case_map[case_id].module_id if case_id in case_map else None,
+        "name": str(raw.get("name") or "").strip(),
+        "classification": str(raw.get("classification") or "").strip(),
+        "findings": [str(f).strip() for f in (raw.get("findings") or []) if str(f).strip()],
+        "fix": {
+            "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
+            "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
+            "params": fix.get("params") if isinstance(fix.get("params"), dict) else {},
+            "headers": fix.get("headers") if isinstance(fix.get("headers"), dict) else {},
+            "steps": step_fixes,
+            "pre_hook": pre_hook,
+            "reorder": {"before_case_name": str(reorder.get("before_case_name") or "").strip()}
+            if reorder.get("before_case_name")
+            else {},
+        },
+    }
 
 
 def diagnose_report_items(
@@ -2944,6 +3145,10 @@ def diagnose_report_items(
             "def": _serialize_api_case_definition(c),
             "result": [
                 {
+                    "step_id": r.step_id,
+                    "step_order": getattr(r, "step_order", None),
+                    "step_name": r.step_name,
+                    "step_type": r.step_type,
                     "request": (r.input_data or "")[:1200],
                     "status_code": r.status_code,
                     "response": (r.output_data or "")[:1800],
@@ -2964,7 +3169,7 @@ def diagnose_report_items(
     items_in.sort(key=_sort_key)
 
     # 全局上下文：变量产出/引用表 + 状态变更用例。整份报告算一次，注入到每个 chunk。
-    report_context, producers = _build_report_dependency_context(items_in, case_map)
+    report_context, producers, flow_hints_by_case = _build_report_dependency_context(items_in, case_map)
 
     # 用户历史反馈：清除标记时留下的更正/经验，按用例注入（权威性最高，防止重复误判）
     from server.services.ai_flag_service import get_case_feedback
@@ -2982,8 +3187,10 @@ def diagnose_report_items(
         except Exception as exc:  # noqa: BLE001 —— 线索是增强项，失败不阻塞诊断
             logger.warning("[diagnose] build_case_hints case=%s 失败：%s", cid, exc)
             hints = []
+        # 生命周期分析来自完整报告的真实步骤顺序，优先级高于模型推测。
+        hints.extend(flow_hints_by_case.get(cid) or [])
         if hints:
-            it["hints"] = hints
+            it["hints"] = hints[:10]
         fb = feedback_by_case.get(cid)
         if fb:
             it["user_feedback"] = fb
@@ -3047,42 +3254,7 @@ def diagnose_report_items(
             for x in parsed:
                 if not isinstance(x, dict):
                     continue
-                fix = x.get("fix") if isinstance(x.get("fix"), dict) else {}
-                try:
-                    _cid = int(x.get("case_id"))
-                except Exception:
-                    _cid = None
-                reorder = fix.get("reorder") if isinstance(fix.get("reorder"), dict) else {}
-                # 场景多步用例的按步修复：fix.steps=[{step_id, params, headers}]
-                step_fixes = []
-                for sf in fix.get("steps") or []:
-                    if not isinstance(sf, dict):
-                        continue
-                    try:
-                        _sid = int(sf.get("step_id"))
-                    except Exception:
-                        continue
-                    sf_params = sf.get("params") if isinstance(sf.get("params"), dict) else {}
-                    sf_headers = sf.get("headers") if isinstance(sf.get("headers"), dict) else {}
-                    if sf_params or sf_headers:
-                        step_fixes.append({"step_id": _sid, "params": sf_params, "headers": sf_headers})
-                out.append({
-                    "case_id": _cid,
-                    "module_id": case_map[_cid].module_id if _cid in case_map else None,
-                    "name": str(x.get("name") or "").strip(),
-                    "classification": str(x.get("classification") or "").strip(),
-                    "findings": [str(f).strip() for f in (x.get("findings") or []) if str(f).strip()],
-                    "fix": {
-                        "extract": fix.get("extract") if isinstance(fix.get("extract"), dict) else {},
-                        "assertion": fix.get("assertion") if isinstance(fix.get("assertion"), dict) else {},
-                        "params": fix.get("params") if isinstance(fix.get("params"), dict) else {},
-                        "headers": fix.get("headers") if isinstance(fix.get("headers"), dict) else {},
-                        "steps": step_fixes,
-                        "reorder": {"before_case_name": str(reorder.get("before_case_name") or "").strip()}
-                        if reorder.get("before_case_name")
-                        else {},
-                    },
-                })
+                out.append(_normalize_report_diagnosis_item(x, case_map))
 
     return {"items": out, "total": len(items_in)}
 

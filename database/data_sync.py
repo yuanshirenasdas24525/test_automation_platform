@@ -14,11 +14,12 @@
 """
 from __future__ import annotations
 
-import os
 import json
+import os
+import re
 import traceback
-from utils.logger import LOGGER
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import func, case
 
@@ -29,6 +30,10 @@ from database.models import (
     TestReport,
     TestStepReport,
 )
+from utils.logger import LOGGER
+
+
+_CASE_FIXTURE_ID_RE = re.compile(r"^\s*\{\s*['\"]id['\"]\s*:\s*(\d+)")
 
 
 # ---------------------------------------------------------------------------
@@ -37,24 +42,35 @@ from database.models import (
 # 正常路径上，`config/pytest_config.py::pytest_runtest_makereport` 在每条用例跑完
 # 时就把 TestStepReport 写进库了（有 action/target/input/output 等 record_property
 # 给的细节）。这个函数是 FALLBACK：
-#   - 如果 pytest 钩子因为异常 / worker 崩溃没写进去，这里拿 allure 结果兜底补齐；
-#   - 已经有记录的 report_id 就跳过，避免出现 "一个 case 两条 step" 的重复。
+#   - 如果 pytest 钩子因为异常 / worker 崩溃漏写，这里拿 allure 结果按 case 补齐；
+#   - 已有该 report_id + case_id 的记录就跳过，避免重复，同时允许修复单条写库失败。
 def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
     """从 allure 结果目录兜底补齐 test_step_reports。
 
-    - 如果 `test_step_reports` 里该 report_id 已经有记录，说明 pytest 钩子正常工作，
-      这里不再写，避免重复。
-    - 否则遍历 `result_path` 下的 `*-result.json`，每条转成一条 step 记录。
+    - 遍历 `result_path` 下的 `*-result.json`，按显式 case_id 判断是否缺行；
+    - pytest 钩子已写入的 case 不重复，只有漏写的 case 才补一条用例级记录；
+    - 老 Allure 没有 case_id label 时，从 pytest 的 case fixture 参数开头安全读取 id。
     - **不**在这里 commit —— 由调用方控制事务（通常是 finalize_report 统一 commit）。
     """
-    existing = (
-        db.query(TestStepReport)
+    existing_case_ids = {
+        int(case_id)
+        for (case_id,) in (
+            db.query(TestStepReport.case_id)
+            .filter(
+                TestStepReport.report_id == report_id,
+                TestStepReport.case_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        if case_id is not None
+    }
+    existing_count = (
+        db.query(func.count(TestStepReport.id))
         .filter(TestStepReport.report_id == report_id)
-        .count()
+        .scalar()
+        or 0
     )
-    if existing > 0:
-        LOGGER.info(f"[sync_allure_to_db] report_id={report_id} 已有 {existing} 条记录，跳过兜底")
-        return
 
     if not result_path or not os.path.isdir(result_path):
         LOGGER.warning(f"[sync_allure_to_db] 结果目录不存在或为空: {result_path}")
@@ -72,6 +88,14 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
                 LOGGER.warning(f"[sync_allure_to_db] 跳过坏文件 {file}: {exc}")
                 continue
 
+            case_id = _case_id_from_allure_result(res)
+            if case_id is not None and case_id in existing_case_ids:
+                continue
+            # 老结果完全无法识别 case_id 时，仅保留“整份报告一行都没有”的历史兜底；
+            # 部分已有记录时加入 case_id=NULL 会污染统计且无法参与后续验证装配。
+            if case_id is None and existing_count > 0:
+                continue
+
             status = res.get("status")
             # 修优先级 bug：(stop - start) / 1000 → 毫秒转秒
             start_ms = res.get("start") or 0
@@ -80,6 +104,7 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
 
             step_record = TestStepReport(
                 report_id=report_id,
+                case_id=case_id,
                 step_name=res.get("name"),
                 status=status,
                 duration=duration_sec,
@@ -92,6 +117,8 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
             )
             db.add(step_record)
             added += 1
+            if case_id is not None:
+                existing_case_ids.add(case_id)
 
         db.flush()
     except Exception as exc:
@@ -100,6 +127,31 @@ def sync_allure_to_db(report_id: int, result_path: str, db) -> None:
         raise
     else:
         LOGGER.info(f"[sync_allure_to_db] 兜底写入 {added} 条 step 记录")
+
+
+def _case_id_from_allure_result(result: dict[str, Any]) -> int | None:
+    """从 Allure 结果提取 case_id，兼容新 label 与历史 fixture 参数。"""
+    for label in result.get("labels") or []:
+        if isinstance(label, dict) and label.get("name") == "case_id":
+            try:
+                return int(label.get("value"))
+            except (TypeError, ValueError):
+                return None
+    for parameter in result.get("parameters") or []:
+        if not isinstance(parameter, dict):
+            continue
+        name = parameter.get("name")
+        value = parameter.get("value")
+        if name == "case_id":
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+        if name == "case" and isinstance(value, str):
+            match = _CASE_FIXTURE_ID_RE.match(value)
+            if match:
+                return int(match.group(1))
+    return None
 
 
 # ---------------------------------------------------------------------------

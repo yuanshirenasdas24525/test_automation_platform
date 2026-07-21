@@ -44,6 +44,9 @@ class TestCaseCreate(pydantic.BaseModel):
     tags: Optional[List[str]] = None
     priority: Optional[int] = None
     steps: Optional[List[StepPayload]] = None
+    # 前/后置步骤必须随详情接口返回并允许用户显式编辑、清空；禁止再作为隐藏字段。
+    pre_hook: Optional[List[Dict[str, Any]]] = None
+    post_hook: Optional[List[Dict[str, Any]]] = None
 
     # ------- 历史 HTTP 字段：暂留到后续删列迁移 -------
     method: Optional[str] = None

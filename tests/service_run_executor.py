@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import pytest
 
-from runners.context.execution_context import ExecutionContext
 from runners.case_executor import CaseExecutor
+from runners.context.auth_cache import RunAuthCache
+from runners.context.execution_context import ExecutionContext
 from runners.protocol import StepStatus
 
 
 _RUN_SHARED_VARS: dict[str, object] = {}
+_RUN_AUTH_CACHE = RunAuthCache()
 
 
 def reset_run_shared_vars() -> None:
     """清空单轮 pytest 运行内的跨用例变量池。"""
     _RUN_SHARED_VARS.clear()
+    _RUN_AUTH_CACHE.clear()
 
 
 class TestService:
@@ -43,6 +46,7 @@ class TestService:
         try:
             from utils.allure_utils import (
                 set_allure_case,
+                set_allure_case_id,
                 set_allure_module,
                 set_allure_project,
                 set_allure_suites,
@@ -69,6 +73,8 @@ class TestService:
             if case_name:
                 set_allure_case(case_name)
                 set_allure_title(case_name)
+            if isinstance(case, dict) and case.get("id") is not None:
+                set_allure_case_id(int(case["id"]))
             # Suites 面板：同样三层；任意为空时该层跳过
             set_allure_suites(
                 parent=project_name or None,
@@ -81,6 +87,7 @@ class TestService:
 
         ctx = ExecutionContext(record_property)
         ctx.set_var("_run_shared_vars", dict(_RUN_SHARED_VARS))
+        ctx.set_var("_run_auth_cache", _RUN_AUTH_CACHE)
         result = CaseExecutor().run(case, ctx)
         for key, value in ctx.vars.items():
             if not str(key).startswith("_"):

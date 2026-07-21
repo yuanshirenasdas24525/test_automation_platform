@@ -87,6 +87,18 @@ export interface TestStepDraft {
   on_failure?: "stop" | "continue" | "retry";
 }
 
+/** 用例级前/后置步骤。后端按数组顺序在主步骤前后执行。 */
+export interface TestCaseHookDraft {
+  type?: string;
+  step_name?: string;
+  skip?: boolean;
+  wait_before?: number;
+  timeout?: number;
+  retry?: number;
+  on_failure?: "stop" | "continue" | "retry";
+  config?: Record<string, unknown>;
+}
+
 export interface Project {
   id: number;
   name: string;
@@ -168,6 +180,9 @@ export interface TestCaseCreate {
    * 传 [] 表示显式清空；传数组则整体替换。
    */
   steps?: TestStepDraft[] | null;
+  /** 用户可见、可编辑的前/后置步骤；传 [] 表示显式清空。 */
+  pre_hook?: TestCaseHookDraft[] | null;
+  post_hook?: TestCaseHookDraft[] | null;
 
   /** 历史 HTTP 字段：数据库列暂留，执行定义以 steps 为准。 */
   method?: string | null;

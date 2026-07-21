@@ -37,6 +37,14 @@ from utils.allure_step_reporter import (
 logger = logging.getLogger(__name__)
 
 
+class _AllureReportedFailure(AssertionError):
+    """仅用于通知 Allure 当前步骤失败，不向 Runner/CaseExecutor 泄露。"""
+
+
+class _AllureReportedError(RuntimeError):
+    """仅用于通知 Allure 当前步骤异常，不向 Runner/CaseExecutor 泄露。"""
+
+
 class StepDispatcher:
     def __init__(self) -> None:
         self._registry: dict[str, StepRunner] = {}
@@ -101,12 +109,24 @@ class StepDispatcher:
 
         last_result: StepResult | None = None
         for attempt in range(1, max_attempts + 1):
-            with allure_step(allure_name if attempt == 1 else f"{allure_name} #retry{attempt}"):
-                result = runner.execute(step, ctx)
-                # 失败时先尝试截一张图，再 attach（顺序很重要：截图也要进 attachments）
-                capture_failure_screenshot(ctx, step, result)
-                attach_step_details(result)
-                last_result = result
+            try:
+                with allure_step(allure_name if attempt == 1 else f"{allure_name} #retry{attempt}"):
+                    result = runner.execute(step, ctx)
+                    # 失败时先尝试截一张图，再 attach（顺序很重要：截图也要进 attachments）
+                    capture_failure_screenshot(ctx, step, result)
+                    attach_step_details(result)
+                    last_result = result
+
+                    # Runner 按协议把异常包装成 StepResult，不会向外 raise。若不在
+                    # Allure 上下文内补抛一次，Allure 就会把失败步骤错误地标成绿色。
+                    # 这里只让 Allure 观察到异常，退出上下文后立即吞掉，执行层仍然
+                    # 完全依赖 StepResult，不破坏“Runner 永不 raise”的不变量。
+                    if result.status == StepStatus.FAILED:
+                        raise _AllureReportedFailure(result.error_message or "步骤执行失败")
+                    if result.status == StepStatus.ERROR:
+                        raise _AllureReportedError(result.error_message or "步骤执行异常")
+            except (_AllureReportedFailure, _AllureReportedError):
+                pass
             if result.status in (StepStatus.PASSED, StepStatus.SKIPPED):
                 if attempt > 1:
                     logger.info("step#%s 第 %s 次重试成功", step.get("id"), attempt)

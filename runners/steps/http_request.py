@@ -42,9 +42,10 @@ from typing import Any
 import requests
 from requests.exceptions import JSONDecodeError
 
+from runners.context.auth_cache import RunAuthCache, build_auth_request_signature, is_login_path
 from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
-from utils.allure_utils import add_allure_step, set_allure_link
+from utils.allure_utils import add_allure_failed_step, add_allure_step, set_allure_link
 from utils.encrypt import RequestCryptoProcessor
 from utils.logger import LOGGER
 from utils.platform_utils import extractor, rep_expr
@@ -64,6 +65,58 @@ _DATA_TYPE_ALIASES = {
 # "非空 / 为空"断言哨兵：expected 写成这些词时按操作符语义判断，而不是字面量相等。
 _NOT_EMPTY_SENTINELS = {"not_empty", "not_null", "notnull", "notempty", "非空", "@notnull", "@notempty"}
 _IS_EMPTY_SENTINELS = {"is_null", "为空", "空", "@null"}
+
+
+def _response_shape(value: Any, depth: int = 0) -> Any:
+    """生成不包含业务值的响应结构，供参数提取错误报告安全展示。"""
+    if depth >= 4:
+        return type(value).__name__
+    if isinstance(value, dict):
+        items = list(value.items())
+        shaped = {
+            str(key): _response_shape(item, depth + 1)
+            for key, item in items[:30]
+        }
+        if len(items) > 30:
+            shaped["..."] = f"另有 {len(items) - 30} 个字段"
+        return shaped
+    if isinstance(value, list):
+        return [_response_shape(value[0], depth + 1)] if value else []
+    if value is None:
+        return "null"
+    return type(value).__name__
+
+
+def _response_error_message(value: Any) -> str | None:
+    """从常见错误响应字段中提取简短原因，不把完整响应塞进异常标题。"""
+    if not isinstance(value, dict):
+        return None
+    for key in ("detail", "message", "error", "msg"):
+        candidate = value.get(key)
+        if isinstance(candidate, (str, int, float, bool)):
+            return str(candidate)
+    data = value.get("data")
+    if isinstance(data, dict):
+        return _response_error_message(data)
+    return None
+
+
+def _format_extract_error(
+    failures: list[dict[str, Any]],
+    status_code: int,
+    response_body: Any,
+) -> str:
+    """把提取失败项压成适合 Allure 标题和用例错误摘要的一行。"""
+    items = []
+    for failure in failures:
+        name = failure.get("变量名") or "未命名变量"
+        expression = failure.get("表达式") or failure.get("来源") or "response.body"
+        items.append(f"{name} ({expression})")
+    message = f"参数提取失败：{', '.join(items)}；HTTP {status_code}"
+    response_error = _response_error_message(response_body)
+    if response_error:
+        message += f"；接口返回：{response_error}"
+    return message
 
 
 def _v1_json_extract_to_rules(raw: Any) -> list[dict]:
@@ -222,6 +275,21 @@ class HttpRequestStepRunner(BaseStepRunner):
         response_body, status_code = self._send(method, url, headers, body, files, data_type, timeout)
         response_body, crypto_response_meta = crypto.apply_response(response_body)
 
+        # 认证缓存只在单轮测试运行内生效。任意成功登录都刷新同凭据缓存；若缓存 token
+        # 被服务端拒绝，或刚被登出/改密请求使用，则精准失效对应缓存项。
+        auth_cache = ctx.get_var("_run_auth_cache")
+        if isinstance(auth_cache, RunAuthCache):
+            signature = build_auth_request_signature(config, ctx)
+            if is_login_path(path) and 200 <= status_code < 400:
+                auth_cache.put(signature, response_body)
+            mutation_path = path.lower()
+            invalidating_request = any(
+                hint in mutation_path
+                for hint in ("logout", "signout", "revoke", "password")
+            ) and 200 <= status_code < 400
+            if status_code in (401, 403) or invalidating_request:
+                auth_cache.invalidate_if_used({"headers": headers, "body": body})
+
         result.output_data = response_body
         ctx.record("status_code", status_code)
         # 把请求/响应记进 record_property，pytest 钩子会落库到 TestStepReport，
@@ -244,7 +312,7 @@ class HttpRequestStepRunner(BaseStepRunner):
             extract_rules = _v1_json_extract_to_rules(config.get("extract_data"))
         else:
             extract_rules = step.get("extract") or []
-        extracted = self._apply_extract(
+        extracted, extract_failures = self._apply_extract(
             extract_rules,
             response_body=response_body,
             status_code=status_code,
@@ -252,6 +320,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         )
         result.extracted = extracted
         ctx.record("extract_values", extracted)
+        ctx.record("extract_errors", extract_failures)
         if extracted:
             ctx_vars_display = {k: v for k, v in ctx.vars.items()
                                 if not k.startswith("_")}
@@ -260,6 +329,37 @@ class HttpRequestStepRunner(BaseStepRunner):
                 ctx_vars_display or "(空)",
                 attachment_name="变量池（提取后）",
             )
+        if extract_failures:
+            error_message = _format_extract_error(
+                extract_failures,
+                status_code,
+                response_body,
+            )
+            error_details = {
+                "错误信息": error_message,
+                "HTTP状态码": status_code,
+                "接口错误": _response_error_message(response_body),
+                "失败项": extract_failures,
+                "响应结构": _response_shape(response_body),
+            }
+            if step.get("_is_hook"):
+                add_allure_failed_step(
+                    "参数提取失败",
+                    error_message,
+                    error_details,
+                    attachment_name="参数提取错误详情",
+                )
+            else:
+                add_allure_step(
+                    "参数提取未命中",
+                    error_details,
+                    attachment_name="参数提取错误详情",
+                )
+            # pre_hook 是主步骤的硬依赖，声明的变量缺失必须直接失败。普通 HTTP
+            # 步骤继续维持原语义：负向用例即便带了可选 token 提取，也可按 401
+            # 断言正常通过，但 Allure 中会留下明确的“参数提取未命中”信息。
+            if step.get("_is_hook"):
+                raise AssertionError(error_message)
 
         if str(config.get("sql_query_phase") or "after").lower() != "before":
             self._apply_sql_query(config.get("sql_query"), ctx)
@@ -457,8 +557,9 @@ class HttpRequestStepRunner(BaseStepRunner):
         response_body: Any,
         status_code: int,
         ctx: ExecutionContext,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         extracted: dict[str, Any] = {}
+        failures: list[dict[str, Any]] = []
         for rule in rules or []:
             if not isinstance(rule, dict):
                 continue
@@ -490,6 +591,13 @@ class HttpRequestStepRunner(BaseStepRunner):
             # 如果把 token 写成 None，后续依赖旧 token 的步骤会被连带污染。
             # 如确实需要显式清空变量，可在提取规则中配置 overwrite_empty=true。
             if val is None and not bool(rule.get("overwrite_empty")):
+                expression = rule.get("jsonpath") or rule.get("path")
+                failures.append({
+                    "变量名": str(name),
+                    "来源": src,
+                    "表达式": str(expression) if expression else None,
+                    "原因": "未匹配到值（JSONPath 无效、响应结构变化或接口返回失败）",
+                })
                 LOGGER.warning(
                     "HTTP extract skipped empty value: name=%s source=%s status=%s",
                     name,
@@ -508,7 +616,7 @@ class HttpRequestStepRunner(BaseStepRunner):
 
         if extracted:
             add_allure_step("Extracted", extracted)
-        return extracted
+        return extracted, failures
 
     # ---------------------- assertion ----------------------
     def _apply_assertions(

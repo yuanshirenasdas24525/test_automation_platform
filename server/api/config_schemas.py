@@ -164,6 +164,62 @@ API_CONFIG_SCHEMA: list[dict[str, Any]] = [
         "applies_to": ["api"],
     },
 
+    # —— 4b. auth_provider：悬空鉴权变量自动补齐 ——
+    # 用例引用了 ${admin_token} 这类变量、但没有任何步骤产出它时（AI 生成用例的高频缺陷），
+    # 执行器会用这里配的登录接口自动补一次，把变量拿回来。不配则该能力整体不生效。
+    {
+        "config_group": "auth_provider",
+        "key": "path",
+        "type": "str",
+        "default": "",
+        "description": (
+            "登录接口路径。用例引用了下方 extract 声明的变量、而变量池里没有时，"
+            "执行器会自动调用它补齐。留空则不启用自动补齐。"
+            "建议路径包含 login/signin，否则单轮登录缓存不生效、可能触发接口限流。"
+        ),
+        "example": "/api/auth/login",
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "auth_provider",
+        "key": "params",
+        "type": "str",
+        "default": "",
+        "description": "登录请求体（JSON 字符串），凭据建议引用 default_parameters 里的变量。",
+        "example": '{"username": "${user_admin}", "password": "${password_admin}"}',
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "auth_provider",
+        "key": "extract",
+        "type": "str",
+        "default": "",
+        "description": (
+            "从登录响应提取哪些变量（JSON 字符串，变量名→JSONPath）。"
+            "**只有这里声明的变量才会被自动补齐**，不做语义猜测。"
+        ),
+        "example": '{"admin_token": "$.data.access_token"}',
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "auth_provider",
+        "key": "method",
+        "type": "str",
+        "default": "POST",
+        "description": "登录接口 HTTP 方法，默认 POST。",
+        "example": "POST",
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "auth_provider",
+        "key": "enabled",
+        "type": "str",
+        "default": "true",
+        "description": "是否启用自动鉴权补齐。填 false 可临时关闭而不清空上面的配置。",
+        "example": "true",
+        "applies_to": ["api"],
+    },
+
     # —— 5. encryption_decryption：加解密 ——
     {
         "config_group": "encryption_decryption",

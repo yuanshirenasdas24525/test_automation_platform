@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery } from "@tanstack/react-query";
-import { Braces, Check, Info, Loader2, X } from "lucide-react";
+import { Braces, Check, ChevronDown, ChevronRight, Info, Loader2, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -30,7 +30,12 @@ import { StepEditor, validateStepsForCategory } from "@/components/case/step-edi
 import { casesApi, configApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
-import type { CaseType, ContentNode, TestStepDraft } from "@/types/domain";
+import type {
+  CaseType,
+  ContentNode,
+  TestCaseHookDraft,
+  TestStepDraft,
+} from "@/types/domain";
 
 const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH"] as const;
 
@@ -190,6 +195,7 @@ const caseSchema = z.object({
   repeat_count: z.coerce.number().int().min(1).max(100).optional(),
   skip: z.boolean().optional(),
   steps: z.array(z.any()).optional(),
+  pre_hook: z.array(z.any()).optional(),
   case_type: z.string().optional(),
 });
 
@@ -301,6 +307,53 @@ function normalizeHttpStepForSubmit(step: TestStepDraft): TestStepDraft {
   };
 }
 
+function hookToStepDraft(hook: TestCaseHookDraft, index: number): TestStepDraft {
+  const config = { ...(hook.config || {}) };
+  const rawExtract = config.extract_data ?? config.extract;
+  const rawAssertion = config.assertion;
+  const extract = Array.isArray(rawExtract)
+    ? rawExtract as Record<string, unknown>[]
+    : extractConfigToRules(rawExtract);
+  const assertion = Array.isArray(rawAssertion)
+    ? rawAssertion as Record<string, unknown>[]
+    : assertionConfigToRules(rawAssertion);
+  delete config.extract;
+  return hydrateHttpStepConfig({
+    step_order: index,
+    step_name: hook.step_name || `前置步骤 ${index + 1}`,
+    step_type: hook.type || "http_request",
+    skip: hook.skip ?? false,
+    config,
+    extract,
+    assertion,
+    wait_before: hook.wait_before ?? 0,
+    timeout: hook.timeout ?? 30,
+    retry: hook.retry ?? 0,
+    on_failure: hook.on_failure ?? "stop",
+  });
+}
+
+function stepDraftToHook(step: TestStepDraft): TestCaseHookDraft {
+  const normalized = normalizeHttpStepForSubmit(step);
+  const config = { ...(normalized.config || {}) };
+  const extractMap = parseJsonMap(extractRulesToConfigText(normalized.extract));
+  const assertionMap = parseJsonMap(assertionRulesToConfigText(normalized.assertion));
+  delete config.extract_data;
+  delete config.assertion;
+  if (extractMap) config.extract_data = extractMap;
+  if (assertionMap) config.assertion = assertionMap;
+  return {
+    type: normalized.step_type,
+    step_name: normalized.step_name,
+    skip: normalized.skip ?? false,
+    wait_before: normalized.wait_before ?? 0,
+    timeout: normalized.timeout ?? 30,
+    retry: normalized.retry ?? 0,
+    on_failure: normalized.on_failure ?? "stop",
+    config,
+  };
+}
+
 function buildSingleHttpStep(values: CaseFormValues): TestStepDraft {
   return {
     step_order: 0,
@@ -391,6 +444,7 @@ export function CaseDialog({
         repeat_count: (src.repeat_count as number) ?? 1,
         skip: (src.skip as boolean) ?? false,
         steps,
+        pre_hook: ((src.pre_hook as TestCaseHookDraft[] | undefined) ?? []).map(hookToStepDraft),
         case_type: (src.case_type as string | undefined) ?? category,
       };
     }
@@ -410,6 +464,7 @@ export function CaseDialog({
       repeat_count: 1,
       skip: false,
       steps: [],
+      pre_hook: [],
       case_type: category,
     };
   }, [existing, detail, category]);
@@ -432,14 +487,22 @@ export function CaseDialog({
 
   const isStepEditorCase = category === "web" || category === "android" || category === "ios" || category === "mixed";
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
+  const currentPreHooks = (form.watch("pre_hook") as TestStepDraft[] | undefined) ?? [];
   const [apiMode, setApiMode] = useState<"single" | "multi">("single");
+  const [preHooksOpen, setPreHooksOpen] = useState(false);
   const detailStepCount = (detail?.steps as TestStepDraft[] | undefined)?.length ?? 0;
+  const detailPreHookCount = detail?.pre_hook?.length ?? 0;
   const loadingDetail = !!existing && caseDetailQuery.isLoading;
 
   useEffect(() => {
     if (!isApi || loadingDetail) return;
     setApiMode(detailStepCount > 1 ? "multi" : "single");
   }, [isApi, loadingDetail, detailStepCount, existing?.id, state?.mode]);
+
+  useEffect(() => {
+    if (loadingDetail) return;
+    setPreHooksOpen(detailPreHookCount > 0);
+  }, [loadingDetail, detailPreHookCount, existing?.id, state?.mode]);
 
   const title =
     state?.mode === "edit"
@@ -460,6 +523,12 @@ export function CaseDialog({
         <form
           className="space-y-4"
           onSubmit={form.handleSubmit((values) => {
+            const preHookSteps = (values.pre_hook as TestStepDraft[] | undefined) ?? [];
+            const normalizedPreHooks = preHookSteps.map(stepDraftToHook);
+            const valuesWithHooks = {
+              ...values,
+              pre_hook: normalizedPreHooks as unknown as CaseFormValues["pre_hook"],
+            };
             if (isStepEditorCase || (isApi && apiMode === "multi")) {
               const stepValidationErrors = validateStepsForCategory(
                 category,
@@ -472,7 +541,7 @@ export function CaseDialog({
             }
 
             if (!isApi) {
-              onSubmit(values);
+              onSubmit(valuesWithHooks);
               return;
             }
 
@@ -490,7 +559,10 @@ export function CaseDialog({
               };
             });
             const finalSteps = apiMode === "multi" ? normalized : [buildSingleHttpStep(values)];
-            onSubmit({ ...values, steps: finalSteps as unknown as CaseFormValues["steps"] });
+            onSubmit({
+              ...valuesWithHooks,
+              steps: finalSteps as unknown as CaseFormValues["steps"],
+            });
           })}
         >
           <div className="space-y-1.5">
@@ -525,6 +597,48 @@ export function CaseDialog({
               </p>
             ) : null}
           </div>
+
+          {isApi ? (
+            <div className="rounded-md border border-amber-300/70 bg-amber-50/40 p-3 dark:bg-amber-950/10">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 text-left"
+                onClick={() => setPreHooksOpen((value) => !value)}
+              >
+                <span>
+                  <span className="text-sm font-medium">前置步骤（{currentPreHooks.length}）</span>
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    在主步骤前执行，执行内容会完整显示在 Allure 中
+                  </span>
+                </span>
+                {preHooksOpen ? (
+                  <ChevronDown className="h-4 w-4 shrink-0" />
+                ) : (
+                  <ChevronRight className="h-4 w-4 shrink-0" />
+                )}
+              </button>
+              {preHooksOpen ? (
+                <div className="mt-3 border-t pt-3">
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    可修改、排序、跳过或删除。删除全部并保存后，本用例将不再执行任何隐藏前置请求。
+                  </p>
+                  <StepEditor
+                    category="api"
+                    databaseConnections={databaseConnections}
+                    value={currentPreHooks}
+                    error={form.formState.errors.pre_hook?.message}
+                    onChange={(next) =>
+                      form.setValue(
+                        "pre_hook",
+                        next as unknown as CaseFormValues["pre_hook"],
+                        { shouldDirty: true },
+                      )
+                    }
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {isApi ? (
             <div className="flex justify-center">
