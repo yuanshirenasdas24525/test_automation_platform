@@ -197,6 +197,36 @@ def triage_step(
             "suggestion": "看错误信息定位缺失的配置/依赖；这类与用例写法无关，整批同因",
         }
 
+    # 4.6) SQL 校验本身写错：列名/表名不存在等。AI 写 sql 断言时按语义猜列名，
+    #      猜错了就是这个形态。归用例问题——接口没毛病，是校验语句写错了。
+    if any(h in err for h in ("UndefinedColumn", "UndefinedTable", "ProgrammingError", "psycopg2.errors")):
+        m = re.search(r'column "([^"]+)" does not exist|relation "([^"]+)" does not exist', err)
+        missing = next((g for g in (m.groups() if m else ()) if g), None)
+        return {
+            "classification": CLS_CASE, "subtype": "bad_sql",
+            "summary": (
+                f"SQL 校验里的 {missing!r} 在库里不存在" if missing else "SQL 校验语句执行报错"
+            ),
+            "evidence": err[:200],
+            "suggestion": "对照真实表结构修正 SQL 断言的表名/列名；接口本身没问题",
+        }
+
+    # 4.7) 断言的成功码写错：请求其实成功了（2xx），只是期望的是另一个 2xx。
+    #      典型是 AI 按 REST 惯例写 201，而接口实际返回 200。接口没毛病，是断言不符实现。
+    #      严格限定"两边都是 2xx"——跨类比较（如 200 vs 401）含语义分歧，留给 L2。
+    actual, expected = _status_pair(err)
+    if (
+        actual is not None and expected is not None
+        and 200 <= actual < 300 and 200 <= expected < 300 and actual != expected
+    ):
+        return {
+            "classification": CLS_CASE, "subtype": "wrong_status_assertion",
+            "summary": f"请求已成功（{actual}），但断言期望 {expected} —— 断言与接口实现不符",
+            "evidence": err[:200],
+            "suggestion": f"确认接口约定后把断言改成 {actual}（或推动接口按 {expected} 返回）",
+            "fix_hint": {"assertion": {"status_code": actual}},
+        }
+
     # 5) extract 路径写错：值其实在响应里，只是 JSONPath 指错了 —— 能直接算出正确路径
     failed_vars = _extract_failed_vars(err)
     if failed_vars and body is not None:

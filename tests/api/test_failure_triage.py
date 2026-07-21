@@ -109,6 +109,36 @@ def test_wrong_jsonpath_is_case_problem_with_fix_hint():
     assert "access_token" in (v.get("fix_hint") or {}).get("extract", {})
 
 
+def test_wrong_success_code_assertion_is_case_problem():
+    """请求成功了（200），只是断言期望另一个 2xx（201）→ 断言与实现不符，可算出修复。
+
+    真实来源：平台 POST /api/users 返回 200，AI 按 REST 惯例断言 201，
+    报告 19 里 58 条同因。
+    """
+    v = _triage(_step(code=200, error="断言失败 1/1 条:\n[equal] status_code: 200 != 201",
+                      output={"data": {"id": 1}}))
+    assert v["classification"] == CLS_CASE and v["subtype"] == "wrong_status_assertion"
+    assert v["fix_hint"]["assertion"]["status_code"] == 200
+
+
+def test_cross_class_status_mismatch_is_left_to_l2():
+    """2xx vs 4xx 含语义分歧（到底该不该拒绝），L1 不判。"""
+    v = _triage(_step(code=200, error="断言失败 1/1 条:\n[equal] status_code: 200 != 401",
+                      sent={"headers": {}}, output={"status": "success"}))
+    assert v is None
+
+
+def test_sql_column_error_is_case_problem():
+    """SQL 校验里的列名不存在 → 用例写错，不是接口问题。"""
+    v = _triage(_step(
+        code=200,
+        error='ProgrammingError: (psycopg2.errors.UndefinedColumn) column "is_superuser" does not exist',
+        output={"data": {}},
+    ))
+    assert v["classification"] == CLS_CASE and v["subtype"] == "bad_sql"
+    assert "is_superuser" in v["summary"]
+
+
 # ---------------------------------------------------------------- 边界
 def test_pure_assertion_mismatch_is_left_to_l2():
     """纯断言语义分歧（登出是否该幂等）L1 判不了 —— 必须返回 None，不硬归因。"""
