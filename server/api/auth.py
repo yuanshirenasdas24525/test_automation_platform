@@ -302,6 +302,9 @@ def _check_api_key_scope(key: ApiKey, method: str, path: str) -> None:
     if API_KEY_SCOPE_AI in scopes:
         allowed.append(("POST", "/api/functional_cases/ai_diagnose_report"))
         allowed.append(("POST", "/api/functional_cases/ai_report_fix/apply"))
+        # 规则分诊落成诊断：与 ai_diagnose_report 同性质（产出可应用的诊断），只是判定方是规则
+        if path.startswith("/api/reports/") and path.endswith("/triage/diagnosis"):
+            allowed.append((method, path))
     if (method, path) not in allowed:
         raise HTTPException(
             status_code=403,

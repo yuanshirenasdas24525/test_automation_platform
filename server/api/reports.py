@@ -194,6 +194,64 @@ def get_report_triage(report_id: int, db: DBDep):
     return {"status": "success", "data": data}
 
 
+@router.post("/{report_id}/triage/diagnosis")
+def create_diagnosis_from_triage(report_id: int, db: DBDep):
+    """把 L1 规则分诊结果落成一次可应用的"诊断"，返回 ai_run_id。
+
+    规则分诊本质上就是一次诊断，只是判定方是规则而非模型。落成 AiRun 之后，
+    就能复用既有的 `POST /api/functional_cases/ai_report_fix/apply` 通道——
+    预检、逐条编辑事件、verify 重跑、绿变红自动回滚全部照旧生效，
+    不需要为规则修复另开一套应用逻辑，也不消耗任何 token。
+    """
+    from database.models import AI_FEATURE_API_REPORT_FIX, AI_RUN_STATUS_SUCCESS
+    from server.services.failure_triage import as_diagnosis_items, triage_report
+
+    report = db.session.query(TestReport).filter(TestReport.id == report_id).first()
+    if report is None:
+        raise HTTPException(status_code=404, detail="报告不存在")
+
+    triage = triage_report(db.session, report_id)
+    done_ids = [
+        c["case_id"] for c in triage["cases"]
+        if c["case_id"] is not None and c["classification"] != "待定"
+    ]
+    module_ids = {
+        c.id: c.module_id
+        for c in db.session.query(TestCase).filter(TestCase.id.in_(done_ids or [0])).all()
+    }
+    items = as_diagnosis_items(triage, module_ids)
+    fixable = [i for i in items if any(i["fix"].get(k) for k in ("extract", "assertion", "params"))]
+    if not fixable:
+        raise HTTPException(
+            status_code=400,
+            detail="规则分诊没有算出任何可直接应用的修复（多为缺前置步骤类，需人工补）",
+        )
+
+    run = AiRun(
+        feature=AI_FEATURE_API_REPORT_FIX,
+        status=AI_RUN_STATUS_SUCCESS,
+        project_id=report.project_id,
+        input_payload={"report_id": report_id, "source": "L1_triage"},
+        output_payload={"items": items, "total": len(items), "source": "L1_triage"},
+    )
+    db.session.add(run)
+    db.session.flush()
+    db.session.refresh(run)
+
+    return {
+        "status": "success",
+        "data": {
+            "ai_run_id": run.id,
+            "total_items": len(items),
+            "fixable_items": len(fixable),
+            "message": (
+                f"规则分诊产出 {len(items)} 条结论，其中 {len(fixable)} 条带可应用的修复；"
+                f"用 POST /api/functional_cases/ai_report_fix/apply 应用（ai_run_id={run.id}）"
+            ),
+        },
+    }
+
+
 @router.get("/{report_id}/failures")
 def get_report_failures(report_id: int, db: DBDep):
     """失败明细最小集 —— 给 coding agent（MCP）自愈回路用的精简读接口。

@@ -276,6 +276,20 @@ def triage_report(session: Session, report_id: int) -> dict:
         for c in session.query(TestCase).filter(TestCase.id.in_(failed_case_ids or {0})).all()
     }
 
+    # fix_hint 能否安全应用：apply 层的顶层 fix 一律打到用例的**第一个 http 步骤**上
+    # （见 ai_fix_service._apply_fix_to_case）。若失败发生在后面的步骤，把修复打到第一步
+    # 会改坏一个本来正确的断言 —— 这种情况下宁可不给 fix，只报结论。
+    from database.models import TestStep
+    first_http: dict[int, tuple] = {}
+    for st in (
+        session.query(TestStep)
+        .filter(TestStep.case_id.in_(failed_case_ids or {0}))
+        .order_by(TestStep.case_id, TestStep.step_order)
+        .all()
+    ):
+        if st.step_type == "http_request":
+            first_http.setdefault(st.case_id, (st.id, st.step_name))
+
     seen: set[int] = set()
     cases: list[dict] = []
     for step in rows:
@@ -283,6 +297,18 @@ def triage_report(session: Session, report_id: int) -> dict:
             continue
         seen.add(step.case_id)          # 每条用例只按它第一个失败步骤定性
         verdict = triage_step(step, producers=producers, failed_case_ids=failed_case_ids)
+        if verdict and verdict.get("fix_hint"):
+            target = first_http.get(step.case_id)
+            # step_id 可能因为步骤被重建而对不上，退回按步骤名比对
+            same = bool(target) and (
+                step.step_id == target[0] or (step.step_name or "") == (target[1] or "")
+            )
+            if not same:
+                verdict.pop("fix_hint", None)
+                verdict["suggestion"] = (
+                    f"{verdict.get('suggestion', '')}"
+                    "（注意：问题不在本用例第一个请求上，需手工改对应步骤，平台的一键修复只作用于第一步）"
+                ).strip()
         cases.append({
             "case_id": step.case_id,
             "case_name": names.get(step.case_id),
@@ -352,7 +378,7 @@ def as_diagnosis_items(triage: dict, module_ids: dict[int, Optional[int]] | None
             "findings": [f for f in findings if f.strip()],
             "fix": {
                 "extract": hint.get("extract") or {},
-                "assertion": {},
+                "assertion": hint.get("assertion") or {},
                 "params": {},
                 "headers": {},
                 "steps": [],
