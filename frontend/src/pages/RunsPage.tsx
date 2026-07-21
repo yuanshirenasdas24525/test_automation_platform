@@ -44,6 +44,8 @@ import {
   reportsApi,
   tasksOverviewApi,
   type ReportAnalysisOutput,
+  type ReportTriage,
+  type ReportTriageCase,
   type TestReportDetail,
   type TestReportSummary,
   type TestStepReportItem,
@@ -514,6 +516,15 @@ function DetailDialog({
     queryFn: () => reportsApi.get(reportId!),
     enabled: reportId !== null,
   });
+  // L1 确定性分诊：零 LLM 成本，报告一打开就拉；仅对已结束且有失败的报告有意义
+  const triageQuery = useQuery({
+    queryKey: reportId ? ["report-triage", reportId] : ["report-triage", "none"],
+    queryFn: () => reportsApi.triage(reportId!),
+    enabled:
+      reportId !== null &&
+      query.data?.status !== "running" &&
+      (query.data?.fail_count ?? 0) + (query.data?.error_count ?? 0) > 0,
+  });
   const modelsQuery = useQuery({
     queryKey: ["ai-models", query.data?.project_id ?? "none"],
     queryFn: () => aiModelsApi.list(query.data!.project_id as number),
@@ -592,6 +603,7 @@ function DetailDialog({
             analysisStage={analysisStage}
             analysisLoading={submitAnalysis.isPending || analysisQuery.isLoading}
             onStartAnalysis={() => submitAnalysis.mutate()}
+            triage={triageQuery.data ?? null}
           />
         ) : null}
 
@@ -612,6 +624,7 @@ function DetailBody({
   analysisStage,
   analysisLoading,
   onStartAnalysis,
+  triage,
 }: {
   detail: TestReportDetail;
   analysisRun: AiRun | null;
@@ -619,6 +632,7 @@ function DetailBody({
   analysisStage: "idle" | "collecting" | "rules" | "ai" | "done" | "failed";
   analysisLoading: boolean;
   onStartAnalysis: () => void;
+  triage: ReportTriage | null;
 }) {
   const meta: [string, string][] = [
     ["项目", detail.project_name ?? `#${detail.project_id ?? "-"}`],
@@ -681,6 +695,8 @@ function DetailBody({
         </Button>
       </div>
 
+      <TriagePanel triage={triage} />
+
       <AnalysisPanel run={analysisRun} preview={analysisPreview} stage={analysisStage} />
 
       {/* 错误摘要 */}
@@ -694,6 +710,112 @@ function DetailBody({
       {/* 步骤列表 */}
       <StepsList steps={detail.steps} />
     </div>
+  );
+}
+
+/** 分类 → 配色。用例问题=可自己修（琥珀），接口问题=被测方的锅（红），环境=外因（蓝）。 */
+const TRIAGE_STYLE: Record<string, string> = {
+  用例问题: "bg-amber-100 text-amber-800",
+  接口问题: "bg-red-100 text-red-800",
+  环境或其他: "bg-sky-100 text-sky-800",
+  待定: "bg-slate-100 text-slate-600",
+};
+
+/**
+ * 失败归因（L1 确定性分诊）。
+ *
+ * 不调 LLM、零成本，所以报告一打开就直接展示——它的价值在于把「126 条全红」
+ * 变成「103 条变量悬空 + 10 条限流 + 8 条缺鉴权 + 5 条待定」，让人一眼知道该修哪。
+ */
+function TriagePanel({ triage }: { triage: ReportTriage | null }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!triage || triage.total_failed === 0) return null;
+
+  // 同因归组：同一 subtype 的失败通常是一个根因，逐条看没意义
+  const groups = new Map<string, ReportTriageCase[]>();
+  for (const c of triage.cases) {
+    const key = `${c.classification}|${c.subtype ?? "-"}|${c.suggestion}`;
+    const list = groups.get(key) ?? [];
+    list.push(c);
+    groups.set(key, list);
+  }
+  const sorted = [...groups.values()].sort((a, b) => b.length - a.length);
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold">失败归因</span>
+          <span className="text-xs text-muted-foreground">
+            {triage.total_failed} 条失败，规则已定性 {triage.triaged} 条
+            {triage.undetermined > 0 ? `，${triage.undetermined} 条需 AI 判断` : ""}
+          </span>
+          {Object.entries(triage.by_classification).map(([k, v]) => (
+            <span
+              key={k}
+              className={cn("rounded px-1.5 py-0.5 text-[11px]", TRIAGE_STYLE[k] ?? TRIAGE_STYLE.待定)}
+            >
+              {k} {v}
+            </span>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {sorted.map((group) => {
+            const head = group[0];
+            const shown = expanded ? group : group.slice(0, 3);
+            return (
+              <div key={`${head.classification}-${head.subtype}-${head.suggestion}`} className="rounded border p-2.5">
+                <div className="flex items-start gap-2">
+                  <span
+                    className={cn(
+                      "mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[11px]",
+                      TRIAGE_STYLE[head.classification] ?? TRIAGE_STYLE.待定,
+                    )}
+                  >
+                    {head.classification}
+                    {head.subtype ? `·${head.subtype}` : ""}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium">
+                      {head.summary}
+                      {group.length > 1 ? (
+                        <span className="ml-1 text-muted-foreground">（{group.length} 条同因）</span>
+                      ) : null}
+                    </div>
+                    <div className="mt-1 text-[11px] text-muted-foreground">
+                      <span className="font-medium text-foreground/70">依据：</span>
+                      {head.evidence}
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-primary/80">
+                      <span className="font-medium">建议：</span>
+                      {head.suggestion}
+                    </div>
+                    <ul className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
+                      {shown.map((c) => (
+                        <li key={c.case_id} className="truncate">
+                          · {c.case_name ?? `#${c.case_id}`}
+                          {c.step_name ? <span className="opacity-60">（{c.step_name}）</span> : null}
+                        </li>
+                      ))}
+                      {!expanded && group.length > shown.length ? (
+                        <li className="opacity-60">…还有 {group.length - shown.length} 条</li>
+                      ) : null}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {triage.cases.length > 3 ? (
+          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? "收起用例清单" : "展开全部用例"}
+          </Button>
+        ) : null}
+      </CardContent>
+    </Card>
   );
 }
 

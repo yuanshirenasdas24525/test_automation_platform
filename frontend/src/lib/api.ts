@@ -1196,6 +1196,35 @@ export interface TestReportDetail extends TestReportSummary {
   steps: TestStepReportItem[];
 }
 
+/** L1 确定性失败分诊：不调 LLM，按规则给失败用例定性（见 server/services/failure_triage.py）。 */
+export interface ReportTriageCase {
+  case_id: number;
+  case_name: string | null;
+  step_name: string | null;
+  status_code: number | null;
+  /** 用例问题 / 接口问题 / 环境或其他 / 待定 */
+  classification: string;
+  /** dangling_var / missing_auth / wrong_jsonpath / rate_limit / server_error … */
+  subtype: string | null;
+  summary: string;
+  evidence: string;
+  suggestion: string;
+  /** 归因到上游失败用例时带上它们的 id */
+  related_case_ids?: number[];
+  /** 规则直接算出的修复（如正确的 JSONPath） */
+  fix_hint?: Record<string, unknown>;
+}
+
+export interface ReportTriage {
+  report_id: number;
+  report_status: string | null;
+  total_failed: number;
+  triaged: number;
+  undetermined: number;
+  by_classification: Record<string, number>;
+  cases: ReportTriageCase[];
+}
+
 export interface ReportAnalysisSuggestion {
   category: string;
   severity: string;
@@ -1290,6 +1319,10 @@ export const reportsApi = {
   },
   analysisPreview(id: number, signal?: AbortSignal) {
     return request<ReportAnalysisOutput>(`/api/reports/${id}/analysis-preview`, { signal });
+  },
+  /** L1 确定性失败分诊（零 LLM 成本，报告一打开就能看）。 */
+  triage(id: number) {
+    return request<ReportTriage>(`/api/reports/${id}/triage`);
   },
   analyze(id: number, body: { model_name?: string | null; operator?: string | null } = {}) {
     return request<AiSubmitResponse>(`/api/reports/${id}/ai-analysis`, {
