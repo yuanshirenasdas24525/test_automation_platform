@@ -169,6 +169,18 @@ def get_report_failures(report_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def triage_report_failures(report_id: int) -> dict[str, Any]:
+    """对报告的失败用例做确定性分诊（不调 LLM、零成本），给出每条的归因与建议。
+
+    分类：用例问题 / 接口问题 / 环境或其他 / 待定。每条带 evidence 说明依据，
+    部分还带 fix_hint（如算出的正确 JSONPath）。
+    **排查失败原因时优先调它**，比直接读 get_report_failures 的原始报错更省事；
+    只有分类为"待定"的才需要进一步用 diagnose_report 走 AI 分析。
+    """
+    return _api().get_data(f"/api/reports/{report_id}/triage") or {}
+
+
+@mcp.tool()
 def get_coverage(project_id: int) -> dict[str, Any]:
     """查需求-用例覆盖率：按需求 / 按模块两个维度，返回覆盖缺口（该补用例的地方）。"""
     return _api().get_data("/api/requirements/coverage", params={"project_id": project_id}) or {}
