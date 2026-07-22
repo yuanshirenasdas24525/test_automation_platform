@@ -36,12 +36,17 @@ def collect_report_samples(session, report_id: int, limit: int = MAX_SAMPLES) ->
         .order_by(TestStepReport.id)
         .all()
     )
-    samples: list[dict] = []
+    # 成功/失败分开收集，最后按比例取 —— 否则一份"大部分挂了"的报告会让样本全是
+    # 错误响应，模型只能提炼出错误结构，学不到"成功时返回什么状态码"。
+    # （实测教训：项目 1 首次学习只产出了一条「错误响应结构约定」，
+    #   缺少「POST 创建返回 200 而非 201」这类约定，导致后续生成的用例大批断言错状态码。）
+    ok_samples: list[dict] = []
+    err_samples: list[dict] = []
     for r in rows:
         resp = _loose_json(r.output_data)
         if resp is None:
             continue
-        samples.append({
+        item = {
             "name": (r.step_name or "")[:60],
             "request": {
                 "method": r.action,
@@ -50,10 +55,13 @@ def collect_report_samples(session, report_id: int, limit: int = MAX_SAMPLES) ->
             },
             "response": resp,
             "status": r.status_code,
-        })
-        if len(samples) >= limit:
-            break
-    return samples
+        }
+        code = r.status_code or 0
+        (ok_samples if 200 <= code < 300 else err_samples).append(item)
+
+    half = max(1, limit // 2)
+    picked = ok_samples[:half] + err_samples[: limit - min(len(ok_samples), half)]
+    return picked[:limit]
 
 
 def _loose_json(raw: Any) -> Any:
