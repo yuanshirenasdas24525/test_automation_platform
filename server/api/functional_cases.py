@@ -3247,7 +3247,7 @@ def diagnose_report_items(
     if only_case_ids is not None:
         items_in = [it for it in items_in if it.get("case_id") in only_case_ids]
         if not items_in:
-            return {"items": [], "total": 0}
+            return {"items": [], "total": 0, "tokens_in": 0, "tokens_out": 0}
 
     out = []
     template = _load_prompt("api_report_diagnose")
@@ -3274,13 +3274,14 @@ def diagnose_report_items(
     if cur:
         chunks.append(cur)
 
+    tokens_in = tokens_out = 0
     for chunk in chunks:
         prompt = _render_prompt(template, {
             "REPORT_CONTEXT": report_context[:6000],
             "CASES": json.dumps(chunk, ensure_ascii=False),
         })
         try:
-            raw, _tin, _tout = chat_markdown(
+            raw, call_tin, call_tout = chat_markdown(
                 prompt,
                 cfg,
                 timeout=call_options["timeout"],
@@ -3294,6 +3295,11 @@ def diagnose_report_items(
         except Exception as e:  # noqa: BLE001
             # 在 Celery handler 里执行：抛普通异常即可，dispatch 兜底成 ai_run.status=failed。
             raise RuntimeError(f"AI 调用失败：{e}") from e
+        # 累计 token 用量：分块调用会调多次，逐次累加后随结果返回，
+        # 供 AiRun 记账（此前这里用 _tin/_tout 丢弃了，导致成本看板恒为空）
+        tokens_in += int(call_tin or 0)
+        tokens_out += int(call_tout or 0)
+
         parsed = _extract_json_list(raw)
         if isinstance(parsed, list):
             for x in parsed:
@@ -3301,7 +3307,10 @@ def diagnose_report_items(
                     continue
                 out.append(_normalize_report_diagnosis_item(x, case_map))
 
-    return {"items": out, "total": len(items_in)}
+    return {
+        "items": out, "total": len(items_in),
+        "tokens_in": tokens_in, "tokens_out": tokens_out,
+    }
 
 
 @router.post("")

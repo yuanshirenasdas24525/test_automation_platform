@@ -1054,6 +1054,7 @@ def _handle_api_report_fix(run: "AiRun", session) -> dict:
                 return {
                     "output": {"items": l1_items, "total": len(l1_items), "l1": l1_stats},
                     "model": cfg.model, "provider": cfg.provider, "prompt_version": "v1+L1",
+                    "tokens_in": 0, "tokens_out": 0,      # 全靠规则定性，一次模型都没调
                 }
         except Exception:  # noqa: BLE001
             # 分诊失败不能挡住主流程：退回全量送模型（老行为）
@@ -1071,6 +1072,8 @@ def _handle_api_report_fix(run: "AiRun", session) -> dict:
         "model": cfg.model,
         "provider": cfg.provider,
         "prompt_version": "v1+L1" if l1_stats else "v1",
+        "tokens_in": result.get("tokens_in"),
+        "tokens_out": result.get("tokens_out"),
     }
 
 
