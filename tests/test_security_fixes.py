@@ -131,6 +131,15 @@ class TestJwtSecretKey:
 # #7 登录失败限速：窗口内超阈值即锁定，成功清零
 # ===========================================================================
 class TestLoginThrottle:
+    @pytest.fixture(autouse=True)
+    def _force_throttle_on(self, monkeypatch):
+        """限流已改为可配置（LOGIN_THROTTLE_ENABLED，测试环境常关）。
+
+        这几条验证的是限流**功能本身**，必须显式打开，不能受本机 .env 影响 ——
+        否则开发机把开关关掉后，这道安全测试会静默变成"永远通过不了"。
+        """
+        monkeypatch.setenv("LOGIN_THROTTLE_ENABLED", "1")
+
     def _auth(self):
         pytest.importorskip("fastapi")
         return importlib.import_module("server.api.auth")
@@ -151,6 +160,23 @@ class TestLoginThrottle:
         for _ in range(auth.LOGIN_MAX_FAILURES - 1):
             auth._register_login_failure(user, ip)
         auth._clear_login_failures(user, ip)  # 相当于登录成功
+        assert auth._check_login_locked(user, ip) == 0
+
+    def test_default_is_enabled(self, monkeypatch):
+        """没配环境变量时必须是**开启**的 —— 安全默认值不能因为加了开关而反转。"""
+        auth = self._auth()
+        monkeypatch.delenv("LOGIN_THROTTLE_ENABLED", raising=False)
+        assert auth._throttle_enabled() is True
+
+    @pytest.mark.parametrize("val", ["0", "false", "no", "off", "OFF"])
+    def test_can_be_disabled_for_test_env(self, monkeypatch, val):
+        """显式关闭后不再累计、不再锁定（测试环境跑回归用）。"""
+        auth = self._auth()
+        monkeypatch.setenv("LOGIN_THROTTLE_ENABLED", val)
+        user, ip = "throttle_off_user", "203.0.113.11"
+        auth._clear_login_failures(user, ip)
+        for _ in range(auth.LOGIN_MAX_FAILURES * 2):
+            auth._register_login_failure(user, ip)
         assert auth._check_login_locked(user, ip) == 0
 
 
