@@ -14,3 +14,8 @@ class RunTestRequest(pydantic.BaseModel):
     # 直接 `DevicePool.acquire_by_id(device_id)`；设备必须 idle，否则 409。
     # 只对 category 在 {app, android, ios} 时有意义；其它类型忽略。
     device_id: int | None = None
+    # 「AI 自愈运行」：执行本身与普通运行完全一致，跑完后额外做
+    # 分诊 → 应用可算出的修复 → 重跑验证（见 tasks/ai_heal_task.py）。
+    # ai_model 为空时只做零成本的规则自愈；给了模型才会调 LLM 深度诊断。
+    ai_heal: bool = False
+    ai_model: str | None = None

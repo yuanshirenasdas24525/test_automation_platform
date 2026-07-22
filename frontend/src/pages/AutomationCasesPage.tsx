@@ -427,14 +427,29 @@ export function AutomationCasesPage({
     ]);
   }, []);
 
+  // AI 自愈用哪个模型；"__rules__" = 只做零成本的规则自愈，不调 LLM
+  const [healModel, setHealModel] = useState<string>("__rules__");
+  const { data: healModels } = useQuery({
+    queryKey: ["ai-models", projectId],
+    queryFn: () => aiModelsApi.list(projectId),
+    enabled: Number.isFinite(projectId),
+    staleTime: 5 * 60_000,
+  });
+
   const runMutation = useMutation({
-    mutationFn: (ids: number[]) => runsApi.trigger({
-      project: projectId,
-      category: caseType,
-      case_ids: ids,
-    }),
+    mutationFn: ({ ids, heal, model }: { ids: number[]; heal?: boolean; model?: string | null }) =>
+      runsApi.trigger({
+        project: projectId,
+        category: caseType,
+        case_ids: ids,
+        ai_heal: heal,
+        ai_model: model ?? null,
+      }),
     onSuccess: (result) => {
-      toast.success(`已提交 ${result.case_number ?? 0} 条 ${caseLabel} 用例，报告 #${result.report_id}`);
+      toast.success(
+        `已提交 ${result.case_number ?? 0} 条 ${caseLabel} 用例，报告 #${result.report_id}` +
+        (result.ai_heal ? "；跑完会自动分诊并修复可确定的问题" : ""),
+      );
       setSelected(new Set());
       invalidate();
       window.setTimeout(invalidate, 2500);
@@ -632,7 +647,39 @@ export function AutomationCasesPage({
             </Button>
             <Button variant="ghost" size="sm" disabled={moduleId == null || renumbering} onClick={() => renumberCases(false)} title="去掉用例名上的序号前缀">去掉编号</Button>
             <Button variant="outline" size="sm" disabled={moduleId == null} onClick={exportCases}><Download className="h-4 w-4" />导出</Button>
-            {selected.size > 0 ? <Button size="sm" disabled={runMutation.isPending} onClick={() => runMutation.mutate([...selected])}><Play className="h-4 w-4" />运行选中（{selected.size}）</Button> : null}
+            {selected.size > 0 ? (
+              <>
+                <Button size="sm" disabled={runMutation.isPending} onClick={() => runMutation.mutate({ ids: [...selected] })}>
+                  <Play className="h-4 w-4" />运行选中（{selected.size}）
+                </Button>
+                {/* AI 自愈运行：执行本身与左边完全一样，只是跑完后自动分诊 → 修复 → 重跑验证。
+                    模型下拉留空＝只做零成本的规则自愈（变量悬空、断言状态码等确定性问题）。 */}
+                <Select value={healModel} onValueChange={setHealModel}>
+                  <SelectTrigger className="h-8 w-[132px]" title="自愈时用哪个模型做深度诊断">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__rules__">仅规则（免费）</SelectItem>
+                    {(healModels ?? []).map((m) => (
+                      <SelectItem key={m.name} value={m.name}>{m.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={runMutation.isPending}
+                  title="执行与普通运行完全一致；跑完自动分诊、应用可确定的修复，并重跑验证（绿变红自动回滚）"
+                  onClick={() => runMutation.mutate({
+                    ids: [...selected],
+                    heal: true,
+                    model: healModel === "__rules__" ? null : healModel,
+                  })}
+                >
+                  <Sparkles className="h-4 w-4" />AI 自愈运行
+                </Button>
+              </>
+            ) : null}
           </>
         )}
         {moduleId != null && !quickEdit ? (
@@ -687,7 +734,7 @@ export function AutomationCasesPage({
                   selected={selected}
                   onSelected={setSelected}
                   onEdit={setEditor}
-                  onRun={(row) => runMutation.mutate([row.id])}
+                  onRun={(row) => runMutation.mutate({ ids: [row.id] })}
                   onDiagnose={handleDiagnose}
                   onShowRunDetail={setRunDetailCase}
                   onShowFlag={setFlagDialogCase}

@@ -187,9 +187,9 @@ def get_coverage(project_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
-def list_ai_models() -> Any:
-    """列出平台配置的 AI 模型（diagnose_report 的 model_name 参数从这里选）。"""
-    return _api().get_data("/api/ai-models") or []
+def list_ai_models(project_id: int) -> Any:
+    """列出该项目配置的 AI 模型（diagnose_report 的 model_name 参数从这里选）。"""
+    return _api().get_data("/api/ai-models", params={"project_id": project_id}) or []
 
 
 @mcp.tool()

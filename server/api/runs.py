@@ -167,16 +167,24 @@ async def run_test(req: RunTestRequest, db: DBDep):
 
     if sync_mode:
         LOGGER.info("[sync_mode] 同步执行 Web 用例（apply），浏览器将弹出当前桌面")
-        run_test_task.apply(args=(task_id, report_id, cases_to_run, req.category))
+        # 只在开了自愈时才多传参数：普通运行保持 4 参数的老签名，
+        # 这样即使 worker 还没重启到新代码，日常执行也不会因签名不匹配而挂。
+        extra = (req.ai_heal, req.ai_model) if req.ai_heal else ()
+        run_test_task.apply(args=(task_id, report_id, cases_to_run, req.category, *extra))
     else:
-        run_test_task.delay(task_id, report_id, cases_to_run, req.category)
+        extra = (req.ai_heal, req.ai_model) if req.ai_heal else ()
+        run_test_task.delay(task_id, report_id, cases_to_run, req.category, *extra)
 
     return {
         "status": "success",
         "report_id": report_id,
         "task_id": task_id,
         "case_number": case_number,
-        "message": "测试已在后台启动" if not sync_mode else "测试已在当前进程同步执行",
+        "ai_heal": bool(req.ai_heal),
+        "message": (
+            ("测试已在后台启动" if not sync_mode else "测试已在当前进程同步执行")
+            + ("；跑完将自动分诊并修复可确定的问题" if req.ai_heal else "")
+        ),
     }
 
 

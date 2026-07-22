@@ -75,3 +75,4 @@ import tasks.bug_fix_task  # noqa: F401
 import tasks.edit_history_cleanup  # noqa: F401
 import tasks.ai_fix_verify_task  # noqa: F401
 import tasks.learn_convention_task  # noqa: F401 — 报告后自动学响应约定
+import tasks.ai_heal_task  # noqa: F401 — 「AI 自愈运行」跑完后的分诊+修复+验证
