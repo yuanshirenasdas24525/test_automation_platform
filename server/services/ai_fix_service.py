@@ -495,6 +495,70 @@ def _sanitize_pre_hook(raw: Any) -> tuple[list, list[str]]:
     return out, produced
 
 
+def _sanitize_insert_steps(raw: Any) -> tuple[list, list[str]]:
+    """规整 fix.insert_steps（在用例开头插入**可见**的前置步骤）。
+
+    与被禁用的 pre_hook 的本质区别：insert_steps 落成真正的 TestStep 行，
+    用户在步骤编辑器里看得见、能改、能删；pre_hook 是藏在用例配置里的隐藏逻辑。
+    「不做隐藏魔法」的原则保留，但"给用例补一个登录步骤"这件事本身应当允许。
+
+    白名单（宁可拒绝也不冒险，任何一条不满足就整体丢弃）：
+      - 只允许 GET / POST（不许 PUT/PATCH/DELETE —— 补前置不该改动或删除数据）
+      - 必须 extract 出至少一个变量（不产出变量的前置步骤没有意义）
+      - 凭据类字段（password/secret/token 等）只能引用 ${变量}，不许明文字面量
+        —— 防止模型把猜的密码硬编码进用例库
+
+    返回 (规整后的步骤列表, 产出的变量名列表)。
+    """
+    if not isinstance(raw, list) or not raw:
+        return [], []
+
+    cred_keys = ("password", "passwd", "pwd", "secret", "token", "credential", "api_key")
+    out: list = []
+    produced: list[str] = []
+    for st in raw[:3]:                      # 最多补 3 步，防止模型塞一整条用例进来
+        if not isinstance(st, dict):
+            continue
+        cfg = st.get("config") if isinstance(st.get("config"), dict) else st
+        method = str(cfg.get("method") or "").upper()
+        path = str(cfg.get("path") or cfg.get("url") or "")
+        if not path or method not in ("GET", "POST"):
+            return [], []
+
+        ext = cfg.get("extract_data") or cfg.get("extract") or {}
+        names = (
+            [str(k) for k in ext if str(k).strip()] if isinstance(ext, dict)
+            else [str(r.get("name")) for r in ext
+                  if isinstance(r, dict) and r.get("name")] if isinstance(ext, list)
+            else []
+        )
+        if not names:
+            return [], []
+
+        params = cfg.get("params") or cfg.get("body") or {}
+        if isinstance(params, dict):
+            for k, v in params.items():
+                if any(c in str(k).lower() for c in cred_keys):
+                    if not (isinstance(v, str) and "${" in v):
+                        # 明文凭据 —— 整体拒绝
+                        return [], []
+
+        out.append({
+            "step_name": str(st.get("step_name") or "AI 补充的前置步骤")[:200],
+            "step_type": "http_request",
+            "config": {
+                "method": method,
+                "path": path,
+                "data_type": cfg.get("data_type") or "application/json",
+                "params": params if isinstance(params, dict) else {},
+                "headers": cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {},
+                "extract_data": ext if isinstance(ext, dict) else {},
+            },
+        })
+        produced.extend(names)
+    return (out, produced) if out else ([], [])
+
+
 def _preflight_one(
     item: dict,
     case_map: dict[int, TestCase],
@@ -516,13 +580,15 @@ def _preflight_one(
     name = str(item.get("name") or "")
     base = {
         "case_id": cid, "name": name, "eligible": False, "request_changed": False,
-        "fix": {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": [], "pre_hook": []},
+        "fix": {"extract": {}, "assertion": {}, "params": {}, "headers": {}, "steps": [],
+                "pre_hook": [], "insert_steps": []},
         "dropped": dropped, "deferred": deferred,
     }
 
     fix = item.get("fix") if isinstance(item.get("fix"), dict) else {}
     has_any_fix = any(
-        fix.get(k) for k in ("extract", "assertion", "params", "headers", "steps", "pre_hook")
+        fix.get(k)
+        for k in ("extract", "assertion", "params", "headers", "steps", "pre_hook", "insert_steps")
     )
     if cid is None or cid not in case_map:
         if has_any_fix:
@@ -554,8 +620,24 @@ def _preflight_one(
     if fix.get("pre_hook"):
         _drop(
             "pre_hook",
-            "已禁止 AI 自动写入前置步骤；请在用例编辑器的「前置步骤」区域人工确认后添加",
+            "已禁止 AI 自动写入前置步骤；请改用 insert_steps 插入用户可见的步骤",
         )
+
+    # insert_steps：补一个**可见**的前置步骤（典型是登录拿 token）。
+    # 与 pre_hook 的区别是它落成真正的 TestStep，用户在编辑器里看得见、可改可删。
+    sanitized_inserts: list[dict] = []
+    insert_vars: list[str] = []
+    if fix.get("insert_steps"):
+        sanitized_inserts, insert_vars = _sanitize_insert_steps(fix.get("insert_steps"))
+        if not sanitized_inserts:
+            _drop(
+                "insert_steps",
+                "前置步骤未通过白名单：只允许 GET/POST、必须 extract 出变量、"
+                "且凭据字段只能引用 ${变量} 不能写明文",
+            )
+        elif status == "passed":
+            sanitized_inserts, insert_vars = [], []
+            _drop("insert_steps", "用例本次已通过，不插入前置步骤（防绿变红）")
 
     # ── 已通过的用例：只允许纯增量 extract/assertion（治假通过），不许动请求 ──
     if status == "passed" and (fp or fh or step_fixes_in):
@@ -567,7 +649,8 @@ def _preflight_one(
     original_refs = _referenced_vars(
         [{"config": s.config, "extract": s.extract, "assertion": s.assertion} for s in (case.steps or [])]
     )
-    pre_hook_var_names = set(pre_hook_vars)
+    # 新插入的前置步骤产出的变量，视作本用例内可用（它们排在所有原步骤之前）
+    pre_hook_var_names = set(pre_hook_vars) | set(insert_vars)
 
     def _vars_ok(obj: Any, part: str) -> bool:
         new_vars = _referenced_vars(obj) - original_refs
@@ -728,11 +811,12 @@ def _preflight_one(
         "headers": sanitized_headers,
         "steps": sanitized_steps,
         "pre_hook": sanitized_pre_hook,
+        "insert_steps": sanitized_inserts,
     }
-    base["request_changed"] = request_changed
+    base["request_changed"] = request_changed or bool(sanitized_inserts)
     base["eligible"] = bool(
         sanitized_extract or sanitized_assertion or request_changed
-        or sanitized_pre_hook
+        or sanitized_pre_hook or sanitized_inserts
     )
     return base
 
@@ -840,6 +924,27 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
         return parts
     first_http = http_steps[0]
     step_by_id = {s.id: s for s in http_steps}
+
+    # insert_steps：在用例最前面插入可见的前置步骤（如登录拿 token）。
+    # 落成真正的 TestStep 行，用户在编辑器里看得见、可改可删 —— 与被禁的 pre_hook
+    # （隐藏逻辑）的本质区别就在这里。原有步骤整体后移。
+    inserted = fix.get("insert_steps") or []
+    if inserted:
+        from database.models import TestStep
+
+        shift = len(inserted)
+        for s in steps_sorted:
+            s.step_order = int(s.step_order or 0) + shift
+        for idx, spec in enumerate(inserted):
+            case.steps.append(TestStep(
+                case_id=case.id,
+                step_order=idx,
+                step_name=spec["step_name"],
+                step_type="http_request",
+                config=spec["config"],
+                on_failure="stop",          # 前置失败就没必要继续跑主步骤
+            ))
+        parts.append("insert_steps")
 
     for var, jp in (fix.get("extract") or {}).items():
         name = str(var)
