@@ -341,6 +341,11 @@ import type { AiDialogueSession } from "@/types/domain";
   - `CELERY_TASK_ALWAYS_EAGER=1`（同步调试）
   - `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`（Celery broker / backend，docker-compose 默认注入）
   - `PLATFORM_SECRET_KEY`（AES-256 主密钥，加解密 Git 凭证；docker-compose 通过 `.env` 注入；不入仓）
+  - `LOGIN_THROTTLE_ENABLED`（登录限流开关，**默认 1 开启**）。设 `0` 关闭 —— 仅测试环境用：
+    接口套件里有若干"故意用错误密码登录"的负向用例，跑一轮就把失败计数攒满（5 次/5 分钟），
+    5 分钟内跑第二轮时所有需登录的用例全被 429 挡住（实测一轮里 84~86 条连锁失败）。
+    **生产环境务必保持开启**，这是防在线爆破的第一道减速带。
+  - `DEVICE_LEASE_TIMEOUT_MINUTES`（设备租约超时分钟数，默认 120；0 关闭强制释放）
   - `PYTHONUNBUFFERED=1`、`TZ=Asia/Shanghai`
 
 ---

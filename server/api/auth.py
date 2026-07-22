@@ -20,6 +20,8 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from jose import JWTError, jwt
 from sqlalchemy.orm import selectinload
 
+from utils.logger import LOGGER
+
 from database.models import ApiKey, User, UserSession
 from database.models import (
     API_KEY_SCOPE_AI, API_KEY_SCOPE_EXECUTE, API_KEY_SCOPE_READ,
@@ -102,6 +104,31 @@ LOGIN_MAX_FAILURES = 5           # 窗口内允许的最大失败次数
 LOGIN_FAILURE_WINDOW = 300       # 计数窗口（秒）
 LOGIN_LOCKOUT_SECONDS = 300      # 触发后的锁定时长（秒）
 
+# 开关：默认开启（安全优先）。测试环境跑回归时可用 LOGIN_THROTTLE_ENABLED=0 关掉。
+#
+# 为什么需要这个开关：接口测试套件里有若干"故意用错误密码登录"的负向用例
+# （错误密码登录失败、多次错误尝试、限流功能本身的验证等）。跑一轮就把失败计数攒满，
+# 5 分钟内跑第二轮时所有需要登录的用例全被 429 挡住 —— 实测一轮回归里 84~86 条
+# 因此连锁失败，看起来像"代码越改越差"，其实只是限流窗口没过。
+#
+# ⚠️ 生产环境务必保持开启：这是防在线爆破的第一道减速带。
+def _throttle_enabled() -> bool:
+    enabled = os.getenv("LOGIN_THROTTLE_ENABLED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+    global _throttle_warned
+    if not enabled and not _throttle_warned:
+        _throttle_warned = True
+        LOGGER.warning(
+            "[auth] 登录限流已被 LOGIN_THROTTLE_ENABLED 关闭 —— "
+            "暴力破解保护失效，仅应在测试环境这样配置"
+        )
+    return enabled
+
+
+_throttle_warned = False
+
+
 _login_attempts: dict[str, tuple[int, float, float]] = {}  # key -> (fails, window_start, locked_until)
 _login_attempts_lock = threading.Lock()
 
@@ -112,6 +139,8 @@ def _login_throttle_key(username: str, ip: str | None) -> str:
 
 def _check_login_locked(username: str, ip: str | None) -> int:
     """返回剩余锁定秒数；0 表示未锁定。"""
+    if not _throttle_enabled():
+        return 0
     key = _login_throttle_key(username, ip)
     now = time.monotonic()
     with _login_attempts_lock:
@@ -125,6 +154,8 @@ def _check_login_locked(username: str, ip: str | None) -> int:
 
 
 def _register_login_failure(username: str, ip: str | None) -> None:
+    if not _throttle_enabled():
+        return
     key = _login_throttle_key(username, ip)
     now = time.monotonic()
     with _login_attempts_lock:
