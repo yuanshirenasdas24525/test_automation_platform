@@ -28,12 +28,71 @@ def reset_run_shared_vars() -> None:
     _RUN_AUTH_CACHE.clear()
 
 
+def _heal_enabled(request) -> bool:
+    try:
+        return bool(request.config.getoption("--ai_heal"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _try_heal_and_retry(case, failed_result, record_property):
+    """就地修复并重试一次。返回重试后的 CaseResult；没修或修不动返回 None。
+
+    重试用**新的 ExecutionContext**（带上最新的共享变量池），避免上一轮的
+    半截状态串进来。仍失败就如实返回失败结果，绝不粉饰。
+    """
+    from database.db import DB
+
+    db = None
+    try:
+        from server.services.inline_heal import heal_case_inline
+
+        db = DB()
+        healed = heal_case_inline(case, failed_result, _LAST_CTX[0], session=db.session)
+        if not healed:
+            return None
+
+        print(
+            f"[inline_heal] 用例「{case.get('name')}」自愈："
+            f"{healed['subtype']} → 改了 {healed['parts']}；重试中…"
+        )
+        record_property("inline_heal", healed)
+
+        retry_ctx = ExecutionContext(record_property)
+        retry_ctx.set_var("_run_shared_vars", dict(_RUN_SHARED_VARS))
+        retry_ctx.set_var("_run_auth_cache", _RUN_AUTH_CACHE)
+        retried = CaseExecutor().run(case, retry_ctx)
+        _LAST_CTX[0] = retry_ctx
+        for key, value in retry_ctx.vars.items():
+            if not str(key).startswith("_"):
+                _RUN_SHARED_VARS[str(key)] = value
+        record_property(
+            "inline_heal_result",
+            "修复后通过" if retried.status == StepStatus.PASSED else "修复后仍失败",
+        )
+        return retried
+    except Exception as exc:  # noqa: BLE001
+        # 自愈本身出错绝不能改变用例结论
+        print(f"[inline_heal] 自愈失败（已忽略）：{exc}")
+        return None
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# 当前用例的 ctx（自愈时要读 ctx.records 里的 status_code）
+_LAST_CTX: list = [None]
+
+
 class TestService:
     # v2 唯一入口：所有 case（API/Web/App/Android/iOS/Mixed）都走 CaseExecutor。
     # 老的 v1 `test_api_runner`（一条 case = 一次 HTTP 请求）已删；
     # 没有 steps 的 API 老用例需要先跑 database/migrations/data_migrations/v2_cases_to_steps.py
     # 把字段拆成 step。
-    def test_case_runner(self, case, record_property):
+    def test_case_runner(self, case, record_property, request):
         if case is None:
             pytest.skip("没有接收到待执行的用例数据")
 
@@ -89,6 +148,16 @@ class TestService:
         ctx.set_var("_run_shared_vars", dict(_RUN_SHARED_VARS))
         ctx.set_var("_run_auth_cache", _RUN_AUTH_CACHE)
         result = CaseExecutor().run(case, ctx)
+        _LAST_CTX[0] = ctx
+
+        # ---- 逐条即时自愈：挂了就当场修 + 重试一次，再跑下一条 ----
+        # 关键价值是阻断连锁污染：上游用例拿不到变量会让后面几十条全挂，
+        # 事后批量修还得再跑一整轮才见效（实测修 58 条只多通过 9 条）。
+        if _heal_enabled(request) and result.status in (StepStatus.FAILED, StepStatus.ERROR):
+            healed = _try_heal_and_retry(case, result, record_property)
+            if healed is not None:
+                result = healed
+
         for key, value in ctx.vars.items():
             if not str(key).startswith("_"):
                 _RUN_SHARED_VARS[str(key)] = value

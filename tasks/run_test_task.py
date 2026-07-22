@@ -79,6 +79,9 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
             _PYTEST_TARGET,
             f"--cases_data={json.dumps(cases)}",
         ]
+        # 逐条即时自愈：某条挂了就地修复+重试一次再跑下一条，阻断连锁污染
+        if ai_heal:
+            pytest_args.append("--ai_heal")
 
         # pytest.main 本身不抛异常；退出码通过返回值拿。异常在收集 / conftest 阶段才抛。
         try:

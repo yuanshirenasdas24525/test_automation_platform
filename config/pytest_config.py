@@ -85,6 +85,10 @@ def pytest_addoption(parser):
     parser.addoption("--cases_data", action="store", default="[]")
     parser.addoption("--report_id", action="store", help="主报告ID")
     parser.addoption("--category", action="store", help="测试类型: api/web/app")
+    # 逐条即时自愈：某条用例失败就地诊断+修复+重试一次，再跑下一条。
+    # 目的是阻断连锁污染（上游拿不到变量会让下游全挂），见 server/services/inline_heal.py
+    parser.addoption("--ai_heal", action="store_true", default=False,
+                     help="逐条自愈：用例失败时就地修复并重试一次")
 
 
 # -----------------------------------------------------------------------------
