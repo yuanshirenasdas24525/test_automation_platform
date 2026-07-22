@@ -346,6 +346,10 @@ import type { AiDialogueSession } from "@/types/domain";
     5 分钟内跑第二轮时所有需登录的用例全被 429 挡住（实测一轮里 84~86 条连锁失败）。
     **生产环境务必保持开启**，这是防在线爆破的第一道减速带。
   - `DEVICE_LEASE_TIMEOUT_MINUTES`（设备租约超时分钟数，默认 120；0 关闭强制释放）
+  - `AUTH_RESPONSE_CACHE`（登录响应复用，**默认 0 关闭**）。开启后同凭据的登录 hook
+    一轮只真发一次、其余复用响应 —— 会让执行引擎谎报"发过请求"（步骤显示登录、
+    挂着响应，实际没发出去），且同账号重复登录拿到同一 token，多会话语义失真。
+    只有被测系统限流关不掉、且能接受这个代价时才设 1。
   - `PYTHONUNBUFFERED=1`、`TZ=Asia/Shanghai`
 
 ---

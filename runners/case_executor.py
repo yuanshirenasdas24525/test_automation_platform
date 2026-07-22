@@ -44,6 +44,18 @@ logger = logging.getLogger(__name__)
 _VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
+def _auth_cache_reuse_enabled() -> bool:
+    """是否允许用缓存的登录响应顶替真实请求。**默认关闭**。
+
+    关闭的理由见 _run_hooks 里的说明：执行引擎不该谎报"发过请求"。
+    只有当被测系统限流无法关闭、且能接受重复登录步骤不真实执行时，
+    才设 AUTH_RESPONSE_CACHE=1 打开。
+    """
+    import os
+
+    return os.getenv("AUTH_RESPONSE_CACHE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
 class CaseExecutor:
     def __init__(
         self,
@@ -597,14 +609,25 @@ class CaseExecutor:
                     continue
                 cache = ctx.get_var("_run_auth_cache")
                 signature = build_auth_request_signature(hook_step["config"], ctx)
-                if isinstance(cache, RunAuthCache) and signature:
+                # 复用登录响应**默认关闭**：把声明要发的请求偷偷换成缓存响应，会让
+                # 报告撒谎——步骤显示"登录"、挂着一份响应，实际什么都没发出去，
+                # 对它的断言全是空的；同一账号重复登录也会拿到同一个 token，
+                # "多会话/多设备"这类语义在平台里直接失真。
+                #
+                # 它当初是为了压住被测系统的登录限流，但那是用污染测试结果的方式
+                # 解决对方的问题。限流应由被测系统侧配置解决
+                #（见 LOGIN_THROTTLE_ENABLED）。
+                # 确有需要（如对方限流无法关闭）可设 AUTH_RESPONSE_CACHE=1 恢复旧行为，
+                # 但要清楚代价：那一轮里重复的登录步骤不再真实执行。
+                if _auth_cache_reuse_enabled() and isinstance(cache, RunAuthCache) and signature:
                     cached_response = cache.get(signature)
                     cached_extracts = extract_hook_values(hook_step["config"], cached_response)
                     if cached_response is not None and expected_vars <= set(cached_extracts):
                         for key, value in cached_extracts.items():
                             ctx.set_var(key, value)
                         logger.info(
-                            "%s 命中单轮认证缓存，复用登录响应并映射变量：%s",
+                            "%s 命中单轮认证缓存，复用登录响应并映射变量：%s"
+                            "（AUTH_RESPONSE_CACHE=1 开启，本步骤未真实发送请求）",
                             hook_step["step_name"],
                             ", ".join(sorted(cached_extracts)),
                         )

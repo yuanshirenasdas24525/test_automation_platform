@@ -146,8 +146,7 @@ def test_wrong_login_jsonpath_recovers_unique_nested_token():
     assert extracted == {"admin_token": "fresh-token"}
 
 
-def test_same_login_hook_reuses_one_run_cache_across_cases(monkeypatch):
-    """同凭据的逐用例登录 hook 在一轮运行中只请求一次，并映射不同变量名。"""
+def _run_two_login_hook_cases(monkeypatch):
     monkeypatch.setattr(CaseExecutor, "_inject_default_parameters", staticmethod(lambda _ctx: None))
     monkeypatch.setattr(CaseExecutor, "_inject_target_db", staticmethod(lambda _ctx: None))
     dispatcher = _NestedLoginDispatcher()
@@ -165,14 +164,35 @@ def test_same_login_hook_reuses_one_run_cache_across_cases(monkeypatch):
     second_ctx = ExecutionContext()
     second_ctx.set_var("_run_auth_cache", cache)
 
-    first_result = executor.run(first, first_ctx)
-    second_result = executor.run(second, second_ctx)
+    r1 = executor.run(first, first_ctx)
+    r2 = executor.run(second, second_ctx)
+    assert r1.status == StepStatus.PASSED
+    assert r2.status == StepStatus.PASSED
+    return dispatcher, first_ctx, second_ctx
 
-    assert first_result.status == StepStatus.PASSED
-    assert second_result.status == StepStatus.PASSED
-    assert dispatcher.hook_calls == 1
-    assert first_ctx.get_var("token_one") == "fresh-token"
-    assert second_ctx.get_var("token_two") == "fresh-token"
+
+def test_same_login_hook_really_logs_in_每次(monkeypatch):
+    """同凭据的登录 hook **每条用例都真发请求**（默认行为）。
+
+    原实现一轮只请求一次、后续复用缓存响应。那会让执行引擎谎报"发过请求"：
+    步骤显示登录、挂着一份响应，实际没发出去，对它的断言全是空的；同账号重复登录
+    还会拿到同一个 token，多会话/多设备语义直接失真。正确性优先于省请求。
+    """
+    monkeypatch.delenv("AUTH_RESPONSE_CACHE", raising=False)
+    dispatcher, c1, c2 = _run_two_login_hook_cases(monkeypatch)
+
+    assert dispatcher.hook_calls == 2, "两条用例的登录 hook 都应真实执行"
+    assert c1.get_var("token_one") == "fresh-token"
+    assert c2.get_var("token_two") == "fresh-token"
+
+
+def test_login_response_reuse_can_be_reenabled(monkeypatch):
+    """逃生通道：被测系统限流关不掉时，可显式恢复"一轮只登一次"。"""
+    monkeypatch.setenv("AUTH_RESPONSE_CACHE", "1")
+    dispatcher, c1, c2 = _run_two_login_hook_cases(monkeypatch)
+
+    assert dispatcher.hook_calls == 1, "开启复用后同凭据只应请求一次"
+    assert c1.get_var("token_one") == c2.get_var("token_two") == "fresh-token"
 
 
 def test_auth_cache_invalidation_matches_token_usage_only():
