@@ -9,6 +9,8 @@ const DevicesPage = lazy(() => import("@/pages/DevicesPage").then((m) => ({ defa
 const FunctionalCasesPage = lazy(() => import("@/pages/FunctionalCasesPage").then((m) => ({ default: m.FunctionalCasesPage })));
 const HomePage = lazy(() => import("@/pages/HomePage").then((m) => ({ default: m.HomePage })));
 const LoginPage = lazy(() => import("@/pages/LoginPage").then((m) => ({ default: m.LoginPage })));
+const PerformanceConcurrencyPage = lazy(() => import("@/pages/PerformanceConcurrencyPage").then((m) => ({ default: m.PerformanceConcurrencyPage })));
+const PerformanceRequirementPage = lazy(() => import("@/pages/PerformanceRequirementPage").then((m) => ({ default: m.PerformanceRequirementPage })));
 const ProjectDetailPage = lazy(() => import("@/pages/ProjectDetailPage").then((m) => ({ default: m.ProjectDetailPage })));
 const ProjectManagementPage = lazy(() => import("@/pages/ProjectManagementPage").then((m) => ({ default: m.ProjectManagementPage })));
 const ProjectVersionDetailPage = lazy(() => import("@/pages/ProjectVersionDetailPage").then((m) => ({ default: m.ProjectVersionDetailPage })));
@@ -54,6 +56,8 @@ export const router = createBrowserRouter([
       { path: "dashboard", element: lazyPage(<HomePage />) },
       { path: "projects", element: lazyPage(<ProjectsPage />) },
       { path: "projects/:id", element: lazyPage(<ProjectDetailPage />) },
+      { path: "projects/:id/performance", element: lazyPage(<PerformanceRequirementPage />) },
+      { path: "projects/:id/performance/concurrency", element: lazyPage(<PerformanceConcurrencyPage />) },
       { path: "projects/:id/functional", element: lazyPage(<FunctionalCasesPage />) },
       { path: "projects/:id/management", element: lazyPage(<ProjectManagementPage />) },
       { path: "projects/:id/versions/:vid", element: lazyPage(<ProjectVersionDetailPage />) },

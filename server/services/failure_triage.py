@@ -106,7 +106,21 @@ def triage_step(
     err = step.error_message or ""
     code = step.status_code
     body = _loads(step.output_data)
-    request_blob = f"{step.target or ''} {step.input_data or ''}"
+
+    # 检测"未解析的 ${var}"只能看**实际发送的内容**：URL + 已解析的请求体（body）。
+    # 不能看整个 input_data —— 它同时存了模板 params（原样保留 ${var}，正常现象）。
+    # 曾误报：一条密码写错导致 401 的登录用例，因 params 模板里有 ${user_admin}，
+    # 被判成"变量悬空"，盖过了真正的失败原因（密码不对）。
+    sent = _loads(step.input_data) or {}
+    if isinstance(sent, dict):
+        sent_payload = {
+            "url": step.target or "",
+            "body": sent.get("body"),          # 已解析的真实请求体
+            "headers": sent.get("headers"),    # 头里可能残留未解析的 Authorization
+        }
+        request_blob = json.dumps(sent_payload, ensure_ascii=False, default=str)
+    else:
+        request_blob = f"{step.target or ''} {step.input_data or ''}"
 
     # 1) 连接层失败：压根没拿到响应 —— 环境问题，跟用例写得对不对无关
     if code is None and any(h.lower() in err.lower() for h in _CONN_HINTS):
@@ -166,7 +180,13 @@ def triage_step(
     #     `Authorization: Bearer ${admin_token}` 但变量解析不出来时，平台会把这个头丢掉，
     #     所以"定义里有、实际没发"正是悬空的表现形态。
     #     只在"期望 2xx"时判定——否则会把【鉴权】类负向用例（本就该不带 token）误伤。
-    if code in (401, 403):
+    # 登录/注册/刷新这类"用凭据换 token"的接口本来就不带 Authorization，
+    # 它们的 401 是凭据不对（账号/密码错），不是缺鉴权头 —— 不能套 missing_auth。
+    _target = (step.target or "").lower()
+    _is_credential_endpoint = any(
+        h in _target for h in ("login", "signin", "sign_in", "register", "/auth/token", "refresh")
+    )
+    if code in (401, 403) and not _is_credential_endpoint:
         actual, expected = _status_pair(err)
         if expected is not None and 200 <= expected < 300:
             sent = _loads(step.input_data) or {}

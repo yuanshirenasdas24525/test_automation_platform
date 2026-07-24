@@ -1,17 +1,21 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
   ArrowUp,
   Bug,
+  Check,
   ChevronRight,
   CloudOff,
   Download,
   FileText,
   Folder,
+  Gauge,
+  GripVertical,
   History,
   ListChecks,
+  ListPlus,
   ListOrdered,
   Loader2,
   Pencil,
@@ -22,6 +26,7 @@ import {
   Trash2,
   Upload,
   Wrench,
+  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -51,11 +56,13 @@ import {
   casesApi,
   contentApi,
   functionalCasesApi,
+  modulesApi,
   projectsApi,
   reportsApi,
   runsApi,
   type ReportAnalysisOutput,
   type ReportAnalysisSuggestion,
+  type ModulePickerNode,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
@@ -103,6 +110,47 @@ type ApiQuickNewRow = {
   aboveCaseId?: number;
   insertSortOrder?: number;
 };
+
+type PerformancePoolItem = {
+  caseId: number;
+  moduleId: number;
+  moduleName: string;
+  name: string;
+  method: string;
+  path: string;
+};
+
+function performancePoolKey(projectId: number): string {
+  return `performance-interface-pool:${projectId}`;
+}
+
+function readPerformancePool(projectId: number): PerformancePoolItem[] {
+  if (!Number.isFinite(projectId)) return [];
+  try {
+    const raw = window.localStorage.getItem(performancePoolKey(projectId));
+    if (!raw) return [];
+    const items = JSON.parse(raw) as PerformancePoolItem[];
+    if (!Array.isArray(items)) return [];
+    return items.filter(
+      (item) =>
+        Number.isInteger(item.caseId) &&
+        item.caseId > 0 &&
+        Number.isInteger(item.moduleId) &&
+        item.moduleId > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function mergePerformancePool(
+  current: PerformancePoolItem[],
+  incoming: PerformancePoolItem[],
+): PerformancePoolItem[] {
+  const byCaseId = new Map(current.map((item) => [item.caseId, item]));
+  for (const item of incoming) byCaseId.set(item.caseId, item);
+  return [...byCaseId.values()];
+}
 
 const STATUS_META: Record<ApiRunStatus, { label: string; className: string }> = {
   pending: { label: "待执行", className: "bg-slate-100 text-slate-600" },
@@ -283,6 +331,7 @@ export function AutomationCasesPage({
 } = {}) {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const caseLabel = CASE_LABELS[caseType];
   const isApiWorkbench = caseType === "api";
@@ -306,6 +355,10 @@ export function AutomationCasesPage({
   const [diagnose, setDiagnose] = useState<{ row: ApiCase; loading: boolean; result: DiagnoseResult | null } | null>(null);
   const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
   const [renumbering, setRenumbering] = useState(false);
+  const [performancePool, setPerformancePool] = useState<PerformancePoolItem[]>(
+    () => readPerformancePool(projectId),
+  );
+  const [performancePickerOpen, setPerformancePickerOpen] = useState(false);
 
   const aiModelsQuery = useQuery({
     queryKey: ["ai-models", projectId],
@@ -314,6 +367,18 @@ export function AutomationCasesPage({
   });
   const firstModel = (aiModelsQuery.data ?? []).find((m) => m.enabled)?.name ?? "";
   const enabledModels = (aiModelsQuery.data ?? []).filter((m) => m.enabled).map((m) => m.name);
+
+  useEffect(() => {
+    if (!Number.isFinite(projectId)) return;
+    if (performancePool.length === 0) {
+      window.localStorage.removeItem(performancePoolKey(projectId));
+      return;
+    }
+    window.localStorage.setItem(
+      performancePoolKey(projectId),
+      JSON.stringify(performancePool),
+    );
+  }, [performancePool, projectId]);
 
   const handleDiagnose = async (row: ApiCase) => {
     if (!firstModel) {
@@ -712,6 +777,46 @@ export function AutomationCasesPage({
         ) : null}
       </div>
 
+      {isApiWorkbench && moduleId == null ? (
+        <PerformancePoolPanel
+          items={performancePool}
+          onManualSelect={() => setPerformancePickerOpen(true)}
+          onMove={(fromIndex, toIndex) =>
+            setPerformancePool((current) => {
+              if (
+                fromIndex < 0 ||
+                fromIndex >= current.length ||
+                toIndex < 0 ||
+                toIndex >= current.length ||
+                fromIndex === toIndex
+              ) {
+                return current;
+              }
+              const next = [...current];
+              const [moving] = next.splice(fromIndex, 1);
+              next.splice(toIndex, 0, moving);
+              return next;
+            })
+          }
+          onRemove={(caseId) =>
+            setPerformancePool((current) =>
+              current.filter((item) => item.caseId !== caseId),
+            )
+          }
+          onClear={() => {
+            setPerformancePool([]);
+            toast.success("压测接口池已清空");
+          }}
+          onDesign={() =>
+            navigate(
+              `/projects/${projectId}/performance?case_ids=${performancePool
+                .map((item) => item.caseId)
+                .join(",")}`,
+            )
+          }
+        />
+      ) : null}
+
       {contentQuery.isLoading ? <Loading /> : (
         <div className="space-y-6">
           {moduleId == null || modules.length > 0 ? (
@@ -795,12 +900,430 @@ export function AutomationCasesPage({
         onClose={() => setRecordsOpen(false)}
       />
       {isApiWorkbench ? (
-        <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
+        <>
+          <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
+          <PerformanceCasePickerDialog
+            open={performancePickerOpen}
+            projectId={projectId}
+            poolItems={performancePool}
+            onAdd={(items) =>
+              setPerformancePool((current) =>
+                mergePerformancePool(current, items),
+              )
+            }
+            onClose={() => setPerformancePickerOpen(false)}
+          />
+        </>
       ) : null}
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
       <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
       <AiFlagClearDialog row={flagDialogCase} onClose={() => setFlagDialogCase(null)} onCleared={() => { setFlagDialogCase(null); invalidate(); }} />
     </div>
+  );
+}
+
+function PerformancePoolPanel({
+  items,
+  onManualSelect,
+  onMove,
+  onRemove,
+  onClear,
+  onDesign,
+}: {
+  items: PerformancePoolItem[];
+  onManualSelect: () => void;
+  onMove: (fromIndex: number, toIndex: number) => void;
+  onRemove: (caseId: number) => void;
+  onClear: () => void;
+  onDesign: () => void;
+}) {
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-sky-200 bg-gradient-to-br from-sky-50/80 via-background to-indigo-50/50 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-sky-100 px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="rounded-lg bg-sky-100 p-2 text-sky-700">
+            <Gauge className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-semibold">压测接口池</h3>
+              <Badge className="border-sky-200 bg-white/80 text-sky-700">
+                {items.length} 个接口
+              </Badge>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              按模块选择接口，并拖动调整执行顺序；确认后再设计压测目标与并发模型。
+            </p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={onManualSelect}
+            className="bg-white"
+          >
+            <ListPlus className="h-4 w-4" />
+            手动选择接口
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={items.length === 0}
+            onClick={onClear}
+            className="text-muted-foreground hover:text-destructive"
+          >
+            <X className="h-4 w-4" />
+            一键清除池子
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={items.length === 0}
+            onClick={onDesign}
+          >
+            <Gauge className="h-4 w-4" />
+            设计压测（{items.length}）
+          </Button>
+        </div>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="px-5 py-8 text-center">
+          <p className="text-sm font-medium text-muted-foreground">
+            接口池还是空的
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            点击“手动选择接口”，按模块勾选需要参与压测的 API 用例。
+          </p>
+        </div>
+      ) : (
+        <div className="max-h-80 overflow-auto p-4">
+          <div className="min-w-[760px] overflow-hidden rounded-lg border bg-background/90">
+            <div className="grid grid-cols-[36px_28px_90px_minmax(220px,1fr)_minmax(150px,0.6fr)_116px] items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <span>顺序</span>
+              <span />
+              <span>方法</span>
+              <span>用例 / 路径</span>
+              <span>模块</span>
+              <span className="text-right">调整</span>
+            </div>
+          {items.map((item, index) => (
+            <div
+              key={item.caseId}
+              draggable
+              onDragStart={(event) => {
+                setDraggedIndex(index);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                if (draggedIndex != null) onMove(draggedIndex, index);
+                setDraggedIndex(null);
+              }}
+              onDragEnd={() => setDraggedIndex(null)}
+              className={cn(
+                "grid grid-cols-[36px_28px_90px_minmax(220px,1fr)_minmax(150px,0.6fr)_116px] items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0",
+                "transition-colors hover:bg-muted/20",
+                draggedIndex === index && "opacity-50",
+              )}
+            >
+              <span className="font-mono text-xs text-muted-foreground">{index + 1}</span>
+              <span className="cursor-grab text-muted-foreground active:cursor-grabbing" title="拖动排序">
+                <GripVertical className="h-4 w-4" />
+              </span>
+              <Badge className="w-fit font-mono">{item.method}</Badge>
+              <div className="min-w-0">
+                <div className="truncate font-medium" title={item.name}>
+                  {item.name}
+                </div>
+                <div className="mt-0.5 truncate font-mono text-xs text-muted-foreground" title={item.path}>
+                  {item.path}
+                </div>
+              </div>
+              <span className="truncate text-xs text-muted-foreground" title={item.moduleName}>
+                {item.moduleName}
+              </span>
+              <div className="flex justify-end gap-1">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={index === 0}
+                  title="上移"
+                  onClick={() => onMove(index, index - 1)}
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  disabled={index === items.length - 1}
+                  title="下移"
+                  onClick={() => onMove(index, index + 1)}
+                >
+                  <ArrowDown className="h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={`从压测接口池移除 ${item.name}`}
+                  title="从接口池移除"
+                  className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                  onClick={() => onRemove(item.caseId)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function modulePath(
+  module: ModulePickerNode,
+  modulesById: Map<number, ModulePickerNode>,
+): string {
+  const names = [module.name];
+  const visited = new Set<number>([module.id]);
+  let parentId = module.parent_id;
+  while (parentId != null && !visited.has(parentId)) {
+    visited.add(parentId);
+    const parent = modulesById.get(parentId);
+    if (!parent) break;
+    names.unshift(parent.name);
+    parentId = parent.parent_id;
+  }
+  return names.join(" / ");
+}
+
+function PerformanceCasePickerDialog({
+  open,
+  projectId,
+  poolItems,
+  onAdd,
+  onClose,
+}: {
+  open: boolean;
+  projectId: number;
+  poolItems: PerformancePoolItem[];
+  onAdd: (items: PerformancePoolItem[]) => void;
+  onClose: () => void;
+}) {
+  const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
+  const [checkedCaseIds, setCheckedCaseIds] = useState<Set<number>>(new Set());
+
+  const modulesQuery = useQuery({
+    queryKey: ["performance-module-picker", projectId],
+    queryFn: () => modulesApi.listForPicker(projectId),
+    enabled: open && Number.isFinite(projectId),
+  });
+  const modules = useMemo(() => modulesQuery.data ?? [], [modulesQuery.data]);
+  const modulesById = useMemo(
+    () => new Map(modules.map((module) => [module.id, module])),
+    [modules],
+  );
+  const moduleOptions = useMemo(
+    () =>
+      modules.map((module) => ({
+        ...module,
+        displayName: modulePath(module, modulesById),
+      })),
+    [modules, modulesById],
+  );
+
+  useEffect(() => {
+    if (!open || selectedModuleId != null || moduleOptions.length === 0) return;
+    setSelectedModuleId(moduleOptions[0].id);
+  }, [moduleOptions, open, selectedModuleId]);
+
+  const casesQuery = useQuery({
+    queryKey: ["performance-module-cases", selectedModuleId],
+    queryFn: () =>
+      automationCasesApi.list({
+        moduleId: selectedModuleId!,
+        caseType: "api",
+        pageSize: 0,
+      }),
+    enabled: open && selectedModuleId != null,
+  });
+  const moduleCases = casesQuery.data?.items ?? [];
+  const poolCaseIds = useMemo(
+    () => new Set(poolItems.map((item) => item.caseId)),
+    [poolItems],
+  );
+  const selectableCases = moduleCases.filter((item) => !poolCaseIds.has(item.id));
+  const allSelectableChecked =
+    selectableCases.length > 0 &&
+    selectableCases.every((item) => checkedCaseIds.has(item.id));
+  const selectedModule = selectedModuleId == null
+    ? null
+    : moduleOptions.find((module) => module.id === selectedModuleId) ?? null;
+
+  const changeModule = (value: string) => {
+    setSelectedModuleId(Number(value));
+    setCheckedCaseIds(new Set());
+  };
+
+  const addCheckedCases = () => {
+    if (!selectedModule) return;
+    const items = moduleCases
+      .filter((item) => checkedCaseIds.has(item.id))
+      .map((item) => ({
+        caseId: item.id,
+        moduleId: item.module_id,
+        moduleName: selectedModule.displayName,
+        name: item.name,
+        method: (item.method || "GET").toUpperCase(),
+        path: item.path || "--",
+      } satisfies PerformancePoolItem));
+    onAdd(items);
+    setCheckedCaseIds(new Set());
+    toast.success(`已加入 ${items.length} 个接口`);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(nextOpen) => !nextOpen && onClose()}>
+      <DialogContent className="max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>手动选择压测接口</DialogTitle>
+          <DialogDescription>
+            先选择模块，再勾选该模块中的 API 用例加入压测接口池。可连续切换模块添加。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="grid gap-2">
+            <span className="text-sm font-medium">选择模块</span>
+            <Select
+              value={selectedModuleId == null ? "" : String(selectedModuleId)}
+              onValueChange={changeModule}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder={modulesQuery.isLoading ? "加载模块…" : "请选择模块"} />
+              </SelectTrigger>
+              <SelectContent>
+                {moduleOptions.map((module) => (
+                  <SelectItem key={module.id} value={String(module.id)}>
+                    {module.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border">
+            <div className="grid grid-cols-[36px_90px_minmax(180px,1fr)_minmax(180px,1.2fr)_90px] items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                aria-label="选择当前模块全部接口"
+                className="h-4 w-4 rounded border-input accent-primary"
+                checked={allSelectableChecked}
+                disabled={selectableCases.length === 0}
+                onChange={() =>
+                  setCheckedCaseIds(
+                    allSelectableChecked
+                      ? new Set()
+                      : new Set(selectableCases.map((item) => item.id)),
+                  )
+                }
+              />
+              <span>方法</span>
+              <span>用例名称</span>
+              <span>请求路径</span>
+              <span>状态</span>
+            </div>
+            <div className="max-h-80 overflow-y-auto">
+              {selectedModuleId == null ? (
+                <div className="py-10 text-center text-sm text-muted-foreground">
+                  请先选择模块
+                </div>
+              ) : casesQuery.isLoading ? (
+                <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  加载接口…
+                </div>
+              ) : moduleCases.length === 0 ? (
+                <div className="py-10 text-center text-sm text-muted-foreground">
+                  当前模块没有 API 用例
+                </div>
+              ) : (
+                moduleCases.map((item) => {
+                  const alreadyInPool = poolCaseIds.has(item.id);
+                  const checked = alreadyInPool || checkedCaseIds.has(item.id);
+                  return (
+                    <label
+                      key={item.id}
+                      className={cn(
+                        "grid grid-cols-[36px_90px_minmax(180px,1fr)_minmax(180px,1.2fr)_90px] items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0",
+                        alreadyInPool
+                          ? "cursor-default bg-muted/30 text-muted-foreground"
+                          : "cursor-pointer hover:bg-muted/20",
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 rounded border-input accent-primary"
+                        checked={checked}
+                        disabled={alreadyInPool}
+                        onChange={() => {
+                          const next = new Set(checkedCaseIds);
+                          if (next.has(item.id)) next.delete(item.id);
+                          else next.add(item.id);
+                          setCheckedCaseIds(next);
+                        }}
+                      />
+                      <Badge className="w-fit font-mono">
+                        {(item.method || "GET").toUpperCase()}
+                      </Badge>
+                      <span className="truncate" title={item.name}>{item.name}</span>
+                      <span className="truncate font-mono text-xs" title={item.path || ""}>
+                        {item.path || "--"}
+                      </span>
+                      <span className={alreadyInPool ? "text-sky-600" : "text-muted-foreground"}>
+                        {alreadyInPool ? "已在池中" : "可选择"}
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="items-center sm:justify-between">
+          <span className="text-xs text-muted-foreground">
+            池中已有 {poolItems.length} 个接口，本次勾选 {checkedCaseIds.size} 个
+          </span>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={onClose}>完成</Button>
+            <Button
+              disabled={checkedCaseIds.size === 0}
+              onClick={addCheckedCases}
+            >
+              <Check className="h-4 w-4" />
+              加入池子（{checkedCaseIds.size}）
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

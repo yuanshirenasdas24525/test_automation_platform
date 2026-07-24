@@ -149,6 +149,39 @@ def test_pure_assertion_mismatch_is_left_to_l2():
     assert v is None
 
 
+def test_template_params_not_misread_as_dangling():
+    """input_data 里 params 是模板（原样保留 ${var}），不能当成"未解析残留"。
+
+    真实误报：一条登录用例密码写错导致 401，params 模板里有 ${user_admin}
+    （body 里其实已解析成 admin），被误判成变量悬空，盖过了真正的失败原因。
+    悬空检测只看实际发送的 body / url，不看模板 params。
+    """
+    sent = {
+        "url": "http://h/api/auth/login",
+        "body": {"username": "admin", "password": "wrong"},   # 已解析
+        "params": {"username": "${user_admin}", "password": "wrong"},  # 模板，含 ${}
+    }
+    v = _triage(_step(
+        code=401, target="http://h/api/auth/login",
+        error="断言失败 1/1 条:\n[equal] status_code: 401 != 200",
+        sent=sent, output={"detail": "用户名或密码错误"},
+    ))
+    # 不该判成 dangling_var；登录接口的 401 也不该判成 missing_auth
+    assert v is None or v.get("subtype") not in ("dangling_var", "missing_auth"), v
+
+
+def test_login_401_is_not_missing_auth():
+    """登录/注册接口本来就不带 Authorization，其 401 是凭据错，不是缺鉴权头。"""
+    for path in ("http://h/api/auth/login", "http://h/api/users/register", "http://h/api/auth/refresh"):
+        v = _triage(_step(
+            code=401, target=path,
+            error="断言失败 1/1 条:\n[equal] status_code: 401 != 200",
+            sent={"url": path, "body": {"username": "x"}, "headers": {"Content-Type": "application/json"}},
+            output={"detail": "用户名或密码错误"},
+        ))
+        assert v is None or v.get("subtype") != "missing_auth", f"{path}: {v}"
+
+
 def test_dangling_var_takes_priority_over_runtime_error():
     """变量悬空的归因优先于"没有响应"的兜底，避免抢走更准确的结论。"""
     v = _triage(_step(target="http://h/api/x/${oid}", error="some failure"))
