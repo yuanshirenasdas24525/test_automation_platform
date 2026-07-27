@@ -37,6 +37,9 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { pathname, search } = useLocation();
   const current = pathname + search;
+  const backendOrigin = import.meta.env.DEV
+    ? "http://127.0.0.1:54351"
+    : window.location.origin;
   const { user, setUser } = useCurrentUser();
 
   useEffect(() => {
@@ -101,7 +104,7 @@ export function AppLayout() {
             })}
           </nav>
           <div className="border-t p-3 text-xs text-muted-foreground">
-            后端：<code className="font-mono">127.0.0.1:54351</code>
+            后端：<code className="break-all font-mono">{backendOrigin}</code>
           </div>
         </aside>
         <main className="flex flex-1 flex-col overflow-hidden">
