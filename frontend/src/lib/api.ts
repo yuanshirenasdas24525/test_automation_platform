@@ -113,6 +113,35 @@ export class ApiError extends Error {
   }
 }
 
+function formatApiErrorDetail(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+  if (Array.isArray(value)) {
+    const messages = value
+      .map((item) => formatApiErrorDetail(item))
+      .filter((item): item is string => Boolean(item));
+    return messages.length > 0 ? messages.join("；") : null;
+  }
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+
+  const issue = value as Record<string, unknown>;
+  const message = formatApiErrorDetail(issue.msg ?? issue.message);
+  if (!message) {
+    return null;
+  }
+
+  const location = Array.isArray(issue.loc)
+    ? issue.loc
+        .map((part) => String(part))
+        .filter((part) => part !== "body")
+        .join(".")
+    : "";
+  return location ? `${location}：${message}` : message;
+}
+
 // ---------------------------------------------------------------------------
 // Token 管理
 // ---------------------------------------------------------------------------
@@ -328,9 +357,13 @@ async function request<T>(
   }
 
   if (!res.ok) {
+    const errorPayload =
+      payload && typeof payload === "object"
+        ? (payload as Record<string, unknown>)
+        : null;
     const msg =
-      (payload as Record<string, unknown>)?.detail as string ||
-      (payload as ApiEnvelope)?.message ||
+      formatApiErrorDetail(errorPayload?.detail) ||
+      formatApiErrorDetail(errorPayload?.message) ||
       `HTTP ${res.status} ${res.statusText}`;
     throw new ApiError(msg, res.status, payload);
   }

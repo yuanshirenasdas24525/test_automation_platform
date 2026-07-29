@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { usersApi } from "@/lib/api";
 import { ALL_ROLE_CODES, ROLE_LABELS } from "@/types/domain";
-import type { RoleCode, User } from "@/types/domain";
+import type { RoleCode, User, UserUpdate } from "@/types/domain";
 
 const PROTECTED_ADMIN_USERNAME = "admin";
 
@@ -227,11 +227,16 @@ function EditUserDialog({
     mutationFn: async () => {
       if (!user) throw new Error("no user");
       if (isProtectedAdmin) throw new Error("admin 账号为系统内置账号，禁止编辑");
-      await usersApi.update(user.id, {
-        full_name: fullName.trim() || null,
-        email: email.trim() || null,
-        password: password || null,
-      });
+
+      const payload: UserUpdate = {};
+      const normalizedFullName = fullName.trim();
+      const normalizedEmail = email.trim();
+      if (normalizedFullName) payload.full_name = normalizedFullName;
+      if (normalizedEmail) payload.email = normalizedEmail;
+      if (password) payload.password = password;
+      if (Object.keys(payload).length > 0) {
+        await usersApi.update(user.id, payload);
+      }
       await usersApi.setRoles(user.id, Array.from(selected));
     },
     onSuccess: () => {
