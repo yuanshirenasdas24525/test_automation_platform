@@ -44,9 +44,9 @@ def _run_allure_generate(result_path: str, report_path: str) -> None:
 def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: str | None = None):
     """后台执行入口。无论走哪条路径，结束时 TestReport.status 必须是终态。
 
-    ai_heal / ai_model 对应「AI 自愈运行」：执行本身与普通运行**完全一致**，
-    只是跑完后额外派发一个自愈任务（分诊 → 修复 → 验证）。带默认值是为了兼容
-    已经排在队列里的旧签名任务。
+    ai_heal / ai_model 对应「AI 自愈运行」：每个 HTTP 请求失败时同步做
+    “需求约束诊断 → 候选修复 → 当前用例重跑验证”，验证通过后才落库。
+    带默认值是为了兼容已经排在队列里的旧签名任务。
     """
     # --- 入口 trace：这条打印出来就说明 celery worker（或 EAGER 模式）已经接到了任务 ---
     # 如果提交了 /api/run_test 但 worker 终端 / uvicorn 终端一条这样的日志都没有，
@@ -82,6 +82,7 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
         # 逐条即时自愈：某条挂了就地修复+重试一次再跑下一条，阻断连锁污染
         if ai_heal:
             pytest_args.append("--ai_heal")
+            pytest_args.extend(["--ai_heal_model", str(ai_model or "")])
 
         # pytest.main 本身不抛异常；退出码通过返回值拿。异常在收集 / conftest 阶段才抛。
         try:
@@ -131,15 +132,8 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning(f"[run_test_task] 派发响应约定学习失败（忽略）: {exc}")
 
-        # 「AI 自愈运行」：跑完自动分诊 + 应用可算出的修复 + 重跑验证。
-        # 只在用户显式选了自愈模式时触发；纯增强动作，失败不影响本次报告结论。
-        if ai_heal:
-            try:
-                from tasks.ai_heal_task import ai_heal_report_task
-                ai_heal_report_task.delay(r_id, ai_model)
-                LOGGER.info(f"[run_test_task] 已派发 AI 自愈 report={r_id} model={ai_model}")
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.warning(f"[run_test_task] 派发 AI 自愈失败（忽略）: {exc}")
+        # AI 自愈已经在 pytest 执行过程中逐请求完成。这里不再追加报告级自动修改，
+        # 避免同一条用例被第二条异步链路重复修复，或绕过即时验证直接落库。
 
     except Exception as exc:
         # 任何没被内层捕获的异常都在这里兜底

@@ -361,6 +361,38 @@ def test_failed_extract_does_not_overwrite_existing_variable(monkeypatch):
     }]
 
 
+def test_ai_heal_mode_stops_immediately_on_extract_failure(monkeypatch):
+    """自愈模式把普通请求的提取异常提升为失败，避免污染后续变量链。"""
+    resp = _FakeResponse(200, {"data": {"access_token": "abc"}})
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])
+    executor = CaseExecutor(_build_dispatcher(http_runner))
+    ctx = ExecutionContext()
+    ctx.set_var("_ai_heal_enabled", True)
+    case = {
+        "id": 201,
+        "name": "登录成功并提取 token",
+        "case_type": "api",
+        "steps": [{
+            "id": 2011,
+            "step_order": 0,
+            "step_name": "登录",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/login",
+                "params": {},
+                "extract_data": {"token": "$.data.token"},
+                "assertion": {"status_code": 200},
+            },
+        }],
+    }
+
+    result = executor.run(case, ctx)
+
+    assert result.status == StepStatus.FAILED
+    assert "参数提取失败" in str(result.error_message)
+
+
 def test_pre_hook_extract_failure_contains_actionable_error(monkeypatch):
     """前置参数提取失败必须带变量、路径、状态码和接口错误。"""
     resp = _FakeResponse(401, {"detail": "会话已失效"})
@@ -672,6 +704,46 @@ def test_step_failure_continues_when_allowed(monkeypatch):
     assert result.steps[0].status == StepStatus.FAILED
     assert result.steps[1].status == StepStatus.PASSED
     assert calls["i"] == 2
+
+
+def test_ai_heal_mode_interrupts_continue_before_next_request(monkeypatch):
+    """AI 自愈模式必须先处理当前失败，不能让 continue 把错误带到下一请求。"""
+    resp1 = _FakeResponse(500, {"err": "boom"})
+    resp2 = _FakeResponse(200, {"ok": True})
+    http_runner, calls = _make_runner_with_mocked_http(monkeypatch, [resp1, resp2])
+    executor = CaseExecutor(_build_dispatcher(http_runner))
+    ctx = ExecutionContext()
+    ctx.set_var("_ai_heal_enabled", True)
+    case = {
+        "id": 41,
+        "name": "失败后立即自愈",
+        "case_type": "api",
+        "steps": [
+            {
+                "id": 4101,
+                "step_order": 0,
+                "step_type": "http_request",
+                "step_name": "失败请求",
+                "config": {"method": "GET", "path": "/a"},
+                "assertion": [{"type": "equal", "target": "status_code", "expected": 200}],
+                "on_failure": "continue",
+            },
+            {
+                "id": 4102,
+                "step_order": 1,
+                "step_type": "http_request",
+                "step_name": "不应提前执行",
+                "config": {"method": "GET", "path": "/b"},
+                "assertion": [{"type": "equal", "target": "status_code", "expected": 200}],
+            },
+        ],
+    }
+
+    result = executor.run(case, ctx)
+
+    assert result.status == StepStatus.FAILED
+    assert len(result.steps) == 1
+    assert calls["i"] == 1
 
 
 # ===================================================================

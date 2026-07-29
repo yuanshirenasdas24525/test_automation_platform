@@ -89,6 +89,12 @@ def pytest_addoption(parser):
     # 目的是阻断连锁污染（上游拿不到变量会让下游全挂），见 server/services/inline_heal.py
     parser.addoption("--ai_heal", action="store_true", default=False,
                      help="逐条自愈：用例失败时就地修复并重试一次")
+    parser.addoption(
+        "--ai_heal_model",
+        action="store",
+        default="",
+        help="逐条自愈使用的项目级 AI 模型名称",
+    )
 
 
 # -----------------------------------------------------------------------------

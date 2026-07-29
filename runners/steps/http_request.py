@@ -373,10 +373,11 @@ class HttpRequestStepRunner(BaseStepRunner):
                     error_details,
                     attachment_name="参数提取错误详情",
                 )
-            # pre_hook 是主步骤的硬依赖，声明的变量缺失必须直接失败。普通 HTTP
-            # 步骤继续维持原语义：负向用例即便带了可选 token 提取，也可按 401
-            # 断言正常通过，但 Allure 中会留下明确的“参数提取未命中”信息。
-            if step.get("_is_hook"):
+            # pre_hook 是主步骤的硬依赖，声明的变量缺失必须直接失败。
+            # AI 自愈模式下，普通 HTTP 步骤的提取异常也必须成为一个明确断点，
+            # 才能在继续下游请求前立即让需求约束诊断判断“路径写错”还是“该负向
+            # 用例本就不该提取”。普通运行仍保持历史语义，只在 Allure 留痕。
+            if step.get("_is_hook") or bool(ctx.get_var("_ai_heal_enabled")):
                 raise AssertionError(error_message)
 
         if str(config.get("sql_query_phase") or "after").lower() != "before":

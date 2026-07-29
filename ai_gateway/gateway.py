@@ -42,6 +42,8 @@ _TASK_DEFAULT_OPTIONS: dict[str, dict[str, Any]] = {
     # 报告修复需要读真实响应和上下文，允许更长输出和更强推理。
     "api_report_fix": {"timeout": 300, "max_tokens": 20000, "json_mode": False, "enable_thinking": True, "temperature": 0.2},
     "api_run_diagnose": {"timeout": 180, "max_tokens": 12000, "json_mode": True, "enable_thinking": True, "temperature": 0.2},
+    # 即时自愈每个失败请求都会调用，输出只需一个紧凑决策对象。
+    "api_inline_heal": {"timeout": 120, "max_tokens": 5000, "json_mode": True, "enable_thinking": True, "temperature": 0.1},
 }
 
 

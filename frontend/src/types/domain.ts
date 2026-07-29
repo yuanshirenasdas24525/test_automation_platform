@@ -416,9 +416,9 @@ export interface RunTestRequest {
   category: Exclude<ProjectStack, "functional"> | string;
   /** 只在 app/android/ios 场景下生效：指定某台已 idle 的设备运行，忽略 env 的 device_pool 过滤。 */
   device_id?: number | null;
-  /** AI 自愈运行：执行本身与普通运行一致，跑完后自动分诊 → 修复 → 重跑验证。 */
+  /** AI 自愈运行：失败请求立即按用例/需求意图诊断，候选修复验证通过后才落库。 */
   ai_heal?: boolean;
-  /** 自愈时用哪个模型做深度诊断；不传则只做零成本的规则自愈。 */
+  /** 自愈时用于需求约束诊断的项目级模型；开启 ai_heal 时必填。 */
   ai_model?: string | null;
 }
 
@@ -428,7 +428,7 @@ export interface RunTestResult {
   task_id?: string;
   case_number?: number;
   message?: string;
-  /** 本次是否走了 AI 自愈运行（跑完自动分诊 + 修复 + 验证）。 */
+  /** 本次是否走了逐请求、需求约束的 AI 自愈运行。 */
   ai_heal?: boolean;
 }
 

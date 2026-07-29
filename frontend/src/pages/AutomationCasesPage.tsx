@@ -499,14 +499,24 @@ export function AutomationCasesPage({
     ]);
   }, []);
 
-  // AI 自愈用哪个模型；"__rules__" = 只做零成本的规则自愈，不调 LLM
-  const [healModel, setHealModel] = useState<string>("__rules__");
+  // AI 自愈必须有语义模型：规则只提供证据，最终修改要受用例名称/描述/需求约束。
+  const [healModel, setHealModel] = useState<string>("");
   const { data: healModels } = useQuery({
     queryKey: ["ai-models", projectId],
     queryFn: () => aiModelsApi.list(projectId),
     enabled: Number.isFinite(projectId),
     staleTime: 5 * 60_000,
   });
+  const enabledHealModels = useMemo(
+    () => (healModels ?? []).filter((model) => model.enabled),
+    [healModels],
+  );
+
+  useEffect(() => {
+    if (enabledHealModels.some((model) => model.name === healModel)) return;
+    const preferred = enabledHealModels.find((model) => model.is_default) ?? enabledHealModels[0];
+    setHealModel(preferred?.name ?? "");
+  }, [enabledHealModels, healModel]);
 
   const runMutation = useMutation({
     mutationFn: ({ ids, heal, model }: { ids: number[]; heal?: boolean; model?: string | null }) =>
@@ -520,7 +530,7 @@ export function AutomationCasesPage({
     onSuccess: (result) => {
       toast.success(
         `已提交 ${result.case_number ?? 0} 条 ${caseLabel} 用例，报告 #${result.report_id}` +
-        (result.ai_heal ? "；跑完会自动分诊并修复可确定的问题" : ""),
+        (result.ai_heal ? "；失败请求会立即按用例意图进行 AI 自愈和验证" : ""),
       );
       setSelected(new Set());
       invalidate();
@@ -724,15 +734,14 @@ export function AutomationCasesPage({
                 <Button size="sm" disabled={runMutation.isPending} onClick={() => runMutation.mutate({ ids: [...selected] })}>
                   <Play className="h-4 w-4" />运行选中（{selected.size}）
                 </Button>
-                {/* AI 自愈运行：执行本身与左边完全一样，只是跑完后自动分诊 → 修复 → 重跑验证。
-                    模型下拉留空＝只做零成本的规则自愈（变量悬空、断言状态码等确定性问题）。 */}
+                {/* AI 自愈运行：每个失败请求立即结合用例名称、描述、关联需求和真实响应诊断。
+                    候选修复只有在当前用例重跑验证通过后才会落库。 */}
                 <Select value={healModel} onValueChange={setHealModel}>
-                  <SelectTrigger className="h-8 w-[132px]" title="自愈时用哪个模型做深度诊断">
-                    <SelectValue />
+                  <SelectTrigger className="h-8 w-[148px]" title="自愈时用于需求约束诊断的模型">
+                    <SelectValue placeholder="选择自愈模型" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="__rules__">仅规则（免费）</SelectItem>
-                    {(healModels ?? []).map((m) => (
+                    {enabledHealModels.map((m) => (
                       <SelectItem key={m.name} value={m.name}>{m.name}</SelectItem>
                     ))}
                   </SelectContent>
@@ -740,12 +749,16 @@ export function AutomationCasesPage({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={runMutation.isPending}
-                  title="执行与普通运行完全一致；跑完自动分诊、应用可确定的修复，并重跑验证（绿变红自动回滚）"
+                  disabled={runMutation.isPending || !healModel}
+                  title={
+                    healModel
+                      ? "每个失败请求立即按用例名称、描述和需求诊断；候选修复验证通过后才落库"
+                      : "请先在项目配置中启用一个 AI 模型"
+                  }
                   onClick={() => runMutation.mutate({
                     ids: [...selected],
                     heal: true,
-                    model: healModel === "__rules__" ? null : healModel,
+                    model: healModel,
                   })}
                 >
                   <Sparkles className="h-4 w-4" />AI 自愈运行

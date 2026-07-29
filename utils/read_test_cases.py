@@ -248,6 +248,7 @@ def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
             .options(
                 selectinload(TestCase.steps),
                 joinedload(TestCase.environment),
+                joinedload(TestCase.requirement),
             )
             .filter(TestCase.id == case_id)
         )
@@ -282,6 +283,7 @@ def get_cases_v2_from_db(params: Dict[str, Any], db) -> List[Dict[str, Any]]:
         .options(
             selectinload(TestCase.steps),
             joinedload(TestCase.environment),
+            joinedload(TestCase.requirement),
         )
         .filter(Module.project_id == project_id)
     )
@@ -374,6 +376,18 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "id": c.id,
         "name": c.name,
         "description": c.description,
+        "requirement_id": c.requirement_id,
+        "requirement": (
+            {
+                "id": c.requirement.id,
+                "title": c.requirement.title,
+                "description": c.requirement.description,
+                "acceptance_criteria": c.requirement.acceptance_criteria or [],
+                "spec_json": c.requirement.spec_json or {},
+            }
+            if c.requirement is not None
+            else None
+        ),
         "case_type": c.case_type or "api",
         "project_id": c.module.project_id if c.module else None,
         "project_name": proj_name,
@@ -401,4 +415,3 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "assertion": c.assertion,
         "wait_time": c.wait_time,
     }
-

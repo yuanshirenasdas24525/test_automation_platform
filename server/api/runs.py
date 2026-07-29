@@ -39,6 +39,21 @@ async def run_test(req: RunTestRequest, db: DBDep):
     if not req.category:
         raise HTTPException(status_code=400, detail="缺少项目类型 api/web/android/ios")
 
+    if req.ai_heal:
+        if not req.ai_model:
+            raise HTTPException(
+                status_code=422,
+                detail="AI 自愈运行必须选择一个已启用的 AI 模型",
+            )
+        from server.services.ai_model_service import get_ai_model
+
+        heal_model = get_ai_model(db.session, req.ai_model, project_id=req.project)
+        if heal_model is None or not heal_model.enabled:
+            raise HTTPException(
+                status_code=422,
+                detail=f"AI 模型 {req.ai_model!r} 未配置或未启用",
+            )
+
     # functional 用例不走自动化 dispatcher —— 它们由 /api/functional_cases/.../mark
     # 这条人工勾结果路径处理。这里在最早期就拦掉，避免误透传到 Celery / pytest。
     cat_lower = str(req.category or "").strip().lower()
@@ -167,8 +182,7 @@ async def run_test(req: RunTestRequest, db: DBDep):
 
     if sync_mode:
         LOGGER.info("[sync_mode] 同步执行 Web 用例（apply），浏览器将弹出当前桌面")
-        # 只在开了自愈时才多传参数：普通运行保持 4 参数的老签名，
-        # 这样即使 worker 还没重启到新代码，日常执行也不会因签名不匹配而挂。
+        # 只在开了自愈时才多传参数：普通运行保持 4 参数的老签名。
         extra = (req.ai_heal, req.ai_model) if req.ai_heal else ()
         run_test_task.apply(args=(task_id, report_id, cases_to_run, req.category, *extra))
     else:
@@ -183,7 +197,7 @@ async def run_test(req: RunTestRequest, db: DBDep):
         "ai_heal": bool(req.ai_heal),
         "message": (
             ("测试已在后台启动" if not sync_mode else "测试已在当前进程同步执行")
-            + ("；跑完将自动分诊并修复可确定的问题" if req.ai_heal else "")
+            + ("；失败请求会立即按用例意图进行 AI 自愈并验证" if req.ai_heal else "")
         ),
     }
 

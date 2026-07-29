@@ -276,6 +276,8 @@ class CaseExecutor:
         d: dict = {
             "id": getattr(case, "id", None),
             "name": getattr(case, "name", None),
+            "description": getattr(case, "description", None),
+            "requirement_id": getattr(case, "requirement_id", None),
             "case_type": getattr(case, "case_type", None) or "api",
             "tags": getattr(case, "tags", None),
             "priority": getattr(case, "priority", None),
@@ -296,6 +298,15 @@ class CaseExecutor:
             "assertion": getattr(case, "assertion", None),
             "wait_time": getattr(case, "wait_time", None),
         }
+        requirement = getattr(case, "requirement", None)
+        if requirement is not None:
+            d["requirement"] = {
+                "id": getattr(requirement, "id", None),
+                "title": getattr(requirement, "title", None),
+                "description": getattr(requirement, "description", None),
+                "acceptance_criteria": getattr(requirement, "acceptance_criteria", None) or [],
+                "spec_json": getattr(requirement, "spec_json", None) or {},
+            }
 
         # steps：若是 ORM 实例则每个都转 dict
         steps_attr = getattr(case, "steps", None) or []
@@ -757,6 +768,18 @@ class CaseExecutor:
             # 失败策略：stop 就中断；continue 就跳过；其他（包括 retry，dispatcher 内部已处理）继续下一条
             if result.status in (StepStatus.FAILED, StepStatus.ERROR):
                 strategy = (step.get("on_failure") or "stop").lower()
+                if (
+                    step.get("step_type") == "http_request"
+                    and bool(ctx.get_var("_ai_heal_enabled"))
+                ):
+                    # 自愈必须发生在下一个接口请求之前。即使用例原来配置了
+                    # on_failure=continue，也先在当前请求形成断点；修好并重跑后，
+                    # CaseExecutor 才会按更新后的定义继续后续步骤。
+                    logger.warning(
+                        "step_order=%s 失败，AI 自愈模式立即中断后续请求",
+                        result.step_order,
+                    )
+                    break
                 if strategy == "continue":
                     logger.warning("step_order=%s 失败但 on_failure=continue，继续下一条",
                                    result.step_order)

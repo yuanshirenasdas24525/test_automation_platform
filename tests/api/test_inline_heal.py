@@ -11,7 +11,14 @@
 """
 from __future__ import annotations
 
-from server.services.inline_heal import _apply_to_case_dict
+from types import SimpleNamespace
+
+from server.services.inline_heal import (
+    _apply_to_case_dict,
+    _redact,
+    _validate_model_decision,
+    _with_rebound_extracts,
+)
 
 
 def _case():
@@ -54,6 +61,68 @@ def test_extract_fix_merges_into_extract_data():
     }
 
 
+def test_fix_targets_failed_http_step_instead_of_first_step():
+    """多请求用例必须精准修改失败步骤，不能把第二步修复误打到第一步。"""
+    case = _case()
+    parts = _apply_to_case_dict(
+        case,
+        {"params": {"user_id": "${uid}"}},
+        target_step_id=12,
+    )
+    assert parts == ["params"]
+    assert "params" not in case["steps"][0]["config"]
+    assert case["steps"][1]["config"]["params"] == {"user_id": "${uid}"}
+
+
+def test_request_fix_merges_and_deletes_explicit_null_field():
+    case = _case()
+    case["steps"][0]["config"]["params"] = {
+        "account": "${username}",
+        "password": "${password}",
+    }
+    _apply_to_case_dict(
+        case,
+        {"params": {"account": None, "username": "${username}"}},
+    )
+    assert case["steps"][0]["config"]["params"] == {
+        "username": "${username}",
+        "password": "${password}",
+    }
+
+
+def test_request_fix_rebinds_replaced_password_variable():
+    """自愈替换旧密码变量时，应自动生成同名提取赋值。"""
+    step = {
+        "config": {
+            "params": {
+                "username": "${username}",
+                "password": "${password_admin}",
+            },
+        },
+    }
+    fix = _with_rebound_extracts(
+        step,
+        {"params": {"password": "NewTest@123"}},
+    )
+
+    assert fix["extract"] == {"password_admin": "NewTest@123"}
+
+
+def test_request_fix_rebinds_embedded_token_without_bearer_prefix():
+    """请求头里的 token 回写时不能把 Bearer 前缀一起写进变量池。"""
+    step = {
+        "config": {
+            "headers": {"Authorization": "Bearer ${token}"},
+        },
+    }
+    fix = _with_rebound_extracts(
+        step,
+        {"headers": {"Authorization": "Bearer ${new_token}"}},
+    )
+
+    assert fix["extract"] == {"token": "${new_token}"}
+
+
 def test_insert_steps_prepends_and_shifts_order():
     """插入的前置步骤必须排在最前面，原步骤整体后移 —— 顺序错了变量就取不到。"""
     case = _case()
@@ -80,3 +149,48 @@ def test_empty_fix_changes_nothing():
     before = case["steps"][0]["config"]["assertion"]["status_code"]
     assert _apply_to_case_dict(case, {}) == []
     assert case["steps"][0]["config"]["assertion"]["status_code"] == before
+
+
+def test_model_fix_without_requirement_evidence_is_rejected():
+    view = SimpleNamespace(status_code=200, output_data={"code": 0})
+    fix, reason = _validate_model_decision({
+        "classification": "用例问题",
+        "intent_supported": True,
+        "requirement_evidence": [],
+        "confidence": 0.99,
+        "fix": {"assertion": {"status_code": 200}},
+    }, view)
+    assert fix is None
+    assert "依据" in str(reason)
+
+
+def test_requirement_guarded_extract_fix_must_exist_in_real_response():
+    view = SimpleNamespace(
+        status_code=200,
+        output_data={"data": {"access_token": "secret"}},
+    )
+    fix, reason = _validate_model_decision({
+        "classification": "用例问题",
+        "intent_supported": True,
+        "requirement_evidence": ["用例描述要求登录成功后提取访问令牌"],
+        "confidence": 0.95,
+        "fix": {
+            "extract": {
+                "token": "$.data.access_token",
+                "missing": "$.data.not_exists",
+            },
+        },
+    }, view)
+    assert reason is None
+    assert fix == {"extract": {"token": "$.data.access_token"}}
+
+
+def test_ai_prompt_payload_redacts_real_secrets_but_keeps_variable_refs():
+    value = _redact({
+        "password": "plain-secret",
+        "Authorization": "Bearer real-token",
+        "template_password": "${password_admin}",
+    })
+    assert value["password"] == "<redacted>"
+    assert value["Authorization"] == "<redacted>"
+    assert value["template_password"] == "${password_admin}"
