@@ -120,11 +120,14 @@ def _format_extract_error(
 
 
 def _v1_json_extract_to_rules(raw: Any) -> list[dict]:
-    """把 v1 风格的提取 JSON（{"token1": "$.data.token"}）转成 extract 规则列表。
+    """把 v1 风格的提取 JSON 转成 extract 规则列表。
 
     多步骤 API 用例在 StepEditor 里把"提取"以这种 JSON 存进 config.extract_data，
     runner 在顶层 step.extract 为空时用它兜底。与 server/api/cases.py 的
     _v1_extract_to_step 行为保持一致（同步维护）。
+
+    固定值赋值由结构化 ``step.extract`` 的 ``from=value`` 表达；这里继续把历史
+    ``extract_data`` 全部按响应路径处理，避免把漏写 ``$`` 的旧 JSONPath 静默当字面量。
     """
     if not raw:
         return []
@@ -136,9 +139,13 @@ def _v1_json_extract_to_rules(raw: Any) -> list[dict]:
             return []
     out: list[dict] = []
     if isinstance(obj, dict):
-        for name, jp in obj.items():
-            if str(name).strip() and str(jp).strip():
-                out.append({"name": str(name), "from": "response.body", "jsonpath": str(jp)})
+        for name, expression in obj.items():
+            if str(name).strip() and expression is not None:
+                out.append({
+                    "name": str(name),
+                    "from": "response.body",
+                    "jsonpath": str(expression),
+                })
     return out
 
 
@@ -312,8 +319,19 @@ class HttpRequestStepRunner(BaseStepRunner):
             extract_rules = _v1_json_extract_to_rules(config.get("extract_data"))
         else:
             extract_rules = step.get("extract") or []
+        assignment_rules = [
+            rule for rule in extract_rules
+            if isinstance(rule, dict) and str(rule.get("from") or "").lower() == "value"
+        ]
+        response_extract_rules = [
+            rule for rule in extract_rules
+            if not (
+                isinstance(rule, dict)
+                and str(rule.get("from") or "").lower() == "value"
+            )
+        ]
         extracted, extract_failures = self._apply_extract(
-            extract_rules,
+            response_extract_rules,
             response_body=response_body,
             status_code=status_code,
             ctx=ctx,
@@ -375,6 +393,39 @@ class HttpRequestStepRunner(BaseStepRunner):
             status_code=status_code,
             ctx=ctx,
         )
+
+        # AI 参数修复把 ``${旧变量}`` 改成新值时，会把同名赋值合并进现有
+        # extract_data。赋值必须等请求成功且断言通过后再执行，避免负向请求或
+        # 错误修复污染后续用例的共享参数池。
+        if assignment_rules and 200 <= status_code < 400:
+            assignment_values, assignment_failures = self._apply_extract(
+                assignment_rules,
+                response_body=response_body,
+                status_code=status_code,
+                ctx=ctx,
+                snapshot_vars=dict(ctx.vars),
+            )
+            if assignment_failures:
+                raise AssertionError(
+                    _format_extract_error(
+                        assignment_failures,
+                        status_code,
+                        response_body,
+                    )
+                )
+            if assignment_values:
+                extracted = {**extracted, **assignment_values}
+                result.extracted = extracted
+                ctx.record("extract_values", extracted)
+                ctx_vars_display = {
+                    k: v for k, v in ctx.vars.items()
+                    if not str(k).startswith("_")
+                }
+                add_allure_step(
+                    "变量池（提取赋值后）",
+                    ctx_vars_display or "(空)",
+                    attachment_name="变量池（提取赋值后）",
+                )
 
     @staticmethod
     def _latin1_safe_headers(headers: dict) -> dict:
@@ -557,9 +608,14 @@ class HttpRequestStepRunner(BaseStepRunner):
         response_body: Any,
         status_code: int,
         ctx: ExecutionContext,
+        snapshot_vars: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         extracted: dict[str, Any] = {}
         failures: list[dict[str, Any]] = []
+        value_ctx = ctx
+        if snapshot_vars is not None:
+            value_ctx = ExecutionContext()
+            value_ctx.vars = dict(snapshot_vars)
         for rule in rules or []:
             if not isinstance(rule, dict):
                 continue
@@ -580,6 +636,10 @@ class HttpRequestStepRunner(BaseStepRunner):
                 val = status_code
             elif src == "response.text":
                 val = response_body if isinstance(response_body, str) else json.dumps(response_body, ensure_ascii=False)
+            elif src == "value":
+                val = self._resolve_value(rule.get("value"), value_ctx)
+                if isinstance(val, str) and re.search(r"\$\{[^}\n]+\}", val):
+                    val = None
             else:
                 val = None
 
@@ -595,8 +655,14 @@ class HttpRequestStepRunner(BaseStepRunner):
                 failures.append({
                     "变量名": str(name),
                     "来源": src,
-                    "表达式": str(expression) if expression else None,
-                    "原因": "未匹配到值（JSONPath 无效、响应结构变化或接口返回失败）",
+                    "表达式": str(expression) if expression else (
+                        "赋值表达式" if src == "value" else None
+                    ),
+                    "原因": (
+                        "赋值引用的变量不存在"
+                        if src == "value"
+                        else "未匹配到值（JSONPath 无效、响应结构变化或接口返回失败）"
+                    ),
                 })
                 LOGGER.warning(
                     "HTTP extract skipped empty value: name=%s source=%s status=%s",

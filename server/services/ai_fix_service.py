@@ -39,6 +39,12 @@ from server.services.edit_history_service import (
     snapshot_test_case,
 )
 from utils.logger import LOGGER
+from utils.parameter_flow import (
+    extract_rule,
+    infer_rebound_extracts,
+    is_response_jsonpath,
+    merge_rebound_extracts,
+)
 from utils.platform_utils import extractor
 
 _VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][\w.-]*)\}")
@@ -641,8 +647,16 @@ def _preflight_one(
 
     # ── 已通过的用例：只允许纯增量 extract/assertion（治假通过），不许动请求 ──
     if status == "passed" and (fp or fh or step_fixes_in):
-        _drop("params/headers/steps", "用例本次已通过，不自动改请求参数/请求头（防绿变红）")
-        fp, fh, step_fixes_in = {}, {}, []
+        _drop("params/headers", "用例本次已通过，不自动改请求参数/请求头（防绿变红）")
+        fp, fh = {}, {}
+        step_fixes_in = [
+            {
+                "step_id": sf.get("step_id"),
+                "extract": sf.get("extract"),
+            }
+            for sf in step_fixes_in
+            if isinstance(sf.get("extract"), dict) and sf.get("extract")
+        ]
 
     # ── 请求侧 fix：变量校验 + 合并 ────────────────────────────────
     my_pos = case_pos.get(cid, 1 << 30)
@@ -692,6 +706,28 @@ def _preflight_one(
             else:
                 sanitized_headers = merged
 
+    # AI 一旦把请求中的 ${原变量} 改成新值，自动给当前步骤补同名提取赋值。
+    # 这是确定性推导，不依赖模型再次正确抄写变量名或秘密值。
+    inferred_first_parts: list[dict[str, Any]] = []
+    if first_http is not None:
+        first_cfg = first_http.config if isinstance(first_http.config, dict) else {}
+        if sanitized_params:
+            inferred_first_parts.append(
+                infer_rebound_extracts(
+                    first_cfg.get("params") or {},
+                    sanitized_params,
+                )
+            )
+        if sanitized_headers:
+            inferred_first_parts.append(
+                infer_rebound_extracts(
+                    first_cfg.get("headers") or {},
+                    sanitized_headers,
+                )
+            )
+    inferred_first_extract = merge_rebound_extracts(*inferred_first_parts)
+    fe = {**fe, **inferred_first_extract}
+
     sanitized_steps: list[dict] = []
     for sf in step_fixes_in:
         try:
@@ -707,18 +743,84 @@ def _preflight_one(
         entry: dict = {"step_id": sid}
         sp = sf.get("params") if isinstance(sf.get("params"), dict) else {}
         sh = sf.get("headers") if isinstance(sf.get("headers"), dict) else {}
+        se = sf.get("extract") if isinstance(sf.get("extract"), dict) else {}
+        merged_params: dict = {}
+        merged_headers: dict = {}
         if sp and _vars_ok(sp, f"steps[{sid}].params"):
             merged = _merge_params(cfg.get("params") or {}, sp)
             if merged != (cfg.get("params") or {}):
-                entry["params"] = merged
+                merged_params = merged
+                entry["params"] = merged_params
         if sh and _vars_ok(sh, f"steps[{sid}].headers"):
             merged = _merge_params(cfg.get("headers") or {}, sh)
             if merged != (cfg.get("headers") or {}):
-                entry["headers"] = merged
+                merged_headers = merged
+                entry["headers"] = merged_headers
+
+        inferred_parts = []
+        if merged_params:
+            inferred_parts.append(
+                infer_rebound_extracts(cfg.get("params") or {}, merged_params)
+            )
+        if merged_headers:
+            inferred_parts.append(
+                infer_rebound_extracts(cfg.get("headers") or {}, merged_headers)
+            )
+        inferred_extract = merge_rebound_extracts(*inferred_parts)
+        combined_extract = {**se, **inferred_extract}
+        if combined_extract:
+            existing = _effective_extract(step)
+            existing_map = (
+                {str(k): v for k, v in existing.items()}
+                if isinstance(existing, dict)
+                else {
+                    str(rule.get("name")): (
+                        rule.get("jsonpath")
+                        if str(rule.get("from") or "response.body").lower() == "response.body"
+                        else rule.get("value")
+                    )
+                    for rule in (existing or [])
+                    if isinstance(rule, dict) and rule.get("name")
+                }
+            )
+            row = next((item for item in rows if item.step_id == sid), None)
+            row_body = None
+            if row is not None:
+                parsed_body = _parse_json_loose(row.output_data)
+                row_body = parsed_body if parsed_body else None
+            sanitized_step_extract = {}
+            for var, expression in combined_extract.items():
+                name = str(var)
+                if existing_map.get(name) == expression:
+                    continue
+                if is_response_jsonpath(expression):
+                    if merged_params or merged_headers:
+                        deferred.append(f"steps[{sid}].extract.{name}")
+                        sanitized_step_extract[name] = expression
+                    elif row_body is not None and extractor(row_body, str(expression)) is not None:
+                        sanitized_step_extract[name] = expression
+                    else:
+                        _drop(
+                            f"steps[{sid}].extract",
+                            f"{name}: JSONPath 在该步骤真实响应中取不到值",
+                        )
+                elif inferred_extract.get(name) == expression:
+                    sanitized_step_extract[name] = expression
+                else:
+                    _drop(
+                        f"steps[{sid}].extract",
+                        f"{name}: 固定值赋值不是由本步骤参数修改确定性推导，已拒绝",
+                    )
+            if sanitized_step_extract:
+                entry["extract"] = sanitized_step_extract
         if len(entry) > 1:
             sanitized_steps.append(entry)
 
-    request_changed = bool(sanitized_params or sanitized_headers or sanitized_steps)
+    request_changed = bool(
+        sanitized_params
+        or sanitized_headers
+        or any(entry.get("params") or entry.get("headers") for entry in sanitized_steps)
+    )
 
     # ── extract / assertion：请求没变才能对真实响应预检，否则 deferred ──
     sanitized_extract: dict = {}
@@ -726,32 +828,44 @@ def _preflight_one(
     if first_http is not None:
         effective_extract = _effective_extract(first_http)
         if isinstance(effective_extract, dict):
-            existing_extract = {str(k): str(v) for k, v in effective_extract.items()}
+            existing_extract = {str(k): v for k, v in effective_extract.items()}
         else:
             for rule in effective_extract or []:
                 if isinstance(rule, dict) and rule.get("name"):
-                    existing_extract[str(rule["name"])] = str(
-                        rule.get("jsonpath") or rule.get("path") or ""
+                    source = str(rule.get("from") or "response.body").lower()
+                    existing_extract[str(rule["name"])] = (
+                        rule.get("value")
+                        if source == "value"
+                        else rule.get("jsonpath") or rule.get("path") or ""
                     )
-    for var, jp in (fe or {}).items():
-        var, jp = str(var), str(jp)
+    for var, expression in (fe or {}).items():
+        var = str(var)
         if first_http is None:
             _drop("extract", "用例没有 http_request 步骤")
             break
-        if existing_extract.get(var) == jp:
-            _drop("extract", f"{var} 已是 {jp}（no-op）")
+        if existing_extract.get(var) == expression:
+            _drop("extract", f"{var} 已有相同提取规则（no-op）")
+            continue
+        if not is_response_jsonpath(expression):
+            if inferred_first_extract.get(var) == expression:
+                sanitized_extract[var] = expression
+            else:
+                _drop(
+                    "extract",
+                    f"{var}: 固定值赋值不是由第一步参数修改确定性推导，已拒绝",
+                )
             continue
         if request_changed:
             deferred.append(f"extract.{var}")
-            sanitized_extract[var] = jp
+            sanitized_extract[var] = expression
             continue
         if response_body is None:
             _drop("extract", f"{var}: 响应不是 JSON，无法预检 JSONPath，跳过")
             continue
-        if extractor(response_body, jp) is None:
-            _drop("extract", f"{var}: JSONPath {jp} 在真实响应里取不到值")
+        if extractor(response_body, str(expression)) is None:
+            _drop("extract", f"{var}: JSONPath {expression} 在真实响应里取不到值")
             continue
-        sanitized_extract[var] = jp
+        sanitized_extract[var] = expression
 
     sanitized_assertion: dict = {}
     existing_assertion: dict[str, Any] = {}
@@ -815,7 +929,7 @@ def _preflight_one(
     }
     base["request_changed"] = request_changed or bool(sanitized_inserts)
     base["eligible"] = bool(
-        sanitized_extract or sanitized_assertion or request_changed
+        sanitized_extract or sanitized_assertion or request_changed or sanitized_steps
         or sanitized_pre_hook or sanitized_inserts
     )
     return base
@@ -824,15 +938,56 @@ def _preflight_one(
 # ---------------------------------------------------------------------------
 # 应用（每用例一个事件，同一个 batch）
 # ---------------------------------------------------------------------------
-def _upsert_extract_rule(rules: Any, name: str, jsonpath: str) -> list:
+def _upsert_extract_rule(rules: Any, name: str, expression: Any) -> list:
     new = [dict(r) for r in (rules or []) if isinstance(r, dict)]
     for r in new:
         if str(r.get("name") or "") == name:
-            r["from"] = r.get("from") or "response.body"
-            r["jsonpath"] = jsonpath
+            r.clear()
+            r.update(extract_rule(name, expression))
             return new
-    new.append({"name": name, "from": "response.body", "jsonpath": jsonpath})
+    new.append(extract_rule(name, expression))
     return new
+
+
+def _apply_extract_patch_to_step(step: Any, patch: dict[str, Any]) -> None:
+    """把提取补丁落到步骤，并在固定值赋值出现时切换为无歧义的结构化规则。"""
+    cfg = dict(step.config or {})
+    config_extract = _parse_json_loose(cfg.get("extract_data"))
+    has_assignment = any(
+        not is_response_jsonpath(expression)
+        for expression in patch.values()
+    )
+
+    if has_assignment:
+        rules = [dict(rule) for rule in (step.extract or []) if isinstance(rule, dict)]
+        # config.extract_data 是历史简写，所有值都保持“响应路径”语义；迁移到结构化
+        # 规则后才能与 from=value 的固定值赋值安全共存。
+        for name, jsonpath in config_extract.items():
+            rules = [
+                rule for rule in rules
+                if str(rule.get("name") or "") != str(name)
+            ]
+            rules.append({
+                "name": str(name),
+                "from": "response.body",
+                "jsonpath": str(jsonpath),
+            })
+        for name, expression in patch.items():
+            rules = _upsert_extract_rule(rules, str(name), expression)
+        step.extract = rules
+        cfg.pop("extract_data", None)
+        step.config = cfg
+        return
+
+    for name, expression in patch.items():
+        step.extract = _upsert_extract_rule(
+            step.extract,
+            str(name),
+            expression,
+        )
+    if cfg.get("extract_data") not in (None, "", {}, []) or config_extract:
+        cfg["extract_data"] = {**config_extract, **patch}
+        step.config = cfg
 
 
 def _upsert_assertion_rule(rules: Any, target: str, expected: Any) -> list:
@@ -946,15 +1101,11 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
             ))
         parts.append("insert_steps")
 
-    for var, jp in (fix.get("extract") or {}).items():
-        name = str(var)
-        jsonpath = str(jp)
-        first_http.extract = _upsert_extract_rule(first_http.extract, name, jsonpath)
-        cfg = dict(first_http.config or {})
-        config_extract = _parse_json_loose(cfg.get("extract_data"))
-        if cfg.get("extract_data") not in (None, "", {}, []) or config_extract:
-            cfg["extract_data"] = {**config_extract, name: jsonpath}
-            first_http.config = cfg
+    for var, expression in (fix.get("extract") or {}).items():
+        _apply_extract_patch_to_step(
+            first_http,
+            {str(var): expression},
+        )
         if "extract" not in parts:
             parts.append("extract")
     for target, expected in (fix.get("assertion") or {}).items():
@@ -988,7 +1139,10 @@ def _apply_fix_to_case(case: TestCase, fix: dict) -> list[str]:
             cfg["params"] = sf["params"]
         if sf.get("headers"):
             cfg["headers"] = sf["headers"]
+        step_extract = sf.get("extract") if isinstance(sf.get("extract"), dict) else {}
         step.config = cfg
+        if step_extract:
+            _apply_extract_patch_to_step(step, step_extract)
         if "steps" not in parts:
             parts.append("steps")
 

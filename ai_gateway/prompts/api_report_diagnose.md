@@ -23,6 +23,7 @@
 7. **执行顺序/前置依赖**：本用例引用了 `${token}`/`${id}` 但前面没有能 extract 出它的用例（或顺序排在它后面）？对照上面的【变量产出表】判断。如是，给出顺序建议。
 7.1 **未补全的占位 / 缺失鉴权（重点）**：请求头 `Authorization` 里是 `<TODO …>`、占位说明、空值，或鉴权接口缺 `Authorization` 头导致 401？**对照【变量产出表】**：若已有用例能产出鉴权 token（如 `${token}` / `${test_token01}`），就用 `fix.headers` 把头改成 `{"Authorization": "Bearer ${token}"}`（选产出方排在本用例前面的那个变量），并在确有顺序问题时一并给 `fix.reorder`。判为 **用例问题**。注意：401≠业务校验失败——一条本想测 422/400 的负向用例若因为 token 没接好而返回 401，是**用例问题**（鉴权没接对），不是接口问题。
 7.2 **上游改了状态导致下游用旧值（重点）**：对照【状态变更用例】。若某用例（如"修改密码成功"）改了某共享账号的密码/状态，其**后面**还用旧值（如 `${my_password}`）登录同一账号的用例会失败（401）。这是 **用例问题**：优先 `fix.params` 改用正确的当前值（如改密码后用新密码变量/字面量），或在 findings 里明确指出"该账号密码已被前序用例改变，需用新密码或改用独立账号/调整顺序"。不要把这种 401 误判成"接口问题"。
+   **变量回写规则**：如果 `fix.params` / `fix.headers` 把原来的 `${变量}` 改成新值，平台会在同一步骤自动补同名 `extract`，请求成功后把新值赋回原变量。例如把 `password: "${password_admin}"` 修成 `password: "NewTest@123"`，会自动得到 `extract: {"password_admin": "NewTest@123"}`；把 `Authorization: "Bearer ${token}"` 修成 `Bearer ${new_token}`，会自动得到 `extract: {"token": "${new_token}"}`。不要逐条修改后续所有引用方。
 
 7.3 **共享 token 被前序用例作废导致连环 401（重点）**：对照【状态变更用例】。若前面有"登出 / 登出所有会话 / 刷新令牌 / 改密码"等**作废会话**的用例，把共享 `${token}` 杀掉了，则其后引用旧 token 的 401 是**用例问题**。优先改用报告上下文中同账号的最新有效 token；**没有可用候选时（变量根本无人产出），用 `fix.insert_steps` 在用例最前面插入一个登录步骤把它产出来**（见下方 insert_steps 约定）。**仍然禁止输出 `fix.pre_hook`** —— pre_hook 是用户看不见的隐藏逻辑，而 insert_steps 落成真正的步骤、用户在编辑器里可改可删，这是两者的本质区别。
 7.4 **多个 token 不能按名字猜（重点）**：若【变量生命周期】里同时有 `${token1}`/`${token2}`/`${token3}`，先看各自产出步骤、账号主体、后续状态变更与“当前候选”标记。对于同一账号连续登录，单会话系统通常只有最后产出的 token 可用；下游引用早期 token 且真实返回 401 时，应把该步骤的 Authorization 改成生命周期里同账号的**最新有效候选**（例如 `${token3}`）。如果没有明确有效候选，只在 findings 中提示用户添加可见前置步骤；**禁止按变量名字母序选择 token，也禁止输出 `fix.pre_hook`**。
@@ -46,7 +47,7 @@
       "建议补充断言：$.data.user.id 非空",
       "请求参数字段 account 与接口真实错误提示不符，应改为 username，并保留 password 等其它正确字段"
     ],
-    "fix": { "extract": {"token": "$.data.token"}, "assertion": {"status_code": 200, "$.status": "success"}, "params": {}, "headers": {"Authorization": "Bearer ${token}"}, "steps": [{"step_id": 45, "params": {"username": "${my_account}", "password": "${new_password}"}}], "reorder": {"before_case_name": "需要排在它前面的某用例名"} }
+    "fix": { "extract": {"token": "$.data.token"}, "assertion": {"status_code": 200, "$.status": "success"}, "params": {}, "headers": {"Authorization": "Bearer ${token}"}, "steps": [{"step_id": 45, "params": {"username": "${my_account}", "password": "NewTest@123"}, "extract": {"password_admin": "NewTest@123"}}], "reorder": {"before_case_name": "需要排在它前面的某用例名"} }
   }
 ]
 ```
@@ -56,7 +57,8 @@
 - `fix` 只在 classification=**用例问题** 时给；接口问题/环境/正常 一律给 `{}`。
 - `fix.params` 只在请求参数确实写错时给（修正后的完整 `params`/请求体对象，必须保留原本正确字段），否则省略。不要只因为用例失败就给空对象或猜测对象；必须能从真实错误响应、当前请求、上下文变量关系中说明原因。
 - 平台会把 `fix.params`/`fix.headers` 与原对象**合并**（防止残缺输出清掉正确字段）：要**删除**某个字段（如字段改名后残留的旧字段名 `account`→`username`），把旧字段的值显式设为 `null`，例如 `{"account": null, "username": "${my_account}", ...}`。
-- **多步（场景）用例**：`def.steps` 有多个 http 步骤时，顶层 `fix.params`/`fix.headers` 只会应用到第一步。要修第 2..N 步的参数/请求头，必须用 `fix.steps`：`[{"step_id": <def.steps 里的 step_id>, "params": {…完整对象}, "headers": {…完整对象}}]`，只列需要修的步骤，params/headers 按需给。单步用例直接用顶层 `fix.params`/`fix.headers` 即可，不必给 `fix.steps`。
+- **多步（场景）用例**：`def.steps` 有多个 http 步骤时，顶层 `fix.params`/`fix.headers`/`fix.extract` 只会应用到第一步。要修第 2..N 步，必须用 `fix.steps`：`[{"step_id": <def.steps 里的 step_id>, "params": {…完整对象}, "headers": {…完整对象}, "extract": {…}}]`，只列需要修的步骤。单步用例直接用顶层字段即可。
+- `fix.extract` 的值以 `$` 开头时表示响应 JSONPath；`${变量}` 或其他固定值表示请求成功后的变量赋值。固定值赋值只能用于把 AI 刚刚替换掉的原变量写回参数池，平台会根据修改前后请求做程序化校验，禁止凭空新增秘密值。
 - `fix.headers` 只在请求头确实要改时给（修正后的**完整请求头对象**，含原有的 `Content-Type` 等）：典型是把 `<TODO>`/缺失的 `Authorization` 改成 `Bearer ${token}`（token 名取自【变量产出表】里能产出鉴权 token 且排在本用例之前的变量）。否则省略。鉴权类负向用例（如"携带无效 token"）本就该用错误 token，**不要**给 headers。
 - `fix.reorder` 只在确实存在顺序/前置依赖问题时给：`before_case_name` = 本用例应排到其前面的那条用例名（即依赖产出方）。否则省略。
 - **禁止输出 `fix.pre_hook`**（用户不可见的隐藏逻辑）。需要补前置时改用 `fix.insert_steps`。

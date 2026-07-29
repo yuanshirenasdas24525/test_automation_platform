@@ -223,6 +223,98 @@ def test_variable_propagation_across_steps(monkeypatch):
     assert second_headers.get("Authorization") == "Bearer xyz"
 
 
+def test_literal_extract_assignment_updates_parameter_pool_after_success(monkeypatch):
+    """AI 修复写入的固定值提取只在成功后覆盖原变量。"""
+    responses = [
+        _FakeResponse(200, {"status": "success"}),
+        _FakeResponse(200, {"status": "success"}),
+    ]
+    http_runner, calls = _make_runner_with_mocked_http(monkeypatch, responses)
+    executor = CaseExecutor(_build_dispatcher(http_runner))
+    ctx = ExecutionContext()
+    ctx.set_var("password_admin", "OldTest@123")
+    case = {
+        "id": 22,
+        "name": "修复密码后继续登录",
+        "case_type": "api",
+        "steps": [
+            {
+                "id": 2201,
+                "step_order": 0,
+                "step_name": "使用修复后的密码",
+                "step_type": "http_request",
+                "config": {
+                    "method": "POST",
+                    "path": "/api/auth/login",
+                    "params": {"password": "NewTest@123"},
+                    "assertion": {"status_code": 200},
+                },
+                "extract": [{
+                    "name": "password_admin",
+                    "from": "value",
+                    "value": "NewTest@123",
+                }],
+            },
+            {
+                "id": 2202,
+                "step_order": 1,
+                "step_name": "后续请求复用原变量名",
+                "step_type": "http_request",
+                "config": {
+                    "method": "POST",
+                    "path": "/api/auth/login",
+                    "params": {"password": "${password_admin}"},
+                    "assertion": {"status_code": 200},
+                },
+            },
+        ],
+    }
+
+    result = executor.run(case, ctx)
+
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert ctx.get_var("password_admin") == "NewTest@123"
+    assert calls["recorded"][1]["json"]["password"] == "NewTest@123"
+    assert result.steps[0].extracted == {"password_admin": "NewTest@123"}
+
+
+def test_literal_extract_assignment_is_skipped_for_expected_error(monkeypatch):
+    """负向响应即使断言通过，也不能用修复值污染参数池。"""
+    response = _FakeResponse(400, {"detail": "密码错误"})
+    http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [response])
+    executor = CaseExecutor(_build_dispatcher(http_runner))
+    ctx = ExecutionContext()
+    ctx.set_var("password_admin", "OldTest@123")
+    case = {
+        "id": 23,
+        "name": "错误密码登录",
+        "case_type": "api",
+        "steps": [{
+            "id": 2301,
+            "step_order": 0,
+            "step_name": "错误密码",
+            "step_type": "http_request",
+            "config": {
+                "method": "POST",
+                "path": "/api/auth/login",
+                "params": {"password": "WrongTest@123"},
+                "assertion": {"status_code": 400},
+            },
+            "extract": [{
+                "name": "password_admin",
+                "from": "value",
+                "value": "WrongTest@123",
+            }],
+        }],
+    }
+
+    result = executor.run(case, ctx)
+
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert ctx.get_var("password_admin") == "OldTest@123"
+    assert result.steps[0].extracted == {}
+
+
 def test_failed_extract_does_not_overwrite_existing_variable(monkeypatch):
     resp = _FakeResponse(401, {"detail": "用户名或密码错误"})
     http_runner, _ = _make_runner_with_mocked_http(monkeypatch, [resp])

@@ -223,8 +223,13 @@ function extractRulesToConfigText(rules: TestStepDraft["extract"]): string {
   const map: Record<string, unknown> = {};
   for (const rule of rules) {
     const name = String(rule?.name ?? "").trim();
-    const jsonpath = String(rule?.jsonpath ?? rule?.path ?? "").trim();
-    if (name && jsonpath) map[name] = jsonpath;
+    const source = String(rule?.from ?? "response.body").toLowerCase();
+    const expression = source === "value"
+      ? rule?.value
+      : rule?.jsonpath ?? rule?.path;
+    if (name && expression !== undefined && expression !== null) {
+      map[name] = expression;
+    }
   }
   return Object.keys(map).length ? JSON.stringify(map, null, 2) : "";
 }
@@ -251,12 +256,14 @@ function extractConfigToRules(raw: unknown): TestStepDraft["extract"] {
   const map = parseJsonMap(raw);
   if (!map) return [];
   return Object.entries(map)
-    .map(([name, jsonpath]) => ({
-      name,
-      from: "response.body",
-      jsonpath: String(jsonpath ?? ""),
-    }))
-    .filter((rule) => rule.name.trim() && rule.jsonpath.trim());
+    .map(([name, expression]) => {
+      const text = typeof expression === "string" ? expression.trim() : "";
+      const isJsonPath = text.startsWith("$") && !text.startsWith("${");
+      return isJsonPath
+        ? { name, from: "response.body", jsonpath: expression }
+        : { name, from: "value", value: expression };
+    })
+    .filter((rule) => rule.name.trim());
 }
 
 function assertionConfigToRules(raw: unknown): TestStepDraft["assertion"] {

@@ -272,6 +272,199 @@ def test_ai_fix_updates_runner_effective_extract_and_assertion():
     assert serialized["assertion"]["status_code"] == 200
 
 
+def test_report_fix_rebinds_replaced_parameter_to_original_variable():
+    """报告级参数修复替换 ${变量} 后，应自动补同名提取赋值。"""
+    case = ORMTestCase(id=11, module_id=1, name="管理员登录", case_type="api")
+    step = ORMTestStep(
+        id=21,
+        case_id=11,
+        step_order=0,
+        step_name="管理员登录",
+        step_type="http_request",
+        config={
+            "method": "POST",
+            "path": "/api/auth/login",
+            "params": {
+                "username": "${user_admin}",
+                "password": "${password_admin}",
+            },
+            "extract_data": {},
+        },
+        extract=[],
+        assertion=[],
+    )
+    case.steps = [step]
+    row = SimpleNamespace(
+        status="failed",
+        step_id=21,
+        step_type="http_request",
+        output_data='{"detail":"用户名或密码错误"}',
+        status_code=401,
+    )
+
+    checked = _preflight_one(
+        {
+            "case_id": 11,
+            "name": "管理员登录",
+            "classification": "用例问题",
+            "fix": {
+                "params": {
+                    "username": "${user_admin}",
+                    "password": "NewTest@123",
+                },
+            },
+        },
+        {11: case},
+        {11: [row]},
+        {},
+        {11: 0},
+    )
+
+    assert checked["eligible"] is True
+    assert checked["fix"]["params"]["password"] == "NewTest@123"
+    assert checked["fix"]["extract"] == {
+        "password_admin": "NewTest@123",
+    }
+    parts = _apply_fix_to_case(case, checked["fix"])
+    assert set(parts) == {"params", "extract"}
+    assert step.extract == [{
+        "name": "password_admin",
+        "from": "value",
+        "value": "NewTest@123",
+    }]
+
+
+def test_report_step_fix_keeps_literal_extract_on_target_step():
+    """多步骤参数修复必须把同名赋值落到被修改的步骤。"""
+    case = ORMTestCase(id=12, module_id=1, name="场景登录", case_type="api")
+    first = ORMTestStep(
+        id=31,
+        case_id=12,
+        step_order=0,
+        step_name="准备",
+        step_type="http_request",
+        config={"method": "GET", "path": "/prepare", "params": {}},
+        extract=[],
+        assertion=[],
+    )
+    target = ORMTestStep(
+        id=32,
+        case_id=12,
+        step_order=1,
+        step_name="重新登录",
+        step_type="http_request",
+        config={
+            "method": "POST",
+            "path": "/api/auth/login",
+            "params": {"password": "${password_admin}"},
+            "extract_data": {},
+        },
+        extract=[],
+        assertion=[],
+    )
+    case.steps = [first, target]
+    rows = [
+        SimpleNamespace(
+            status="passed",
+            step_id=31,
+            step_type="http_request",
+            output_data='{"status":"success"}',
+            status_code=200,
+        ),
+        SimpleNamespace(
+            status="failed",
+            step_id=32,
+            step_type="http_request",
+            output_data='{"detail":"用户名或密码错误"}',
+            status_code=401,
+        ),
+    ]
+
+    checked = _preflight_one(
+        {
+            "case_id": 12,
+            "name": "场景登录",
+            "classification": "用例问题",
+            "fix": {
+                "steps": [{
+                    "step_id": 32,
+                    "params": {"password": "NewTest@123"},
+                }],
+            },
+        },
+        {12: case},
+        {12: rows},
+        {},
+        {12: 0},
+    )
+
+    assert checked["eligible"] is True
+    assert checked["fix"]["steps"] == [{
+        "step_id": 32,
+        "params": {"password": "NewTest@123"},
+        "extract": {"password_admin": "NewTest@123"},
+    }]
+
+
+def test_report_context_exposes_successful_password_transition_to_downstream_fix():
+    """参数修复应从前序成功改密请求中得到当前密码，而不是猜值。"""
+    items = [
+        {
+            "case_id": 21,
+            "name": "修改管理员密码",
+            "def": {"steps": [{
+                "step_id": 211,
+                "step_name": "修改密码",
+                "method": "PUT",
+                "path": "/api/auth/password",
+                "headers": {},
+                "params": {
+                    "old_password": "${password_admin}",
+                    "new_password": "NewTest@123",
+                },
+                "extract": {},
+                "assertion": {},
+            }]},
+            "result": [{
+                "step_id": 211,
+                "status": "passed",
+                "status_code": 200,
+                "response": '{"status":"success"}',
+                "extract_values": "{}",
+            }],
+        },
+        {
+            "case_id": 22,
+            "name": "管理员重新登录",
+            "def": {"steps": [{
+                "step_id": 221,
+                "step_name": "登录",
+                "method": "POST",
+                "path": "/api/auth/login",
+                "headers": {},
+                "params": {"password": "${password_admin}"},
+                "extract": {},
+                "assertion": {"status_code": 200},
+            }]},
+            "result": [{
+                "step_id": 221,
+                "status": "failed",
+                "status_code": 401,
+                "response": '{"detail":"用户名或密码错误"}',
+                "extract_values": "{}",
+            }],
+        },
+    ]
+
+    context, _producers, issues = _build_report_dependency_context(items, {})
+
+    assert "${password_admin} 更新为 \"NewTest@123\"" in context
+    assert any(
+        "当前值应改为 \"NewTest@123\"" in issue
+        for issue in issues[22]
+    )
+
+
 def test_report_diagnosis_keeps_pre_hook_for_apply_stage():
     """模型返回的独立登录 hook 必须穿过诊断规整层，交给应用服务。"""
     hook = [{

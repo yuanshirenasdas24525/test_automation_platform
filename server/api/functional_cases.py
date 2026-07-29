@@ -77,6 +77,7 @@ from server.services.edit_history_service import (
     merge_test_case_edit_history,
     snapshot_test_case,
 )
+from utils.parameter_flow import infer_state_transition_extracts
 
 # 可选当前用户：带了有效 token 就解出 User，否则 None（不强制登录，记录 operator 用）
 OptionalUserDep = Annotated[Optional[User], Depends(_get_optional_user)]
@@ -2928,6 +2929,7 @@ def _build_report_dependency_context(
     consumers: dict[str, list[str]] = {}
     issues_by_case: dict[int, list[str]] = {}
     token_states: dict[str, dict[str, Any]] = {}
+    value_states: dict[str, dict[str, Any]] = {}
     latest_by_subject: dict[str, str] = {}
     order_lines: list[str] = []
     mutation_lines: list[str] = []
@@ -2981,6 +2983,13 @@ def _build_report_dependency_context(
             auth_failed = str(result.get("status_code") or "") in {"401", "403"}
             for var in sorted(refs):
                 consumers.setdefault(var, []).append(label)
+                replacement = value_states.get(var)
+                if replacement is not None and auth_failed:
+                    issues_by_case.setdefault(case_id, []).append(
+                        f"本步骤仍引用 ${{{var}}}，但它已被「{replacement['reason']}」更新；"
+                        f"当前值应改为 {json.dumps(replacement['value'], ensure_ascii=False)}。"
+                        "修复该请求后，平台会自动把新值赋回同名变量。"
+                    )
                 state = token_states.get(var)
                 if state is None or intentional_stale_check:
                     continue
@@ -3032,6 +3041,9 @@ def _build_report_dependency_context(
 
             mutation = _mutation_kind(case_name, step_name, path)
             if mutation and _result_is_success(result):
+                state_updates = infer_state_transition_extracts(step.get("params") or {})
+                for var, value in state_updates.items():
+                    value_states[var] = {"value": value, "reason": label}
                 referenced_tokens = [
                     var for var in refs
                     if var in token_states and "token" in var.lower()
@@ -3046,7 +3058,18 @@ def _build_report_dependency_context(
                 for var in invalidated:
                     token_states[var]["status"] = "invalid"
                     token_states[var]["reason"] = label
-                suffix = f"，作废 {', '.join('${' + v + '}' for v in sorted(invalidated))}" if invalidated else ""
+                changes = [
+                    f"${{{var}}} 更新为 {json.dumps(value, ensure_ascii=False)}"
+                    for var, value in state_updates.items()
+                ]
+                suffix_parts = []
+                if invalidated:
+                    suffix_parts.append(
+                        f"作废 {', '.join('${' + v + '}' for v in sorted(invalidated))}"
+                    )
+                if changes:
+                    suffix_parts.extend(changes)
+                suffix = f"，{'；'.join(suffix_parts)}" if suffix_parts else ""
                 mutation_lines.append(f"- {label}{suffix}")
 
         order_lines.append(
@@ -3112,8 +3135,14 @@ def _normalize_report_diagnosis_item(raw: dict, case_map: dict[int, TestCase]) -
             continue
         params = step_fix.get("params") if isinstance(step_fix.get("params"), dict) else {}
         headers = step_fix.get("headers") if isinstance(step_fix.get("headers"), dict) else {}
-        if params or headers:
-            step_fixes.append({"step_id": step_id, "params": params, "headers": headers})
+        extract = step_fix.get("extract") if isinstance(step_fix.get("extract"), dict) else {}
+        if params or headers or extract:
+            step_fixes.append({
+                "step_id": step_id,
+                "params": params,
+                "headers": headers,
+                "extract": extract,
+            })
     return {
         "case_id": case_id,
         "module_id": case_map[case_id].module_id if case_id in case_map else None,
