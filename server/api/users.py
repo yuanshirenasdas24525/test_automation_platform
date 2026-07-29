@@ -58,12 +58,21 @@ class UserCreate(pydantic.BaseModel):
     email: str | None = pydantic.Field(None, max_length=255)
     password: str = pydantic.Field(..., min_length=6, max_length=128)
     is_active: bool = True
-    role_codes: list[str] | None = None
+    role_codes: list[str] = pydantic.Field(..., min_length=1)
 
     @pydantic.field_validator("username")
     @classmethod
     def validate_username(cls, value: str) -> str:
         return _validate_username(value)
+
+    @pydantic.field_validator("role_codes")
+    @classmethod
+    def validate_role_codes(cls, value: list[str]) -> list[str]:
+        """创建账号时至少指定一个有效职务（角色）。"""
+        cleaned = [str(item).strip() for item in value]
+        if any(not item for item in cleaned):
+            raise ValueError("role_code 不能为空")
+        return list(dict.fromkeys(cleaned))
 
 
 class UserUpdate(pydantic.BaseModel):
@@ -127,8 +136,8 @@ def create_user(payload: UserCreate, db: DBDep, current_user: CurrentUserDep):
         raise HTTPException(status_code=409, detail="username 已存在")
     if payload.email and db.session.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=409, detail="email 已存在")
-    if payload.role_codes is not None and not set(payload.role_codes) <= ALL_ROLE_CODES:
-        raise HTTPException(status_code=400, detail=f"非法 role_code，可选: {sorted(ALL_ROLE_CODES)}")
+    if not set(payload.role_codes) <= ALL_ROLE_CODES:
+        raise HTTPException(status_code=422, detail=f"非法 role_code，可选: {sorted(ALL_ROLE_CODES)}")
 
     user = User(
         username=payload.username,
@@ -139,9 +148,8 @@ def create_user(payload: UserCreate, db: DBDep, current_user: CurrentUserDep):
     user.password_hash = bcrypt.hashpw(
         payload.password.encode("utf-8"), bcrypt.gensalt()
     ).decode("utf-8")
-    if payload.role_codes:
-        roles = db.session.query(Role).filter(Role.code.in_(payload.role_codes)).all()
-        user.roles = list(roles)
+    roles = db.session.query(Role).filter(Role.code.in_(payload.role_codes)).all()
+    user.roles = list(roles)
     db.session.add(user)
     db.session.flush()
     db.session.refresh(user)

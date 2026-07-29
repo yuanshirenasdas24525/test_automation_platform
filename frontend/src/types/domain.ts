@@ -998,7 +998,7 @@ export interface UserCreate {
   email?: string | null;
   password: string;
   is_active?: boolean;
-  role_codes?: string[] | null;
+  role_codes: string[];
 }
 
 export interface UserUpdate {

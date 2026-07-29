@@ -352,15 +352,19 @@ function CreateUserDialog({
   }, [open]);
 
   const save = useMutation({
-    mutationFn: () =>
-      usersApi.create({
+    mutationFn: () => {
+      if (selected.size === 0) {
+        throw new Error("请至少选择一个职务");
+      }
+      return usersApi.create({
         username: username.trim(),
         full_name: fullName.trim() || null,
         email: email.trim() || null,
         password,
         is_active: true,
         role_codes: Array.from(selected),
-      }),
+      });
+    },
     onSuccess: () => {
       toast.success("已创建用户");
       onCreated();
@@ -413,7 +417,7 @@ function CreateUserDialog({
             />
           </div>
           <div>
-            <Label>角色</Label>
+            <Label>职务（必填）</Label>
             <div className="mt-1 grid grid-cols-2 gap-2">
               {ALL_ROLE_CODES.map((code) => (
                 <label
@@ -443,7 +447,12 @@ function CreateUserDialog({
             取消
           </Button>
           <Button
-            disabled={save.isPending || !username.trim() || password.length < 6}
+            disabled={
+              save.isPending ||
+              !username.trim() ||
+              password.length < 6 ||
+              selected.size === 0
+            }
             onClick={() => save.mutate()}
           >
             创建
