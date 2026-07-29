@@ -22,7 +22,7 @@ from database.models import (
     User,
 )
 from database.models.edit_operation import ENTITY_TYPE_TEST_CASE
-from server.services.edit_history_service import serialize_test_case_event
+from server.services.edit_history_service import merge_test_case_edit_history
 
 # 可选当前用户：带 token 解出 User，否则 None（记录清除标记的 operator 用）
 OptionalUserDep = Annotated[Optional[User], Depends(_get_optional_user)]
@@ -381,10 +381,8 @@ def list_edit_history(
             .limit(limit)
             .all()
         )
-    data = [serialize_test_case_event(row) for row in event_rows]
-    data.extend(row.to_dict() for row in rows)
-    data.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return {"status": "success", "data": data[:limit]}
+    data = merge_test_case_edit_history(event_rows, rows, limit=limit)
+    return {"status": "success", "data": data}
 
 
 @router.get("/test_history")

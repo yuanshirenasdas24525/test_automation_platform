@@ -289,10 +289,17 @@ function appendExtractRule(
   return { steps: nextSteps };
 }
 
+const PLATFORM_TIME_ZONE = "Asia/Shanghai";
+const EDIT_HISTORY_MERGE_WINDOW_MS = 30 * 60 * 1000;
+
+function normalizeApiTime(value: string): string {
+  const normalized = value.trim().replace(" ", "T");
+  return /[zZ]|[+-]\d{2}:?\d{2}$/.test(normalized) ? normalized : `${normalized}Z`;
+}
+
 function formatTime(value: string | null | undefined): string {
   if (!value) return "--";
-  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value.replace(" ", "T");
-  const date = new Date(normalized);
+  const date = new Date(normalizeApiTime(value));
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
@@ -302,13 +309,13 @@ function formatTime(value: string | null | undefined): string {
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
+    timeZone: PLATFORM_TIME_ZONE,
   }).format(date);
 }
 
 function getTimeValue(value: string | null | undefined): number {
   if (!value) return 0;
-  const normalized = /[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : value.replace(" ", "T");
-  const time = new Date(normalized).getTime();
+  const time = new Date(normalizeApiTime(value)).getTime();
   return Number.isNaN(time) ? 0 : time;
 }
 
@@ -2551,7 +2558,7 @@ function RecordsDialog({
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(value) => !value && onClose()}><DialogContent className="max-w-4xl"><DialogHeader><DialogTitle>{quickEdit ? "编辑记录" : "测试记录"}</DialogTitle><DialogDescription>{quickEdit ? "同一次快速编辑中的改动按会话聚合。" : "API 自动执行结果按报告聚合。点报告右侧「AI 全面分析」可批量诊断所有用例。"}</DialogDescription></DialogHeader><div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">{loading ? <Loading /> : quickEdit ? <EditRecords records={editQuery.data ?? []} onRollback={rollbackRecord} /> : <TestRecords reports={testQuery.data ?? []} onAnalyze={analyzeReport} />}</div><DialogFooter><Button variant="outline" onClick={onClose}>关闭</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog open={open} onOpenChange={(value) => !value && onClose()}><DialogContent className="max-w-4xl"><DialogHeader><DialogTitle>{quickEdit ? "编辑记录" : "测试记录"}</DialogTitle><DialogDescription>{quickEdit ? "相邻两次编辑间隔不超过 30 分钟时，自动合并为一条记录。" : "API 自动执行结果按报告聚合。点报告右侧「AI 全面分析」可批量诊断所有用例。"}</DialogDescription></DialogHeader><div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">{loading ? <Loading /> : quickEdit ? <EditRecords records={editQuery.data ?? []} onRollback={rollbackRecord} /> : <TestRecords reports={testQuery.data ?? []} onAnalyze={analyzeReport} />}</div><DialogFooter><Button variant="outline" onClick={onClose}>关闭</Button></DialogFooter></DialogContent></Dialog>
       <ReportAnalysisDialog
         state={analysis}
         run={aiRunQuery.data ?? null}
@@ -3027,21 +3034,38 @@ function analysisModeLabel(mode: string): string {
 
 function EditRecords({ records, onRollback }: { records: ApiCaseEditRecord[]; onRollback: (record: ApiCaseEditRecord, fullBatch?: boolean) => void }) {
   const groups = useMemo(() => {
-    const map = new Map<string, ApiCaseEditRecord[]>();
-    records
+    const sortedRecords = records
       .filter((record) => !(record.session_id?.startsWith("ai-") && record.batch_id == null))
-      .forEach((record) => {
-        const createdSecond = (record.created_at || "").replace(" ", "T").slice(0, 19);
-        const key = record.session_id ?? `time-${createdSecond}-${record.operator ?? ""}-${record.action}`;
-        map.set(key, [...(map.get(key) ?? []), record]);
+      .sort((a, b) => getTimeValue(b.created_at) - getTimeValue(a.created_at));
+    const merged: Array<{
+      key: string;
+      items: ApiCaseEditRecord[];
+      time: number;
+      previousTime: number;
+    }> = [];
+
+    sortedRecords.forEach((record) => {
+      const time = getTimeValue(record.created_at);
+      const current = merged.at(-1);
+      const interval = current && time > 0 ? current.previousTime - time : Number.POSITIVE_INFINITY;
+      if (current && interval >= 0 && interval <= EDIT_HISTORY_MERGE_WINDOW_MS) {
+        current.items.push(record);
+        current.previousTime = time;
+        return;
+      }
+      merged.push({
+        key: `history-${record.batch_id ?? "legacy"}-${record.id}`,
+        items: [record],
+        time,
+        previousTime: time,
       });
-    return [...map.entries()]
-      .map(([key, items]) => ({
-        key,
-        items,
-        time: Math.max(...items.map((item) => getTimeValue(item.created_at))),
-      }))
-      .sort((a, b) => b.time - a.time);
+    });
+
+    return merged.map((group) => ({
+      key: group.key,
+      items: group.items,
+      time: group.time,
+    }));
   }, [records]);
   if (!groups.length) return <Empty text="该模块还没有编辑记录" />;
   return (

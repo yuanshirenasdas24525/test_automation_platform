@@ -1,7 +1,7 @@
 """可回滚编辑历史服务。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import or_
@@ -26,6 +26,7 @@ from database.models.edit_operation import (
 
 
 SNAPSHOT_RETENTION_DAYS = 180
+EDIT_HISTORY_DUPLICATE_WINDOW_SECONDS = 5
 REQUIREMENT_SNAPSHOT_FIELDS = [
     "id",
     "project_id",
@@ -478,6 +479,97 @@ def serialize_test_case_event(event: EditOperationEvent) -> dict:
             event.snapshot_expires_at.isoformat() if event.snapshot_expires_at else None
         ),
     }
+
+
+def merge_test_case_edit_history(
+    event_rows: list[EditOperationEvent],
+    legacy_rows: list[Any],
+    *,
+    limit: int,
+) -> list[dict]:
+    """合并新旧用例编辑历史，并把数据库的无时区 UTC 时间显式标为 UTC。
+
+    用例 CRUD 为兼容旧页面会同时写旧审计表和可回滚事件表。这里将同一请求产生的
+    两条记录合成一条：保留新事件的回滚能力，同时沿用旧记录里的用户名、会话 ID
+    和更适合展示的字段差异。
+    """
+    events = [serialize_test_case_event(row) for row in event_rows]
+    used_event_indexes: set[int] = set()
+    merged: list[dict] = []
+
+    for legacy_row in legacy_rows:
+        legacy = legacy_row.to_dict()
+        legacy_time = _parse_history_time(legacy.get("created_at"))
+        matched_index: int | None = None
+        matched_delta: float | None = None
+        for index, event in enumerate(events):
+            if index in used_event_indexes:
+                continue
+            if event.get("case_id") != legacy.get("case_id"):
+                continue
+            if event.get("action") != legacy.get("action"):
+                continue
+            event_time = _parse_history_time(event.get("created_at"))
+            if event_time is None or legacy_time is None:
+                continue
+            delta = abs((event_time - legacy_time).total_seconds())
+            if delta > EDIT_HISTORY_DUPLICATE_WINDOW_SECONDS:
+                continue
+            if matched_delta is None or delta < matched_delta:
+                matched_index = index
+                matched_delta = delta
+
+        if matched_index is None:
+            merged.append(legacy)
+            continue
+
+        used_event_indexes.add(matched_index)
+        event = dict(events[matched_index])
+        event["session_id"] = legacy.get("session_id")
+        event["operator"] = legacy.get("operator") or event.get("operator")
+        if legacy.get("changes"):
+            event["changes"] = legacy["changes"]
+        merged.append(event)
+
+    merged.extend(
+        event for index, event in enumerate(events) if index not in used_event_indexes
+    )
+    for item in merged:
+        item["created_at"] = _history_time_iso(item.get("created_at"))
+        if item.get("snapshot_expires_at"):
+            item["snapshot_expires_at"] = _history_time_iso(item["snapshot_expires_at"])
+    merged.sort(
+        key=lambda item: _parse_history_time(item.get("created_at")) or datetime.min,
+        reverse=True,
+    )
+    return merged[:limit]
+
+
+def _parse_history_time(value: Any) -> datetime | None:
+    """解析历史时间；PG 的 timestamp without time zone 按项目约定视为 UTC。"""
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).strip().replace(" ", "T")
+        if text.endswith(("Z", "z")):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _history_time_iso(value: Any) -> str | None:
+    """输出带 Z 的 UTC ISO 时间，避免浏览器把 UTC 误当成本地时间。"""
+    parsed = _parse_history_time(value)
+    if parsed is None:
+        return str(value) if value else None
+    return f"{parsed.isoformat()}Z"
 
 
 def _snapshot_module_id(event: EditOperationEvent) -> int | None:

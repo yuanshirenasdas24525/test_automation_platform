@@ -74,7 +74,7 @@ from server.services.edit_history_service import (
     record_test_case_create,
     record_test_case_delete,
     record_test_case_update,
-    serialize_test_case_event,
+    merge_test_case_edit_history,
     snapshot_test_case,
 )
 
@@ -3638,10 +3638,8 @@ def list_edit_history(
             .limit(limit)
             .all()
         )
-    data = [serialize_test_case_event(row) for row in event_rows]
-    data.extend(r.to_dict() for r in rows)
-    data.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return {"status": "success", "data": data[:limit]}
+    data = merge_test_case_edit_history(event_rows, rows, limit=limit)
+    return {"status": "success", "data": data}
 
 
 @router.get("/test_history")
