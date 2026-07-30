@@ -2337,6 +2337,15 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
     if not shaped:
         raise HTTPException(status_code=502, detail="本批解析失败或无有效用例，请重试")
 
+    # 执行接地精修：interface 用例真跑一遍，按真实响应纠正 extract/assertion（GEN_PROBE_REFINE=0 可关）
+    import os as _os
+    if payload.mode == "interface" and _os.getenv("GEN_PROBE_REFINE", "1") != "0":
+        try:
+            from server.services.generation_probe_refine import probe_and_refine
+            shaped = probe_and_refine(shaped, module.project_id, cfg)
+        except Exception:  # noqa: BLE001
+            logger.warning("[gen-probe] 精修接入失败，用原草稿", exc_info=True)
+
     # 去重 + 标记：本次已生成的直接丢；与模块现有用例同名的保留但标 duplicate=true
     existing_norm = {_norm_name(n) for n in existing}
     seen = {_norm_name(n) for n in session_done}

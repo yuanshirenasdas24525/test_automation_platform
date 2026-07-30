@@ -42,3 +42,56 @@ def apply_refinements(drafts: list[dict], refinements: list[dict]) -> list[dict]
         if "assertion" in r:
             cfg["assertion"] = r["assertion"] or {}
     return drafts
+
+
+def probe_drafts(drafts: list[dict], project_id: int) -> list[dict]:
+    """真跑每条草稿（不落库），返回 SAMPLES 列表；执行异常的草稿给空响应样本，不中断。"""
+    from runners.case_executor import CaseExecutor
+    from runners.context.execution_context import ExecutionContext
+
+    samples: list[dict] = []
+    for draft in drafts:
+        try:
+            ctx = ExecutionContext()
+            ctx.set_var("_project_id", project_id)
+            result = CaseExecutor().run(dict(draft), ctx)
+            first = next(
+                (s for s in (result.steps or []) if getattr(s, "step_type", "") == "http_request"),
+                None,
+            )
+            rec = {
+                "input_data": getattr(first, "input_data", None) if first else None,
+                "output_data": getattr(first, "output_data", None) if first else None,
+                "status_code": (getattr(ctx, "records", {}) or {}).get("status_code"),
+            }
+        except Exception:  # noqa: BLE001
+            rec = {"input_data": None, "output_data": None, "status_code": None}
+        samples.append(format_sample(draft, rec))
+    return samples
+
+
+def refine_from_samples(samples: list[dict], cfg: Any) -> list[dict]:
+    """把样本喂给 api_probe_refine.md，返回精修后的 [{name, extract, assertion, note}]。"""
+    import json
+
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown
+
+    template = _load_prompt("api_probe_refine")
+    prompt = _render_prompt(template, {"SAMPLES": json.dumps(samples, ensure_ascii=False)})
+    raw, _tin, _tout = chat_markdown(prompt, cfg, timeout=180)
+    from server.api.functional_cases import _extract_json_list
+
+    return _extract_json_list(raw) or []
+
+
+def probe_and_refine(drafts: list[dict], project_id: int, cfg: Any) -> list[dict]:
+    """闭环编排：真跑收集样本 → 精修 → 合并回草稿。任何一步失败都回退原草稿（不阻断生成）。"""
+    try:
+        samples = probe_drafts(drafts, project_id)
+        refinements = refine_from_samples(samples, cfg)
+        return apply_refinements(drafts, refinements)
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).warning("[gen-probe] 精修闭环失败，返回原草稿", exc_info=True)
+        return drafts
