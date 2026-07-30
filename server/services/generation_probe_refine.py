@@ -44,13 +44,48 @@ def apply_refinements(drafts: list[dict], refinements: list[dict]) -> list[dict]
     return drafts
 
 
+_DESTRUCTIVE_HINTS = ("change-password", "reset-password", "/password", "logout", "signout")
+
+
+def _step_is_destructive(cfg: dict) -> bool:
+    """步骤是否破坏性操作（改密码/登出/删除账号）。"""
+    path = str(cfg.get("path") or "").lower()
+    method = str(cfg.get("method") or "").upper()
+    if any(h in path for h in _DESTRUCTIVE_HINTS):
+        return True
+    return method == "DELETE" and "user" in path
+
+
+def validate_isolation(draft: dict) -> list[str]:
+    """草稿对共享账号做破坏性操作却没先建一次性账号 → 返回违规说明；否则空列表。"""
+    import json
+
+    steps = draft.get("steps") or []
+    if not any(_step_is_destructive(s.get("config") or {}) for s in steps):
+        return []
+    blob = json.dumps([s.get("config") or {} for s in steps], ensure_ascii=False)
+    if "function:unique" in blob:
+        return []
+    return [
+        "破坏性操作（改密码/删除/登出）未用一次性账号："
+        "应先 function:unique 建号→登录→对它操作，不能直接用共享账号"
+    ]
+
+
 def probe_drafts(drafts: list[dict], project_id: int) -> list[dict]:
-    """真跑每条草稿（不落库），返回 SAMPLES 列表；执行异常的草稿给空响应样本，不中断。"""
+    """真跑每条草稿（不落库），返回 SAMPLES 列表。
+
+    隔离保护：对"破坏性操作打共享账号"的违规草稿**跳过真跑**（给空样本），
+    避免 probe 真跑污染共享账号；执行异常的草稿也给空样本，不中断。
+    """
     from runners.case_executor import CaseExecutor
     from runners.context.execution_context import ExecutionContext
 
     samples: list[dict] = []
     for draft in drafts:
+        if validate_isolation(draft):
+            samples.append(format_sample(draft, {"input_data": None, "output_data": None, "status_code": None}))
+            continue
         try:
             ctx = ExecutionContext()
             ctx.set_var("_project_id", project_id)

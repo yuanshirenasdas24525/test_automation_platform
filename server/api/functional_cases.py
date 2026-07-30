@@ -2345,6 +2345,16 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep):
             shaped = probe_and_refine(shaped, module.project_id, cfg)
         except Exception:  # noqa: BLE001
             logger.warning("[gen-probe] 精修接入失败，用原草稿", exc_info=True)
+    # 隔离校验：给"直接改共享账号做破坏性操作"的草稿打标记，供评审页提示改用一次性账号
+    if payload.mode == "interface":
+        try:
+            from server.services.generation_probe_refine import validate_isolation
+            for _c in shaped:
+                _w = validate_isolation(_c)
+                if _w:
+                    _c["isolation_warning"] = _w[0]
+        except Exception:  # noqa: BLE001
+            pass
 
     # 去重 + 标记：本次已生成的直接丢；与模块现有用例同名的保留但标 duplicate=true
     existing_norm = {_norm_name(n) for n in existing}

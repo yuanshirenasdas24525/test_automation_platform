@@ -4,7 +4,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from server.services.generation_probe_refine import format_sample, apply_refinements
+from server.services.generation_probe_refine import (
+    format_sample,
+    apply_refinements,
+    validate_isolation,
+)
 
 
 def test_format_sample_extracts_request_and_response():
@@ -53,3 +57,34 @@ def test_apply_refinements_skips_unmatched_name():
     drafts = [{"name": "A", "steps": [{"config": {"extract_data": {"k": "$.old"}}}]}]
     out = apply_refinements(drafts, [{"name": "B", "extract": {"k": "$.new"}}])
     assert out[0]["steps"][0]["config"]["extract_data"] == {"k": "$.old"}
+
+
+# ---------- 支柱 3：隔离校验 ----------
+
+def test_isolation_flags_destructive_without_ephemeral():
+    """直接改密码、没建一次性账号 → 违规（动了共享账号）。"""
+    draft = {"name": "改密码", "steps": [
+        {"config": {"method": "POST", "path": "/api/auth/login",
+                    "params": {"username": "${user_admin}"}}},
+        {"config": {"method": "PUT", "path": "/api/auth/password",
+                    "params": {"old_password": "x", "new_password": "y"}}}]}
+    assert validate_isolation(draft)  # 非空 = 违规
+
+
+def test_isolation_passes_with_ephemeral_account():
+    """先 function:unique 建一次性账号再改密码 → 合规。"""
+    draft = {"name": "改密码", "steps": [
+        {"config": {"method": "POST", "path": "/api/users",
+                    "params": {"username": "function:unique(AUTO_TEST_x)",
+                               "password": "p", "role_codes": ["test"]}}},
+        {"config": {"method": "POST", "path": "/api/auth/login",
+                    "params": {"username": "${test_username}"}}},
+        {"config": {"method": "PUT", "path": "/api/auth/password", "params": {}}}]}
+    assert validate_isolation(draft) == []
+
+
+def test_isolation_ignores_non_destructive():
+    """只登录、不做破坏性操作 → 不检查（登录共享账号本身没问题）。"""
+    draft = {"name": "登录成功", "steps": [
+        {"config": {"method": "POST", "path": "/api/auth/login", "params": {}}}]}
+    assert validate_isolation(draft) == []
