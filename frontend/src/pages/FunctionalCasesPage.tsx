@@ -2141,8 +2141,8 @@ function CaseDetailDialog({
           <ChevronRight className="h-7 w-7" />
         </button>
         <DialogHeader>
-          <DialogTitle className="flex items-center justify-center gap-2">
-            <span className="min-w-0 truncate text-center">{target.name}</span>
+          <DialogTitle className="flex min-w-0 items-center justify-center gap-2">
+            <span className="min-w-0 break-words text-center">{target.name}</span>
             {pm ? (
               <span className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset", pm.tone, pm.ring)}>
                 {pm.label}
@@ -2158,7 +2158,7 @@ function CaseDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 max-h-[40vh] overflow-y-auto pr-1">
+        <div className="min-w-0 space-y-4 max-h-[40vh] overflow-y-auto pr-1 break-words">
           {spec.preconditions.length > 0 && (
             <div>
               <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">前置条件</div>
