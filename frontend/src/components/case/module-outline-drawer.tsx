@@ -86,7 +86,9 @@ export function ModuleOutlinePanel({
     onSuccess: (summary) => {
       toast.success(`新增 ${summary.added} · 修改 ${summary.modified} · 删除 ${summary.deleted}`);
       if (summary.errors.length > 0) {
-        toast.warning(`${summary.errors.length} 项处理失败：${summary.errors.map((e) => e.error).join("；")}`);
+        // 同一原因(如缺 OpenAPI 契约)会重复很多条，去重后只提示一次。
+        const msgs = Array.from(new Set(summary.errors.map((e) => e.error)));
+        toast.warning(`${summary.errors.length} 项处理失败：${msgs.join("；")}`, { duration: 12000 });
       }
       setPlan(null);
       onApplied?.();
@@ -112,6 +114,9 @@ export function ModuleOutlinePanel({
 
   return (
     <div className="flex flex-col gap-4">
+      {/* 生成大纲后隐藏表单，只留大纲审阅；点大纲里的「返回」回到表单。 */}
+      {!plan ? (
+      <>
       {/* 本次变更 / 新增需求 */}
       <div>
         <div className="mb-1.5 text-xs font-medium text-secondary-foreground">本次变更 / 新增需求</div>
@@ -181,6 +186,8 @@ export function ModuleOutlinePanel({
           规划调整
         </button>
       </div>
+      </>
+      ) : null}
 
       {/* 调整大纲预览 */}
       {plan ? (
@@ -195,7 +202,7 @@ export function ModuleOutlinePanel({
           <ChangeOpsList ops={plan.ops} unchecked={unchecked} onToggle={toggleOp} />
           <div className="mt-3 flex items-center justify-end gap-2">
             <button onClick={() => setPlan(null)} className="rounded-md border border-input px-3.5 py-1.5 text-[13px] hover:bg-accent">
-              取消
+              返回
             </button>
             <button
               onClick={() => applyMut.mutate()}

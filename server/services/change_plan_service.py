@@ -345,4 +345,15 @@ def plan_preview(
     )
     db.session.add(run)
     db.session.flush()
-    return {"plan_id": run.id, "ops": ops, "warnings": ingest.warnings}
+
+    # 接口用例的详情生成需要结构化 OpenAPI 契约（平台防 AI 瞎编接口的硬门禁）。
+    # 若有新增/修改但没解析到契约，提前预警——否则「应用」时这些 op 会全部生成失败。
+    warnings = list(ingest.warnings)
+    needs_contract = any(o["action"] in ("add", "modify") for o in ops)
+    if needs_contract and not (ingest.contract.get("operations") or []):
+        warnings.append(
+            "检测到新增/修改用例，但未解析到结构化 OpenAPI 契约。接口用例的详情生成"
+            "必须有 OpenAPI 契约，否则「应用」时这些用例会生成失败。请上传 OpenAPI "
+            "JSON/YAML 文件，或在「接口文档链接」填入 Swagger/OpenAPI 地址后重新规划。"
+        )
+    return {"plan_id": run.id, "ops": ops, "warnings": warnings}
