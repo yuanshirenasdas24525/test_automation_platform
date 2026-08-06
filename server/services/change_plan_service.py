@@ -83,6 +83,178 @@ def _parse_ai_json(raw: str) -> dict[str, Any] | None:
     return None
 
 
+def _err_msg(exc: Exception) -> str:
+    detail = getattr(exc, "detail", None)
+    if detail:
+        return str(detail)
+    return str(exc) or exc.__class__.__name__
+
+
+def _load_plan(db, plan_id: int) -> AiRun:
+    """按 id 加载调整计划；不存在或不是 change_plan 类型的 AiRun 一律 404。"""
+    from fastapi import HTTPException
+
+    run = (
+        db.session.query(AiRun)
+        .filter(AiRun.id == plan_id, AiRun.feature == AI_FEATURE_CHANGE_PLAN)
+        .first()
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="调整计划不存在")
+    return run
+
+
+def _apply_delete(db, op: dict[str, Any]) -> None:
+    """删除 op 对应的真实用例。复用 `server.api.cases.delete_case`（任务解绑 + 编辑历史一起处理），
+    不在本文件里重新实现一遍删除语义。"""
+    from server.api.cases import delete_case
+
+    case_id = op.get("target_case_id")
+    if not isinstance(case_id, int):
+        raise ValueError("delete op 缺少 target_case_id")
+    delete_case(case_id=case_id, db=db, user=None, session_id=None, history_batch_id=None)
+
+
+def _generate_details(
+    db,
+    module: Module,
+    model_name: str,
+    contract: dict[str, Any] | None,
+    ops: list[dict[str, Any]],
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """把 add/modify ops 的 title 当测试点，复用接口用例详情生成器(ai_generate_batch)
+    产出完整用例（含 steps/request/asserts）。
+
+    `ai_generate_batch` 只返回生成结果，不落库 —— 落库是 plan_apply 自己的事。
+    返回 (op_id -> compiled_case 详情字典, errors[{op_id, error}])。
+    """
+    from server.api.functional_cases import AiBatchRequest, BatchPoint, _norm_name, ai_generate_batch
+
+    payload = AiBatchRequest(
+        module_id=module.id,
+        model_name=model_name,
+        mode="interface",
+        points=[BatchPoint(title=op["title"], category="") for op in ops],
+        api_contract=contract or {},
+    )
+    try:
+        resp = ai_generate_batch(payload, db, None)
+    except Exception as exc:  # noqa: BLE001 —— 整批生成失败，逐 op 记错，不让其它 op（比如 delete）陪葬
+        msg = _err_msg(exc)
+        return {}, [{"op_id": op["id"], "error": f"生成失败：{msg}"} for op in ops]
+
+    generated = ((resp or {}).get("data") or {}).get("cases") or []
+    by_title: dict[str, list[dict[str, Any]]] = {}
+    for item in generated:
+        key = _norm_name(str(item.get("name") or ""))
+        by_title.setdefault(key, []).append(item)
+
+    details: dict[int, dict[str, Any]] = {}
+    errors: list[dict[str, Any]] = []
+    for op in ops:
+        candidates = by_title.get(_norm_name(op["title"]))
+        if not candidates:
+            errors.append({"op_id": op["id"], "error": "生成结果里找不到匹配用例（标题未对上）"})
+            continue
+        item = candidates.pop(0)
+        compiled = item.get("compiled_case")
+        if not isinstance(compiled, dict):
+            errors.append({"op_id": op["id"], "error": "生成结果缺少 compiled_case，可能命中契约硬校验失败"})
+            continue
+        details[op["id"]] = compiled
+    return details, errors
+
+
+def _create_case_from_generated(db, module: Module, detail: dict[str, Any]) -> None:
+    from database.schemas.test_case_create import TestCaseCreate
+    from server.api.cases import create_case
+
+    payload = {**detail, "module_id": module.id}
+    create_case(case=TestCaseCreate(**payload), db=db, user=None, session_id=None)
+
+
+def _overwrite_case_from_generated(db, case_id: int, module: Module, detail: dict[str, Any]) -> None:
+    """用生成的详情整体覆盖已有用例，保留其 id（不改 sort_order/所属批次）。"""
+    from database.schemas.test_case_create import TestCaseCreate
+    from server.api.cases import update_case
+
+    payload = {**detail, "module_id": module.id}
+    payload.pop("sort_order", None)
+    update_case(case_id=case_id, case=TestCaseCreate(**payload), db=db, user=None, session_id=None, history_batch_id=None)
+
+
+def plan_apply(
+    db,
+    plan_id: int,
+    model_name: str,
+    confirmed_delete_ids: list[int] | set[int] | None = None,
+    selected_op_ids: list[int] | set[int] | None = None,
+) -> dict[str, Any]:
+    """把已持久化的调整计划应用到真实模块用例上。
+
+    - delete：只处理 op.id ∈ confirmed_delete_ids 的 delete op，删真实 TestCase。
+    - add/modify：只处理 op.id ∈ selected_op_ids 的 op，复用生成器产出完整用例后写库。
+    - 单个 op 失败进 errors，不中断整批；每个 op 用 SAVEPOINT 包一层，失败只回滚这一条。
+    """
+    run = _load_plan(db, plan_id)
+    ops = (run.output_payload or {}).get("ops") or []
+    delete_ids = set(confirmed_delete_ids or [])
+    selected_ids = set(selected_op_ids or [])
+
+    result: dict[str, Any] = {"added": 0, "modified": 0, "deleted": 0, "errors": []}
+
+    def _run_in_savepoint(fn, *args) -> str | None:
+        """跑一个写库动作，独立 SAVEPOINT；失败只回滚这条，返回错误信息（成功返回 None）。"""
+        try:
+            with db.session.begin_nested():
+                fn(*args)
+            return None
+        except Exception as exc:  # noqa: BLE001 —— per-op 容错，绝不让一个 op 拖垮整批
+            return _err_msg(exc)
+
+    delete_ops = [op for op in ops if op.get("action") == "delete" and op.get("id") in delete_ids]
+    for op in delete_ops:
+        error = _run_in_savepoint(_apply_delete, db, op)
+        if error:
+            result["errors"].append({"op_id": op["id"], "error": error})
+        else:
+            result["deleted"] += 1
+
+    gen_ops = [op for op in ops if op.get("action") in {"add", "modify"} and op.get("id") in selected_ids]
+    if gen_ops:
+        module_id = (run.input_payload or {}).get("module_id")
+        module = db.session.query(Module).filter(Module.id == module_id).first() if module_id else None
+        if module is None:
+            for op in gen_ops:
+                result["errors"].append({"op_id": op["id"], "error": "调整计划关联的模块不存在"})
+        else:
+            contract = (run.output_payload or {}).get("contract")
+            details, gen_errors = _generate_details(db, module, model_name, contract, gen_ops)
+            result["errors"].extend(gen_errors)
+            for op in gen_ops:
+                detail = details.get(op["id"])
+                if detail is None:
+                    continue  # 已经在 gen_errors 里记过错
+                if op["action"] == "add":
+                    error = _run_in_savepoint(_create_case_from_generated, db, module, detail)
+                    if error:
+                        result["errors"].append({"op_id": op["id"], "error": error})
+                    else:
+                        result["added"] += 1
+                else:
+                    target_id = op.get("target_case_id")
+                    if not isinstance(target_id, int):
+                        result["errors"].append({"op_id": op["id"], "error": "modify op 缺少 target_case_id"})
+                        continue
+                    error = _run_in_savepoint(_overwrite_case_from_generated, db, target_id, module, detail)
+                    if error:
+                        result["errors"].append({"op_id": op["id"], "error": error})
+                    else:
+                        result["modified"] += 1
+
+    return result
+
+
 def plan_preview(
     db,
     module: Module,
