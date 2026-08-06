@@ -9,7 +9,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Loader2, Sparkles, Upload } from "lucide-react";
 
-import { changeAdjustApi, aiModelsApi, ApiError } from "@/lib/api";
+import { changeAdjustApi, aiModelsApi, automationCasesApi, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { ChangeOp, ChangePlan } from "@/types/domain";
 
@@ -37,7 +37,8 @@ export function ModuleOutlinePanel({
   const [docFiles, setDocFiles] = useState<File[]>([]);
   const [docLinks, setDocLinks] = useState("");
   const [plan, setPlan] = useState<ChangePlan | null>(null);
-  const [uncheckedDeletes, setUncheckedDeletes] = useState<Set<number>>(new Set());
+  // 被取消勾选的 op（默认全部勾选=写入；去勾=不写入）。适用于新增/修改/删除所有类型。
+  const [unchecked, setUnchecked] = useState<Set<number>>(new Set());
 
   const modelsQuery = useQuery({
     queryKey: ["ai-models", projectId],
@@ -57,22 +58,30 @@ export function ModuleOutlinePanel({
       }),
     onSuccess: (data) => {
       setPlan(data);
-      setUncheckedDeletes(new Set());
+      setUnchecked(new Set());
       if (data.ops.length === 0) toast.info("没有需要调整的测试点");
     },
     onError: (e) => toast.error(errMsg(e)),
   });
 
   const applyMut = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!plan) throw new Error("no plan");
-      const selectedOpIds = plan.ops
-        .filter((op) => op.action !== "delete" || !uncheckedDeletes.has(op.id))
-        .map((op) => op.id);
+      // 勾选=写入；去勾=跳过。delete 需同时进 selected 与 confirmed 才真删。
+      const selectedOpIds = plan.ops.filter((op) => !unchecked.has(op.id)).map((op) => op.id);
       const confirmedDeleteIds = plan.ops
-        .filter((op) => op.action === "delete" && !uncheckedDeletes.has(op.id))
+        .filter((op) => op.action === "delete" && !unchecked.has(op.id))
         .map((op) => op.id);
-      return changeAdjustApi.apply({ planId: plan.plan_id, selectedOpIds, confirmedDeleteIds });
+      const summary = await changeAdjustApi.apply({ planId: plan.plan_id, selectedOpIds, confirmedDeleteIds });
+      // 写入后按 sort_order 统一重编号（与「生成用例」一致，幂等：先剥旧前缀再重排），避免编号重复。
+      if (moduleId != null) {
+        try {
+          await automationCasesApi.renumber(moduleId, { enable: true, caseType: "api" });
+        } catch {
+          /* 重编号失败不阻断主流程，用例已写入 */
+        }
+      }
+      return summary;
     },
     onSuccess: (summary) => {
       toast.success(`新增 ${summary.added} · 修改 ${summary.modified} · 删除 ${summary.deleted}`);
@@ -92,8 +101,8 @@ export function ModuleOutlinePanel({
     previewMut.mutate();
   };
 
-  const toggleDelete = (opId: number) => {
-    setUncheckedDeletes((prev) => {
+  const toggleOp = (opId: number) => {
+    setUnchecked((prev) => {
       const next = new Set(prev);
       if (next.has(opId)) next.delete(opId);
       else next.add(opId);
@@ -183,7 +192,7 @@ export function ModuleOutlinePanel({
               ))}
             </div>
           ) : null}
-          <ChangeOpsList ops={plan.ops} uncheckedDeletes={uncheckedDeletes} onToggleDelete={toggleDelete} />
+          <ChangeOpsList ops={plan.ops} unchecked={unchecked} onToggle={toggleOp} />
           <div className="mt-3 flex items-center justify-end gap-2">
             <button onClick={() => setPlan(null)} className="rounded-md border border-input px-3.5 py-1.5 text-[13px] hover:bg-accent">
               取消
@@ -211,12 +220,12 @@ const ACTION_LABEL: Record<string, string> = {
 
 function ChangeOpsList({
   ops,
-  uncheckedDeletes,
-  onToggleDelete,
+  unchecked,
+  onToggle,
 }: {
   ops: ChangeOp[];
-  uncheckedDeletes: Set<number>;
-  onToggleDelete: (opId: number) => void;
+  unchecked: Set<number>;
+  onToggle: (opId: number) => void;
 }) {
   if (ops.length === 0) {
     return <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">无变更。</div>;
@@ -224,10 +233,11 @@ function ChangeOpsList({
   const added = ops.filter((o) => o.action === "add").length;
   const modified = ops.filter((o) => o.action === "modify").length;
   const deleted = ops.filter((o) => o.action === "delete").length;
+  const willWrite = ops.filter((o) => !unchecked.has(o.id)).length;
   return (
     <>
       <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="font-medium">调整大纲</span>
+        <span className="font-medium">调整大纲（勾选=写入，已选 {willWrite}/{ops.length}）</span>
         <span className="text-muted-foreground">+{added} · ~{modified} · −{deleted}</span>
       </div>
       <div className="overflow-hidden rounded-md border">
@@ -235,8 +245,8 @@ function ChangeOpsList({
           <ChangeOpRow
             key={op.id}
             op={op}
-            checked={!uncheckedDeletes.has(op.id)}
-            onToggleDelete={onToggleDelete}
+            checked={!unchecked.has(op.id)}
+            onToggle={onToggle}
           />
         ))}
       </div>
@@ -247,30 +257,26 @@ function ChangeOpsList({
 function ChangeOpRow({
   op,
   checked,
-  onToggleDelete,
+  onToggle,
 }: {
   op: ChangeOp;
   checked: boolean;
-  onToggleDelete: (opId: number) => void;
+  onToggle: (opId: number) => void;
 }) {
-  const map: Record<string, { bg: string; fg: string; sign: string }> = {
-    add: { bg: "bg-green-50", fg: "text-green-800", sign: "+" },
-    modify: { bg: "bg-amber-50", fg: "text-amber-800", sign: "~" },
-    delete: { bg: "bg-red-50", fg: "text-red-800", sign: "−" },
+  const map: Record<string, { bg: string; fg: string }> = {
+    add: { bg: "bg-green-50", fg: "text-green-800" },
+    modify: { bg: "bg-amber-50", fg: "text-amber-800" },
+    delete: { bg: "bg-red-50", fg: "text-red-800" },
   };
   const s = map[op.action] ?? map.add;
   return (
-    <div className={cn("flex items-start gap-2 border-t px-3 py-2 text-[12px] first:border-t-0", s.bg, s.fg)}>
-      {op.action === "delete" ? (
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={() => onToggleDelete(op.id)}
-          className="mt-0.5 h-3.5 w-3.5 shrink-0"
-        />
-      ) : (
-        <span className="mt-0.5 w-3.5 shrink-0 text-center font-mono">{s.sign}</span>
-      )}
+    <div className={cn("flex items-start gap-2 border-t px-3 py-2 text-[12px] first:border-t-0", s.bg, s.fg, !checked && "opacity-50")}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={() => onToggle(op.id)}
+        className="mt-0.5 h-3.5 w-3.5 shrink-0"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className={cn("font-medium", op.action === "delete" && "line-through")}>{op.title}</span>
