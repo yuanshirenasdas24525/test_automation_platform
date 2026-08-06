@@ -39,8 +39,10 @@ import type {
   CommitDraftsPayload,
   CommitDraftsResult,
   ApiEnvelope,
+  ApplySummary,
   CaseType,
   ChangePasswordRequest,
+  ChangePlan,
   ContentNode,
   FunctionalBatchMarkPayload,
   FunctionalBatchSummary,
@@ -2164,5 +2166,50 @@ export const tasksOverviewApi = {
       `/api/tasks-overview/${encodeURIComponent(typeKey)}/${id}/cancel`,
       { method: "POST" },
     );
+  },
+};
+
+// =============================================================================
+// 变更调整（change-adjust）—— 需求变更驱动的接口用例增改删
+// =============================================================================
+
+export const changeAdjustApi = {
+  /**
+   * 预览：变更文本 + 可选链接 / 附件 → AI 生成的增改删操作计划（不落库）。
+   * multipart 表单，走 request<T> 自带的 FormData 分支（不手动设 Content-Type，
+   * 由浏览器补齐 boundary），与 functionalCasesApi.aiGenerateOutline 同一套路。
+   */
+  preview(args: {
+    moduleId: number;
+    changeText: string;
+    modelName: string;
+    links: string;
+    files: File[];
+  }) {
+    const fd = new FormData();
+    fd.append("module_id", String(args.moduleId));
+    fd.append("change_text", args.changeText);
+    fd.append("model_name", args.modelName);
+    fd.append("links", args.links);
+    args.files.forEach((f) => fd.append("files", f));
+    return request<ChangePlan>("/api/change_plan/preview", {
+      method: "POST",
+      body: fd,
+    });
+  },
+  /** 应用：勾选的 op + 需二次确认的删除 op → 实际写入 test_cases，返回增/改/删汇总。 */
+  apply(args: {
+    planId: number;
+    selectedOpIds: number[];
+    confirmedDeleteIds: number[];
+  }) {
+    return request<ApplySummary>("/api/change_plan/apply", {
+      method: "POST",
+      body: {
+        plan_id: args.planId,
+        selected_op_ids: args.selectedOpIds,
+        confirmed_delete_ids: args.confirmedDeleteIds,
+      },
+    });
   },
 };

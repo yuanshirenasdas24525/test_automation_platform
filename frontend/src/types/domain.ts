@@ -1573,3 +1573,22 @@ export interface ScriptTestResult {
   result?: unknown;
   error?: string;
 }
+
+// =============================================================================
+// 变更调整（change-adjust）—— 需求变更驱动的接口用例增改删
+// =============================================================================
+
+export type ChangeOpAction = "add" | "modify" | "delete";
+export interface ChangeOp {
+  id: number;
+  action: ChangeOpAction;
+  target_case_id: number | null;
+  title: string;
+  endpoint: { method: string; path: string } | null;
+  reason: string;
+}
+export interface ChangePlan { plan_id: number; ops: ChangeOp[]; warnings: string[]; }
+export interface ApplySummary {
+  added: number; modified: number; deleted: number;
+  errors: { op_id: number; error: string }[];
+}
