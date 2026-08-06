@@ -119,7 +119,7 @@ def _ingest_link(url: str, catalogs: list[dict[str, Any]], result: IngestResult)
         return
     try:
         import requests
-        resp = requests.get(url, timeout=15, stream=True)
+        resp = requests.get(url, timeout=15, stream=True, allow_redirects=False)
         resp.raise_for_status()
         raw = resp.raw.read(_MAX_LINK_BYTES + 1, decode_content=True)
         if len(raw) > _MAX_LINK_BYTES:
