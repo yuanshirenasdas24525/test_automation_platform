@@ -126,6 +126,12 @@ def _generate_details(
     产出完整用例（含 steps/request/asserts）。
 
     `ai_generate_batch` 只返回生成结果，不落库 —— 落库是 plan_apply 自己的事。
+    调用本身也包一层 SAVEPOINT：`ai_generate_batch` 内部有大量 `db.session.query/flush`，
+    一旦命中真正的 DB 层异常（连接抖动/超时/死锁/完整性错误），Postgres 事务会被置为
+    aborted。没有 SAVEPOINT 的话，session 会带着 PendingRollbackError 一路传到外层
+    （`server/api/deps.py::get_db` 收尾 commit 时炸），把同一次 plan_apply 里已经成功
+    的 delete 也整体拖下水，违反"逐 op 容错、不中断整批"的约定。用 `begin_nested()`
+    包住后，异常只回滚到这个 savepoint，session 本身仍可用，后续 op 能正常继续。
     返回 (op_id -> compiled_case 详情字典, errors[{op_id, error}])。
     """
     from server.api.functional_cases import AiBatchRequest, BatchPoint, _norm_name, ai_generate_batch
@@ -138,8 +144,11 @@ def _generate_details(
         api_contract=contract or {},
     )
     try:
-        resp = ai_generate_batch(payload, db, None)
+        with db.session.begin_nested():
+            resp = ai_generate_batch(payload, db, None)
     except Exception as exc:  # noqa: BLE001 —— 整批生成失败，逐 op 记错，不让其它 op（比如 delete）陪葬
+        # begin_nested() 的上下文管理器已经在异常时把事务回滚到这个 savepoint，
+        # session 保持可用，不会把 PendingRollbackError 带出这个函数。
         msg = _err_msg(exc)
         return {}, [{"op_id": op["id"], "error": f"生成失败：{msg}"} for op in ops]
 
@@ -194,7 +203,11 @@ def plan_apply(
 
     - delete：只处理 op.id ∈ confirmed_delete_ids 的 delete op，删真实 TestCase。
     - add/modify：只处理 op.id ∈ selected_op_ids 的 op，复用生成器产出完整用例后写库。
-    - 单个 op 失败进 errors，不中断整批；每个 op 用 SAVEPOINT 包一层，失败只回滚这一条。
+    - 单个 op 失败进 errors，不中断整批；每个写库动作（delete / create / update）都用
+      SAVEPOINT 包一层，失败只回滚这一条。批量生成阶段（`_generate_details` 里调
+      `ai_generate_batch` 那一步，同一次覆盖这批 add/modify op）也单独用 SAVEPOINT
+      包住——它内部会做大量 `db.session` 操作，DB 层异常必须只回滚到那个 savepoint，
+      不能把整个 session 拖进 aborted 状态，否则前面已经成功的 delete 会被一起赔进去。
     """
     run = _load_plan(db, plan_id)
     ops = (run.output_payload or {}).get("ops") or []
