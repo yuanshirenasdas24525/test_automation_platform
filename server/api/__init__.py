@@ -16,6 +16,7 @@ from .auth import router as auth_router
 from .bug_fix import router as bug_fix_router
 from .cases import router as cases_router
 from .api_cases import router as api_cases_router
+from .change_adjust import router as change_adjust_router
 from .config import router as config_router
 from .content import router as content_router
 from .devices import router as devices_router
@@ -49,6 +50,7 @@ __all__ = [
     "bug_fix_router",
     "cases_router",
     "api_cases_router",
+    "change_adjust_router",
     "config_router",
     "content_router",
     "devices_router",

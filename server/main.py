@@ -74,6 +74,7 @@ from server.api import (
     bug_fix_router,
     cases_router,
     api_cases_router,
+    change_adjust_router,
     config_router,
     content_router,
     devices_router,
@@ -175,6 +176,7 @@ def health():
 # ---------------------------------------------------------------------------
 for router in (
     auth_router,
+    users_router,
 ):
     app.include_router(router, prefix="/api")
 
@@ -185,6 +187,7 @@ for router in (
     project_versions_router,
     cases_router,
     api_cases_router,
+    change_adjust_router,
     functional_cases_router,
     content_router,
     runs_router,
@@ -206,7 +209,6 @@ for router in (
     ai_dialogue_router,
     ai_models_router,
     ai_requirements_router,
-    users_router,
     version_summaries_router,
     bug_fix_router,
     api_keys_router,

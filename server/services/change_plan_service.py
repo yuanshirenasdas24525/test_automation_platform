@@ -104,7 +104,7 @@ def _load_plan(db, plan_id: int) -> AiRun:
     return run
 
 
-def _apply_delete(db, op: dict[str, Any]) -> None:
+def _apply_delete(db, op: dict[str, Any], user: Any = None) -> None:
     """删除 op 对应的真实用例。复用 `server.api.cases.delete_case`（任务解绑 + 编辑历史一起处理），
     不在本文件里重新实现一遍删除语义。"""
     from server.api.cases import delete_case
@@ -112,7 +112,7 @@ def _apply_delete(db, op: dict[str, Any]) -> None:
     case_id = op.get("target_case_id")
     if not isinstance(case_id, int):
         raise ValueError("delete op 缺少 target_case_id")
-    delete_case(case_id=case_id, db=db, user=None, session_id=None, history_batch_id=None)
+    delete_case(case_id=case_id, db=db, user=user, session_id=None, history_batch_id=None)
 
 
 def _generate_details(
@@ -174,22 +174,24 @@ def _generate_details(
     return details, errors
 
 
-def _create_case_from_generated(db, module: Module, detail: dict[str, Any]) -> None:
+def _create_case_from_generated(db, module: Module, detail: dict[str, Any], user: Any = None) -> None:
     from database.schemas.test_case_create import TestCaseCreate
     from server.api.cases import create_case
 
     payload = {**detail, "module_id": module.id}
-    create_case(case=TestCaseCreate(**payload), db=db, user=None, session_id=None)
+    create_case(case=TestCaseCreate(**payload), db=db, user=user, session_id=None)
 
 
-def _overwrite_case_from_generated(db, case_id: int, module: Module, detail: dict[str, Any]) -> None:
+def _overwrite_case_from_generated(
+    db, case_id: int, module: Module, detail: dict[str, Any], user: Any = None
+) -> None:
     """用生成的详情整体覆盖已有用例，保留其 id（不改 sort_order/所属批次）。"""
     from database.schemas.test_case_create import TestCaseCreate
     from server.api.cases import update_case
 
     payload = {**detail, "module_id": module.id}
     payload.pop("sort_order", None)
-    update_case(case_id=case_id, case=TestCaseCreate(**payload), db=db, user=None, session_id=None, history_batch_id=None)
+    update_case(case_id=case_id, case=TestCaseCreate(**payload), db=db, user=user, session_id=None, history_batch_id=None)
 
 
 def plan_apply(
@@ -198,6 +200,7 @@ def plan_apply(
     model_name: str,
     confirmed_delete_ids: list[int] | set[int] | None = None,
     selected_op_ids: list[int] | set[int] | None = None,
+    user: Any = None,
 ) -> dict[str, Any]:
     """把已持久化的调整计划应用到真实模块用例上。
 
@@ -208,6 +211,9 @@ def plan_apply(
       `ai_generate_batch` 那一步，同一次覆盖这批 add/modify op）也单独用 SAVEPOINT
       包住——它内部会做大量 `db.session` 操作，DB 层异常必须只回滚到那个 savepoint，
       不能把整个 session 拖进 aborted 状态，否则前面已经成功的 delete 会被一起赔进去。
+    - `user`：调用方（路由层）传入的当前登录用户，透传给 create_case/update_case/
+      delete_case 用于编辑历史（EditOperationEvent）的 operator 归属；可选，缺省 None
+      保持旧行为（历史记录 operator 为空）。
     """
     run = _load_plan(db, plan_id)
     ops = (run.output_payload or {}).get("ops") or []
@@ -227,7 +233,7 @@ def plan_apply(
 
     delete_ops = [op for op in ops if op.get("action") == "delete" and op.get("id") in delete_ids]
     for op in delete_ops:
-        error = _run_in_savepoint(_apply_delete, db, op)
+        error = _run_in_savepoint(_apply_delete, db, op, user)
         if error:
             result["errors"].append({"op_id": op["id"], "error": error})
         else:
@@ -249,7 +255,7 @@ def plan_apply(
                 if detail is None:
                     continue  # 已经在 gen_errors 里记过错
                 if op["action"] == "add":
-                    error = _run_in_savepoint(_create_case_from_generated, db, module, detail)
+                    error = _run_in_savepoint(_create_case_from_generated, db, module, detail, user)
                     if error:
                         result["errors"].append({"op_id": op["id"], "error": error})
                     else:
@@ -259,7 +265,7 @@ def plan_apply(
                     if not isinstance(target_id, int):
                         result["errors"].append({"op_id": op["id"], "error": "modify op 缺少 target_case_id"})
                         continue
-                    error = _run_in_savepoint(_overwrite_case_from_generated, db, target_id, module, detail)
+                    error = _run_in_savepoint(_overwrite_case_from_generated, db, target_id, module, detail, user)
                     if error:
                         result["errors"].append({"op_id": op["id"], "error": error})
                     else:
