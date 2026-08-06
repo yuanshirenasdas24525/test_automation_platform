@@ -13,9 +13,6 @@ import type {
   AiOutlinePoint,
   AiModelConfig,
   AiModelConfigUpsert,
-  ModuleOutline,
-  OutlineAlignPreview,
-  OutlineReplanPreview,
   AiModelTestResult,
   AiRun,
   AiRunStatus,
@@ -627,81 +624,6 @@ export const casesApi = {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(objectUrl);
-  },
-};
-
-// -------------------------------------------------------------------------
-// 模块大纲（测试点）：长期保存 + 刷新对齐。见 docs/module_outline_design.md
-// -------------------------------------------------------------------------
-export const moduleOutlineApi = {
-  /** 读某模块大纲；没有则返回 null。 */
-  get(moduleId: number, mode: string = "functional") {
-    return request<ModuleOutline | null>(
-      `/api/functional_cases/module_outline?module_id=${moduleId}&mode=${encodeURIComponent(mode)}`,
-    );
-  },
-  /** 算大纲 ↔ 当前用例的 diff（不落库）。 */
-  alignPreview(moduleId: number, mode: string = "interface") {
-    return request<OutlineAlignPreview>(
-      `/api/functional_cases/module_outline/align_preview`,
-      { method: "POST", body: { module_id: moduleId, mode } },
-    );
-  },
-  /** 按最新用例重算并应用对齐（幂等）。 */
-  applyAlign(moduleId: number, mode: string = "interface") {
-    return request<ModuleOutline>(
-      `/api/functional_cases/module_outline/apply`,
-      { method: "POST", body: { module_id: moduleId, mode } },
-    );
-  },
-  /** 清理没有关联用例的测试点（缺口垃圾），只保留同步自真实用例的点。 */
-  purgeGaps(moduleId: number, mode: string = "interface") {
-    return request<{ removed: number; outline: ModuleOutline | null }>(
-      `/api/functional_cases/module_outline/purge_gaps`,
-      { method: "POST", body: { module_id: moduleId, mode } },
-    );
-  },
-  /** AI 增量重规划预览：基于现有大纲 + 本次变更，产出新测试点的 diff（不落库）。 */
-  replanPreview(args: {
-    moduleId: number;
-    modelName: string;
-    changeText: string;
-    mode?: string;
-    incremental?: boolean;
-  }) {
-    return request<OutlineReplanPreview>(
-      `/api/functional_cases/module_outline/replan_preview`,
-      {
-        method: "POST",
-        body: {
-          module_id: args.moduleId,
-          model_name: args.modelName,
-          change_text: args.changeText,
-          mode: args.mode ?? "interface",
-          incremental: args.incremental ?? true,
-        },
-      },
-    );
-  },
-  /** 应用 AI 增量重规划：把预览产出的新测试点写入大纲。 */
-  replanApply(args: {
-    moduleId: number;
-    mode?: string;
-    digest: string;
-    points: { title: string; category?: string }[];
-  }) {
-    return request<ModuleOutline>(
-      `/api/functional_cases/module_outline/replan_apply`,
-      {
-        method: "POST",
-        body: {
-          module_id: args.moduleId,
-          mode: args.mode ?? "interface",
-          digest: args.digest,
-          points: args.points,
-        },
-      },
-    );
   },
 };
 

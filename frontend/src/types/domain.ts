@@ -233,42 +233,6 @@ export interface ModuleOutline {
   gap_count: number;
 }
 
-export type OutlineAlignOp =
-  | "added"
-  | "linked"
-  | "renamed"
-  | "orphaned"
-  | "unchanged";
-
-export interface OutlineAlignChange {
-  op: OutlineAlignOp;
-  point_id: number | null;
-  title: string;
-  old_title?: string;
-  category?: string | null;
-  linked_case_id?: number | null;
-  source: string;
-  next_status: string;
-}
-
-export interface OutlineAlignPreview {
-  module_id: number;
-  mode: string;
-  has_outline: boolean;
-  changes: OutlineAlignChange[];
-  summary: { added: number; linked: number; renamed: number; orphaned: number };
-}
-
-/** AI 增量重规划预览：changes 只含 added；digest/points 供 apply 回传。 */
-export interface OutlineReplanPreview {
-  module_id: number;
-  has_outline: boolean;
-  changes: OutlineAlignChange[];
-  summary: { added: number };
-  digest: string;
-  points: { title: string; category?: string }[];
-}
-
 export type ApiRunStatus = "passed" | "failed" | "error" | "skipped" | "pending";
 
 export interface ApiCaseLatestRun {
