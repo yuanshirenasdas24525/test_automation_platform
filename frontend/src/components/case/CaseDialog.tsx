@@ -444,7 +444,10 @@ export function CaseDialog({
         path: toFieldText(singleConfig.path ?? src.path),
         headers: toFieldText(singleConfig.headers ?? src.headers),
         data_type: toFieldText(singleConfig.data_type ?? src.data_type) || "application/json",
-        params: toFieldText(singleConfig.params ?? src.params),
+        // 生成用例的请求体在 config.json（新版分区式，runner 从这里读）；手工单请求
+        // 编辑器历史上写进 config.params（遗留式）。回显时优先 json，兼容旧的 params，
+        // 否则会读空只显示 placeholder（看着像"参数丢了"）。
+        params: toFieldText(singleConfig.json ?? singleConfig.body ?? singleConfig.params ?? src.params),
         extract_data: toFieldText(singleConfig.extract_data ?? src.extract_data),
         assertion: toFieldText(singleConfig.assertion ?? src.assertion),
         sql_query: toFieldText(singleConfig.sql_query ?? src.sql_query),
