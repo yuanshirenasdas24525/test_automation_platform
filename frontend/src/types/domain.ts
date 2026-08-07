@@ -532,6 +532,8 @@ export interface AiGeneratedCase {
   action?: "add" | "modify" | "delete";
   /** modify/delete 指向现有用例。 */
   target_case_id?: number | null;
+  /** 变更调整专用：从对应测试点带过来的增/改/删理由，审阅行展示。 */
+  reason?: string;
   category?: string;
   operation_id?: string;
   scenario_type?: string;
@@ -620,6 +622,8 @@ export interface AiOutlinePoint {
   /** modify/delete 指向现有用例；add 为 null。 */
   target_case_id?: number | null;
   endpoint?: { method: string; path: string } | null;
+  /** 变更调整专用：AI 给出的增/改/删理由，审阅时展示。 */
+  reason?: string;
 }
 
 /** AI 项目概览（模块关联图谱，存在项目上）。 */

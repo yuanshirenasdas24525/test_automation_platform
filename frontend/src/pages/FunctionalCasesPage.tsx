@@ -2540,32 +2540,55 @@ function aiCaseAlreadyApplied(
   generationRunId: number | null,
   contractHash: unknown,
 ) {
-  if ((candidate.action ?? "add") === "delete") {
+  const action = candidate.action ?? "add";
+  if (action === "delete") {
     return candidate.target_case_id == null || !existing.some((s) => s.id === candidate.target_case_id);
+  }
+  if (action === "modify") {
+    // modify 候选的名字本就等于它要覆盖的现有用例的名字，按名匹配只会被误判成"已写入"而被
+    // 提前过滤 / 写入后自动取消勾选，导致 casesApi.update 分支永远走不到（跟 delete 是同一类坑，
+    // 只是方向相反）。modify 是就地覆盖，没有可靠的"是否已应用"信号——宁可可重复覆盖（幂等无害），
+    // 也不要被误判跳过。
+    return false;
   }
   return existing.some((stored) => storedCaseMatchesCandidate(stored, candidate, generationRunId, contractHash));
 }
 
+/** 用例名归一化（去空白/标点/大小写）用于精确匹配；与后端 server/api/functional_cases.py::_norm_name 对齐。 */
+function normalizeAiCaseTitle(s: string) {
+  return String(s || "").replace(/[\s\-_:：、，,。.（）()【】[\]]+/g, "").toLowerCase();
+}
+
 /**
- * 变更调整：把一批测试点的 action/target_case_id 回填到该批生成结果上。
- * 优先按标题对齐（AI 有时会打乱顺序或改写标题片段），退化为按序对齐；这批调用前已经把
- * delete 测试点过滤掉了，所以这里的 points 只会是 add/modify（或普通生成流程里没有 action
- * 的测试点）。没有 action 的测试点回填是 no-op —— 直接返回原用例，不影响普通生成流程。
+ * 变更调整：把一批测试点的 action/target_case_id/reason 回填到该批生成结果上。
+ * 只在标题"归一化后精确相等"时才 stamp —— 子串包含或按序兜底都不可靠，一旦对错位，
+ * modify 的 target_case_id 会贴到不相干的生成用例上，写入时 casesApi.update 会静默覆盖
+ * 错误的用例，比不 stamp 更危险。找不到精确匹配时宁可不贴，让这条生成用例走普通 add
+ * （多建一条），也不要冒覆盖错用例的风险；这一点也和后端 change_plan_service.py::_generate_details
+ * 的对齐方式一致（同样只按 _norm_name 精确匹配，匹配不到就报错而不是瞎贴）。
+ * 这批调用前已经把 delete 测试点过滤掉了，所以这里的 points 只会是 add/modify（或普通生成
+ * 流程里没有 action 的测试点）。没有 action 的测试点回填是 no-op —— 直接返回原用例，不影响
+ * 普通生成流程。
  */
 function stampGeneratedActions(points: AiOutlinePoint[], generated: AiGeneratedCase[]): AiGeneratedCase[] {
   const used = new Set<number>();
-  return generated.map((c, i) => {
-    let idx = points.findIndex(
-      (p, pi) => !used.has(pi) && (p.title === c.name || c.name.includes(p.title) || p.title.includes(c.name)),
-    );
-    if (idx === -1 && i < points.length && !used.has(i)) idx = i;
-    if (idx === -1) return c;
+  const isChangeAdjustBatch = points.some((p) => p.action);
+  return generated.map((c) => {
+    const key = normalizeAiCaseTitle(c.name);
+    const idx = points.findIndex((p, pi) => !used.has(pi) && normalizeAiCaseTitle(p.title) === key);
+    if (idx === -1) {
+      if (isChangeAdjustBatch) {
+        console.warn(`[变更调整] 生成用例标题未能与测试点精确匹配，按新增处理，不覆盖任何现有用例：${c.name}`);
+      }
+      return c;
+    }
     used.add(idx);
     const point = points[idx];
     if (!point.action) return c;
     return {
       ...c,
       action: point.action,
+      reason: point.reason ?? c.reason,
       target_case_id: point.action === "modify" ? point.target_case_id ?? null : null,
     };
   });
@@ -3302,6 +3325,7 @@ export function AiGenerateDialog({
           name: p.title,
           action: "delete" as const,
           target_case_id: p.target_case_id ?? null,
+          reason: p.reason,
           preconditions: [],
           steps: [],
           expected: [],
@@ -3597,6 +3621,10 @@ export function AiGenerateDialog({
         const createdCases: AiGeneratedCase[] = [];
         const failedCases: Array<{ name: string; message: string }> = [];
         let manualAdjustmentCount = 0;
+        // 变更调整分开计数：delete 混进"已写入 N 条"会把删除也算成写入，误导用户。
+        let addedCount = 0;
+        let modifiedCount = 0;
+        let deletedCount = 0;
         // 严格按审阅列表从上到下顺序写入；勾掉部分用例时保留剩余项的相对顺序。
         for (const c of chosen) {
           // 变更调整：add/modify(缺省=add，普通生成流程一直如此) 走"生成+契约编译"入库；
@@ -3636,16 +3664,19 @@ export function AiGenerateDialog({
                 await casesApi.remove(c.target_case_id);
                 createdIds.push(c.target_case_id);
                 createdCases.push(c);
+                deletedCount += 1;
               }
             } else if (action === "modify" && c.target_case_id != null) {
               await casesApi.update(c.target_case_id, payload as TestCaseCreate);
               createdIds.push(c.target_case_id);
               createdCases.push(c);
+              modifiedCount += 1;
               if (!blocked) runnableIds.push(c.target_case_id);
             } else {
               const res = await casesApi.create(payload as TestCaseCreate);
               createdIds.push(res.id);
               createdCases.push(c);
+              addedCount += 1;
               if (blocked) manualAdjustmentCount += 1;
               else runnableIds.push(res.id);
             }
@@ -3673,8 +3704,13 @@ export function AiGenerateDialog({
         }
         // P0-2 试跑：写入成功后一键回归本批，跑绿=已验证，跑挂=真 bug 或用例要修
         if (createdIds.length) {
+          // 普通生成流程只有 add，沿用原提示文案；变更调整混入 modify/delete 时改用分类计数，
+          // 避免"已写入 N 条"把删除也算成写入。
+          const hasModifyOrDelete = modifiedCount > 0 || deletedCount > 0;
           toast.success(
-            `已写入 ${createdIds.length} 条接口用例`,
+            hasModifyOrDelete
+              ? `新增 ${addedCount} · 修改 ${modifiedCount} · 删除 ${deletedCount}`
+              : `已写入 ${addedCount} 条接口用例`,
             {
               duration: 15000,
               description: manualAdjustmentCount
@@ -4759,6 +4795,9 @@ export function AiGenerateDialog({
                           </span>
                         ) : null}
                       </div>
+                      {c.action && c.reason ? (
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">{c.reason}</div>
+                      ) : null}
                       {/* delete 候选没有详情（无 compiled_case），前置/步骤/预期本就是空数组；
                           这里再显式挡一道，避免以后合成逻辑变化时误渲染出无意义的空块。 */}
                       {c.action !== "delete" && c.preconditions.length ? (

@@ -77,6 +77,7 @@ export function ModuleOutlinePanel({
         action: op.action,
         target_case_id: op.target_case_id,
         endpoint: op.endpoint,
+        reason: op.reason,
       }));
       onPlanned?.({
         generationRunId: data.generation_run_id,
