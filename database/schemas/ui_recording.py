@@ -1,0 +1,126 @@
+"""UI 录制中心对外 API Schema。"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from database.models.ui_recording import ALL_UI_PLATFORMS
+
+
+class UiRecordingCreate(BaseModel):
+    project_id: int = Field(..., gt=0)
+    platform: str
+    name: str = Field(..., min_length=1, max_length=200)
+    environment_id: int | None = Field(None, gt=0)
+    device_id: int | None = Field(None, gt=0)
+    app_package_id: int | None = Field(None, gt=0)
+    source_url: str | None = Field(None, max_length=4000)
+    capture_config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("platform")
+    @classmethod
+    def validate_platform(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in ALL_UI_PLATFORMS:
+            raise ValueError("platform 必须是 web/android/ios")
+        return normalized
+
+
+class UiRecordingEventCreate(BaseModel):
+    event_key: str = Field(..., min_length=1, max_length=80)
+    sequence_no: int | None = Field(None, ge=1)
+    event_type: str = Field(..., min_length=1, max_length=80)
+    source: str = Field(..., min_length=1, max_length=40)
+    severity: str = Field("info", min_length=1, max_length=20)
+    page_key: str | None = Field(None, max_length=255)
+    element_id: int | None = Field(None, gt=0)
+    snapshot_before_id: int | None = Field(None, gt=0)
+    snapshot_after_id: int | None = Field(None, gt=0)
+    occurred_at: datetime
+    monotonic_ms: int | None = Field(None, ge=0)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class UiRecordingEventBatchCreate(BaseModel):
+    events: list[UiRecordingEventCreate] = Field(..., min_length=1, max_length=500)
+
+
+class UiRecordingRead(BaseModel):
+    id: int
+    project_id: int
+    platform: str
+    status: str
+    name: str
+    environment_id: int | None
+    device_id: int | None
+    app_package_id: int | None
+    created_by_id: int | None
+    source_url: str | None
+    recorder_agent_id: str | None
+    offline_level: int
+    capture_config: dict[str, Any]
+    capabilities: dict[str, Any]
+    context_summary: dict[str, Any]
+    error: str | None
+    event_count: int = 0
+    snapshot_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    paused_at: datetime | None
+    ended_at: datetime | None
+
+
+class UiRecordingEventRead(BaseModel):
+    id: int
+    session_id: int
+    event_key: str
+    sequence_no: int
+    event_type: str
+    source: str
+    severity: str
+    page_key: str | None
+    element_id: int | None
+    snapshot_before_id: int | None
+    snapshot_after_id: int | None
+    occurred_at: datetime
+    monotonic_ms: int | None
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class UiElementLocatorRead(BaseModel):
+    id: int
+    strategy: str
+    locator: str
+    score: int
+    is_primary: bool
+    is_unique: bool | None
+    match_count: int | None
+    source: str
+    last_verified_snapshot_id: int | None
+    last_verified_at: datetime | None
+
+
+class UiElementRead(BaseModel):
+    id: int
+    project_id: int
+    platform: str
+    page_key: str
+    page_name: str
+    semantic_name: str
+    element_type: str
+    status: str
+    fingerprint: str
+    attributes: dict[str, Any]
+    first_snapshot_id: int | None
+    last_snapshot_id: int | None
+    usage_count: int
+    last_verified_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    locators: list[UiElementLocatorRead]

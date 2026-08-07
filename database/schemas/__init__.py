@@ -20,6 +20,15 @@ from .test_environment_schema import (
 from .device_schema import (
     DeviceRead, DeviceHeartbeat, DeviceAcquireRequest, DeviceAcquireResponse,
 )
+from .ui_recording import (
+    UiRecordingCreate,
+    UiRecordingEventCreate,
+    UiRecordingEventBatchCreate,
+    UiRecordingRead,
+    UiRecordingEventRead,
+    UiElementLocatorRead,
+    UiElementRead,
+)
 
 __all__ = [
     # Step
@@ -31,4 +40,7 @@ __all__ = [
     "TestEnvironmentCreate", "TestEnvironmentUpdate", "TestEnvironmentRead",
     # Device
     "DeviceRead", "DeviceHeartbeat", "DeviceAcquireRequest", "DeviceAcquireResponse",
+    # UI recording
+    "UiRecordingCreate", "UiRecordingEventCreate", "UiRecordingEventBatchCreate",
+    "UiRecordingRead", "UiRecordingEventRead", "UiElementLocatorRead", "UiElementRead",
 ]

@@ -35,6 +35,7 @@ from .tasks_overview import router as tasks_overview_router
 from .users import router as users_router
 from .system import router as system_router
 from .test_plans import router as test_plans_router
+from .ui_recordings import router as ui_recordings_router
 from .version_summaries import router as version_summaries_router
 
 __all__ = [
@@ -67,6 +68,7 @@ __all__ = [
     "tasks_router",
     "tasks_overview_router",
     "test_plans_router",
+    "ui_recordings_router",
     "roles_router",
     "users_router",
     "version_summaries_router",

@@ -456,7 +456,8 @@ Docker 环境会通过 volume 缓存浏览器内核。
 - `docs/ai_bug_fix_plan.md`：AI Bug Fix 设计。
 - `docs/ai_case_generation_m7_plan.md`：AI 生成用例设计。
 - `docs/ai_analysis_m6_plan.md`：AI 需求分析设计。
-- `docs/ai_ui_automation_m8_plan.md`：AI UI 自动化规划。
+- `docs/元素库与UI录制/README.md`：元素库、页面快照与 UI 录制专题索引。
+- `docs/元素库与UI录制/ai_ui_automation_m8_plan.md`：AI UI 自动化与早期元素库规划。
 
 ## Git 忽略与运行期产物
 

@@ -66,6 +66,97 @@ export const AUTOMATED_CASE_TYPES: CaseType[] = [
 /** 需要 Appium 设备的 case_type 集合（前端判断"要不要弹设备选择器"）。 */
 export const APP_CASE_TYPES: CaseType[] = ["android", "ios"];
 
+/** UI 录制中心只覆盖三个可执行 UI 平台。 */
+export type UiPlatform = "web" | "android" | "ios";
+
+export type UiRecordingStatus =
+  | "draft"
+  | "starting"
+  | "recording"
+  | "paused"
+  | "stopping"
+  | "processing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface UiRecordingSession {
+  id: number;
+  project_id: number;
+  platform: UiPlatform;
+  status: UiRecordingStatus;
+  name: string;
+  environment_id: number | null;
+  device_id: number | null;
+  app_package_id: number | null;
+  created_by_id: number | null;
+  source_url: string | null;
+  recorder_agent_id: string | null;
+  offline_level: number;
+  capture_config: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  context_summary: Record<string, unknown>;
+  error: string | null;
+  event_count: number;
+  snapshot_count: number;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  paused_at: string | null;
+  ended_at: string | null;
+}
+
+export interface UiRecordingEvent {
+  id: number;
+  session_id: number;
+  event_key: string;
+  sequence_no: number;
+  event_type: string;
+  source: "user" | "console" | "network" | "browser" | "screen" | "agent" | string;
+  severity: string;
+  page_key: string | null;
+  element_id: number | null;
+  snapshot_before_id: number | null;
+  snapshot_after_id: number | null;
+  occurred_at: string;
+  monotonic_ms: number | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface UiElementLocator {
+  id: number;
+  strategy: string;
+  locator: string;
+  score: number;
+  is_primary: boolean;
+  is_unique: boolean | null;
+  match_count: number | null;
+  source: string;
+  last_verified_snapshot_id: number | null;
+  last_verified_at: string | null;
+}
+
+export interface UiElement {
+  id: number;
+  project_id: number;
+  platform: UiPlatform;
+  page_key: string;
+  page_name: string;
+  semantic_name: string;
+  element_type: string;
+  status: "pending" | "verified" | "stale" | "archived";
+  fingerprint: string;
+  attributes: Record<string, unknown>;
+  first_snapshot_id: number | null;
+  last_snapshot_id: number | null;
+  usage_count: number;
+  last_verified_at: string | null;
+  created_at: string;
+  updated_at: string;
+  locators: UiElementLocator[];
+}
+
 /**
  * 一条 step 的"前端草稿"形态：在 CaseDialog 里增删改时用的结构，和后端
  * schemas/test_step_schema.py 的 TestStepCreate 对齐。`config` 字段由 step_type

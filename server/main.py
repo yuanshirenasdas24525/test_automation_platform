@@ -92,6 +92,7 @@ from server.api import (
     tasks_router,
     tasks_overview_router,
     test_plans_router,
+    ui_recordings_router,
     users_router,
     version_summaries_router,
 )
@@ -204,6 +205,7 @@ for router in (
     tasks_router,
     tasks_overview_router,
     test_plans_router,
+    ui_recordings_router,
     ai_router,
     ai_case_generation_router,
     ai_dialogue_router,

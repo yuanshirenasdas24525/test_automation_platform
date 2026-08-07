@@ -6,9 +6,10 @@
 #   1. redis + postgres        （docker compose 起依赖，代码连 127.0.0.1）
 #   2. alembic upgrade head    （建表/迁移）
 #   3. FastAPI (uvicorn)       → http://127.0.0.1:54351   --reload 热更新
-#   4. Celery worker           （跑用例 / AI 任务 / 设备探活）
-#   5. Celery beat             （定时任务调度，一个集群只能一个）
-#   6. 前端 Vite dev           → http://localhost:5173    （API 代理到 54351）
+#   4. Recorder Agent          → http://127.0.0.1:54352   （持有可见 Playwright 浏览器）
+#   5. Celery worker           （跑用例 / AI 任务 / 设备探活）
+#   6. Celery beat             （定时任务调度，一个集群只能一个）
+#   7. 前端 Vite dev           → http://localhost:5173    （API 代理到 54351）
 #
 # 用法：
 #   ./start-dev.sh                      # 全开
@@ -50,9 +51,11 @@ fi
 API_HOST="${API_HOST:-127.0.0.1}"
 API_PORT="${API_PORT:-54351}"
 WEB_PORT="${WEB_PORT:-5173}"
+RECORDER_AGENT_PORT="${RECORDER_AGENT_PORT:-54352}"
 START_INFRA="${START_INFRA:-1}"        # 用 docker compose 起 redis + postgres
 RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"  # 启动前跑 alembic upgrade head
 START_API="${START_API:-1}"
+START_RECORDER_AGENT="${START_RECORDER_AGENT:-1}"
 START_WORKER="${START_WORKER:-1}"
 START_BEAT="${START_BEAT:-1}"
 START_WEB="${START_WEB:-1}"
@@ -94,8 +97,8 @@ fi
 log "python: $PYBIN ($("$PYBIN" --version 2>&1))"
 
 # ---- 1.5 依赖预检 ----（缺依赖时明确提示，而不是莫名 command not found）
-if ! "$PYBIN" -c "import alembic, uvicorn, celery, fastapi" >/dev/null 2>&1; then
-  warn "当前 python 环境缺少后端依赖（alembic / uvicorn / celery / fastapi 等）。"
+if ! "$PYBIN" -c "import alembic, uvicorn, celery, fastapi, httpx, playwright" >/dev/null 2>&1; then
+  warn "当前 python 环境缺少后端或录制依赖（alembic / uvicorn / playwright 等）。"
   if [[ "${AUTO_INSTALL:-0}" == "1" ]]; then
     log "AUTO_INSTALL=1 → $PYBIN -m pip install -r requirements.txt"
     "$PYBIN" -m pip install -r requirements.txt
@@ -106,6 +109,8 @@ if ! "$PYBIN" -c "import alembic, uvicorn, celery, fastapi" >/dev/null 2>&1; the
     exit 1
   fi
 fi
+
+export UI_RECORDER_AGENT_URL="${UI_RECORDER_AGENT_URL:-http://127.0.0.1:$RECORDER_AGENT_PORT}"
 
 # ---- 2. 基础设施：redis + postgres ----
 if [[ "$START_INFRA" == "1" ]]; then
@@ -151,7 +156,15 @@ if [[ "$RUN_MIGRATIONS" == "1" ]]; then
   "$PYBIN" scripts/init_fresh_db.py
 fi
 
-# ---- 4. 后端 API ----
+# ---- 4. 宿主机 Recorder Agent ----
+if [[ "$START_RECORDER_AGENT" == "1" ]]; then
+  log "Recorder Agent → http://127.0.0.1:$RECORDER_AGENT_PORT   日志 $LOG_DIR/recorder-agent.log"
+  "$PYBIN" -m uvicorn recorder_agent.main:app --host 127.0.0.1 --port "$RECORDER_AGENT_PORT" \
+    > "$LOG_DIR/recorder-agent.log" 2>&1 &
+  PIDS+=($!)
+fi
+
+# ---- 5. 后端 API ----
 if [[ "$START_API" == "1" ]]; then
   reload_args=()
   if [[ "$API_RELOAD" == "1" ]]; then
@@ -178,7 +191,7 @@ if [[ "$START_API" == "1" ]]; then
   PIDS+=($!)
 fi
 
-# ---- 5. Celery worker ----
+# ---- 6. Celery worker ----
 if [[ "$START_WORKER" == "1" ]]; then
   log "Celery worker   日志 $LOG_DIR/worker.log"
   "$PYBIN" -m celery -A celery_app worker --loglevel=INFO \
@@ -186,7 +199,7 @@ if [[ "$START_WORKER" == "1" ]]; then
   PIDS+=($!)
 fi
 
-# ---- 6. Celery beat ----
+# ---- 7. Celery beat ----
 if [[ "$START_BEAT" == "1" ]]; then
   log "Celery beat     日志 $LOG_DIR/beat.log"
   "$PYBIN" -m celery -A celery_app beat --loglevel=INFO \
@@ -195,7 +208,7 @@ if [[ "$START_BEAT" == "1" ]]; then
   PIDS+=($!)
 fi
 
-# ---- 7. 前端 dev ----
+# ---- 8. 前端 dev ----
 if [[ "$START_WEB" == "1" ]]; then
   if [[ -d frontend/node_modules ]]; then
     log "前端 Vite dev → http://localhost:$WEB_PORT   日志 $LOG_DIR/web.log"
@@ -209,6 +222,7 @@ fi
 printf "\n"
 log "全部启动完成。Ctrl+C 停止全部。"
 echo "    API   : http://$API_HOST:$API_PORT"
+echo "    Agent : http://127.0.0.1:$RECORDER_AGENT_PORT"
 echo "    前端  : http://localhost:$WEB_PORT  （/api 代理到后端）"
 echo "    日志  : $LOG_DIR/"
 printf "\n"

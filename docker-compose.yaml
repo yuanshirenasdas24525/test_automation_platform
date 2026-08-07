@@ -28,6 +28,9 @@ x-app-common: &app-common
     # 前后端分域部署时填 "https://foo.com,https://bar.com"。
     BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # Web Recorder Agent 原生运行在宿主机，容器通过 host.docker.internal 控制。
+    UI_RECORDER_AGENT_URL: ${UI_RECORDER_AGENT_URL:-http://host.docker.internal:54352}
+    UI_RECORDER_AGENT_SECRET: ${UI_RECORDER_AGENT_SECRET:-}
     # 探活
     REDIS_HOST: redis
     REDIS_PORT: "6379"
@@ -56,6 +59,8 @@ x-app-common: &app-common
     postgres:
       condition: service_healthy
   restart: unless-stopped
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 
 services:

@@ -2,6 +2,7 @@ allure-python-commons~=2.15.0
 allure-pytest~=2.15.0
 pytest~=8.4.1
 requests~=2.32.4
+httpx~=0.28.0
 jsonpath_ng~=1.7.0
 PyYAML~=6.0.2
 pandas~=2.3.1

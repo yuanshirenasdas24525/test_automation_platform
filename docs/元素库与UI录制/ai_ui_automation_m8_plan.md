@@ -4,6 +4,7 @@
 > 前置里程碑：M7（AI 生成功能用例 + `ai_case_drafts` + `test_cases.business_steps`）
 > 宏观蓝图来源：`docs/ai_case_generation_m7_plan.md` §9「M8 衔接预留」、`docs/ai_features_requirements.md` 功能 6/7
 > 状态：**设计稿，selector 来源方案待 owner 拍板（见 §3）**
+> 专题目录索引：[`README.md`](./README.md)
 
 ## Context
 

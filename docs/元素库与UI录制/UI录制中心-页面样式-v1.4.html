@@ -1,0 +1,1897 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Ui Recording Center V14</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Ui Recording Center V14" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Ui Recording Center V14&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(
+    --background,
+    var(--color-background-primary, light-dark(rgb(255 255 255), rgb(24 24 24)))
+  ) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: var(
+    --color-background-primary,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --card: color-mix(in oklab, var(--foreground) 5%, var(--background));
+  --card-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --popover: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255), rgb(45 45 45))
+  );
+  --popover-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --primary: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --primary-foreground: var(
+    --color-text-inverse,
+    light-dark(rgb(255 255 255), rgb(13 13 13))
+  );
+  --secondary: var(
+    --color-background-secondary,
+    light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%))
+  );
+  --secondary-foreground: var(
+    --color-text-primary,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: var(
+    --color-text-secondary,
+    light-dark(rgb(26 28 31 / 49.4%), rgb(255 255 255 / 49.8%))
+  );
+  --accent: var(
+    --color-background-info,
+    light-dark(rgb(229 242 255), rgb(13 39 63))
+  );
+  --accent-foreground: var(
+    --color-text-info,
+    light-dark(rgb(51 156 255), rgb(131 195 255))
+  );
+  --destructive: var(
+    --color-text-warning,
+    light-dark(rgb(226 85 7), rgb(255 133 73))
+  );
+  --border: var(
+    --color-border-secondary,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+  --input: var(
+    --color-border-primary,
+    light-dark(
+      rgb(26 28 31 / 11.8%),
+      color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+    )
+  );
+  --ring: var(
+    --color-ring-primary,
+    light-dark(rgb(51 156 255), rgb(131 195 255 / 76%))
+  );
+  --font-size-base: var(--font-text-md-size, 14px);
+  --blue: light-dark(rgb(51 156 255), rgb(51 156 255));
+  --orange: light-dark(rgb(226 85 7), rgb(251 106 34));
+  --green: light-dark(rgb(0 162 64), rgb(64 201 119));
+  --red: light-dark(rgb(224 46 42), rgb(255 103 100));
+  --purple: light-dark(rgb(146 79 247), rgb(173 123 249));
+  --yellow: light-dark(rgb(255 195 0), rgb(255 210 64));
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: var(--border-radius-lg, 12.5px);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  /* Preserve MCP aliases for older inline renderers without creating :root cycles. */
+  --color-background-primary: var(
+    --background,
+    light-dark(rgb(255 255 255), rgb(24 24 24))
+  );
+  --color-text-primary: var(
+    --foreground,
+    light-dark(rgb(26 28 31), rgb(255 255 255))
+  );
+  --color-border-secondary: var(
+    --border,
+    light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%))
+  );
+
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--font-weight-medium, 500);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--foreground);
+  font: inherit;
+  text-align: start;
+}
+
+.table :is(th, td) {
+  padding-block: 10px;
+  padding-inline: 0 24px;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+  text-align: start;
+  vertical-align: top;
+}
+
+.table-responsive &gt; .table :is(th, td) {
+  overflow-wrap: break-word;
+}
+
+.table :is(th, td):last-child {
+  padding-inline-end: 0;
+}
+
+.table :is(caption, thead th) {
+  font-weight: 600;
+}
+
+.table thead th {
+  padding-block: 8px;
+  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
+}
+
+.table tbody tr:last-child :is(th, td) {
+  border-bottom: 0;
+}
+
+.table.table-sm :is(th, td) {
+  padding-block: 6px;
+}
+
+.table.table-sm :is(th, td):not(:last-child) {
+  padding-inline-end: 16px;
+}
+
+.table :is(.text-end, [align=&quot;right&quot;]) {
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+}
+
+.table :is(.text-center, [align=&quot;center&quot;]) {
+  text-align: center;
+}
+
+.table .text-nowrap {
+  white-space: nowrap;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+/* Model-authored chart rules can otherwise stretch icons after these styles load. */
+svg.lucide {
+  display: block;
+  width: 16px !important;
+  height: 16px !important;
+  flex: none;
+  margin: 0 !important;
+  stroke-width: 1.6;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;ui-recorder-v14&quot;&gt;
+  &lt;style&gt;
+    #ui-recorder-v14 {
+      width: 100%;
+      min-height: 780px;
+      color: light-dark(#172033, #edf1f7);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, &quot;Segoe UI&quot;, sans-serif;
+      color-scheme: light dark;
+    }
+    #ui-recorder-v14 * { box-sizing: border-box; }
+    #ui-recorder-v14 button,
+    #ui-recorder-v14 input { font: inherit; }
+    #ui-recorder-v14 button { color: inherit; }
+    #ui-recorder-v14 .rec-demo-switch {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      margin: 0 auto 12px;
+      width: fit-content;
+      padding: 5px;
+      border: 1px solid light-dark(#dfe3ea, #2d3441);
+      border-radius: 12px;
+      background: light-dark(#ffffff, #171c25);
+      box-shadow: 0 10px 30px light-dark(rgba(33, 43, 67, .08), rgba(0, 0, 0, .24));
+    }
+    #ui-recorder-v14 .rec-demo-switch button {
+      border: 0;
+      border-radius: 8px;
+      padding: 7px 13px;
+      background: transparent;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    #ui-recorder-v14 .rec-demo-switch button[aria-pressed=&quot;true&quot;] {
+      background: light-dark(#eef0ff, #292b52);
+      color: light-dark(#4f46c8, #c8c6ff);
+      font-weight: 700;
+    }
+    #ui-recorder-v14 .rec-app-window {
+      position: relative;
+      width: 100%;
+      height: 730px;
+      overflow: hidden;
+      border: 1px solid light-dark(#d9dee7, #2b313c);
+      border-radius: 18px;
+      background: light-dark(#f6f7fa, #0f131a);
+      box-shadow: 0 24px 70px light-dark(rgba(32, 42, 64, .15), rgba(0, 0, 0, .42));
+    }
+    #ui-recorder-v14 .rec-screen { display: none; width: 100%; height: 100%; }
+    #ui-recorder-v14 .rec-screen.is-visible { display: block; }
+    #ui-recorder-v14 .rec-topbar {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 0 20px;
+      border-bottom: 1px solid light-dark(#e3e6ec, #282e38);
+      background: light-dark(#ffffff, #171b23);
+    }
+    #ui-recorder-v14 .rec-brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: -.01em;
+      white-space: nowrap;
+    }
+    #ui-recorder-v14 .rec-brand-mark {
+      display: grid;
+      place-items: center;
+      width: 29px;
+      height: 29px;
+      border-radius: 9px;
+      color: #ffffff;
+      background: linear-gradient(145deg, #6d5dfc, #4740c8);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
+    }
+    #ui-recorder-v14 .rec-main-nav { display: flex; gap: 3px; height: 100%; align-items: center; }
+    #ui-recorder-v14 .rec-main-nav span {
+      padding: 8px 10px;
+      border-radius: 8px;
+      color: light-dark(#687286, #9da7b8);
+      font-size: 12px;
+    }
+    #ui-recorder-v14 .rec-main-nav .is-current {
+      color: light-dark(#242b38, #f5f7fa);
+      background: light-dark(#f0f2f6, #232934);
+      font-weight: 700;
+    }
+    #ui-recorder-v14 .rec-top-spacer { flex: 1; }
+    #ui-recorder-v14 .rec-project-chip {
+      padding: 7px 10px;
+      border: 1px solid light-dark(#e0e4eb, #313844);
+      border-radius: 9px;
+      background: light-dark(#fbfcfd, #1d222b);
+      color: light-dark(#566174, #b4bdcb);
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-avatar {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: light-dark(#1f2937, #f0f2f6);
+      color: light-dark(#ffffff, #161b23);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    #ui-recorder-v14 .rec-shell { display: grid; grid-template-columns: 188px 1fr; height: calc(100% - 56px); }
+    #ui-recorder-v14 .rec-sidebar {
+      padding: 17px 12px;
+      border-right: 1px solid light-dark(#e3e6ec, #282e38);
+      background: light-dark(#fbfcfd, #141820);
+    }
+    #ui-recorder-v14 .rec-side-label {
+      padding: 0 10px 8px;
+      color: light-dark(#98a0af, #727d8e);
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    #ui-recorder-v14 .rec-side-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 9px 10px;
+      margin: 2px 0;
+      border: 0;
+      border-radius: 9px;
+      background: transparent;
+      color: light-dark(#596477, #9da7b8);
+      font-size: 12px;
+      text-align: left;
+    }
+    #ui-recorder-v14 .rec-side-item.is-active {
+      color: light-dark(#4039b5, #d2d0ff);
+      background: light-dark(#eeefff, #242746);
+      font-weight: 700;
+    }
+    #ui-recorder-v14 .rec-side-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .7; }
+    #ui-recorder-v14 .rec-content { min-width: 0; padding: 24px; overflow: hidden; }
+    #ui-recorder-v14 .rec-breadcrumb { color: light-dark(#8a93a3, #778295); font-size: 11px; margin-bottom: 8px; }
+    #ui-recorder-v14 .rec-page-head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+    #ui-recorder-v14 .rec-page-title { font-size: 23px; line-height: 1.2; font-weight: 800; letter-spacing: -.025em; }
+    #ui-recorder-v14 .rec-page-sub { color: light-dark(#7b8495, #8d98aa); font-size: 12px; margin-top: 6px; }
+    #ui-recorder-v14 .rec-head-spacer { flex: 1; }
+    #ui-recorder-v14 .rec-toolbar { display: flex; align-items: center; gap: 8px; }
+    #ui-recorder-v14 .rec-action-primary,
+    #ui-recorder-v14 .rec-action-secondary,
+    #ui-recorder-v14 .rec-action-ghost {
+      height: 34px;
+      border-radius: 9px;
+      padding: 0 12px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #ui-recorder-v14 .rec-action-primary { border: 1px solid #5650dd; background: #5d57e8; color: #ffffff; }
+    #ui-recorder-v14 .rec-action-secondary {
+      border: 1px solid light-dark(#cfd5df, #38414f);
+      background: light-dark(#ffffff, #1c222c);
+      color: light-dark(#31394a, #e4e8ef);
+    }
+    #ui-recorder-v14 .rec-action-ghost {
+      border: 0;
+      background: transparent;
+      color: light-dark(#687286, #a6b0bf);
+    }
+    #ui-recorder-v14 .rec-search-line { display: flex; align-items: center; gap: 9px; margin-bottom: 13px; }
+    #ui-recorder-v14 .rec-search-box {
+      flex: 1;
+      height: 35px;
+      border: 1px solid light-dark(#dfe3ea, #303743);
+      border-radius: 9px;
+      background: light-dark(#ffffff, #181d25);
+      color: light-dark(#3d4658, #e8ebf0);
+      padding: 0 12px;
+      outline: none;
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-filter-chip {
+      height: 35px;
+      padding: 0 11px;
+      border: 1px solid light-dark(#dfe3ea, #303743);
+      border-radius: 9px;
+      background: light-dark(#ffffff, #181d25);
+      color: light-dark(#697387, #a5afbd);
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-table-wrap {
+      overflow: hidden;
+      border: 1px solid light-dark(#e0e4eb, #2c333e);
+      border-radius: 13px;
+      background: light-dark(#ffffff, #171c24);
+    }
+    #ui-recorder-v14 .rec-table-head,
+    #ui-recorder-v14 .rec-table-row {
+      display: grid;
+      grid-template-columns: 1.8fr .8fr .8fr .7fr .45fr;
+      gap: 12px;
+      align-items: center;
+      min-height: 47px;
+      padding: 0 15px;
+      border-bottom: 1px solid light-dark(#edf0f4, #252c36);
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-table-head {
+      min-height: 39px;
+      color: light-dark(#8891a1, #7e899a);
+      background: light-dark(#fafbfc, #141920);
+      font-size: 10px;
+      font-weight: 800;
+    }
+    #ui-recorder-v14 .rec-table-row:last-child { border-bottom: 0; }
+    #ui-recorder-v14 .rec-case-name { font-weight: 700; }
+    #ui-recorder-v14 .rec-case-meta { color: light-dark(#8a93a3, #778295); font-size: 10px; margin-top: 3px; }
+    #ui-recorder-v14 .rec-status-ok { color: #1c9b69; font-weight: 700; }
+    #ui-recorder-v14 .rec-status-draft { color: #a5731e; font-weight: 700; }
+    #ui-recorder-v14 .rec-kebab { color: light-dark(#7c8595, #8994a6); letter-spacing: 2px; }
+    #ui-recorder-v14 .rec-drawer-backdrop {
+      position: absolute;
+      inset: 56px 0 0;
+      background: rgba(15, 21, 32, .22);
+      backdrop-filter: blur(1px);
+      z-index: 8;
+    }
+    #ui-recorder-v14 .rec-element-drawer {
+      position: absolute;
+      z-index: 9;
+      top: 56px;
+      right: 0;
+      bottom: 0;
+      width: 410px;
+      padding: 19px;
+      border-left: 1px solid light-dark(#dce1e9, #313844);
+      background: light-dark(#ffffff, #171c24);
+      box-shadow: -18px 0 45px rgba(14, 19, 29, .16);
+    }
+    #ui-recorder-v14 .rec-drawer-title-row { display: flex; gap: 12px; align-items: center; }
+    #ui-recorder-v14 .rec-drawer-title { font-size: 17px; font-weight: 800; }
+    #ui-recorder-v14 .rec-drawer-close { margin-left: auto; border: 0; background: transparent; font-size: 18px; cursor: pointer; }
+    #ui-recorder-v14 .rec-drawer-sub { color: light-dark(#818b9b, #8994a6); font-size: 11px; margin: 6px 0 15px; }
+    #ui-recorder-v14 .rec-element-row {
+      display: grid;
+      grid-template-columns: 34px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 11px;
+      margin-top: 7px;
+      border: 1px solid light-dark(#e3e7ed, #2d3540);
+      border-radius: 11px;
+      background: light-dark(#fcfcfd, #1a2029);
+    }
+    #ui-recorder-v14 .rec-element-icon {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 9px;
+      color: light-dark(#514acb, #c7c3ff);
+      background: light-dark(#eeefff, #282b4d);
+      font-weight: 800;
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-element-name { font-size: 11px; font-weight: 800; }
+    #ui-recorder-v14 .rec-element-locator { color: light-dark(#788294, #8792a4); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; margin-top: 3px; }
+    #ui-recorder-v14 .rec-element-score { color: #1c9b69; font-size: 10px; font-weight: 800; }
+    #ui-recorder-v14 .rec-drawer-footer { position: absolute; left: 19px; right: 19px; bottom: 19px; display: flex; gap: 8px; }
+    #ui-recorder-v14 .rec-drawer-footer .rec-action-primary { flex: 1; }
+
+    #ui-recorder-v14 .rec-target-top {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px;
+      border-bottom: 1px solid light-dark(#dde2ea, #2c333f);
+      background: light-dark(#ffffff, #171c24);
+    }
+    #ui-recorder-v14 .rec-browser-dots { display: flex; gap: 5px; }
+    #ui-recorder-v14 .rec-browser-dots i { width: 8px; height: 8px; border-radius: 50%; background: #ff6b64; }
+    #ui-recorder-v14 .rec-browser-dots i:nth-child(2) { background: #f4ba3f; }
+    #ui-recorder-v14 .rec-browser-dots i:nth-child(3) { background: #35b776; }
+    #ui-recorder-v14 .rec-address {
+      flex: 1;
+      height: 29px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      border-radius: 8px;
+      background: light-dark(#f1f3f6, #202630);
+      color: light-dark(#687286, #a5afbd);
+      font-size: 10px;
+    }
+    #ui-recorder-v14 .rec-target-page {
+      position: relative;
+      height: calc(100% - 48px);
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 28% 20%, light-dark(rgba(109,93,252,.14), rgba(109,93,252,.17)), transparent 33%),
+        light-dark(#f8f9fc, #10151d);
+    }
+    #ui-recorder-v14 .rec-target-nav { display: flex; align-items: center; padding: 17px 28px; gap: 25px; }
+    #ui-recorder-v14 .rec-shop-logo { font-size: 15px; font-weight: 900; letter-spacing: -.03em; }
+    #ui-recorder-v14 .rec-target-links { display: flex; gap: 16px; color: light-dark(#687286, #9ca6b6); font-size: 10px; }
+    #ui-recorder-v14 .rec-target-links span:first-child { color: light-dark(#292f3c, #f1f3f7); font-weight: 700; }
+    #ui-recorder-v14 .rec-login-panel {
+      position: absolute;
+      left: 50%;
+      top: 48%;
+      width: 350px;
+      transform: translate(-50%, -50%);
+      padding: 28px;
+      border: 1px solid light-dark(#e0e4eb, #2e3642);
+      border-radius: 17px;
+      background: light-dark(rgba(255,255,255,.96), rgba(24,29,38,.97));
+      box-shadow: 0 22px 55px light-dark(rgba(33,43,67,.12), rgba(0,0,0,.34));
+    }
+    #ui-recorder-v14 .rec-login-kicker { color: #5d57e8; font-size: 10px; font-weight: 800; }
+    #ui-recorder-v14 .rec-login-title { font-size: 23px; font-weight: 900; letter-spacing: -.03em; margin: 7px 0; }
+    #ui-recorder-v14 .rec-login-sub { color: light-dark(#7b8495, #8d98aa); font-size: 11px; margin-bottom: 20px; }
+    #ui-recorder-v14 .rec-form-label { color: light-dark(#5b6577, #a9b2c1); font-size: 10px; font-weight: 700; margin: 10px 0 6px; }
+    #ui-recorder-v14 .rec-form-input {
+      height: 38px;
+      width: 100%;
+      border: 1px solid light-dark(#d9dee7, #37404d);
+      border-radius: 9px;
+      background: light-dark(#ffffff, #151a22);
+      color: light-dark(#31394a, #eef1f5);
+      padding: 0 11px;
+      font-size: 11px;
+    }
+    #ui-recorder-v14 .rec-login-submit {
+      position: relative;
+      width: 100%;
+      height: 40px;
+      margin-top: 17px;
+      border: 1px solid #554fd8;
+      border-radius: 9px;
+      background: #5d57e8;
+      color: #ffffff;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: crosshair;
+    }
+    #ui-recorder-v14 .rec-login-submit::after {
+      content: &quot;&quot;;
+      position: absolute;
+      inset: -5px;
+      border: 2px solid #7f77ff;
+      border-radius: 12px;
+      box-shadow: 0 0 0 3px rgba(109,93,252,.13);
+      pointer-events: none;
+    }
+    #ui-recorder-v14 .rec-selected-tag {
+      position: absolute;
+      left: 50%;
+      top: calc(48% + 161px);
+      transform: translateX(-50%);
+      padding: 5px 8px;
+      border-radius: 6px;
+      background: #4f49c9;
+      color: #ffffff;
+      font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+      box-shadow: 0 5px 15px rgba(62,57,157,.25);
+    }
+    #ui-recorder-v14 .rec-float-shell {
+      position: absolute;
+      z-index: 20;
+      left: 50%;
+      bottom: 19px;
+      width: min(720px, calc(100% - 28px));
+      transform: translateX(-50%);
+      border: 1px solid light-dark(#d8dde6, #39414d);
+      border-radius: 15px;
+      background: light-dark(#ffffff, #191f28);
+      box-shadow: 0 18px 54px rgba(13, 18, 28, .28);
+      overflow: hidden;
+      touch-action: none;
+    }
+    #ui-recorder-v14 .rec-float-shell.is-compact { width: min(430px, calc(100% - 28px)); }
+    #ui-recorder-v14 .rec-float-detail {
+      display: grid;
+      grid-template-columns: 1fr 285px;
+      min-height: 190px;
+      border-bottom: 1px solid light-dark(#e4e7ed, #2e3540);
+    }
+    #ui-recorder-v14 .rec-float-shell.is-compact .rec-float-detail { display: none; }
+    #ui-recorder-v14 .rec-float-preview { padding: 15px; background: light-dark(#fafbfc, #151a22); }
+    #ui-recorder-v14 .rec-preview-label { color: light-dark(#7e8798, #8994a6); font-size: 9px; font-weight: 800; margin-bottom: 9px; }
+    #ui-recorder-v14 .rec-preview-mini {
+      height: 143px;
+      display: grid;
+      place-items: center;
+      border: 1px solid light-dark(#e0e4eb, #303845);
+      border-radius: 10px;
+      background: linear-gradient(135deg, light-dark(#f0f1ff, #232642), light-dark(#ffffff, #181e27));
+      color: light-dark(#4d5668, #b8c0cc);
+      font-size: 10px;
+    }
+    #ui-recorder-v14 .rec-locator-panel { padding: 14px; border-left: 1px solid light-dark(#e4e7ed, #2e3540); }
+    #ui-recorder-v14 .rec-locator-title { font-size: 12px; font-weight: 900; }
+    #ui-recorder-v14 .rec-locator-sub { color: light-dark(#80899a, #8d98aa); font-size: 9px; margin: 3px 0 10px; }
+    #ui-recorder-v14 .rec-locator-line {
+      display: grid;
+      grid-template-columns: 46px 1fr 35px;
+      gap: 7px;
+      align-items: center;
+      padding: 6px 0;
+      border-top: 1px solid light-dark(#edf0f4, #292f39);
+      font-size: 9px;
+    }
+    #ui-recorder-v14 .rec-locator-kind { color: light-dark(#697387, #9da7b8); font-weight: 800; }
+    #ui-recorder-v14 .rec-locator-code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: light-dark(#30394a, #e2e6ec); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #ui-recorder-v14 .rec-locator-score { color: #1c9b69; font-weight: 900; text-align: right; }
+    #ui-recorder-v14 .rec-float-bar {
+      min-height: 57px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+    }
+    #ui-recorder-v14 .rec-float-handle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      cursor: grab;
+      user-select: none;
+    }
+    #ui-recorder-v14 .rec-float-handle:active { cursor: grabbing; }
+    #ui-recorder-v14 .rec-record-dot { width: 9px; height: 9px; border-radius: 50%; background: #ee504f; box-shadow: 0 0 0 4px rgba(238,80,79,.13); }
+    #ui-recorder-v14 .rec-record-copy { min-width: 83px; }
+    #ui-recorder-v14 .rec-record-status { font-size: 10px; font-weight: 900; }
+    #ui-recorder-v14 .rec-record-time { color: light-dark(#828c9c, #8994a6); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 9px; margin-top: 2px; }
+    #ui-recorder-v14 .rec-float-spacer { flex: 1; }
+    #ui-recorder-v14 .rec-float-control {
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid light-dark(#dce1e9, #38414e);
+      border-radius: 9px;
+      background: light-dark(#ffffff, #202631);
+      color: light-dark(#515c6f, #c6ced9);
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    #ui-recorder-v14 .rec-float-control.is-active { color: light-dark(#4d46c4, #cbc8ff); border-color: light-dark(#a9a5ef, #5c59a8); background: light-dark(#f0efff, #282a4c); }
+    #ui-recorder-v14 .rec-float-stop { width: 34px; padding: 0; color: #e24a49; }
+    #ui-recorder-v14 .rec-popout-window {
+      display: none;
+      position: absolute;
+      z-index: 30;
+      right: 20px;
+      top: 22px;
+      width: 390px;
+      height: 270px;
+      overflow: hidden;
+      border: 1px solid light-dark(#cfd5df, #3a4350);
+      border-radius: 14px;
+      background: light-dark(#ffffff, #181e27);
+      box-shadow: 0 24px 70px rgba(0,0,0,.30);
+    }
+    #ui-recorder-v14 .rec-popout-window.is-open { display: block; }
+    #ui-recorder-v14 .rec-popout-title { height: 37px; display: flex; align-items: center; gap: 7px; padding: 0 11px; border-bottom: 1px solid light-dark(#e1e5ec, #303844); font-size: 10px; font-weight: 800; }
+    #ui-recorder-v14 .rec-popout-body { padding: 14px; }
+    #ui-recorder-v14 .rec-popout-preview { height: 145px; display: grid; place-items: center; border-radius: 10px; background: light-dark(#f3f4fb, #202536); color: light-dark(#676f85, #aab2c3); font-size: 10px; }
+    #ui-recorder-v14 .rec-popout-controls { display: flex; gap: 7px; margin-top: 10px; }
+
+    #ui-recorder-v14 .rec-result-shell { height: 100%; display: flex; flex-direction: column; }
+    #ui-recorder-v14 .rec-result-head {
+      min-height: 66px;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      padding: 0 18px;
+      border-bottom: 1px solid light-dark(#e0e4eb, #2b323e);
+      background: light-dark(#ffffff, #171c24);
+    }
+    #ui-recorder-v14 .rec-result-back { border: 0; background: transparent; cursor: pointer; color: light-dark(#677184, #a9b2c1); }
+    #ui-recorder-v14 .rec-result-title { font-size: 15px; font-weight: 900; }
+    #ui-recorder-v14 .rec-result-meta { color: light-dark(#80899a, #8d98aa); font-size: 9px; margin-top: 3px; }
+    #ui-recorder-v14 .rec-result-health { margin-left: auto; display: flex; gap: 6px; }
+    #ui-recorder-v14 .rec-health-item { padding: 5px 7px; border-radius: 7px; background: light-dark(#edf8f3, #183229); color: #1c9b69; font-size: 8px; font-weight: 800; }
+    #ui-recorder-v14 .rec-result-main { min-height: 0; flex: 1; display: grid; grid-template-columns: 205px 1fr 265px; }
+    #ui-recorder-v14 .rec-timeline { border-right: 1px solid light-dark(#e0e4eb, #2b323e); background: light-dark(#fbfcfd, #141920); padding: 13px; overflow: hidden; }
+    #ui-recorder-v14 .rec-pane-title { color: light-dark(#6d7789, #98a3b3); font-size: 9px; font-weight: 900; letter-spacing: .05em; text-transform: uppercase; margin-bottom: 9px; }
+    #ui-recorder-v14 .rec-step-row { display: grid; grid-template-columns: 23px 1fr; gap: 8px; padding: 8px 7px; border-radius: 9px; cursor: pointer; }
+    #ui-recorder-v14 .rec-step-row.is-current { background: light-dark(#eeefff, #242746); }
+    #ui-recorder-v14 .rec-step-num { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 7px; background: light-dark(#e8ebf1, #252c36); color: light-dark(#667184, #a8b1bf); font-size: 8px; font-weight: 900; }
+    #ui-recorder-v14 .rec-step-row.is-current .rec-step-num { background: #5d57e8; color: #ffffff; }
+    #ui-recorder-v14 .rec-step-name { font-size: 9px; font-weight: 800; }
+    #ui-recorder-v14 .rec-step-info { color: light-dark(#8b94a4, #7f8a9b); font-size: 8px; margin-top: 2px; }
+    #ui-recorder-v14 .rec-result-visual { position: relative; padding: 15px; min-width: 0; background: light-dark(#f4f6f9, #10151d); }
+    #ui-recorder-v14 .rec-result-browser { height: 100%; overflow: hidden; border: 1px solid light-dark(#dce1e8, #303844); border-radius: 11px; background: light-dark(#ffffff, #181e27); }
+    #ui-recorder-v14 .rec-result-browser-top { height: 35px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid light-dark(#e4e7ed, #2c333e); }
+    #ui-recorder-v14 .rec-result-url { flex: 1; height: 22px; display: flex; align-items: center; padding: 0 9px; border-radius: 6px; background: light-dark(#f0f2f5, #222934); color: light-dark(#748093, #99a4b5); font-size: 8px; }
+    #ui-recorder-v14 .rec-result-page { position: relative; height: calc(100% - 35px); display: grid; place-items: center; background: radial-gradient(circle at 30% 20%, light-dark(#eeefff, #252846), light-dark(#ffffff, #171c24) 55%); }
+    #ui-recorder-v14 .rec-result-login { width: 260px; padding: 19px; border: 1px solid light-dark(#e0e4eb, #333b47); border-radius: 13px; background: light-dark(#ffffff, #1c222c); box-shadow: 0 15px 38px rgba(24,31,47,.13); }
+    #ui-recorder-v14 .rec-result-login strong { display: block; font-size: 16px; margin-bottom: 14px; }
+    #ui-recorder-v14 .rec-result-input { height: 31px; margin-top: 7px; border: 1px solid light-dark(#dce1e8, #37404c); border-radius: 7px; background: light-dark(#fafbfc, #161b23); }
+    #ui-recorder-v14 .rec-result-button { height: 33px; display: grid; place-items: center; margin-top: 10px; border-radius: 7px; background: #5d57e8; color: #ffffff; font-size: 9px; font-weight: 800; outline: 3px solid rgba(109,93,252,.20); }
+    #ui-recorder-v14 .rec-result-marker { position: absolute; padding: 5px 7px; border-radius: 6px; background: #4f49c9; color: #ffffff; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; transform: translate(95px, 118px); }
+    #ui-recorder-v14 .rec-result-inspector { border-left: 1px solid light-dark(#e0e4eb, #2b323e); background: light-dark(#ffffff, #171c24); padding: 14px; overflow: hidden; }
+    #ui-recorder-v14 .rec-inspector-name { font-size: 13px; font-weight: 900; }
+    #ui-recorder-v14 .rec-inspector-type { color: light-dark(#808a9b, #8994a6); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; margin: 4px 0 12px; }
+    #ui-recorder-v14 .rec-inspector-group { margin-top: 13px; color: light-dark(#758093, #909bac); font-size: 8px; font-weight: 900; text-transform: uppercase; letter-spacing: .06em; }
+    #ui-recorder-v14 .rec-inspector-code { margin-top: 6px; padding: 8px; border-radius: 8px; background: light-dark(#f3f5f8, #202631); color: light-dark(#343d4e, #dbe0e7); font: 8px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ui-recorder-v14 .rec-score-track { height: 5px; margin-top: 7px; border-radius: 3px; background: light-dark(#e7eaf0, #2c333d); overflow: hidden; }
+    #ui-recorder-v14 .rec-score-track i { display: block; width: 96%; height: 100%; background: #28a875; }
+    #ui-recorder-v14 .rec-context-strip { height: 183px; border-top: 1px solid light-dark(#e0e4eb, #2b323e); background: light-dark(#ffffff, #171c24); }
+    #ui-recorder-v14 .rec-context-tabs { height: 37px; display: flex; align-items: stretch; gap: 3px; padding: 0 13px; border-bottom: 1px solid light-dark(#e7eaf0, #292f39); }
+    #ui-recorder-v14 .rec-context-tab { position: relative; border: 0; background: transparent; padding: 0 10px; color: light-dark(#7a8495, #8e99aa); font-size: 9px; font-weight: 800; cursor: pointer; }
+    #ui-recorder-v14 .rec-context-tab[aria-pressed=&quot;true&quot;] { color: light-dark(#433db7, #c9c6ff); }
+    #ui-recorder-v14 .rec-context-tab[aria-pressed=&quot;true&quot;]::after { content: &quot;&quot;; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; background: #5d57e8; }
+    #ui-recorder-v14 .rec-context-view { display: none; height: 145px; overflow: hidden; padding: 9px 14px; }
+    #ui-recorder-v14 .rec-context-view.is-current { display: block; }
+    #ui-recorder-v14 .rec-console-line { display: grid; grid-template-columns: 42px 52px 1fr auto; gap: 8px; padding: 4px 0; border-bottom: 1px solid light-dark(#f0f2f5, #252b34); font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #ui-recorder-v14 .rec-console-level-error { color: #e34f4d; font-weight: 900; }
+    #ui-recorder-v14 .rec-console-level-info { color: #5283d8; font-weight: 900; }
+    #ui-recorder-v14 .rec-console-time,
+    #ui-recorder-v14 .rec-console-source { color: light-dark(#8b94a4, #7f8a9b); }
+    #ui-recorder-v14 .rec-network-head,
+    #ui-recorder-v14 .rec-network-row { display: grid; grid-template-columns: 50px 1.5fr 55px 65px 60px; gap: 8px; padding: 5px 0; border-bottom: 1px solid light-dark(#edf0f4, #252b34); font-size: 8px; }
+    #ui-recorder-v14 .rec-network-head { color: light-dark(#8992a2, #7e899a); font-weight: 900; }
+    #ui-recorder-v14 .rec-network-bad { color: #e34f4d; font-weight: 900; }
+    #ui-recorder-v14 .rec-network-good { color: #1c9b69; font-weight: 900; }
+    #ui-recorder-v14 .rec-env-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+    #ui-recorder-v14 .rec-env-item { padding: 9px; border: 1px solid light-dark(#e4e7ed, #2d3540); border-radius: 8px; }
+    #ui-recorder-v14 .rec-env-label { color: light-dark(#8791a1, #7f8a9b); font-size: 8px; }
+    #ui-recorder-v14 .rec-env-value { margin-top: 4px; font-size: 9px; font-weight: 800; }
+    @media (max-width: 780px) {
+      #ui-recorder-v14 { min-height: 700px; }
+      #ui-recorder-v14 .rec-app-window { height: 650px; border-radius: 14px; }
+      #ui-recorder-v14 .rec-main-nav,
+      #ui-recorder-v14 .rec-project-chip,
+      #ui-recorder-v14 .rec-sidebar { display: none; }
+      #ui-recorder-v14 .rec-shell { grid-template-columns: 1fr; }
+      #ui-recorder-v14 .rec-content { padding: 16px; }
+      #ui-recorder-v14 .rec-page-head { flex-wrap: wrap; }
+      #ui-recorder-v14 .rec-toolbar { width: 100%; }
+      #ui-recorder-v14 .rec-table-head,
+      #ui-recorder-v14 .rec-table-row { grid-template-columns: 1.6fr .7fr .7fr; }
+      #ui-recorder-v14 .rec-table-head &gt; :nth-child(4),
+      #ui-recorder-v14 .rec-table-head &gt; :nth-child(5),
+      #ui-recorder-v14 .rec-table-row &gt; :nth-child(4),
+      #ui-recorder-v14 .rec-table-row &gt; :nth-child(5) { display: none; }
+      #ui-recorder-v14 .rec-element-drawer { width: min(100%, 380px); }
+      #ui-recorder-v14 .rec-float-detail { grid-template-columns: 1fr; }
+      #ui-recorder-v14 .rec-float-preview { display: none; }
+      #ui-recorder-v14 .rec-locator-panel { border-left: 0; }
+      #ui-recorder-v14 .rec-float-control span { display: none; }
+      #ui-recorder-v14 .rec-result-main { grid-template-columns: 150px 1fr; }
+      #ui-recorder-v14 .rec-result-inspector { display: none; }
+      #ui-recorder-v14 .rec-result-health { display: none; }
+      #ui-recorder-v14 .rec-context-strip { height: 170px; }
+      #ui-recorder-v14 .rec-env-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 480px) {
+      #ui-recorder-v14 .rec-demo-switch { width: 100%; }
+      #ui-recorder-v14 .rec-demo-switch button { flex: 1; padding: 7px 4px; font-size: 10px; }
+      #ui-recorder-v14 .rec-topbar { padding: 0 12px; }
+      #ui-recorder-v14 .rec-page-title { font-size: 19px; }
+      #ui-recorder-v14 .rec-action-primary,
+      #ui-recorder-v14 .rec-action-secondary { padding: 0 8px; }
+      #ui-recorder-v14 .rec-filter-chip { display: none; }
+      #ui-recorder-v14 .rec-login-panel { width: calc(100% - 34px); }
+      #ui-recorder-v14 .rec-float-shell { left: 14px; right: 14px; width: auto; transform: none; }
+      #ui-recorder-v14 .rec-float-handle { padding: 8px 5px; }
+      #ui-recorder-v14 .rec-record-copy { min-width: 65px; }
+      #ui-recorder-v14 .rec-float-control { padding: 0 8px; }
+      #ui-recorder-v14 .rec-result-main { grid-template-columns: 1fr; }
+      #ui-recorder-v14 .rec-timeline { display: none; }
+      #ui-recorder-v14 .rec-result-visual { padding: 9px; }
+      #ui-recorder-v14 .rec-context-tab { padding: 0 5px; }
+      #ui-recorder-v14 .rec-network-head,
+      #ui-recorder-v14 .rec-network-row { grid-template-columns: 42px 1fr 46px; }
+      #ui-recorder-v14 .rec-network-head &gt; :nth-child(4),
+      #ui-recorder-v14 .rec-network-head &gt; :nth-child(5),
+      #ui-recorder-v14 .rec-network-row &gt; :nth-child(4),
+      #ui-recorder-v14 .rec-network-row &gt; :nth-child(5) { display: none; }
+    }
+  &lt;/style&gt;
+
+  &lt;div class=&quot;rec-demo-switch&quot; aria-label=&quot;样式状态预览&quot;&gt;
+    &lt;button type=&quot;button&quot; data-demo-view=&quot;cases&quot; aria-pressed=&quot;false&quot;&gt;入口与元素库&lt;/button&gt;
+    &lt;button type=&quot;button&quot; data-demo-view=&quot;recording&quot; aria-pressed=&quot;true&quot;&gt;录制中&lt;/button&gt;
+    &lt;button type=&quot;button&quot; data-demo-view=&quot;result&quot; aria-pressed=&quot;false&quot;&gt;上下文结果&lt;/button&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;rec-app-window&quot;&gt;
+    &lt;section class=&quot;rec-screen&quot; data-screen=&quot;cases&quot;&gt;
+      &lt;header class=&quot;rec-topbar&quot;&gt;
+        &lt;div class=&quot;rec-brand&quot;&gt;&lt;span class=&quot;rec-brand-mark&quot;&gt;A&lt;/span&gt;AutoTest&lt;/div&gt;
+        &lt;nav class=&quot;rec-main-nav&quot;&gt;&lt;span&gt;项目&lt;/span&gt;&lt;span class=&quot;is-current&quot;&gt;测试&lt;/span&gt;&lt;span&gt;报告&lt;/span&gt;&lt;span&gt;AI 工作台&lt;/span&gt;&lt;/nav&gt;
+        &lt;div class=&quot;rec-top-spacer&quot;&gt;&lt;/div&gt;&lt;div class=&quot;rec-project-chip&quot;&gt;电商前台 · Staging&lt;/div&gt;&lt;div class=&quot;rec-avatar&quot;&gt;QA&lt;/div&gt;
+      &lt;/header&gt;
+      &lt;div class=&quot;rec-shell&quot;&gt;
+        &lt;aside class=&quot;rec-sidebar&quot;&gt;
+          &lt;div class=&quot;rec-side-label&quot;&gt;自动化用例&lt;/div&gt;
+          &lt;button class=&quot;rec-side-item&quot;&gt;&lt;i class=&quot;rec-side-dot&quot;&gt;&lt;/i&gt;API&lt;/button&gt;
+          &lt;button class=&quot;rec-side-item is-active&quot;&gt;&lt;i class=&quot;rec-side-dot&quot;&gt;&lt;/i&gt;Web&lt;/button&gt;
+          &lt;button class=&quot;rec-side-item&quot;&gt;&lt;i class=&quot;rec-side-dot&quot;&gt;&lt;/i&gt;Android&lt;/button&gt;
+          &lt;button class=&quot;rec-side-item&quot;&gt;&lt;i class=&quot;rec-side-dot&quot;&gt;&lt;/i&gt;iOS&lt;/button&gt;
+          &lt;button class=&quot;rec-side-item&quot;&gt;&lt;i class=&quot;rec-side-dot&quot;&gt;&lt;/i&gt;功能用例&lt;/button&gt;
+        &lt;/aside&gt;
+        &lt;main class=&quot;rec-content&quot;&gt;
+          &lt;div class=&quot;rec-breadcrumb&quot;&gt;项目 / 电商前台 / 自动化测试&lt;/div&gt;
+          &lt;div class=&quot;rec-page-head&quot;&gt;
+            &lt;div&gt;&lt;div class=&quot;rec-page-title&quot;&gt;Web 用例&lt;/div&gt;&lt;div class=&quot;rec-page-sub&quot;&gt;维护浏览器自动化用例与项目级元素资产&lt;/div&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-head-spacer&quot;&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-toolbar&quot;&gt;
+              &lt;button class=&quot;rec-action-primary&quot;&gt;＋ 新建 Web 用例&lt;/button&gt;
+              &lt;button class=&quot;rec-action-secondary&quot; data-open-elements&gt;元素库&lt;/button&gt;
+            &lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;rec-search-line&quot;&gt;&lt;input class=&quot;rec-search-box&quot; aria-label=&quot;搜索用例&quot; value=&quot;&quot; placeholder=&quot;搜索名称、标签或负责人&quot;&gt;&lt;button class=&quot;rec-filter-chip&quot;&gt;状态：全部&lt;/button&gt;&lt;button class=&quot;rec-filter-chip&quot;&gt;最近更新&lt;/button&gt;&lt;/div&gt;
+          &lt;div class=&quot;rec-table-wrap&quot;&gt;
+            &lt;div class=&quot;rec-table-head&quot;&gt;&lt;span&gt;用例&lt;/span&gt;&lt;span&gt;模块&lt;/span&gt;&lt;span&gt;状态&lt;/span&gt;&lt;span&gt;最近执行&lt;/span&gt;&lt;span&gt;&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-table-row&quot;&gt;&lt;div&gt;&lt;div class=&quot;rec-case-name&quot;&gt;用户使用正确账号登录&lt;/div&gt;&lt;div class=&quot;rec-case-meta&quot;&gt;8 个步骤 · Chromium&lt;/div&gt;&lt;/div&gt;&lt;span&gt;登录认证&lt;/span&gt;&lt;span class=&quot;rec-status-ok&quot;&gt;通过&lt;/span&gt;&lt;span&gt;12 分钟前&lt;/span&gt;&lt;span class=&quot;rec-kebab&quot;&gt;•••&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-table-row&quot;&gt;&lt;div&gt;&lt;div class=&quot;rec-case-name&quot;&gt;购物车商品数量变更&lt;/div&gt;&lt;div class=&quot;rec-case-meta&quot;&gt;11 个步骤 · Chromium&lt;/div&gt;&lt;/div&gt;&lt;span&gt;购物车&lt;/span&gt;&lt;span class=&quot;rec-status-ok&quot;&gt;通过&lt;/span&gt;&lt;span&gt;1 小时前&lt;/span&gt;&lt;span class=&quot;rec-kebab&quot;&gt;•••&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-table-row&quot;&gt;&lt;div&gt;&lt;div class=&quot;rec-case-name&quot;&gt;优惠券失效提示&lt;/div&gt;&lt;div class=&quot;rec-case-meta&quot;&gt;6 个步骤 · WebKit&lt;/div&gt;&lt;/div&gt;&lt;span&gt;结算&lt;/span&gt;&lt;span class=&quot;rec-status-draft&quot;&gt;草稿&lt;/span&gt;&lt;span&gt;尚未执行&lt;/span&gt;&lt;span class=&quot;rec-kebab&quot;&gt;•••&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-table-row&quot;&gt;&lt;div&gt;&lt;div class=&quot;rec-case-name&quot;&gt;订单详情跳转物流页&lt;/div&gt;&lt;div class=&quot;rec-case-meta&quot;&gt;9 个步骤 · Firefox&lt;/div&gt;&lt;/div&gt;&lt;span&gt;订单&lt;/span&gt;&lt;span class=&quot;rec-status-ok&quot;&gt;通过&lt;/span&gt;&lt;span&gt;昨天&lt;/span&gt;&lt;span class=&quot;rec-kebab&quot;&gt;•••&lt;/span&gt;&lt;/div&gt;
+          &lt;/div&gt;
+        &lt;/main&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;rec-drawer-backdrop&quot;&gt;&lt;/div&gt;
+      &lt;aside class=&quot;rec-element-drawer&quot;&gt;
+        &lt;div class=&quot;rec-drawer-title-row&quot;&gt;&lt;div class=&quot;rec-drawer-title&quot;&gt;项目元素库&lt;/div&gt;&lt;button class=&quot;rec-drawer-close&quot; type=&quot;button&quot; data-close-elements&gt;×&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-drawer-sub&quot;&gt;Web · 42 个元素 · 所有元素都有快照和定位器验证证据&lt;/div&gt;
+        &lt;input class=&quot;rec-search-box&quot; aria-label=&quot;搜索元素&quot; placeholder=&quot;搜索元素名称、页面或定位器&quot;&gt;
+        &lt;div class=&quot;rec-element-row&quot;&gt;&lt;div class=&quot;rec-element-icon&quot;&gt;ID&lt;/div&gt;&lt;div&gt;&lt;div class=&quot;rec-element-name&quot;&gt;登录按钮&lt;/div&gt;&lt;div class=&quot;rec-element-locator&quot;&gt;#login-submit&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-element-score&quot;&gt;96&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-element-row&quot;&gt;&lt;div class=&quot;rec-element-icon&quot;&gt;@&lt;/div&gt;&lt;div&gt;&lt;div class=&quot;rec-element-name&quot;&gt;账号输入框&lt;/div&gt;&lt;div class=&quot;rec-element-locator&quot;&gt;[data-testid=&quot;email&quot;]&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-element-score&quot;&gt;98&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-element-row&quot;&gt;&lt;div class=&quot;rec-element-icon&quot;&gt;R&lt;/div&gt;&lt;div&gt;&lt;div class=&quot;rec-element-name&quot;&gt;购物车入口&lt;/div&gt;&lt;div class=&quot;rec-element-locator&quot;&gt;role=link[name=&quot;购物车&quot;]&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-element-score&quot;&gt;92&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-drawer-footer&quot;&gt;&lt;button class=&quot;rec-action-primary&quot; type=&quot;button&quot; data-start-recording&gt;● 开始录制&lt;/button&gt;&lt;button class=&quot;rec-action-secondary&quot;&gt;完整元素库&lt;/button&gt;&lt;/div&gt;
+      &lt;/aside&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;rec-screen is-visible&quot; data-screen=&quot;recording&quot;&gt;
+      &lt;div class=&quot;rec-target-top&quot;&gt;&lt;div class=&quot;rec-browser-dots&quot;&gt;&lt;i&gt;&lt;/i&gt;&lt;i&gt;&lt;/i&gt;&lt;i&gt;&lt;/i&gt;&lt;/div&gt;&lt;div class=&quot;rec-address&quot;&gt;🔒 staging.shop.local/login&lt;/div&gt;&lt;button class=&quot;rec-action-ghost&quot; data-go-cases&gt;回到平台&lt;/button&gt;&lt;/div&gt;
+      &lt;div class=&quot;rec-target-page&quot;&gt;
+        &lt;div class=&quot;rec-target-nav&quot;&gt;&lt;div class=&quot;rec-shop-logo&quot;&gt;NORTH / SHOP&lt;/div&gt;&lt;div class=&quot;rec-target-links&quot;&gt;&lt;span&gt;首页&lt;/span&gt;&lt;span&gt;新品&lt;/span&gt;&lt;span&gt;会员中心&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-login-panel&quot;&gt;&lt;div class=&quot;rec-login-kicker&quot;&gt;WELCOME BACK&lt;/div&gt;&lt;div class=&quot;rec-login-title&quot;&gt;登录你的账户&lt;/div&gt;&lt;div class=&quot;rec-login-sub&quot;&gt;继续管理订单、收藏和会员权益&lt;/div&gt;&lt;div class=&quot;rec-form-label&quot;&gt;邮箱&lt;/div&gt;&lt;input class=&quot;rec-form-input&quot; value=&quot;qa@example.com&quot; aria-label=&quot;邮箱&quot;&gt;&lt;div class=&quot;rec-form-label&quot;&gt;密码&lt;/div&gt;&lt;input class=&quot;rec-form-input&quot; value=&quot;••••••••&quot; aria-label=&quot;密码&quot;&gt;&lt;button class=&quot;rec-login-submit&quot; type=&quot;button&quot;&gt;登录&lt;/button&gt;&lt;/div&gt;
+        &lt;div class=&quot;rec-selected-tag&quot;&gt;button#login-submit · 360 × 40&lt;/div&gt;
+        &lt;div class=&quot;rec-float-shell&quot; data-recorder-shell&gt;
+          &lt;div class=&quot;rec-float-detail&quot;&gt;
+            &lt;div class=&quot;rec-float-preview&quot;&gt;&lt;div class=&quot;rec-preview-label&quot;&gt;当前画面 · 已选中登录按钮&lt;/div&gt;&lt;div class=&quot;rec-preview-mini&quot;&gt;元素截图与页面局部预览&lt;/div&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-locator-panel&quot;&gt;&lt;div class=&quot;rec-locator-title&quot;&gt;登录按钮&lt;/div&gt;&lt;div class=&quot;rec-locator-sub&quot;&gt;button · 唯一匹配 · 刚刚验证&lt;/div&gt;&lt;div class=&quot;rec-locator-line&quot;&gt;&lt;span class=&quot;rec-locator-kind&quot;&gt;ID&lt;/span&gt;&lt;span class=&quot;rec-locator-code&quot;&gt;login-submit&lt;/span&gt;&lt;span class=&quot;rec-locator-score&quot;&gt;96&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-locator-line&quot;&gt;&lt;span class=&quot;rec-locator-kind&quot;&gt;CSS&lt;/span&gt;&lt;span class=&quot;rec-locator-code&quot;&gt;#login-submit&lt;/span&gt;&lt;span class=&quot;rec-locator-score&quot;&gt;94&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-locator-line&quot;&gt;&lt;span class=&quot;rec-locator-kind&quot;&gt;Role&lt;/span&gt;&lt;span class=&quot;rec-locator-code&quot;&gt;button[name=&quot;登录&quot;]&lt;/span&gt;&lt;span class=&quot;rec-locator-score&quot;&gt;92&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-locator-line&quot;&gt;&lt;span class=&quot;rec-locator-kind&quot;&gt;XPath&lt;/span&gt;&lt;span class=&quot;rec-locator-code&quot;&gt;//*[@id=&#x27;login-submit&#x27;]&lt;/span&gt;&lt;span class=&quot;rec-locator-score&quot;&gt;78&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;rec-float-bar&quot;&gt;
+            &lt;div class=&quot;rec-float-handle&quot; data-drag-handle&gt;&lt;span class=&quot;rec-record-dot&quot;&gt;&lt;/span&gt;&lt;div class=&quot;rec-record-copy&quot;&gt;&lt;div class=&quot;rec-record-status&quot; data-record-status&gt;录制中&lt;/div&gt;&lt;div class=&quot;rec-record-time&quot;&gt;00:03:21 · 12 步&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+            &lt;div class=&quot;rec-float-spacer&quot;&gt;&lt;/div&gt;
+            &lt;button class=&quot;rec-float-control&quot; type=&quot;button&quot; data-pause&gt;&lt;span&gt;Ⅱ &lt;/span&gt;暂停&lt;/button&gt;
+            &lt;button class=&quot;rec-float-control is-active&quot; type=&quot;button&quot; data-pick&gt;&lt;span&gt;⌖ &lt;/span&gt;拾取&lt;/button&gt;
+            &lt;button class=&quot;rec-float-control&quot; type=&quot;button&quot; data-popout&gt;&lt;span&gt;↗ &lt;/span&gt;弹出&lt;/button&gt;
+            &lt;button class=&quot;rec-float-control rec-float-stop&quot; type=&quot;button&quot; data-stop aria-label=&quot;停止录制&quot;&gt;■&lt;/button&gt;
+          &lt;/div&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;rec-popout-window&quot; data-popout-window&gt;&lt;div class=&quot;rec-popout-title&quot;&gt;&lt;span class=&quot;rec-record-dot&quot;&gt;&lt;/span&gt;元素录制 · 独立窗口 &lt;button class=&quot;rec-drawer-close&quot; data-popout-close&gt;×&lt;/button&gt;&lt;/div&gt;&lt;div class=&quot;rec-popout-body&quot;&gt;&lt;div class=&quot;rec-popout-preview&quot;&gt;实时画面 · 登录页&lt;br&gt;Console 2 · Network 14&lt;/div&gt;&lt;div class=&quot;rec-popout-controls&quot;&gt;&lt;button class=&quot;rec-float-control&quot;&gt;Ⅱ 暂停&lt;/button&gt;&lt;button class=&quot;rec-float-control is-active&quot;&gt;⌖ 拾取&lt;/button&gt;&lt;button class=&quot;rec-float-control rec-float-stop&quot;&gt;■&lt;/button&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+
+    &lt;section class=&quot;rec-screen&quot; data-screen=&quot;result&quot;&gt;
+      &lt;div class=&quot;rec-result-shell&quot;&gt;
+        &lt;header class=&quot;rec-result-head&quot;&gt;&lt;button class=&quot;rec-result-back&quot; data-go-cases&gt;←&lt;/button&gt;&lt;div&gt;&lt;div class=&quot;rec-result-title&quot;&gt;录制结果 · 用户登录&lt;/div&gt;&lt;div class=&quot;rec-result-meta&quot;&gt;Web · Chromium 127 · macOS 15 · 3分42秒 · 12 个动作&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-health&quot;&gt;&lt;span class=&quot;rec-health-item&quot;&gt;画面正常&lt;/span&gt;&lt;span class=&quot;rec-health-item&quot;&gt;Console 正常&lt;/span&gt;&lt;span class=&quot;rec-health-item&quot;&gt;Network 正常&lt;/span&gt;&lt;/div&gt;&lt;button class=&quot;rec-action-primary&quot;&gt;生成用例草稿&lt;/button&gt;&lt;/header&gt;
+        &lt;div class=&quot;rec-result-main&quot;&gt;
+          &lt;aside class=&quot;rec-timeline&quot;&gt;&lt;div class=&quot;rec-pane-title&quot;&gt;动作时间线&lt;/div&gt;&lt;div class=&quot;rec-step-row&quot;&gt;&lt;span class=&quot;rec-step-num&quot;&gt;1&lt;/span&gt;&lt;div&gt;&lt;div class=&quot;rec-step-name&quot;&gt;打开登录页&lt;/div&gt;&lt;div class=&quot;rec-step-info&quot;&gt;导航 · 812ms&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-step-row&quot;&gt;&lt;span class=&quot;rec-step-num&quot;&gt;2&lt;/span&gt;&lt;div&gt;&lt;div class=&quot;rec-step-name&quot;&gt;输入邮箱&lt;/div&gt;&lt;div class=&quot;rec-step-info&quot;&gt;账号输入框&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-step-row&quot;&gt;&lt;span class=&quot;rec-step-num&quot;&gt;3&lt;/span&gt;&lt;div&gt;&lt;div class=&quot;rec-step-name&quot;&gt;输入密码&lt;/div&gt;&lt;div class=&quot;rec-step-info&quot;&gt;值已脱敏&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-step-row is-current&quot;&gt;&lt;span class=&quot;rec-step-num&quot;&gt;4&lt;/span&gt;&lt;div&gt;&lt;div class=&quot;rec-step-name&quot;&gt;点击登录&lt;/div&gt;&lt;div class=&quot;rec-step-info&quot;&gt;1 error · 1 failed request&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-step-row&quot;&gt;&lt;span class=&quot;rec-step-num&quot;&gt;5&lt;/span&gt;&lt;div&gt;&lt;div class=&quot;rec-step-name&quot;&gt;进入工作台&lt;/div&gt;&lt;div class=&quot;rec-step-info&quot;&gt;导航 · 1.4s&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;/aside&gt;
+          &lt;main class=&quot;rec-result-visual&quot;&gt;&lt;div class=&quot;rec-result-browser&quot;&gt;&lt;div class=&quot;rec-result-browser-top&quot;&gt;&lt;div class=&quot;rec-browser-dots&quot;&gt;&lt;i&gt;&lt;/i&gt;&lt;i&gt;&lt;/i&gt;&lt;i&gt;&lt;/i&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-url&quot;&gt;staging.shop.local/login&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-page&quot;&gt;&lt;div class=&quot;rec-result-login&quot;&gt;&lt;strong&gt;登录你的账户&lt;/strong&gt;&lt;div class=&quot;rec-result-input&quot;&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-input&quot;&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-button&quot;&gt;登录&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-result-marker&quot;&gt;button#login-submit&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;/main&gt;
+          &lt;aside class=&quot;rec-result-inspector&quot;&gt;&lt;div class=&quot;rec-pane-title&quot;&gt;元素与定位器&lt;/div&gt;&lt;div class=&quot;rec-inspector-name&quot;&gt;登录按钮&lt;/div&gt;&lt;div class=&quot;rec-inspector-type&quot;&gt;&amp;lt;button id=&quot;login-submit&quot;&amp;gt;&lt;/div&gt;&lt;div class=&quot;rec-inspector-group&quot;&gt;推荐定位器 · 96&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;id = login-submit&lt;/div&gt;&lt;div class=&quot;rec-score-track&quot;&gt;&lt;i&gt;&lt;/i&gt;&lt;/div&gt;&lt;div class=&quot;rec-inspector-group&quot;&gt;备用定位器&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;css = #login-submit&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;role = button[name=&quot;登录&quot;]&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;xpath = //*[@id=&#x27;login-submit&#x27;]&lt;/div&gt;&lt;div class=&quot;rec-inspector-group&quot;&gt;当时状态&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;visible=true · enabled=true&lt;/div&gt;&lt;div class=&quot;rec-inspector-code&quot;&gt;bounds=504,431,260,33&lt;/div&gt;&lt;/aside&gt;
+        &lt;/div&gt;
+        &lt;section class=&quot;rec-context-strip&quot;&gt;
+          &lt;div class=&quot;rec-context-tabs&quot;&gt;&lt;button class=&quot;rec-context-tab&quot; data-context-tab=&quot;console&quot; aria-pressed=&quot;true&quot;&gt;Console · 2&lt;/button&gt;&lt;button class=&quot;rec-context-tab&quot; data-context-tab=&quot;network&quot; aria-pressed=&quot;false&quot;&gt;Network · 14&lt;/button&gt;&lt;button class=&quot;rec-context-tab&quot; data-context-tab=&quot;events&quot; aria-pressed=&quot;false&quot;&gt;用户事件 · 12&lt;/button&gt;&lt;button class=&quot;rec-context-tab&quot; data-context-tab=&quot;environment&quot; aria-pressed=&quot;false&quot;&gt;环境&lt;/button&gt;&lt;/div&gt;
+          &lt;div class=&quot;rec-context-view is-current&quot; data-context-view=&quot;console&quot;&gt;&lt;div class=&quot;rec-console-line&quot;&gt;&lt;span class=&quot;rec-console-level-info&quot;&gt;INFO&lt;/span&gt;&lt;span class=&quot;rec-console-time&quot;&gt;10:23:18.201&lt;/span&gt;&lt;span&gt;Login form submitted&lt;/span&gt;&lt;span class=&quot;rec-console-source&quot;&gt;login.tsx:88&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-console-line&quot;&gt;&lt;span class=&quot;rec-console-level-error&quot;&gt;ERROR&lt;/span&gt;&lt;span class=&quot;rec-console-time&quot;&gt;10:23:18.492&lt;/span&gt;&lt;span&gt;Failed to load resource: server responded 500&lt;/span&gt;&lt;span class=&quot;rec-console-source&quot;&gt;api.ts:127&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-console-line&quot;&gt;&lt;span class=&quot;rec-console-level-info&quot;&gt;INFO&lt;/span&gt;&lt;span class=&quot;rec-console-time&quot;&gt;10:23:19.106&lt;/span&gt;&lt;span&gt;Retrying authentication request&lt;/span&gt;&lt;span class=&quot;rec-console-source&quot;&gt;auth.ts:51&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+          &lt;div class=&quot;rec-context-view&quot; data-context-view=&quot;network&quot;&gt;&lt;div class=&quot;rec-network-head&quot;&gt;&lt;span&gt;方法&lt;/span&gt;&lt;span&gt;请求&lt;/span&gt;&lt;span&gt;状态&lt;/span&gt;&lt;span&gt;耗时&lt;/span&gt;&lt;span&gt;类型&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-network-row&quot;&gt;&lt;span&gt;POST&lt;/span&gt;&lt;span&gt;/api/auth/login&lt;/span&gt;&lt;span class=&quot;rec-network-bad&quot;&gt;500&lt;/span&gt;&lt;span&gt;291ms&lt;/span&gt;&lt;span&gt;fetch&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-network-row&quot;&gt;&lt;span&gt;POST&lt;/span&gt;&lt;span&gt;/api/auth/login&lt;/span&gt;&lt;span class=&quot;rec-network-good&quot;&gt;200&lt;/span&gt;&lt;span&gt;344ms&lt;/span&gt;&lt;span&gt;fetch&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-network-row&quot;&gt;&lt;span&gt;GET&lt;/span&gt;&lt;span&gt;/api/me&lt;/span&gt;&lt;span class=&quot;rec-network-good&quot;&gt;200&lt;/span&gt;&lt;span&gt;128ms&lt;/span&gt;&lt;span&gt;xhr&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+          &lt;div class=&quot;rec-context-view&quot; data-context-view=&quot;events&quot;&gt;&lt;div class=&quot;rec-console-line&quot;&gt;&lt;span class=&quot;rec-console-level-info&quot;&gt;CLICK&lt;/span&gt;&lt;span class=&quot;rec-console-time&quot;&gt;10:23:18.315&lt;/span&gt;&lt;span&gt;button#login-submit · 登录按钮&lt;/span&gt;&lt;span class=&quot;rec-console-source&quot;&gt;step 4&lt;/span&gt;&lt;/div&gt;&lt;div class=&quot;rec-console-line&quot;&gt;&lt;span class=&quot;rec-console-level-info&quot;&gt;NAV&lt;/span&gt;&lt;span class=&quot;rec-console-time&quot;&gt;10:23:19.781&lt;/span&gt;&lt;span&gt;/login → /dashboard&lt;/span&gt;&lt;span class=&quot;rec-console-source&quot;&gt;main frame&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+          &lt;div class=&quot;rec-context-view&quot; data-context-view=&quot;environment&quot;&gt;&lt;div class=&quot;rec-env-grid&quot;&gt;&lt;div class=&quot;rec-env-item&quot;&gt;&lt;div class=&quot;rec-env-label&quot;&gt;浏览器&lt;/div&gt;&lt;div class=&quot;rec-env-value&quot;&gt;Chromium 127&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-env-item&quot;&gt;&lt;div class=&quot;rec-env-label&quot;&gt;系统&lt;/div&gt;&lt;div class=&quot;rec-env-value&quot;&gt;macOS 15&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-env-item&quot;&gt;&lt;div class=&quot;rec-env-label&quot;&gt;视口&lt;/div&gt;&lt;div class=&quot;rec-env-value&quot;&gt;1440 × 900&lt;/div&gt;&lt;/div&gt;&lt;div class=&quot;rec-env-item&quot;&gt;&lt;div class=&quot;rec-env-label&quot;&gt;网络&lt;/div&gt;&lt;div class=&quot;rec-env-value&quot;&gt;4G · RTT 82ms*&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;
+        &lt;/section&gt;
+      &lt;/div&gt;
+    &lt;/section&gt;
+  &lt;/div&gt;
+
+  &lt;script&gt;
+    (function () {
+      const root = document.getElementById(&#x27;ui-recorder-v14&#x27;);
+      if (!root) return;
+      const screens = Array.from(root.querySelectorAll(&#x27;[data-screen]&#x27;));
+      const demoButtons = Array.from(root.querySelectorAll(&#x27;[data-demo-view]&#x27;));
+      const showScreen = (name) =&gt; {
+        screens.forEach((screen) =&gt; screen.classList.toggle(&#x27;is-visible&#x27;, screen.dataset.screen === name));
+        demoButtons.forEach((button) =&gt; button.setAttribute(&#x27;aria-pressed&#x27;, String(button.dataset.demoView === name)));
+      };
+      demoButtons.forEach((button) =&gt; button.addEventListener(&#x27;click&#x27;, () =&gt; showScreen(button.dataset.demoView)));
+      root.querySelectorAll(&#x27;[data-go-cases]&#x27;).forEach((button) =&gt; button.addEventListener(&#x27;click&#x27;, () =&gt; showScreen(&#x27;cases&#x27;)));
+      root.querySelector(&#x27;[data-start-recording]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; showScreen(&#x27;recording&#x27;));
+      root.querySelector(&#x27;[data-stop]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; showScreen(&#x27;result&#x27;));
+
+      const drawer = root.querySelector(&#x27;.rec-element-drawer&#x27;);
+      const backdrop = root.querySelector(&#x27;.rec-drawer-backdrop&#x27;);
+      const setDrawer = (open) =&gt; {
+        drawer.style.display = open ? &#x27;block&#x27; : &#x27;none&#x27;;
+        backdrop.style.display = open ? &#x27;block&#x27; : &#x27;none&#x27;;
+      };
+      root.querySelector(&#x27;[data-open-elements]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; setDrawer(true));
+      root.querySelector(&#x27;[data-close-elements]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; setDrawer(false));
+      backdrop.addEventListener(&#x27;click&#x27;, () =&gt; setDrawer(false));
+
+      const recorderShell = root.querySelector(&#x27;[data-recorder-shell]&#x27;);
+      const pickButton = root.querySelector(&#x27;[data-pick]&#x27;);
+      pickButton.addEventListener(&#x27;click&#x27;, () =&gt; {
+        const compact = recorderShell.classList.toggle(&#x27;is-compact&#x27;);
+        pickButton.classList.toggle(&#x27;is-active&#x27;, !compact);
+      });
+      const pauseButton = root.querySelector(&#x27;[data-pause]&#x27;);
+      const recordStatus = root.querySelector(&#x27;[data-record-status]&#x27;);
+      pauseButton.addEventListener(&#x27;click&#x27;, () =&gt; {
+        const paused = pauseButton.classList.toggle(&#x27;is-active&#x27;);
+        pauseButton.innerHTML = paused ? &#x27;&lt;span&gt;▶ &lt;/span&gt;继续&#x27; : &#x27;&lt;span&gt;Ⅱ &lt;/span&gt;暂停&#x27;;
+        recordStatus.textContent = paused ? &#x27;已暂停&#x27; : &#x27;录制中&#x27;;
+      });
+
+      const popoutWindow = root.querySelector(&#x27;[data-popout-window]&#x27;);
+      root.querySelector(&#x27;[data-popout]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; popoutWindow.classList.add(&#x27;is-open&#x27;));
+      root.querySelector(&#x27;[data-popout-close]&#x27;).addEventListener(&#x27;click&#x27;, () =&gt; popoutWindow.classList.remove(&#x27;is-open&#x27;));
+
+      const contextTabs = Array.from(root.querySelectorAll(&#x27;[data-context-tab]&#x27;));
+      const contextViews = Array.from(root.querySelectorAll(&#x27;[data-context-view]&#x27;));
+      contextTabs.forEach((tab) =&gt; tab.addEventListener(&#x27;click&#x27;, () =&gt; {
+        contextTabs.forEach((item) =&gt; item.setAttribute(&#x27;aria-pressed&#x27;, String(item === tab)));
+        contextViews.forEach((view) =&gt; view.classList.toggle(&#x27;is-current&#x27;, view.dataset.contextView === tab.dataset.contextTab));
+      }));
+
+      const handle = root.querySelector(&#x27;[data-drag-handle]&#x27;);
+      let drag = null;
+      handle.addEventListener(&#x27;pointerdown&#x27;, (event) =&gt; {
+        const shellRect = recorderShell.getBoundingClientRect();
+        const parentRect = recorderShell.parentElement.getBoundingClientRect();
+        recorderShell.style.left = `${shellRect.left - parentRect.left}px`;
+        recorderShell.style.top = `${shellRect.top - parentRect.top}px`;
+        recorderShell.style.bottom = &#x27;auto&#x27;;
+        recorderShell.style.transform = &#x27;none&#x27;;
+        drag = { startX: event.clientX, startY: event.clientY, left: shellRect.left - parentRect.left, top: shellRect.top - parentRect.top, parentRect };
+        handle.setPointerCapture(event.pointerId);
+      });
+      handle.addEventListener(&#x27;pointermove&#x27;, (event) =&gt; {
+        if (!drag) return;
+        const maxLeft = drag.parentRect.width - recorderShell.offsetWidth - 8;
+        const maxTop = drag.parentRect.height - recorderShell.offsetHeight - 8;
+        const nextLeft = Math.max(8, Math.min(maxLeft, drag.left + event.clientX - drag.startX));
+        const nextTop = Math.max(8, Math.min(maxTop, drag.top + event.clientY - drag.startY));
+        recorderShell.style.left = `${nextLeft}px`;
+        recorderShell.style.top = `${nextTop}px`;
+      });
+      handle.addEventListener(&#x27;pointerup&#x27;, () =&gt; { drag = null; });
+      handle.addEventListener(&#x27;pointercancel&#x27;, () =&gt; { drag = null; });
+    }());
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

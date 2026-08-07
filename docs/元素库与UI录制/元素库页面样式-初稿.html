@@ -1,0 +1,1002 @@
+<div id="element-library-showcase">
+  <style>
+    #element-library-showcase {
+      color-scheme: light dark;
+      width: 100%;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: light-dark(#172033, #e8edf6);
+    }
+    #element-library-showcase * { box-sizing: border-box; }
+    #element-library-showcase button,
+    #element-library-showcase input { font: inherit; }
+    #element-library-showcase .showcase-switcher {
+      display: flex;
+      gap: 6px;
+      width: max-content;
+      max-width: 100%;
+      margin: 0 auto 12px;
+      padding: 5px;
+      border: 1px solid light-dark(#d8dfeb, #334057);
+      border-radius: 11px;
+      background: light-dark(#ffffff, #151c29);
+      box-shadow: 0 8px 24px light-dark(rgba(23, 32, 51, .08), rgba(0, 0, 0, .28));
+      overflow-x: auto;
+    }
+    #element-library-showcase .view-button {
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 12px;
+      background: transparent;
+      color: light-dark(#667085, #98a5ba);
+      cursor: pointer;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 650;
+    }
+    #element-library-showcase .view-button[aria-pressed="true"] {
+      color: light-dark(#1d4ed8, #bfdbfe);
+      background: light-dark(#eef4ff, #1f3157);
+      box-shadow: inset 0 0 0 1px light-dark(#cfddff, #345285);
+    }
+    #element-library-showcase .product-frame {
+      position: relative;
+      width: 100%;
+      height: 680px;
+      overflow: hidden;
+      border: 1px solid light-dark(#d5dce8, #344055);
+      border-radius: 16px;
+      background: light-dark(#f5f7fb, #0e1420);
+      box-shadow: 0 20px 48px light-dark(rgba(23, 32, 51, .14), rgba(0, 0, 0, .38));
+    }
+    #element-library-showcase .screen {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: light-dark(#f5f7fb, #0e1420);
+    }
+    #element-library-showcase .screen.is-active { display: block; }
+    #element-library-showcase .app-shell {
+      display: grid;
+      grid-template-columns: 182px minmax(0, 1fr);
+      height: 100%;
+    }
+    #element-library-showcase .sidebar {
+      padding: 16px 12px;
+      border-right: 1px solid light-dark(#e0e5ee, #273247);
+      background: light-dark(#ffffff, #121925);
+    }
+    #element-library-showcase .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 4px 7px 18px;
+      font-size: 13px;
+      font-weight: 760;
+      letter-spacing: -.01em;
+    }
+    #element-library-showcase .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 27px;
+      height: 27px;
+      border-radius: 8px;
+      color: #ffffff;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      font-size: 13px;
+    }
+    #element-library-showcase .nav-section {
+      padding: 12px 8px 6px;
+      color: light-dark(#98a2b3, #65738a);
+      font-size: 10px;
+      font-weight: 730;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+    #element-library-showcase .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      height: 34px;
+      margin: 2px 0;
+      padding: 0 9px;
+      border-radius: 8px;
+      color: light-dark(#667085, #9ca9bd);
+      font-size: 12px;
+    }
+    #element-library-showcase .nav-item.active {
+      color: light-dark(#1d4ed8, #d7e5ff);
+      background: light-dark(#eef4ff, #1d2a44);
+      font-weight: 650;
+    }
+    #element-library-showcase .nav-icon {
+      display: grid;
+      place-items: center;
+      width: 17px;
+      color: inherit;
+      font-size: 13px;
+    }
+    #element-library-showcase .main-column {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+    #element-library-showcase .topbar {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 22px;
+      border-bottom: 1px solid light-dark(#e0e5ee, #273247);
+      background: light-dark(rgba(255, 255, 255, .96), rgba(18, 25, 37, .96));
+    }
+    #element-library-showcase .crumbs {
+      color: light-dark(#667085, #9aa7ba);
+      font-size: 12px;
+    }
+    #element-library-showcase .crumbs strong { color: light-dark(#172033, #e8edf6); }
+    #element-library-showcase .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #ffffff;
+      background: #64748b;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    #element-library-showcase .page-content {
+      flex: 1;
+      min-height: 0;
+      padding: 20px 22px 24px;
+      overflow: auto;
+    }
+    #element-library-showcase .page-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    #element-library-showcase h2,
+    #element-library-showcase h3,
+    #element-library-showcase p { margin: 0; }
+    #element-library-showcase .page-title {
+      font-size: 19px;
+      letter-spacing: -.02em;
+    }
+    #element-library-showcase .page-subtitle {
+      margin-top: 4px;
+      color: light-dark(#7b8799, #8f9caf);
+      font-size: 11px;
+    }
+    #element-library-showcase .stack-tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 14px;
+      padding: 3px;
+      border: 1px solid light-dark(#dfe5ee, #2c374b);
+      border-radius: 10px;
+      background: light-dark(#ffffff, #151d2a);
+    }
+    #element-library-showcase .stack-tab {
+      padding: 7px 13px;
+      border-radius: 7px;
+      color: light-dark(#667085, #96a3b6);
+      font-size: 11px;
+      font-weight: 650;
+    }
+    #element-library-showcase .stack-tab.active {
+      color: light-dark(#1d4ed8, #d6e5ff);
+      background: light-dark(#edf4ff, #1e2d48);
+    }
+    #element-library-showcase .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    #element-library-showcase .action-button {
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid light-dark(#d4dbe7, #364258);
+      border-radius: 8px;
+      padding: 0 11px;
+      color: light-dark(#344054, #d6deea);
+      background: light-dark(#ffffff, #171f2d);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 650;
+    }
+    #element-library-showcase .action-button:hover {
+      border-color: light-dark(#9fbaf5, #5172a8);
+      background: light-dark(#f6f9ff, #1b2940);
+    }
+    #element-library-showcase .action-button.primary {
+      color: #ffffff;
+      border-color: #2563eb;
+      background: #2563eb;
+    }
+    #element-library-showcase .action-button.element-entry {
+      color: light-dark(#5b21b6, #ddd6fe);
+      border-color: light-dark(#c4b5fd, #5b4794);
+      background: light-dark(#f5f3ff, #2c2247);
+    }
+    #element-library-showcase .spacer { flex: 1; }
+    #element-library-showcase .search-box {
+      width: 205px;
+      height: 32px;
+      border: 1px solid light-dark(#d5dce8, #354157);
+      border-radius: 8px;
+      padding: 0 10px;
+      color: light-dark(#344054, #e4eaf3);
+      background: light-dark(#ffffff, #151d2a);
+      outline: none;
+      font-size: 11px;
+    }
+    #element-library-showcase .panel {
+      border: 1px solid light-dark(#dfe5ee, #2d384d);
+      border-radius: 11px;
+      background: light-dark(#ffffff, #151d2a);
+      overflow: hidden;
+    }
+    #element-library-showcase .panel-head,
+    #element-library-showcase .table-row {
+      display: grid;
+      grid-template-columns: 1.3fr .7fr .85fr .65fr .55fr 74px;
+      align-items: center;
+      gap: 12px;
+      min-height: 42px;
+      padding: 0 14px;
+      border-bottom: 1px solid light-dark(#edf0f5, #263044);
+      font-size: 11px;
+    }
+    #element-library-showcase .panel-head {
+      min-height: 36px;
+      color: light-dark(#8a95a6, #7e8ba0);
+      background: light-dark(#fafbfc, #121925);
+      font-size: 10px;
+      font-weight: 720;
+    }
+    #element-library-showcase .table-row:last-child { border-bottom: 0; }
+    #element-library-showcase .case-name { font-weight: 650; }
+    #element-library-showcase .muted { color: light-dark(#8a95a6, #7f8ba0); }
+    #element-library-showcase .status-tag {
+      display: inline-flex;
+      align-items: center;
+      width: max-content;
+      padding: 3px 7px;
+      border-radius: 999px;
+      color: light-dark(#047857, #86efac);
+      background: light-dark(#ecfdf3, #123325);
+      font-size: 9px;
+      font-weight: 700;
+    }
+    #element-library-showcase .soft-line {
+      height: 8px;
+      border-radius: 4px;
+      background: light-dark(#e9edf3, #252f42);
+    }
+    #element-library-showcase .soft-line.short { width: 62%; }
+    #element-library-showcase .drawer-shade {
+      position: absolute;
+      inset: 0;
+      background: rgba(15, 23, 42, .22);
+      backdrop-filter: blur(1px);
+    }
+    #element-library-showcase .library-drawer {
+      position: absolute;
+      inset: 0 0 0 auto;
+      width: min(84%, 860px);
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+      border-left: 1px solid light-dark(#d8dfeb, #334057);
+      background: light-dark(#f8fafc, #101722);
+      box-shadow: -18px 0 50px rgba(15, 23, 42, .2);
+    }
+    #element-library-showcase .drawer-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 17px 20px;
+      border-bottom: 1px solid light-dark(#e0e5ee, #293449);
+      background: light-dark(#ffffff, #151d2a);
+    }
+    #element-library-showcase .drawer-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 15px;
+      font-weight: 760;
+    }
+    #element-library-showcase .platform-chip {
+      padding: 3px 8px;
+      border-radius: 999px;
+      color: light-dark(#1d4ed8, #bfdbfe);
+      background: light-dark(#eaf2ff, #1e3154);
+      font-size: 9px;
+      font-weight: 750;
+    }
+    #element-library-showcase .drawer-filters {
+      display: flex;
+      gap: 8px;
+      padding: 12px 20px;
+      border-bottom: 1px solid light-dark(#e4e9f1, #293449);
+      background: light-dark(#ffffff, #151d2a);
+    }
+    #element-library-showcase .select-like {
+      min-width: 100px;
+      height: 31px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 10px;
+      border: 1px solid light-dark(#d4dbe7, #354157);
+      border-radius: 8px;
+      color: light-dark(#475467, #c9d2e0);
+      background: light-dark(#ffffff, #121925);
+      font-size: 10px;
+    }
+    #element-library-showcase .drawer-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(310px, 1fr) minmax(260px, .82fr);
+      gap: 14px;
+      padding: 14px 18px 18px;
+    }
+    #element-library-showcase .element-list,
+    #element-library-showcase .element-detail {
+      min-height: 0;
+      border: 1px solid light-dark(#dfe5ee, #2d384d);
+      border-radius: 11px;
+      background: light-dark(#ffffff, #151d2a);
+      overflow: hidden;
+    }
+    #element-library-showcase .section-cap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 40px;
+      padding: 0 13px;
+      border-bottom: 1px solid light-dark(#e8ecf2, #293449);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    #element-library-showcase .element-item {
+      display: grid;
+      grid-template-columns: 36px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 62px;
+      padding: 9px 12px;
+      border-bottom: 1px solid light-dark(#edf0f5, #263044);
+      cursor: pointer;
+    }
+    #element-library-showcase .element-item.selected {
+      background: light-dark(#f1f6ff, #192841);
+      box-shadow: inset 3px 0 #2563eb;
+    }
+    #element-library-showcase .element-symbol {
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid light-dark(#d9e2f2, #32435e);
+      border-radius: 9px;
+      color: light-dark(#2563eb, #93c5fd);
+      background: light-dark(#f3f7ff, #1b2a44);
+      font-size: 13px;
+      font-weight: 760;
+    }
+    #element-library-showcase .element-name { font-size: 11px; font-weight: 720; }
+    #element-library-showcase .element-meta { margin-top: 4px; color: light-dark(#8a95a6, #8290a4); font-size: 9px; }
+    #element-library-showcase .score {
+      min-width: 34px;
+      padding: 4px 6px;
+      border-radius: 7px;
+      color: light-dark(#047857, #86efac);
+      background: light-dark(#ecfdf3, #123325);
+      text-align: center;
+      font-size: 9px;
+      font-weight: 760;
+    }
+    #element-library-showcase .detail-preview {
+      margin: 13px;
+      height: 120px;
+      position: relative;
+      overflow: hidden;
+      border: 1px solid light-dark(#d9e0ea, #334057);
+      border-radius: 9px;
+      background: linear-gradient(145deg, light-dark(#eff4fb, #172235), light-dark(#ffffff, #111925));
+    }
+    #element-library-showcase .preview-login {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 170px;
+      transform: translate(-50%, -50%);
+      padding: 12px;
+      border-radius: 9px;
+      background: light-dark(#ffffff, #1b2433);
+      box-shadow: 0 9px 25px rgba(15, 23, 42, .13);
+    }
+    #element-library-showcase .mini-field { height: 12px; margin-bottom: 8px; border-radius: 4px; background: light-dark(#eef1f5, #2c3749); }
+    #element-library-showcase .mini-login-button { height: 20px; border-radius: 5px; background: #2563eb; }
+    #element-library-showcase .highlight-box {
+      position: absolute;
+      left: 13px;
+      right: 13px;
+      bottom: 11px;
+      height: 22px;
+      border: 2px solid #f59e0b;
+      border-radius: 6px;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, .18);
+    }
+    #element-library-showcase .detail-copy { padding: 0 13px 13px; }
+    #element-library-showcase .detail-name { font-size: 13px; font-weight: 760; }
+    #element-library-showcase .detail-type { margin-top: 3px; color: light-dark(#7a8698, #8996aa); font-size: 9px; }
+    #element-library-showcase .locator-mini {
+      display: grid;
+      grid-template-columns: 56px 1fr 30px;
+      gap: 8px;
+      align-items: center;
+      min-height: 34px;
+      margin-top: 8px;
+      padding: 0 9px;
+      border: 1px solid light-dark(#e0e5ee, #303b50);
+      border-radius: 8px;
+      background: light-dark(#fafbfc, #121925);
+      font-size: 9px;
+    }
+    #element-library-showcase .locator-kind { color: light-dark(#5b21b6, #c4b5fd); font-weight: 760; }
+    #element-library-showcase .locator-value { overflow: hidden; color: light-dark(#475467, #c1cada); text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #element-library-showcase .unique-mark { color: light-dark(#047857, #86efac); font-weight: 780; }
+    #element-library-showcase .recorder-stage {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+    #element-library-showcase .stage-background { position: absolute; inset: 0; opacity: .78; }
+    #element-library-showcase .stage-background .page-content { filter: saturate(.65); }
+    #element-library-showcase .floating-recorder {
+      position: absolute;
+      left: 205px;
+      top: 70px;
+      width: min(760px, calc(100% - 235px));
+      height: 520px;
+      display: grid;
+      grid-template-rows: 48px 1fr 52px;
+      overflow: hidden;
+      border: 1px solid light-dark(#c9d2df, #46536b);
+      border-radius: 14px;
+      background: light-dark(#ffffff, #111925);
+      box-shadow: 0 24px 70px rgba(15, 23, 42, .34);
+      z-index: 5;
+    }
+    #element-library-showcase .recorder-titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 0 14px;
+      border-bottom: 1px solid light-dark(#e2e7ef, #2d394e);
+      background: light-dark(#ffffff, #182130);
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+    }
+    #element-library-showcase .recorder-titlebar:active { cursor: grabbing; }
+    #element-library-showcase .recorder-identity { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    #element-library-showcase .record-dot { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 4px rgba(239, 68, 68, .13); }
+    #element-library-showcase .record-dot.paused { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245, 158, 11, .15); }
+    #element-library-showcase .record-dot.stopped { background: #94a3b8; box-shadow: none; }
+    #element-library-showcase .recorder-name { font-size: 11px; font-weight: 740; white-space: nowrap; }
+    #element-library-showcase .record-state { color: light-dark(#7e899a, #93a0b4); font-size: 9px; white-space: nowrap; }
+    #element-library-showcase .title-actions { display: flex; align-items: center; gap: 5px; }
+    #element-library-showcase .icon-button {
+      width: 29px;
+      height: 29px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      color: light-dark(#667085, #9aa7ba);
+      background: transparent;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    #element-library-showcase .icon-button:hover { border-color: light-dark(#d8dfeb, #3b485e); background: light-dark(#f6f8fb, #202b3c); }
+    #element-library-showcase .recorder-body { min-height: 0; display: grid; grid-template-columns: 1.55fr .9fr; }
+    #element-library-showcase .target-pane {
+      min-width: 0;
+      padding: 12px;
+      border-right: 1px solid light-dark(#e2e7ef, #2d394e);
+      background: light-dark(#eef2f7, #0d131d);
+    }
+    #element-library-showcase .target-browser {
+      height: 100%;
+      overflow: hidden;
+      border: 1px solid light-dark(#cfd7e3, #344157);
+      border-radius: 9px;
+      background: light-dark(#ffffff, #151d2a);
+    }
+    #element-library-showcase .browser-bar {
+      height: 31px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+      border-bottom: 1px solid light-dark(#e1e6ee, #2a3548);
+      background: light-dark(#f7f9fc, #1a2230);
+    }
+    #element-library-showcase .window-dot { width: 7px; height: 7px; border-radius: 50%; background: #cbd5e1; }
+    #element-library-showcase .url-bar { flex: 1; height: 19px; margin-left: 4px; display: flex; align-items: center; padding: 0 8px; border-radius: 5px; color: light-dark(#7f8b9c, #7f8ba0); background: light-dark(#ffffff, #111925); font-size: 8px; }
+    #element-library-showcase .demo-site {
+      height: calc(100% - 31px);
+      display: grid;
+      grid-template-columns: 1fr 230px;
+      align-items: stretch;
+      background: linear-gradient(135deg, light-dark(#eff6ff, #13213a), light-dark(#f7f3ff, #231737));
+    }
+    #element-library-showcase .demo-copy {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 30px;
+    }
+    #element-library-showcase .demo-kicker { color: #2563eb; font-size: 9px; font-weight: 780; letter-spacing: .08em; text-transform: uppercase; }
+    #element-library-showcase .demo-heading { max-width: 245px; margin-top: 8px; font-size: 24px; line-height: 1.08; letter-spacing: -.04em; font-weight: 780; }
+    #element-library-showcase .demo-text { max-width: 250px; margin-top: 10px; color: light-dark(#6f7b8d, #91a0b5); font-size: 9px; line-height: 1.55; }
+    #element-library-showcase .login-card {
+      align-self: center;
+      margin-right: 18px;
+      padding: 18px;
+      border: 1px solid light-dark(#d9e1ec, #38455d);
+      border-radius: 12px;
+      background: light-dark(rgba(255,255,255,.94), rgba(20,28,41,.95));
+      box-shadow: 0 15px 35px rgba(15, 23, 42, .14);
+    }
+    #element-library-showcase .login-card-title { font-size: 13px; font-weight: 760; }
+    #element-library-showcase .login-card-subtitle { margin-top: 3px; color: light-dark(#8a95a6, #8794a8); font-size: 8px; }
+    #element-library-showcase .demo-label { display: block; margin: 12px 0 5px; color: light-dark(#667085, #9aa7ba); font-size: 8px; font-weight: 680; }
+    #element-library-showcase .demo-input,
+    #element-library-showcase .demo-submit {
+      width: 100%;
+      height: 30px;
+      border-radius: 7px;
+      font-size: 9px;
+    }
+    #element-library-showcase .demo-input {
+      border: 1px solid light-dark(#cfd8e5, #3a475e);
+      padding: 0 9px;
+      color: light-dark(#344054, #e5ebf4);
+      background: light-dark(#ffffff, #101722);
+      outline: none;
+    }
+    #element-library-showcase .demo-submit {
+      margin-top: 13px;
+      border: 0;
+      color: #ffffff;
+      background: #2563eb;
+      cursor: crosshair;
+      font-weight: 720;
+    }
+    #element-library-showcase .inspectable { position: relative; }
+    #element-library-showcase .inspectable:hover::after {
+      content: "";
+      position: absolute;
+      inset: -3px;
+      pointer-events: none;
+      border: 2px solid #f59e0b;
+      border-radius: 9px;
+      box-shadow: 0 0 0 3px rgba(245, 158, 11, .18);
+    }
+    #element-library-showcase .inspector-pane { min-width: 0; display: flex; flex-direction: column; background: light-dark(#ffffff, #151d2a); }
+    #element-library-showcase .inspector-head { padding: 13px 14px 10px; border-bottom: 1px solid light-dark(#e5e9f0, #2b364a); }
+    #element-library-showcase .inspector-eyebrow { color: light-dark(#8a95a6, #8290a4); font-size: 8px; font-weight: 760; text-transform: uppercase; letter-spacing: .08em; }
+    #element-library-showcase .chosen-name { margin-top: 5px; font-size: 14px; font-weight: 780; }
+    #element-library-showcase .chosen-type { margin-top: 2px; color: light-dark(#7e899a, #8996aa); font-size: 9px; }
+    #element-library-showcase .inspector-scroll { min-height: 0; flex: 1; overflow: auto; padding: 11px 12px; }
+    #element-library-showcase .inspector-label { margin-bottom: 7px; color: light-dark(#7b8799, #8290a4); font-size: 8px; font-weight: 730; }
+    #element-library-showcase .candidate-row {
+      display: grid;
+      grid-template-columns: 42px 1fr 28px;
+      align-items: center;
+      gap: 7px;
+      min-height: 38px;
+      margin-bottom: 7px;
+      padding: 0 8px;
+      border: 1px solid light-dark(#dfe5ee, #303b50);
+      border-radius: 8px;
+      background: light-dark(#fafbfc, #111925);
+    }
+    #element-library-showcase .candidate-row.best { border-color: light-dark(#9fbaf5, #456aa8); box-shadow: inset 3px 0 #2563eb; }
+    #element-library-showcase .candidate-by { color: light-dark(#5b21b6, #c4b5fd); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+    #element-library-showcase .candidate-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: light-dark(#475467, #c4cedc); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 8px; }
+    #element-library-showcase .candidate-score { color: light-dark(#047857, #86efac); text-align: right; font-size: 8px; font-weight: 800; }
+    #element-library-showcase .inspector-actions { display: flex; gap: 6px; margin-top: 10px; }
+    #element-library-showcase .small-button {
+      height: 28px;
+      flex: 1;
+      border: 1px solid light-dark(#d4dbe7, #354157);
+      border-radius: 7px;
+      color: light-dark(#475467, #d0d8e5);
+      background: light-dark(#ffffff, #182130);
+      cursor: pointer;
+      font-size: 8px;
+      font-weight: 700;
+    }
+    #element-library-showcase .small-button.save { color: #ffffff; border-color: #2563eb; background: #2563eb; }
+    #element-library-showcase .recorder-controls {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 12px;
+      border-top: 1px solid light-dark(#e2e7ef, #2d394e);
+      background: light-dark(#ffffff, #182130);
+    }
+    #element-library-showcase .control-button {
+      height: 30px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid light-dark(#d4dbe7, #3a465c);
+      border-radius: 8px;
+      padding: 0 10px;
+      color: light-dark(#475467, #d0d8e5);
+      background: light-dark(#ffffff, #121925);
+      cursor: pointer;
+      font-size: 9px;
+      font-weight: 700;
+    }
+    #element-library-showcase .control-button.record { color: #ffffff; border-color: #e11d48; background: #e11d48; }
+    #element-library-showcase .control-button.pick.active { color: light-dark(#92400e, #fcd34d); border-color: light-dark(#f4c66a, #80601f); background: light-dark(#fff8e6, #372b12); }
+    #element-library-showcase .control-stats { margin-left: auto; color: light-dark(#7f8b9c, #8996aa); font-size: 8px; }
+    #element-library-showcase .popout-shell { height: 100%; display: grid; grid-template-rows: 55px 1fr 55px; background: light-dark(#edf1f6, #0d131d); }
+    #element-library-showcase .popout-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid light-dark(#d8dfe9, #2d394e);
+      background: light-dark(#ffffff, #151d2a);
+    }
+    #element-library-showcase .popout-title { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 760; }
+    #element-library-showcase .popout-meta { display: flex; align-items: center; gap: 12px; color: light-dark(#7f8b9c, #8f9caf); font-size: 9px; }
+    #element-library-showcase .popout-body { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; padding: 12px; }
+    #element-library-showcase .popout-target,
+    #element-library-showcase .popout-inspector { min-height: 0; border: 1px solid light-dark(#d7dee9, #344157); border-radius: 12px; background: light-dark(#ffffff, #151d2a); overflow: hidden; }
+    #element-library-showcase .popout-target .target-browser { border: 0; border-radius: 0; }
+    #element-library-showcase .popout-target .demo-site { grid-template-columns: 1fr 290px; }
+    #element-library-showcase .popout-target .login-card { margin-right: 34px; }
+    #element-library-showcase .popout-inspector { display: flex; flex-direction: column; }
+    #element-library-showcase .popout-footer { display: flex; align-items: center; gap: 8px; padding: 0 16px; border-top: 1px solid light-dark(#d8dfe9, #2d394e); background: light-dark(#ffffff, #151d2a); }
+    #element-library-showcase .toast {
+      position: absolute;
+      right: 18px;
+      bottom: 18px;
+      z-index: 30;
+      padding: 10px 13px;
+      border: 1px solid light-dark(#b8dec8, #285b40);
+      border-radius: 9px;
+      color: light-dark(#065f46, #a7f3d0);
+      background: light-dark(#ecfdf3, #123325);
+      box-shadow: 0 10px 28px rgba(15, 23, 42, .2);
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity .18s ease, transform .18s ease;
+      pointer-events: none;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    #element-library-showcase .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 760px) {
+      #element-library-showcase .product-frame { height: 620px; }
+      #element-library-showcase .app-shell { grid-template-columns: 54px minmax(0, 1fr); }
+      #element-library-showcase .brand span:last-child,
+      #element-library-showcase .nav-item span:last-child,
+      #element-library-showcase .nav-section { display: none; }
+      #element-library-showcase .sidebar { padding: 14px 8px; }
+      #element-library-showcase .nav-item { justify-content: center; padding: 0; }
+      #element-library-showcase .page-content { padding: 15px; }
+      #element-library-showcase .panel-head,
+      #element-library-showcase .table-row { grid-template-columns: 1.3fr .7fr .7fr; }
+      #element-library-showcase .panel-head > :nth-child(n+4),
+      #element-library-showcase .table-row > :nth-child(n+4) { display: none; }
+      #element-library-showcase .library-drawer { width: calc(100% - 24px); }
+      #element-library-showcase .drawer-body { grid-template-columns: 1fr; }
+      #element-library-showcase .element-detail { display: none; }
+      #element-library-showcase .floating-recorder { left: 68px; top: 48px; width: calc(100% - 82px); height: 520px; }
+      #element-library-showcase .recorder-body { grid-template-columns: 1fr; }
+      #element-library-showcase .inspector-pane { display: none; }
+      #element-library-showcase .demo-site { grid-template-columns: 1fr; }
+      #element-library-showcase .demo-copy { display: none; }
+      #element-library-showcase .login-card { margin: auto; width: 230px; }
+      #element-library-showcase .popout-body { grid-template-columns: 1fr; }
+      #element-library-showcase .popout-inspector { display: none; }
+    }
+  </style>
+
+  <div class="showcase-switcher" role="tablist" aria-label="页面样式">
+    <button class="view-button" type="button" data-view-target="cases" aria-pressed="true">用例页入口</button>
+    <button class="view-button" type="button" data-view-target="library" aria-pressed="false">元素库抽屉</button>
+    <button class="view-button" type="button" data-view-target="recorder" aria-pressed="false">录制浮窗</button>
+    <button class="view-button" type="button" data-view-target="popout" aria-pressed="false">独立录制窗口</button>
+  </div>
+
+  <div class="product-frame">
+    <section class="screen is-active" data-view="cases">
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="brand"><span class="brand-mark">A</span><span>自动化测试平台</span></div>
+          <div class="nav-section">工作台</div>
+          <div class="nav-item"><span class="nav-icon">⌂</span><span>首页</span></div>
+          <div class="nav-item active"><span class="nav-icon">▣</span><span>项目</span></div>
+          <div class="nav-item"><span class="nav-icon">✓</span><span>测试执行</span></div>
+          <div class="nav-item"><span class="nav-icon">◫</span><span>设备管理</span></div>
+          <div class="nav-section">智能能力</div>
+          <div class="nav-item"><span class="nav-icon">✦</span><span>AI Studio</span></div>
+          <div class="nav-item"><span class="nav-icon">⚙</span><span>项目配置</span></div>
+        </aside>
+        <main class="main-column">
+          <header class="topbar"><div class="crumbs">项目 / <strong>电商平台自动化</strong></div><div class="avatar">QA</div></header>
+          <div class="page-content">
+            <div class="page-head"><div><h2 class="page-title">自动化用例</h2><p class="page-subtitle">管理项目的 Web、Android 与 iOS 自动化资产</p></div></div>
+            <div class="stack-tabs"><span class="stack-tab">功能</span><span class="stack-tab">API</span><span class="stack-tab active">Web 24</span><span class="stack-tab">Android 18</span><span class="stack-tab">iOS 12</span></div>
+            <div class="toolbar">
+              <button class="action-button" type="button">＋ 新建 Web 用例</button>
+              <button class="action-button element-entry js-open-library" type="button">⌖ 元素库</button>
+              <button class="action-button" type="button">≡ 按顺序编号</button>
+              <button class="action-button" type="button">⇩ 导出</button>
+              <span class="spacer"></span>
+              <input class="search-box" aria-label="搜索用例" placeholder="搜索用例名称…" />
+            </div>
+            <div class="panel">
+              <div class="panel-head"><span>用例名称</span><span>所属模块</span><span>状态</span><span>优先级</span><span>步骤</span><span>操作</span></div>
+              <div class="table-row"><span class="case-name">用户使用正确账号登录</span><span class="muted">账户中心</span><span class="status-tag">通过</span><span>P1</span><span>5 步</span><span class="muted">•••</span></div>
+              <div class="table-row"><span class="case-name">搜索商品并加入购物车</span><span class="muted">商城</span><span class="status-tag">通过</span><span>P1</span><span>8 步</span><span class="muted">•••</span></div>
+              <div class="table-row"><span class="case-name">提交订单并校验金额</span><span class="muted">结算</span><span class="status-tag">通过</span><span>P0</span><span>11 步</span><span class="muted">•••</span></div>
+              <div class="table-row"><span class="case-name">优惠券不可重复使用</span><span class="muted">营销</span><span class="status-tag">通过</span><span>P2</span><span>7 步</span><span class="muted">•••</span></div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </section>
+
+    <section class="screen" data-view="library">
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="brand"><span class="brand-mark">A</span><span>自动化测试平台</span></div>
+          <div class="nav-section">工作台</div>
+          <div class="nav-item"><span class="nav-icon">⌂</span><span>首页</span></div>
+          <div class="nav-item active"><span class="nav-icon">▣</span><span>项目</span></div>
+          <div class="nav-item"><span class="nav-icon">✓</span><span>测试执行</span></div>
+        </aside>
+        <main class="main-column">
+          <header class="topbar"><div class="crumbs">项目 / <strong>电商平台自动化</strong> / Web</div><div class="avatar">QA</div></header>
+          <div class="page-content">
+            <div class="stack-tabs"><span class="stack-tab">功能</span><span class="stack-tab">API</span><span class="stack-tab active">Web 24</span><span class="stack-tab">Android 18</span><span class="stack-tab">iOS 12</span></div>
+            <div class="toolbar"><button class="action-button">＋ 新建 Web 用例</button><button class="action-button element-entry">⌖ 元素库</button></div>
+            <div class="panel"><div class="panel-head"><span>用例名称</span><span>所属模块</span><span>状态</span><span>优先级</span><span>步骤</span><span>操作</span></div><div class="table-row"><span class="soft-line"></span><span class="soft-line short"></span><span class="soft-line short"></span><span></span><span></span><span></span></div><div class="table-row"><span class="soft-line"></span><span class="soft-line short"></span><span class="soft-line short"></span><span></span><span></span><span></span></div></div>
+          </div>
+        </main>
+      </div>
+      <div class="drawer-shade"></div>
+      <aside class="library-drawer">
+        <header class="drawer-head">
+          <div class="drawer-title">⌖ 项目元素库 <span class="platform-chip">Web</span></div>
+          <div style="display:flex;gap:7px"><button class="action-button js-open-recorder" type="button">● 开始录制</button><button class="icon-button js-close-library" type="button" aria-label="关闭">×</button></div>
+        </header>
+        <div class="drawer-filters">
+          <input class="search-box" style="flex:1;width:auto" placeholder="搜索元素名称、别名或定位器…" />
+          <div class="select-like">全部页面 <span>⌄</span></div>
+          <div class="select-like">有效元素 <span>⌄</span></div>
+          <div class="select-like">v3.8.0 <span>⌄</span></div>
+        </div>
+        <div class="drawer-body">
+          <div class="element-list">
+            <div class="section-cap"><span>登录页 · 6 个元素</span><span class="muted">最近更新 10:24</span></div>
+            <div class="element-item selected"><div class="element-symbol">B</div><div><div class="element-name">登录按钮</div><div class="element-meta">button · #login-btn · 被 8 个用例引用</div></div><div class="score">95</div></div>
+            <div class="element-item"><div class="element-symbol">I</div><div><div class="element-name">用户名输入框</div><div class="element-meta">input · [name='username'] · 被 6 个用例引用</div></div><div class="score">92</div></div>
+            <div class="element-item"><div class="element-symbol">I</div><div><div class="element-name">密码输入框</div><div class="element-meta">input · [name='password'] · 被 6 个用例引用</div></div><div class="score">91</div></div>
+            <div class="element-item"><div class="element-symbol">L</div><div><div class="element-name">忘记密码</div><div class="element-meta">link · text=忘记密码 · 被 2 个用例引用</div></div><div class="score">82</div></div>
+            <div class="section-cap"><span>商城首页 · 18 个元素</span><span class="muted">最近更新 昨天</span></div>
+            <div class="element-item"><div class="element-symbol">I</div><div><div class="element-name">商品搜索框</div><div class="element-meta">input · [data-testid='search']</div></div><div class="score">94</div></div>
+          </div>
+          <div class="element-detail">
+            <div class="section-cap"><span>元素详情</span><span class="status-tag">有效</span></div>
+            <div class="detail-preview"><div class="preview-login"><div class="mini-field"></div><div class="mini-field"></div><div class="mini-login-button"></div><div class="highlight-box"></div></div></div>
+            <div class="detail-copy">
+              <div class="detail-name">登录按钮</div><div class="detail-type">button · 登录页 · v3.8.0</div>
+              <div class="locator-mini"><span class="locator-kind">ID 推荐</span><span class="locator-value">login-btn</span><span class="unique-mark">1/1</span></div>
+              <div class="locator-mini"><span class="locator-kind">CSS</span><span class="locator-value">[data-testid='login-submit']</span><span class="unique-mark">1/1</span></div>
+              <div class="locator-mini"><span class="locator-kind">XPath</span><span class="locator-value">//button[@id='login-btn']</span><span class="unique-mark">1/1</span></div>
+              <div style="display:flex;gap:7px;margin-top:11px"><button class="small-button js-copy" type="button">复制定位器</button><button class="small-button" type="button">查看引用用例</button></div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="screen" data-view="recorder">
+      <div class="recorder-stage">
+        <div class="stage-background app-shell">
+          <aside class="sidebar"><div class="brand"><span class="brand-mark">A</span><span>自动化测试平台</span></div><div class="nav-item active"><span class="nav-icon">▣</span><span>项目</span></div></aside>
+          <main class="main-column"><header class="topbar"><div class="crumbs">项目 / <strong>电商平台自动化</strong> / Web</div><div class="avatar">QA</div></header><div class="page-content"><div class="stack-tabs"><span class="stack-tab active">Web 24</span><span class="stack-tab">Android 18</span><span class="stack-tab">iOS 12</span></div><div class="toolbar"><button class="action-button">＋ 新建 Web 用例</button><button class="action-button element-entry">⌖ 元素库</button></div><div class="panel"><div class="panel-head"><span>用例名称</span><span>所属模块</span><span>状态</span><span>优先级</span><span>步骤</span><span>操作</span></div><div class="table-row"><span class="soft-line"></span><span class="soft-line short"></span><span class="soft-line short"></span><span></span><span></span><span></span></div><div class="table-row"><span class="soft-line"></span><span class="soft-line short"></span><span class="soft-line short"></span><span></span><span></span><span></span></div></div></div></main>
+        </div>
+        <div class="floating-recorder">
+          <header class="recorder-titlebar">
+            <div class="recorder-identity"><span class="record-dot"></span><div><div class="recorder-name">元素录制 · Web</div><div class="record-state">录制中 · 00:03:21 · 登录页</div></div></div>
+            <div class="title-actions"><button class="icon-button js-popout" type="button" title="打开独立窗口">↗</button><button class="icon-button" type="button" title="收起">—</button><button class="icon-button" type="button" title="关闭">×</button></div>
+          </header>
+          <div class="recorder-body">
+            <div class="target-pane">
+              <div class="target-browser">
+                <div class="browser-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><div class="url-bar">https://shop.example.com/login</div></div>
+                <div class="demo-site"><div class="demo-copy"><div class="demo-kicker">Welcome back</div><div class="demo-heading">让每一次测试都有迹可循</div><div class="demo-text">登录测试环境，继续验证商品、订单与营销流程。</div></div><div class="login-card"><div class="login-card-title">账号登录</div><div class="login-card-subtitle">请输入测试账号</div><label class="demo-label">用户名</label><div class="inspectable js-element" data-element="username"><input class="demo-input" value="qa_user" aria-label="用户名" /></div><label class="demo-label">密码</label><div class="inspectable js-element" data-element="password"><input class="demo-input" type="password" value="12345678" aria-label="密码" /></div><button class="demo-submit inspectable js-element" data-element="login" type="button">登录</button></div></div>
+              </div>
+            </div>
+            <aside class="inspector-pane">
+              <div class="inspector-head"><div class="inspector-eyebrow">已选元素</div><div class="chosen-name">登录按钮</div><div class="chosen-type">button · 可见 · 可点击 · 120×40</div></div>
+              <div class="inspector-scroll"><div class="inspector-label">候选定位器 · 当前页面唯一匹配</div><div class="candidate-list"></div><div class="inspector-actions"><button class="small-button js-copy" type="button">验证并复制</button><button class="small-button save js-save" type="button">加入元素库</button></div></div>
+            </aside>
+          </div>
+          <footer class="recorder-controls"><button class="control-button record js-record" type="button">● 录制</button><button class="control-button js-pause" type="button">Ⅱ 暂停</button><button class="control-button js-stop" type="button">■ 停止</button><button class="control-button pick js-pick" type="button">⌖ 拾取元素</button><span class="control-stats">12 个动作 · 8 个元素 · 6 张快照</span></footer>
+        </div>
+      </div>
+    </section>
+
+    <section class="screen" data-view="popout">
+      <div class="popout-shell">
+        <header class="popout-header"><div class="popout-title"><span class="brand-mark">A</span>元素录制工作台 <span class="platform-chip">Web</span></div><div class="popout-meta"><span>电商平台自动化</span><span class="record-state">● 录制中 · 00:03:21</span><span class="avatar">QA</span></div></header>
+        <div class="popout-body">
+          <div class="popout-target">
+            <div class="target-browser"><div class="browser-bar"><span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span><div class="url-bar">https://shop.example.com/login</div></div><div class="demo-site"><div class="demo-copy"><div class="demo-kicker">Welcome back</div><div class="demo-heading">让每一次测试都有迹可循</div><div class="demo-text">登录测试环境，继续验证商品、订单与营销流程。</div></div><div class="login-card"><div class="login-card-title">账号登录</div><div class="login-card-subtitle">请输入测试账号</div><label class="demo-label">用户名</label><div class="inspectable js-element" data-element="username"><input class="demo-input" value="qa_user" aria-label="用户名" /></div><label class="demo-label">密码</label><div class="inspectable js-element" data-element="password"><input class="demo-input" type="password" value="12345678" aria-label="密码" /></div><button class="demo-submit inspectable js-element" data-element="login" type="button">登录</button></div></div></div>
+          </div>
+          <aside class="popout-inspector inspector-pane"><div class="inspector-head"><div class="inspector-eyebrow">已选元素</div><div class="chosen-name">登录按钮</div><div class="chosen-type">button · 可见 · 可点击 · 120×40</div></div><div class="inspector-scroll"><div class="inspector-label">候选定位器 · 当前页面唯一匹配</div><div class="candidate-list"></div><div class="inspector-actions"><button class="small-button js-copy" type="button">验证并复制</button><button class="small-button save js-save" type="button">加入元素库</button></div></div></aside>
+        </div>
+        <footer class="popout-footer"><button class="control-button record js-record" type="button">● 录制</button><button class="control-button js-pause" type="button">Ⅱ 暂停</button><button class="control-button js-stop" type="button">■ 停止</button><button class="control-button pick js-pick" type="button">⌖ 拾取元素</button><span class="control-stats">12 个动作 · 8 个元素 · 6 张快照</span></footer>
+      </div>
+    </section>
+    <div class="toast" role="status">已加入项目元素库</div>
+  </div>
+
+  <script>
+    (function () {
+      const root = document.getElementById('element-library-showcase');
+      if (!root) return;
+      const buttons = Array.from(root.querySelectorAll('.view-button'));
+      const screens = Array.from(root.querySelectorAll('.screen'));
+      const toast = root.querySelector('.toast');
+      const elementData = {
+        login: {
+          name: '登录按钮',
+          type: 'button · 可见 · 可点击 · 120×40',
+          locators: [
+            ['ID', 'login-btn', '95'],
+            ['CSS', "[data-testid='login-submit']", '93'],
+            ['XPath', "//button[@id='login-btn']", '72'],
+            ['Text', '登录', '68']
+          ]
+        },
+        username: {
+          name: '用户名输入框',
+          type: 'input · text · 可见 · 可输入',
+          locators: [
+            ['NAME', 'username', '92'],
+            ['CSS', "input[name='username']", '88'],
+            ['XPath', "//input[@name='username']", '70']
+          ]
+        },
+        password: {
+          name: '密码输入框',
+          type: 'input · password · 输入值已脱敏',
+          locators: [
+            ['NAME', 'password', '91'],
+            ['CSS', "input[type='password']", '81'],
+            ['XPath', "//input[@type='password']", '67']
+          ]
+        }
+      };
+
+      function setView(name) {
+        buttons.forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.viewTarget === name)));
+        screens.forEach((screen) => screen.classList.toggle('is-active', screen.dataset.view === name));
+      }
+
+      function renderInspectors(key) {
+        const data = elementData[key] || elementData.login;
+        root.querySelectorAll('.inspector-pane').forEach((pane) => {
+          const name = pane.querySelector('.chosen-name');
+          const type = pane.querySelector('.chosen-type');
+          const list = pane.querySelector('.candidate-list');
+          if (name) name.textContent = data.name;
+          if (type) type.textContent = data.type;
+          if (list) {
+            list.innerHTML = data.locators.map((item, index) => '<div class="candidate-row' + (index === 0 ? ' best' : '') + '"><span class="candidate-by">' + item[0] + '</span><span class="candidate-value">' + item[1].replace(/</g, '&lt;') + '</span><span class="candidate-score">' + item[2] + '</span></div>').join('');
+          }
+        });
+      }
+
+      function showToast(message) {
+        if (!toast) return;
+        toast.textContent = message;
+        toast.classList.add('show');
+        window.setTimeout(() => toast.classList.remove('show'), 1500);
+      }
+
+      buttons.forEach((button) => button.addEventListener('click', () => setView(button.dataset.viewTarget)));
+      root.querySelectorAll('.js-open-library').forEach((button) => button.addEventListener('click', () => setView('library')));
+      root.querySelectorAll('.js-close-library').forEach((button) => button.addEventListener('click', () => setView('cases')));
+      root.querySelectorAll('.js-open-recorder').forEach((button) => button.addEventListener('click', () => setView('recorder')));
+      root.querySelectorAll('.js-popout').forEach((button) => button.addEventListener('click', () => setView('popout')));
+      root.querySelectorAll('.js-element').forEach((element) => element.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        renderInspectors(element.dataset.element);
+      }));
+      root.querySelectorAll('.js-save').forEach((button) => button.addEventListener('click', () => showToast('已加入项目元素库')));
+      root.querySelectorAll('.js-copy').forEach((button) => button.addEventListener('click', () => {
+        const previous = button.textContent;
+        button.textContent = '✓ 已复制';
+        window.setTimeout(() => { button.textContent = previous; }, 1200);
+      }));
+
+      root.querySelectorAll('.js-pause').forEach((button) => button.addEventListener('click', () => {
+        const isPaused = button.dataset.paused === 'true';
+        button.dataset.paused = String(!isPaused);
+        root.querySelectorAll('.js-pause').forEach((item) => { item.textContent = isPaused ? 'Ⅱ 暂停' : '▶ 继续'; item.dataset.paused = String(!isPaused); });
+        root.querySelectorAll('.record-state').forEach((item) => { item.textContent = isPaused ? '录制中 · 00:03:21' : '已暂停 · 00:03:21'; });
+        root.querySelectorAll('.record-dot').forEach((item) => item.classList.toggle('paused', !isPaused));
+      }));
+      root.querySelectorAll('.js-stop').forEach((button) => button.addEventListener('click', () => {
+        root.querySelectorAll('.record-state').forEach((item) => { item.textContent = '已停止 · 正在处理录制结果'; });
+        root.querySelectorAll('.record-dot').forEach((item) => { item.classList.remove('paused'); item.classList.add('stopped'); });
+        showToast('录制已停止，正在处理元素');
+      }));
+      root.querySelectorAll('.js-record').forEach((button) => button.addEventListener('click', () => {
+        root.querySelectorAll('.record-state').forEach((item) => { item.textContent = '录制中 · 00:00:01'; });
+        root.querySelectorAll('.record-dot').forEach((item) => { item.classList.remove('paused', 'stopped'); });
+        root.querySelectorAll('.js-pause').forEach((item) => { item.textContent = 'Ⅱ 暂停'; item.dataset.paused = 'false'; });
+      }));
+      root.querySelectorAll('.js-pick').forEach((button) => button.addEventListener('click', () => {
+        const next = !button.classList.contains('active');
+        root.querySelectorAll('.js-pick').forEach((item) => item.classList.toggle('active', next));
+        showToast(next ? '已开启拾取模式：点击只选中元素' : '已退出拾取模式');
+      }));
+
+      const floating = root.querySelector('.floating-recorder');
+      const titlebar = root.querySelector('.floating-recorder .recorder-titlebar');
+      const stage = root.querySelector('.recorder-stage');
+      if (floating && titlebar && stage) {
+        let drag = null;
+        titlebar.addEventListener('pointerdown', (event) => {
+          if (event.target.closest('button')) return;
+          const box = floating.getBoundingClientRect();
+          drag = { x: event.clientX, y: event.clientY, left: box.left, top: box.top };
+          titlebar.setPointerCapture(event.pointerId);
+        });
+        titlebar.addEventListener('pointermove', (event) => {
+          if (!drag) return;
+          const stageBox = stage.getBoundingClientRect();
+          const floatingBox = floating.getBoundingClientRect();
+          const nextLeft = Math.max(8, Math.min(stageBox.width - floatingBox.width - 8, drag.left - stageBox.left + event.clientX - drag.x));
+          const nextTop = Math.max(8, Math.min(stageBox.height - 48, drag.top - stageBox.top + event.clientY - drag.y));
+          floating.style.left = nextLeft + 'px';
+          floating.style.top = nextTop + 'px';
+        });
+        titlebar.addEventListener('pointerup', (event) => {
+          drag = null;
+          titlebar.releasePointerCapture(event.pointerId);
+        });
+      }
+
+      renderInspectors('login');
+    })();
+  </script>
+</div>

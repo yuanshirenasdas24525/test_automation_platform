@@ -99,6 +99,10 @@ import type {
   VersionPickerItem,
   VersionTestSummary,
   VersionUpdate,
+  UiElement,
+  UiPlatform,
+  UiRecordingEvent,
+  UiRecordingSession,
 } from "@/types/domain";
 
 export class ApiError extends Error {
@@ -2133,5 +2137,58 @@ export const changeAdjustApi = {
         confirmed_delete_ids: args.confirmedDeleteIds,
       },
     });
+  },
+};
+
+// =============================================================================
+// UI 录制中心与可视化元素库
+// =============================================================================
+
+export const uiRecordingsApi = {
+  list(projectId: number, platform?: UiPlatform) {
+    const qs = new URLSearchParams({ project_id: String(projectId) });
+    if (platform) qs.set("platform", platform);
+    return request<UiRecordingSession[]>(`/api/ui-recordings?${qs.toString()}`);
+  },
+  get(sessionId: number) {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}`);
+  },
+  create(payload: {
+    project_id: number;
+    platform: UiPlatform;
+    name: string;
+    source_url?: string;
+    device_id?: number;
+    app_package_id?: number;
+    capture_config?: Record<string, unknown>;
+  }) {
+    return request<UiRecordingSession>("/api/ui-recordings", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  control(sessionId: number, action: "start" | "pause" | "resume" | "stop" | "cancel") {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/${action}`, {
+      method: "POST",
+    });
+  },
+  listEvents(sessionId: number, afterSequence = 0) {
+    return request<UiRecordingEvent[]>(
+      `/api/ui-recordings/${sessionId}/events?after_sequence=${afterSequence}&limit=500`,
+    );
+  },
+  listElements(args: {
+    projectId: number;
+    platform?: UiPlatform;
+    pageKey?: string;
+    status?: UiElement["status"];
+    keyword?: string;
+  }) {
+    const qs = new URLSearchParams({ project_id: String(args.projectId) });
+    if (args.platform) qs.set("platform", args.platform);
+    if (args.pageKey) qs.set("page_key", args.pageKey);
+    if (args.status) qs.set("status", args.status);
+    if (args.keyword?.trim()) qs.set("keyword", args.keyword.trim());
+    return request<UiElement[]>(`/api/ui-elements?${qs.toString()}`);
   },
 };

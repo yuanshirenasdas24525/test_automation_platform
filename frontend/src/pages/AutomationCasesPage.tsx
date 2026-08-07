@@ -14,6 +14,7 @@ import {
   Gauge,
   GripVertical,
   History,
+  LibraryBig,
   ListChecks,
   ListPlus,
   ListOrdered,
@@ -78,9 +79,11 @@ import type {
   ContentNode,
   TestCaseCreate,
   TestStepDraft,
+  UiPlatform,
 } from "@/types/domain";
 import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
+import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 
 type DiagnoseResult = {
@@ -105,6 +108,11 @@ const CASE_LABELS: Record<CaseType, string> = {
   functional: "功能",
 };
 type AutomationTabCaseType = Exclude<CaseType, "functional" | "mixed">;
+
+function isUiPlatform(value: string | null): value is UiPlatform {
+  return value === "web" || value === "android" || value === "ios";
+}
+
 type ApiQuickNewRow = {
   tempId: string;
   aboveCaseId?: number;
@@ -366,6 +374,17 @@ export function AutomationCasesPage({
     () => readPerformancePool(projectId),
   );
   const [performancePickerOpen, setPerformancePickerOpen] = useState(false);
+  const requestedUiPlatform = typeof window === "undefined"
+    ? null
+    : new URLSearchParams(window.location.search).get("uiElements");
+  const [elementLibraryOpen, setElementLibraryOpen] = useState(
+    () => isUiPlatform(requestedUiPlatform) && caseType !== "api",
+  );
+  const elementLibraryPlatform: UiPlatform | null = isUiPlatform(requestedUiPlatform)
+    ? requestedUiPlatform
+    : caseType === "api"
+      ? null
+      : caseType;
 
   const aiModelsQuery = useQuery({
     queryKey: ["ai-models", projectId],
@@ -713,6 +732,11 @@ export function AutomationCasesPage({
 
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" disabled={moduleId == null} onClick={() => setEditor("new")}><Plus className="h-4 w-4" />新建 {caseLabel} 用例</Button>
+        {!isApiWorkbench ? (
+          <Button variant="outline" size="sm" onClick={() => setElementLibraryOpen(true)}>
+            <LibraryBig className="h-4 w-4" />元素库
+          </Button>
+        ) : null}
         {isApiWorkbench ? (
           <Button variant="outline" size="sm" disabled={moduleId == null} className="border-primary/40 text-primary" onClick={() => setAiOpen(true)}><Sparkles className="h-4 w-4" />AI 生成用例</Button>
         ) : null}
@@ -905,6 +929,14 @@ export function AutomationCasesPage({
       )}
 
       <CaseDialog projectId={projectId} state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
+      {elementLibraryPlatform ? (
+        <UiElementLibraryWorkspace
+          open={elementLibraryOpen}
+          projectId={projectId}
+          initialPlatform={elementLibraryPlatform}
+          onClose={() => setElementLibraryOpen(false)}
+        />
+      ) : null}
       <RecordsDialog
         open={recordsOpen}
         quickEdit={quickEdit}

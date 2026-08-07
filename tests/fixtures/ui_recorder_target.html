@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Recorder Agent Fixture</title>
+  </head>
+  <body>
+    <label for="email">邮箱</label>
+    <input id="email" name="email" data-testid="email-input" />
+    <button id="login-button" type="button">登录</button>
+    <script>
+      window.setTimeout(() => {
+        const input = document.querySelector("#email");
+        input.value = "qa@example.com";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        document.querySelector("#login-button").click();
+        console.log("recorder fixture ready");
+        fetch("/fixture-api", { method: "POST", body: JSON.stringify({ ok: true }) });
+      }, 300);
+    </script>
+  </body>
+</html>

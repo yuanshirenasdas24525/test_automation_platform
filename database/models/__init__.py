@@ -141,6 +141,35 @@ from .device import (
 # ============ App 安装包仓库（v2 新增，App 包管理 / 选择器用） ============
 from .app_package import AppPackage
 
+# ============ UI 录制中心 / 元素事实库 ============
+from .ui_recording import (
+    UiRecordingSession,
+    UiRecordingEvent,
+    UiPageSnapshot,
+    UiElement,
+    UiElementLocator,
+    UiMockExchange,
+    UI_PLATFORM_WEB,
+    UI_PLATFORM_ANDROID,
+    UI_PLATFORM_IOS,
+    ALL_UI_PLATFORMS,
+    UI_RECORDING_DRAFT,
+    UI_RECORDING_STARTING,
+    UI_RECORDING_RECORDING,
+    UI_RECORDING_PAUSED,
+    UI_RECORDING_STOPPING,
+    UI_RECORDING_PROCESSING,
+    UI_RECORDING_COMPLETED,
+    UI_RECORDING_FAILED,
+    UI_RECORDING_CANCELLED,
+    ALL_UI_RECORDING_STATUSES,
+    UI_ELEMENT_PENDING,
+    UI_ELEMENT_VERIFIED,
+    UI_ELEMENT_STALE,
+    UI_ELEMENT_ARCHIVED,
+    ALL_UI_ELEMENT_STATUSES,
+)
+
 # ============ 报告 ============
 from .test_report import TestReport
 from .test_step_report import TestStepReport
