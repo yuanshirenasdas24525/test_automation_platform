@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from server.services import change_plan_service as svc
@@ -240,6 +242,76 @@ def test_plan_apply_generation_db_error_is_isolated_by_savepoint(db_session, mon
         c.id for c in db.session.query(TestCase).filter(TestCase.module_id == module.id).all()
     }
     assert case_to_delete.id not in remaining_ids
+
+
+def test_plan_preview_builds_generation_history_draft(db_session, monkeypatch):
+    """plan_preview 落的 AiRun 必须能被生成历史系统认领：feature=api_case_gen，
+    input_payload.stage=outline + module_id 对上，output_payload.draft.points 里
+    每条都带 title/action/target_case_id，供前端生成视图直接复用。"""
+    from database.models import CASE_TYPE_API, Module, Project, TestCase
+    from database.models.ai_run import AiRun, AI_FEATURE_API_CASE_GEN
+    from database.schemas.ai_config import AiModelConfig
+    from server.services.doc_ingest import IngestResult
+    from server.api.functional_cases import _get_generation_history_run
+
+    db = db_session
+
+    project = Project(name="[test] plan_preview 生成历史兼容", enabled_stacks=["api"])
+    db.session.add(project)
+    db.session.flush()
+
+    module = Module(project_id=project.id, name="[test] plan_preview 模块")
+    db.session.add(module)
+    db.session.flush()
+
+    target_case = TestCase(module_id=module.id, name="待改用例", case_type=CASE_TYPE_API)
+    db.session.add(target_case)
+    db.session.flush()
+
+    fake_cfg = AiModelConfig(name="fake", provider="openai", model="gpt-4o-mini", enabled=True)
+    monkeypatch.setattr(
+        "server.api.functional_cases._resolve_model", lambda db, model_name, project_id: fake_cfg
+    )
+
+    fake_raw = json.dumps({
+        "ops": [
+            {"action": "add", "title": "T1"},
+            {"action": "delete", "target_case_id": target_case.id, "title": "T2"},
+        ]
+    })
+    monkeypatch.setattr(
+        "ai_gateway.gateway.chat_markdown", lambda *a, **kw: (fake_raw, 1, 1)
+    )
+
+    ingest = IngestResult(contract={"operations": []}, text_blocks=[], warnings=[])
+
+    result = svc.plan_preview(
+        db,
+        module=module,
+        model_name="fake",
+        change_text="给登录接口加一个新用例，删掉待改用例",
+        ingest=ingest,
+    )
+
+    assert "generation_run_id" in result
+    assert result["generation_run_id"] == result["plan_id"]
+
+    run = db.session.query(AiRun).filter(AiRun.id == result["generation_run_id"]).first()
+    assert run is not None
+    assert run.feature == AI_FEATURE_API_CASE_GEN
+    assert run.input_payload["stage"] == "outline"
+    assert run.input_payload["module_id"] == module.id
+
+    points = run.output_payload["draft"]["points"]
+    assert len(points) == len(result["ops"])
+    for point in points:
+        assert "title" in point
+        assert "action" in point
+        assert "target_case_id" in point
+
+    # 生成历史列表/详情接口用它按 module 认领这条 run —— 不抛异常即兼容。
+    fetched = _get_generation_history_run(db, result["generation_run_id"], module)
+    assert fetched.id == run.id
 
 
 def test_normalize_ops_filters_bad_target():

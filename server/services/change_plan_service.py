@@ -12,12 +12,14 @@ from datetime import datetime
 from typing import Any
 
 from database.models import CASE_TYPE_API, Module, TestCase
-from database.models.ai_run import AiRun, AI_RUN_STATUS_SUCCESS
+from database.models.ai_run import AiRun, AI_RUN_STATUS_SUCCESS, AI_FEATURE_API_CASE_GEN
 from server.services.api_case_contract import contract_prompt, contract_hash
 from server.services.doc_ingest import IngestResult
 
 AI_FEATURE_CHANGE_PLAN = "change_plan"
 _VALID_ACTIONS = {"add", "modify", "delete"}
+# ops.action → 生成历史草稿里 point 的 category 展示文案（复用现有生成历史 UI 的分类列）。
+ACTION_CATEGORY = {"add": "新增", "modify": "修改", "delete": "删除"}
 
 
 def _existing_interface_cases(db, module_id: int) -> list[TestCase]:
@@ -318,8 +320,41 @@ def plan_preview(
         raise HTTPException(status_code=502, detail="调整大纲解析失败，请重试或更换模型")
     ops = _normalize_ops(obj, existing_ids)
 
+    # draft 结构对齐现有「生成历史」草稿 schema（见 server/api/functional_cases.py
+    # 的 _generation_history_draft / save_ai_generation_history），这样这条 outline
+    # run 能直接被 _get_generation_history_run 认领，前端生成视图可以像加载普通
+    # 大纲生成记录一样加载这次变更规划的结果——points 就是 ops，多带 action/
+    # target_case_id/endpoint 供后续应用阶段使用。
+    draft_points = [
+        {
+            "title": o["title"],
+            "category": ACTION_CATEGORY.get(o["action"], ""),
+            "action": o["action"],
+            "target_case_id": o["target_case_id"],
+            "endpoint": o["endpoint"],
+        }
+        for o in ops
+    ]
+    draft = {
+        "version": 1,
+        "mode": "interface",
+        "stage": "outline",
+        "text": change_text,
+        "docUrls": "",
+        "modelName": model_name,
+        "digest": "",
+        "apiContract": ingest.contract,
+        "points": draft_points,
+        "pickedPoints": list(range(len(draft_points))),
+        "genQueue": draft_points,
+        "cursor": 0,
+        "failedBatches": [],
+        "cases": [],
+        "picked": [],
+        "writtenNames": [],
+    }
     run = AiRun(
-        feature=AI_FEATURE_CHANGE_PLAN,
+        feature=AI_FEATURE_API_CASE_GEN,
         status=AI_RUN_STATUS_SUCCESS,
         project_id=module.project_id,
         provider=cfg.provider,
@@ -329,15 +364,16 @@ def plan_preview(
         input_payload={
             "module_id": module.id,
             "mode": "interface",
+            "stage": "outline",
             "model_name": model_name,
             "change_text": change_text,
-            "warnings": ingest.warnings,
         },
         output_payload={
+            "draft": draft,
+            "points": draft_points,
+            "api_contract": ingest.contract,
             "ops": ops,
-            "contract": ingest.contract,
             "contract_hash": contract_hash(ingest.contract),
-            "doc_text": doc_text,
         },
         operator=operator,
         started_at=datetime.now(),
@@ -356,4 +392,4 @@ def plan_preview(
             "必须有 OpenAPI 契约，否则「应用」时这些用例会生成失败。请上传 OpenAPI "
             "JSON/YAML 文件，或在「接口文档链接」填入 Swagger/OpenAPI 地址后重新规划。"
         )
-    return {"plan_id": run.id, "ops": ops, "warnings": warnings}
+    return {"plan_id": run.id, "generation_run_id": run.id, "ops": ops, "warnings": warnings}
