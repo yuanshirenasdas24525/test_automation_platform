@@ -392,4 +392,10 @@ def plan_preview(
             "必须有 OpenAPI 契约，否则「应用」时这些用例会生成失败。请上传 OpenAPI "
             "JSON/YAML 文件，或在「接口文档链接」填入 Swagger/OpenAPI 地址后重新规划。"
         )
-    return {"plan_id": run.id, "generation_run_id": run.id, "ops": ops, "warnings": warnings}
+    return {
+        "plan_id": run.id,
+        "generation_run_id": run.id,
+        "ops": ops,
+        "warnings": warnings,
+        "api_contract": ingest.contract,
+    }

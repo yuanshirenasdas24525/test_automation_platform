@@ -2469,6 +2469,9 @@ function referencedVariables(c: AiGeneratedCase) {
 
 
 function isAiCaseBlocked(c: AiGeneratedCase, mode: "functional" | "interface") {
+  // delete 候选按设计就没有 compiled_case（不需要，见 AiGeneratedCase 类型注释），
+  // 不是生成期校验失败，不能按"缺 compiled_case"判定为需人工调整。
+  if (c.action === "delete") return false;
   if (c.needs_fix) return true;
   if (mode !== "interface") return false;
   const metadata = c.compiled_case?.generation_metadata as {
@@ -2479,6 +2482,18 @@ function isAiCaseBlocked(c: AiGeneratedCase, mode: "functional" | "interface") {
     || Boolean(metadata.preflight.errors?.length);
 }
 
+
+/** 变更调整行徽标：modify→改(amber)，delete→删(red)，add/undefined→新增(green，仅 action 有值时才显示)。 */
+const AI_CASE_ACTION_BADGE_LABEL: Record<string, string> = {
+  add: "新增",
+  modify: "改",
+  delete: "删",
+};
+const AI_CASE_ACTION_BADGE_CLASS: Record<string, string> = {
+  add: "bg-green-100 text-green-700",
+  modify: "bg-amber-100 text-amber-700",
+  delete: "bg-red-100 text-red-700",
+};
 
 const AI_CASE_SEQUENCE_PREFIX_RE = /^\s*\d+(?:[.、:：\-_)]\s*|\s+)/;
 
@@ -2511,6 +2526,49 @@ function storedCaseMatchesCandidate(
   const candidateKey = aiCaseCandidateKey(candidate, generationRunId, contractHash);
   return storedKey === candidateKey
     || stripAiCaseSequence(stored.name) === stripAiCaseSequence(candidate.name);
+}
+
+/**
+ * 变更调整候选是否"已处理"（写入 / 恢复检测通用）。
+ * add/modify 沿用原有按 key 或名称匹配现有用例的逻辑；delete 语义相反——候选名字本就等于
+ * 将被删除的现有用例的名字，按名字匹配只会误判成"已写入"从而被跳过。delete 候选"已处理"
+ * 应定义为目标 id 已经不在库里了（真的被删掉了，或本来就没有目标 id）。
+ */
+function aiCaseAlreadyApplied(
+  existing: Array<{ id: number; name: string; generation_metadata?: Record<string, unknown> | null }>,
+  candidate: AiGeneratedCase,
+  generationRunId: number | null,
+  contractHash: unknown,
+) {
+  if ((candidate.action ?? "add") === "delete") {
+    return candidate.target_case_id == null || !existing.some((s) => s.id === candidate.target_case_id);
+  }
+  return existing.some((stored) => storedCaseMatchesCandidate(stored, candidate, generationRunId, contractHash));
+}
+
+/**
+ * 变更调整：把一批测试点的 action/target_case_id 回填到该批生成结果上。
+ * 优先按标题对齐（AI 有时会打乱顺序或改写标题片段），退化为按序对齐；这批调用前已经把
+ * delete 测试点过滤掉了，所以这里的 points 只会是 add/modify（或普通生成流程里没有 action
+ * 的测试点）。没有 action 的测试点回填是 no-op —— 直接返回原用例，不影响普通生成流程。
+ */
+function stampGeneratedActions(points: AiOutlinePoint[], generated: AiGeneratedCase[]): AiGeneratedCase[] {
+  const used = new Set<number>();
+  return generated.map((c, i) => {
+    let idx = points.findIndex(
+      (p, pi) => !used.has(pi) && (p.title === c.name || c.name.includes(p.title) || p.title.includes(c.name)),
+    );
+    if (idx === -1 && i < points.length && !used.has(i)) idx = i;
+    if (idx === -1) return c;
+    used.add(idx);
+    const point = points[idx];
+    if (!point.action) return c;
+    return {
+      ...c,
+      action: point.action,
+      target_case_id: point.action === "modify" ? point.target_case_id ?? null : null,
+    };
+  });
 }
 
 
@@ -2829,12 +2887,7 @@ export function AiGenerateDialog({
       if (cancelled) return;
       const currentWritten = new Set<string>();
       cases.forEach((candidate) => {
-        if (storedCases.some((stored) => storedCaseMatchesCandidate(
-          stored,
-          candidate,
-          generationRunId,
-          contractHash,
-        ))) {
+        if (aiCaseAlreadyApplied(storedCases, candidate, generationRunId, contractHash)) {
           currentWritten.add(candidate.name);
         }
       });
@@ -3240,57 +3293,79 @@ export function AiGenerateDialog({
       const displayEnd = displayStart + chunk.length;
       const failureId = `${displayStart}-${displayEnd}-${chunk.map((p) => p.title).join("|")}`;
       try {
-        // 跨批次把前面已产出的变量名带过去，避免后批引用前批 extract 出的 ${id} 被误判缺来源
-        const carriedVars = new Set<string>();
-        for (const c of acc) {
-          // case 级 teardown 会在该用例 finally 中立即清理数据；它产出的 id/token
-          // 不能冒充成跨批次可复用变量。
-          if (c.teardown_api?.length || c.teardown_sql) continue;
-          producedVariables(c).forEach((v) => carriedVars.add(v));
-        }
-        const res = await functionalCasesApi.aiGenerateBatch({
-          module_id: moduleId,
-          model_name: modelName,
-          digest,
-          points: chunk,
-          done_names: acc.map((c) => c.name),
-          done_cases: acc.map((c) => {
-            const metadata = c.compiled_case?.generation_metadata as {
-              preflight?: { passed?: boolean };
-            } | undefined;
-            return {
-              name: c.name,
-              produces: [...producedVariables(c)],
-              depends_on: [...referencedVariables(c)],
-              cleanup_scope: (c.teardown_api?.length || c.teardown_sql) ? "case" : "suite",
-              preflight_passed: Boolean(metadata?.preflight?.passed && !isAiCaseBlocked(c, mode)),
-            };
-          }),
-          mode,
-          carried_vars: [...carriedVars],
-          setup_doc: mode === "interface" ? setupDoc.trim() : "",
-          doc_urls: mode === "interface"
-            ? [docUrls.trim(), text.trim()].filter(Boolean).join("\n")
-            : "",
-          api_contract: mode === "interface" ? apiContract : {},
-          generation_run_id: generationRunId,
-        });
-        if (stopRef.current) break;
-        acc = [...acc, ...res.cases];
-        casesRef.current = acc;
-        if (res.cases.length === 0) {
-          failedCount += 1;
-          setFailedBatches((prev) => upsertFailedBatch(prev, {
-            id: options?.retryFailureId ?? failureId,
-            start: displayStart,
-            end: displayEnd,
-            points: chunk,
-            message: "本批返回 0 条有效用例",
-            attempts: 1,
-          }));
+        // 变更调整：delete 测试点不需要详细用例生成，直接合成一条待删除卡片，不占生成配额、
+        // 也不送去给 AI（AI 也编不出"删除"的 steps）。add/modify（含普通生成流程里没有 action
+        // 的测试点，视为 add）照常走批量生成。
+        const deletePoints = chunk.filter((p) => p.action === "delete");
+        const genPoints = chunk.filter((p) => p.action !== "delete");
+        const deleteCases: AiGeneratedCase[] = deletePoints.map((p) => ({
+          name: p.title,
+          action: "delete" as const,
+          target_case_id: p.target_case_id ?? null,
+          preconditions: [],
+          steps: [],
+          expected: [],
+        }));
+
+        let genCases: AiGeneratedCase[] = [];
+        if (genPoints.length > 0) {
+          // 跨批次把前面已产出的变量名带过去，避免后批引用前批 extract 出的 ${id} 被误判缺来源
+          const carriedVars = new Set<string>();
+          for (const c of acc) {
+            // case 级 teardown 会在该用例 finally 中立即清理数据；它产出的 id/token
+            // 不能冒充成跨批次可复用变量。
+            if (c.teardown_api?.length || c.teardown_sql) continue;
+            producedVariables(c).forEach((v) => carriedVars.add(v));
+          }
+          const res = await functionalCasesApi.aiGenerateBatch({
+            module_id: moduleId,
+            model_name: modelName,
+            digest,
+            points: genPoints,
+            done_names: acc.map((c) => c.name),
+            done_cases: acc.map((c) => {
+              const metadata = c.compiled_case?.generation_metadata as {
+                preflight?: { passed?: boolean };
+              } | undefined;
+              return {
+                name: c.name,
+                produces: [...producedVariables(c)],
+                depends_on: [...referencedVariables(c)],
+                cleanup_scope: (c.teardown_api?.length || c.teardown_sql) ? "case" : "suite",
+                preflight_passed: Boolean(metadata?.preflight?.passed && !isAiCaseBlocked(c, mode)),
+              };
+            }),
+            mode,
+            carried_vars: [...carriedVars],
+            setup_doc: mode === "interface" ? setupDoc.trim() : "",
+            doc_urls: mode === "interface"
+              ? [docUrls.trim(), text.trim()].filter(Boolean).join("\n")
+              : "",
+            api_contract: mode === "interface" ? apiContract : {},
+            generation_run_id: generationRunId,
+          });
+          if (stopRef.current) break;
+          // 把测试点的 action/target_case_id 按标题/顺序对齐回填到生成结果上；普通生成流程
+          // 的测试点没有 action 字段，回填是 no-op，行为不变（等价于原来的 acc = [...acc, ...res.cases]）。
+          genCases = stampGeneratedActions(genPoints, res.cases);
+          if (res.cases.length === 0) {
+            failedCount += 1;
+            setFailedBatches((prev) => upsertFailedBatch(prev, {
+              id: options?.retryFailureId ?? failureId,
+              start: displayStart,
+              end: displayEnd,
+              points: chunk,
+              message: "本批返回 0 条有效用例",
+              attempts: 1,
+            }));
+          } else if (options?.retryFailureId) {
+            setFailedBatches((prev) => prev.filter((item) => item.id !== options.retryFailureId));
+          }
         } else if (options?.retryFailureId) {
           setFailedBatches((prev) => prev.filter((item) => item.id !== options.retryFailureId));
         }
+        acc = [...acc, ...deleteCases, ...genCases];
+        casesRef.current = acc;
         setCases(acc);
         // 默认全选非重复用例。红色候选允许入库，但会强制标记“需人工调整”并
         // skip=true，只有在完整编辑器里修正并确认后才能执行。
@@ -3333,7 +3408,9 @@ export function AiGenerateDialog({
       toast.info("请至少选一个测试点");
       return;
     }
-    if (mode === "interface" && apiContractOperationCount === 0) {
+    // delete 测试点不过 AI、不需要契约；纯删除计划即使没解析到 OpenAPI 契约也该放行。
+    const needsContract = q.some((p) => (p.action ?? "add") !== "delete");
+    if (mode === "interface" && needsContract && apiContractOperationCount === 0) {
       toast.error("没有读取到 OpenAPI 契约，请返回接口说明重新生成大纲；系统不会再生成整批必挂用例");
       setStage("input");
       return;
@@ -3505,22 +3582,12 @@ export function AiGenerateDialog({
         const existing = (await automationCasesApi.list({ moduleId, pageSize: 500 })).items
           .slice()
           .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
-        chosen = selected.filter((candidate) => !existing.some((stored) =>
-          storedCaseMatchesCandidate(
-            stored,
-            candidate,
-            generationRunId,
-            contractHash,
-          ),
-        ));
+        chosen = selected.filter((candidate) =>
+          !aiCaseAlreadyApplied(existing, candidate, generationRunId, contractHash),
+        );
         if (chosen.length === 0) {
           setWrittenNames(new Set(cases
-            .filter((candidate) => existing.some((stored) => storedCaseMatchesCandidate(
-              stored,
-              candidate,
-              generationRunId,
-              contractHash,
-            )))
+            .filter((candidate) => aiCaseAlreadyApplied(existing, candidate, generationRunId, contractHash))
             .map((candidate) => candidate.name)));
           toast.info("勾选的用例当前都已存在，无需重复写入");
           return;
@@ -3532,36 +3599,56 @@ export function AiGenerateDialog({
         let manualAdjustmentCount = 0;
         // 严格按审阅列表从上到下顺序写入；勾掉部分用例时保留剩余项的相对顺序。
         for (const c of chosen) {
-          // 新链路直接使用服务端契约编译产物；前端旧转换器仅兼容历史草稿。
-          // 这样静态校验、在线探测和正式入库不会再各自生成一份步骤。
-          const sequence = sequenceByCase.get(c) ?? cases.indexOf(c) + 1;
-          const basePayload: TestCaseCreate = c.compiled_case
-            ? { ...c.compiled_case, module_id: moduleId }
-            : toInterfaceCase(moduleId, c);
-          const metadata = {
-            ...(basePayload.generation_metadata ?? {}),
-            ai_generation_candidate_key: aiCaseCandidateKey(c, generationRunId, contractHash),
-            ai_generation_sequence: sequence,
-          };
-          let payload: TestCaseCreate = {
-            ...basePayload,
-            name: stripAiCaseSequence(c.name),
-            source: "ai_interface",
-            generation_metadata: metadata,
-          };
-          const blocked = isAiCaseBlocked(c, mode);
-          if (blocked) {
-            payload = markForManualAdjustment(
-              payload,
-              c.blocking_warnings ?? c.warnings ?? ["生成期校验未通过，请人工调整后再启用执行"],
-            );
+          // 变更调整：add/modify(缺省=add，普通生成流程一直如此) 走"生成+契约编译"入库；
+          // delete 没有 compiled_case（也不需要），直接删目标用例，跳过 payload 编译。
+          const action = c.action ?? "add";
+          let payload: TestCaseCreate | null = null;
+          let blocked = false;
+          if (action !== "delete") {
+            // 新链路直接使用服务端契约编译产物；前端旧转换器仅兼容历史草稿。
+            // 这样静态校验、在线探测和正式入库不会再各自生成一份步骤。
+            const sequence = sequenceByCase.get(c) ?? cases.indexOf(c) + 1;
+            const basePayload: TestCaseCreate = c.compiled_case
+              ? { ...c.compiled_case, module_id: moduleId }
+              : toInterfaceCase(moduleId, c);
+            const metadata = {
+              ...(basePayload.generation_metadata ?? {}),
+              ai_generation_candidate_key: aiCaseCandidateKey(c, generationRunId, contractHash),
+              ai_generation_sequence: sequence,
+            };
+            payload = {
+              ...basePayload,
+              name: stripAiCaseSequence(c.name),
+              source: "ai_interface",
+              generation_metadata: metadata,
+            };
+            blocked = isAiCaseBlocked(c, mode);
+            if (blocked) {
+              payload = markForManualAdjustment(
+                payload,
+                c.blocking_warnings ?? c.warnings ?? ["生成期校验未通过，请人工调整后再启用执行"],
+              );
+            }
           }
           try {
-            const res = await casesApi.create(payload);
-            createdIds.push(res.id);
-            createdCases.push(c);
-            if (blocked) manualAdjustmentCount += 1;
-            else runnableIds.push(res.id);
+            if (action === "delete") {
+              if (c.target_case_id != null) {
+                await casesApi.remove(c.target_case_id);
+                createdIds.push(c.target_case_id);
+                createdCases.push(c);
+              }
+            } else if (action === "modify" && c.target_case_id != null) {
+              await casesApi.update(c.target_case_id, payload as TestCaseCreate);
+              createdIds.push(c.target_case_id);
+              createdCases.push(c);
+              if (!blocked) runnableIds.push(c.target_case_id);
+            } else {
+              const res = await casesApi.create(payload as TestCaseCreate);
+              createdIds.push(res.id);
+              createdCases.push(c);
+              if (blocked) manualAdjustmentCount += 1;
+              else runnableIds.push(res.id);
+            }
           } catch (error) {
             failedCases.push({ name: c.name, message: errorMessage(error) });
           }
@@ -3944,7 +4031,30 @@ export function AiGenerateDialog({
           </button>
         </div>
         {view === "outline" ? (
-          <ModuleOutlinePanel moduleId={moduleId} projectId={projectId} mode={mode} onApplied={onInserted} />
+          <ModuleOutlinePanel
+            moduleId={moduleId}
+            projectId={projectId}
+            mode={mode}
+            onPlanned={({ generationRunId, points: plannedPoints, apiContract: plannedContract, warnings }) => {
+              setPoints(plannedPoints);
+              setPickedPoints(new Set(plannedPoints.map((_, i) => i)));
+              setGenerationRunId(generationRunId);
+              setApiContract(plannedContract);
+              // 变更调整只产出接口用例（AI_FEATURE_API_CASE_GEN）；确保生成/写入走 interface 分支。
+              setMode("interface");
+              setGenQueue([]);
+              setCursor(0);
+              setCases([]);
+              casesRef.current = [];
+              setPicked(new Set());
+              setWrittenNames(new Set());
+              setFailedBatches([]);
+              setEnhanceSummary(null);
+              setStage("outline");
+              setView("generate");
+              warnings.forEach((w) => toast.warning(w));
+            }}
+          />
         ) : view === "history" ? (
           <div className="flex min-h-0 flex-1 flex-col gap-3">
             <div className="flex items-center justify-between gap-3">
@@ -4602,7 +4712,19 @@ export function AiGenerateDialog({
                     >
                       <div className="font-medium">
                         <span className="mr-1 text-muted-foreground">{i + 1}.</span>
-                        {c.name}
+                        {c.action ? (
+                          <span
+                            className={cn(
+                              "mr-1.5 rounded px-1.5 py-0.5 text-[10px] font-normal",
+                              AI_CASE_ACTION_BADGE_CLASS[c.action],
+                            )}
+                          >
+                            {AI_CASE_ACTION_BADGE_LABEL[c.action]}
+                          </span>
+                        ) : null}
+                        <span className={c.action === "delete" ? "line-through text-muted-foreground" : undefined}>
+                          {c.name}
+                        </span>
                         {writtenNames.has(c.name) ? (
                           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700">
                             已写入
@@ -4637,20 +4759,22 @@ export function AiGenerateDialog({
                           </span>
                         ) : null}
                       </div>
-                      {c.preconditions.length ? (
+                      {/* delete 候选没有详情（无 compiled_case），前置/步骤/预期本就是空数组；
+                          这里再显式挡一道，避免以后合成逻辑变化时误渲染出无意义的空块。 */}
+                      {c.action !== "delete" && c.preconditions.length ? (
                         <div className="mt-1 text-xs text-muted-foreground">
                           <span className="font-medium text-foreground/70">前置：</span>
                           {c.preconditions.join("；")}
                         </div>
                       ) : null}
-                      {c.steps.length ? (
+                      {c.action !== "delete" && c.steps.length ? (
                         <ol className="mt-1 list-decimal pl-5 text-xs text-muted-foreground">
                           {c.steps.map((s, k) => (
                             <li key={k}>{s}</li>
                           ))}
                         </ol>
                       ) : null}
-                      {c.expected.length ? (
+                      {c.action !== "delete" && c.expected.length ? (
                         <div className="mt-1 text-xs text-muted-foreground">
                           <span className="font-medium text-foreground/70">预期：</span>
                           {c.expected.join("；")}

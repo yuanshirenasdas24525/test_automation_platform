@@ -1705,7 +1705,15 @@ export interface ChangeOp {
   endpoint: { method: string; path: string } | null;
   reason: string;
 }
-export interface ChangePlan { plan_id: number; ops: ChangeOp[]; warnings: string[]; }
+export interface ChangePlan {
+  plan_id: number;
+  /** 与 plan_id 同值；这条 plan 同时是一条生成历史记录（AiRun），用于对齐生成用例时的去重/回填。 */
+  generation_run_id: number;
+  ops: ChangeOp[];
+  warnings: string[];
+  /** 解析出的 OpenAPI 契约（新增/修改用例详情生成时需要）；未解析到结构化契约时为空 operations。 */
+  api_contract?: Record<string, unknown>;
+}
 export interface ApplySummary {
   added: number; modified: number; deleted: number;
   errors: { op_id: number; error: string }[];
