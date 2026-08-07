@@ -1588,14 +1588,7 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
                     </button>
                     {open ? (
                       <div className="space-y-2 border-t bg-muted/10 p-3">
-                        <div className="grid gap-2 md:grid-cols-2">
-                          <JsonBlock title="请求地址" value={step.request.url} />
-                          <JsonBlock title="请求头" value={step.request.headers} />
-                        </div>
-                        <RequestBodySection
-                          written={step.request.body_template ?? step.request.params}
-                          sent={step.request.body ?? step.request.params}
-                        />
+                        <RequestSection request={step.request} />
                         <DetailSection title="响应参数" summary={summarizeValue(step.response)} defaultOpen={false}>
                           <JsonPre value={step.response} />
                         </DetailSection>
@@ -1662,12 +1655,38 @@ function DetailSection({
   );
 }
 
-function RequestBodySection({ written, sent }: { written: unknown; sent: unknown }) {
+function RequestSection({
+  request,
+}: {
+  request: {
+    method: string | null;
+    url: string | null;
+    url_template?: unknown;
+    headers: unknown;
+    headers_template?: unknown;
+    body_template?: unknown;
+    body?: unknown;
+    params?: unknown;
+  };
+}) {
+  // 与 Allure 一致：实际填写(带 ${var} 占位) / 实际请求(解析后真实值)，各含 方法/地址/头/参数。
+  const filled = {
+    请求方法: request.method,
+    请求地址: request.url_template ?? request.url,
+    请求头: request.headers_template ?? request.headers,
+    请求参数: request.body_template ?? request.params,
+  };
+  const sent = {
+    请求方法: request.method,
+    请求地址: request.url,
+    请求头: request.headers,
+    请求参数: request.body ?? request.params,
+  };
   return (
-    <DetailSection title="请求参数" summary={summarizeValue(sent)} defaultOpen>
+    <DetailSection title="Request" summary={`${String(request.method ?? "")} ${String(request.url ?? "")}`} defaultOpen>
       <div className="grid gap-2 md:grid-cols-2">
-        <JsonBlock title="实际填写的" value={written} />
-        <JsonBlock title="请求填写的" value={sent} />
+        <JsonBlock title="实际填写" value={filled} />
+        <JsonBlock title="实际请求" value={sent} />
       </div>
     </DetailSection>
   );

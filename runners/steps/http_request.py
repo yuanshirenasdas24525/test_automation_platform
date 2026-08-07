@@ -280,13 +280,21 @@ class HttpRequestStepRunner(BaseStepRunner):
         crypto = RequestCryptoProcessor(self._encryption_config(), vars=self._merged_pool(ctx))
         headers, body, crypto_request_meta = crypto.apply_request(headers, body)
 
-        # 2) 记录 Allure: Set up（变量池）+ Request（请求详情）
+        # 2) 记录 Allure/报告：变量池 + Request（请求详情）
+        # "实际填写"保留 ${var} 占位（模板），"实际请求"是变量解析后的真实值。
+        # 模板 URL/请求头也记进 input_data，供「最近一次执行详情」弹窗按同样结构展示。
+        _base_url_disp = self._get_base_url()
+        _tmpl_url = path if path.startswith(("http://", "https://")) else (
+            f"{_base_url_disp.rstrip('/')}/{path.lstrip('/')}" if _base_url_disp else path
+        )
         result.action = f"{method} {url}"
         result.target = url
         result.input_data = {
             "method": method,
             "url": url,
+            "url_template": _tmpl_url,
             "headers": headers,
+            "headers_template": headers_in,
             "path_params": path_params,
             "query_params": query_params,
             "params": params_template,
@@ -303,11 +311,6 @@ class HttpRequestStepRunner(BaseStepRunner):
             "变量池",
             ctx_vars_display or "(空)",
             attachment_name="变量池",
-        )
-        # "实际填写"保留 ${var} 占位（模板），"实际请求"是变量解析后的真实值。
-        _base_url_disp = self._get_base_url()
-        _tmpl_url = path if path.startswith(("http://", "https://")) else (
-            f"{_base_url_disp.rstrip('/')}/{path.lstrip('/')}" if _base_url_disp else path
         )
         add_allure_step("Request", {
             "实际填写": {

@@ -351,7 +351,9 @@ export interface ApiCaseLatestRunStepDetail {
   request: {
     method: string | null;
     url: string | null;
+    url_template?: unknown;
     headers: unknown;
+    headers_template?: unknown;
     body_template?: unknown;
     body?: unknown;
     params?: unknown;
