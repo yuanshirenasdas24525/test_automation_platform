@@ -1,14 +1,14 @@
 """AI 参数修复的闭环验证 + 多轮修复循环控制器。
 
 单轮流程（round k）：
-  等验证报告跑完 → 与上一轮报告按用例对比 → green→red 自动按事件回滚
+  等验证报告跑完 → 与上一轮报告按用例对比 → green→red / red→red 自动按事件回滚
   → 若仍有 red 且未到轮数上限：带着**修复后的新响应**（新证据）只对 still_red
     用例重新诊断（附 previous_attempt 说明上一轮做了什么/为何被拦），预检 + 应用
     → 派下一轮验证执行 → 自我派发 round k+1。
 
 停止条件（满足其一）：
   - 没有 still_red 用例；
-  - 到达 loop.max_rounds（默认 3）；
+  - 到达 loop.max_rounds（默认 2）；
   - 新一轮诊断没有产出任何能通过预检的修复（没有新思路，继续无意义）。
 
 结束时以**最初报告**为基线做总账，写 ai_run.output_payload["verify"]；
@@ -203,6 +203,7 @@ def verify_ai_fix_task(
         apply_report_fixes,
         compare_and_rollback,
         prepare_verification_run,
+        rollback_applied_fixes,
     )
 
     LOGGER.info(
@@ -224,18 +225,28 @@ def verify_ai_fix_task(
             rounds.append(entry)
         applied = entry.get("applied") or []
         orig_report_id = int((run.input_payload or {}).get("report_id") or prev_report_id)
-        max_rounds = int((payload.get("loop") or {}).get("max_rounds") or 3)
+        max_rounds = int((payload.get("loop") or {}).get("max_rounds") or 2)
 
         # ── 1. 等本轮验证执行结束 ─────────────────────────────────
         report_status = _wait_report_done(session, verify_report_id)
         if report_status is None or report_status == "running":
+            rollback_result = rollback_applied_fixes(
+                session,
+                batch_id=batch_id,
+                applied=applied,
+                reason="AI 修复验证超时或报告丢失，候选修改未获验证，自动回滚",
+            )
             entry["status"] = "verify_timeout"
+            entry["rolled_back_count"] = rollback_result.get("rolled_back", 0)
+            entry["rollback_conflicts"] = rollback_result.get("conflicts") or []
             payload["rounds"] = rounds
             payload["verify"] = {
                 "status": "timeout" if report_status == "running" else "report_missing",
                 "verify_report_id": verify_report_id,
                 "rounds_used": round_no,
-                "message": "验证执行超时或报告丢失；已应用的修复保留，请手动重跑核对",
+                "message": "验证执行超时或报告丢失；未验证的候选修复已自动回滚",
+                "rolled_back_count": rollback_result.get("rolled_back", 0),
+                "rollback_conflicts": rollback_result.get("conflicts") or [],
                 "finished_at": datetime.now().isoformat(),
             }
             run.output_payload = payload
@@ -380,6 +391,23 @@ def verify_ai_fix_task(
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("[ai_fix_verify] failed: %s", exc)
         traceback.print_exc()
+        rollback_result = {"rolled_back": 0, "conflicts": []}
+        try:
+            from server.services.ai_fix_service import rollback_applied_fixes
+
+            rollback_result = rollback_applied_fixes(
+                session,
+                batch_id=batch_id,
+                applied=applied if "applied" in locals() else [],
+                reason=f"AI 修复验证任务异常（{type(exc).__name__}），候选修改自动回滚",
+            )
+        except Exception as rollback_exc:  # noqa: BLE001
+            LOGGER.error("[ai_fix_verify] 异常兜底回滚失败：%s", rollback_exc)
+            rollback_result = {
+                "rolled_back": 0,
+                "conflicts": [],
+                "error": str(rollback_exc),
+            }
         try:
             run = session.query(AiRun).filter(AiRun.id == ai_run_id).first()
             if run is not None:
@@ -389,6 +417,9 @@ def verify_ai_fix_task(
                     "verify_report_id": verify_report_id,
                     "rounds_used": round_no,
                     "message": f"{type(exc).__name__}: {exc}"[:500],
+                    "rolled_back_count": rollback_result.get("rolled_back", 0),
+                    "rollback_conflicts": rollback_result.get("conflicts") or [],
+                    "rollback_error": rollback_result.get("error"),
                     "finished_at": datetime.now().isoformat(),
                 }
                 run.output_payload = payload

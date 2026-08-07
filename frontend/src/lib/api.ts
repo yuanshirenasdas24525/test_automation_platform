@@ -9,6 +9,8 @@ import type {
   AiCaseDraftStatus,
   AiCaseDraftUpdatePayload,
   AiFeature,
+  AiGenerationHistoryDetail,
+  AiGenerationHistoryItem,
   AiGeneratedCase,
   AiOutlinePoint,
   AiModelConfig,
@@ -641,6 +643,7 @@ export const automationCasesApi = {
     status?: ApiRunStatus | ApiRunStatus[];
     keyword?: string;
     flagType?: AiFlagType;
+    manualAdjustment?: boolean;
     page?: number;
     pageSize?: number;
   }) {
@@ -652,6 +655,7 @@ export const automationCasesApi = {
     }
     if (filters.keyword?.trim()) qs.set("keyword", filters.keyword.trim());
     if (filters.flagType) qs.set("flag_type", filters.flagType);
+    if (filters.manualAdjustment) qs.set("manual_adjustment", "true");
     if (filters.page != null) qs.set("page", String(filters.page));
     if (filters.pageSize != null) qs.set("page_size", String(filters.pageSize));
     return request<ApiCaseListResponse>(`/api/api_cases?${qs}`);
@@ -755,6 +759,27 @@ export interface FunctionalImportResult {
 }
 
 export const functionalCasesApi = {
+  /** AI 接口用例质量：契约门禁、在线探测、首轮与最新真实执行通过率。 */
+  aiGenerationQuality(projectId: number) {
+    return request<{
+      source: "ai_interface";
+      total_cases: number;
+      contract_bound: number;
+      contract_rate: number | null;
+      preflight_passed: number;
+      preflight_rate: number | null;
+      probe_attempted: number;
+      probe_coverage_rate: number | null;
+      probe_passed: number;
+      probe_pass_rate: number | null;
+      first_run_total: number;
+      first_run_passed: number;
+      first_run_pass_rate: number | null;
+      latest_run_passed: number;
+      latest_run_pass_rate: number | null;
+      by_prompt_version: Record<string, Record<string, number>>;
+    }>(`/api/functional_cases/ai_generation_quality?project_id=${projectId}`);
+  },
   /** 创建一条功能用例（写入 test_cases，case_type='functional'）。sessionId=快速编辑会话 id。 */
   create(body: FunctionalCaseCreate, sessionId?: string) {
     const q = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : "";
@@ -844,6 +869,30 @@ export const functionalCasesApi = {
       `/api/functional_cases/edit_history?module_id=${moduleId}&limit=${limit}`,
     );
   },
+  /** 模块下每一次 AI 用例生成的数据库历史，只列大纲主记录。 */
+  aiGenerationHistory(moduleId: number, mode: "functional" | "interface", limit = 50) {
+    const qs = new URLSearchParams({
+      module_id: String(moduleId),
+      mode,
+      limit: String(limit),
+    });
+    return request<AiGenerationHistoryItem[]>(
+      `/api/functional_cases/ai_generation_history?${qs}`,
+    );
+  },
+  /** 查看一次生成的完整大纲、详细用例和写入状态。 */
+  aiGenerationHistoryDetail(runId: number, moduleId: number) {
+    return request<AiGenerationHistoryDetail>(
+      `/api/functional_cases/ai_generation_history/${runId}?module_id=${moduleId}`,
+    );
+  },
+  /** 持久化生成向导审阅态；localStorage 仅保留为快速恢复副本。 */
+  saveAiGenerationHistory(runId: number, moduleId: number, draft: Record<string, unknown>) {
+    return request<AiGenerationHistoryItem>(
+      `/api/functional_cases/ai_generation_history/${runId}`,
+      { method: "PUT", body: { module_id: moduleId, draft } },
+    );
+  },
   /** AI 生成 第一步：文本 + 截图/原型图 + PDF/Word → 测试点大纲 + 需求摘要 digest。 */
   aiGenerateOutline(body: {
     module_id: number;
@@ -875,6 +924,8 @@ export const functionalCasesApi = {
       points: AiOutlinePoint[];
       model: string;
       image_strategy: string;
+      api_contract: Record<string, unknown>;
+      generation_run_id: number;
     }>("/api/functional_cases/ai_generate_outline", { method: "POST", body: fd, signal });
   },
   /** AI 生成 第二步：基于 digest + 本批测试点 + 已生成用例名 → 本批控件级详细用例。 */
@@ -884,13 +935,18 @@ export const functionalCasesApi = {
     digest: string;
     points: AiOutlinePoint[];
     done_names: string[];
+    done_cases?: Array<Record<string, unknown>>;
     mode?: "functional" | "interface";
     /** 跨批次已产出的变量名（前端累积传入，避免误报"变量找不到来源"）。 */
     carried_vars?: string[];
     /** 前置链账号准备接口信息（供前置链跨模块建账号用）。 */
     setup_doc?: string;
+    /** 原始 Swagger/OpenAPI 链接；服务端可在草稿契约丢失时重新解析。 */
+    doc_urls?: string;
+    api_contract?: Record<string, unknown>;
+    generation_run_id?: number | null;
   }) {
-    return request<{ cases: AiGeneratedCase[]; model: string }>(
+    return request<{ cases: AiGeneratedCase[]; model: string; generation_run_id?: number | null }>(
       "/api/functional_cases/ai_generate_batch",
       { method: "POST", body },
     );
@@ -904,6 +960,8 @@ export const functionalCasesApi = {
     cases: AiGeneratedCase[];
     mode?: "functional" | "interface";
     target_extra_count?: number;
+    api_contract?: Record<string, unknown>;
+    generation_run_id?: number | null;
   }) {
     return request<{
       cases: AiGeneratedCase[];
@@ -913,6 +971,23 @@ export const functionalCasesApi = {
       agent_model_name: string;
       run_id: number;
     }>("/api/functional_cases/ai_enhance_cases", {
+      method: "POST",
+      body,
+    });
+  },
+  /** 不调用模型，按当前 OpenAPI 契约重新校验整批接口草稿。 */
+  aiRevalidateCases(body: {
+    module_id: number;
+    cases: AiGeneratedCase[];
+    api_contract: Record<string, unknown>;
+    generation_run_id?: number | null;
+  }) {
+    return request<{
+      cases: AiGeneratedCase[];
+      total: number;
+      writable: number;
+      blocked: number;
+    }>("/api/functional_cases/ai_revalidate_cases", {
       method: "POST",
       body,
     });
@@ -939,7 +1014,7 @@ export const functionalCasesApi = {
       celery_task_id?: string;
     }>("/api/functional_cases/ai_diagnose_report", { method: "POST", body });
   },
-  /** 应用报告级 AI 修复（服务端预检 + 快照 + 自动重跑验证；绿变红自动回滚）。
+  /** 应用报告级 AI 修复（服务端预检 + 快照 + 自动重跑验证；只有红转绿才保留）。
    *  闭环结果由后端写入 ai_run.output_payload.verify，轮询 /api/ai/runs/{id} 可见。 */
   aiApplyReportFixes(body: { ai_run_id: number; verify?: boolean }) {
     return request<{
@@ -959,6 +1034,7 @@ export const functionalCasesApi = {
     points: AiOutlinePoint[];
     text?: string;
     doc_urls?: string;
+    api_contract?: Record<string, unknown>;
   }) {
     return request<{ points: AiOutlinePoint[] }>("/api/functional_cases/ai_outline_gaps", {
       method: "POST",
@@ -974,6 +1050,7 @@ export const functionalCasesApi = {
     points: AiOutlinePoint[];
     text?: string;
     doc_urls?: string;
+    api_contract?: Record<string, unknown>;
   }) {
     return request<{ points: AiOutlinePoint[]; run_id: number }>(
       "/api/functional_cases/ai_outline_gaps_cli",

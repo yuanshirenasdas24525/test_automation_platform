@@ -16,9 +16,9 @@ from server.services.failure_triage import (
 )
 
 
-def _step(*, error="", code=None, output=None, sent=None, target="http://h/api/x"):
+def _step(*, error="", code=None, output=None, sent=None, target="http://h/api/x", name="s"):
     return StepReportModel(
-        report_id=1, case_id=10, step_id=100, step_name="s", step_type="http_request",
+        report_id=1, case_id=10, step_id=100, step_name=name, step_type="http_request",
         status="failed", status_code=code, error_message=error,
         target=target,
         input_data=json.dumps(sent, ensure_ascii=False) if sent is not None else None,
@@ -26,8 +26,13 @@ def _step(*, error="", code=None, output=None, sent=None, target="http://h/api/x
     )
 
 
-def _triage(step, producers=None, failed_cases=None):
-    return triage_step(step, producers=producers or {}, failed_case_ids=failed_cases or set())
+def _triage(step, producers=None, failed_cases=None, case_name=""):
+    return triage_step(
+        step,
+        producers=producers or {},
+        failed_case_ids=failed_cases or set(),
+        case_name=case_name,
+    )
 
 
 # ---------------------------------------------------------------- 环境类
@@ -121,6 +126,83 @@ def test_wrong_success_code_assertion_is_case_problem():
     assert v["fix_hint"]["assertion"]["status_code"] == 200
 
 
+def test_report_74_auth_failures_are_triaged_as_wrong_assertions():
+    """报告 74 的三种 401 都有明确场景证据，应直接归为用例断言问题。"""
+    scenarios = (
+        (
+            "【鉴权】使用无效refresh_token刷新返回401",
+            "【鉴权】使用无效refresh_token刷新返回401",
+            "http://h/api/auth/refresh",
+            {"detail": "token 无效或已过期"},
+        ),
+        (
+            "【场景】登出后使用原 refresh_token 刷新失败",
+            "使用已登出的 refresh_token 刷新令牌",
+            "http://h/api/auth/refresh",
+            {"detail": "会话已失效"},
+        ),
+        (
+            "【场景】使用旧密码登录失败（验证密码已改）",
+            "使用旧密码登录，验证失败",
+            "http://h/api/auth/login",
+            {"detail": "用户名或密码错误"},
+        ),
+    )
+    for case_name, step_name, target, output in scenarios:
+        verdict = _triage(
+            _step(
+                code=401,
+                error="断言失败 1/1 条:\n[equal] status_code: 401 != 200",
+                target=target,
+                name=step_name,
+                sent={"headers": {"Content-Type": "application/json"}},
+                output=output,
+            ),
+            case_name=case_name,
+        )
+        assert verdict["classification"] == CLS_CASE
+        assert verdict["subtype"] == "wrong_auth_status_assertion"
+        assert verdict["fix_hint"]["assertion"]["status_code"] == 401
+
+
+def test_explicit_422_title_can_fix_cross_class_status_assertion():
+    """标题明确写返回 422 时，可以安全修正被错误编译成 200 的断言。"""
+    verdict = _triage(
+        _step(
+            code=422,
+            error="断言失败 1/1 条:\n[equal] status_code: 422 != 200",
+            output={"detail": [{"loc": ["body", "username"], "msg": "Field required"}]},
+        ),
+        case_name="【参数校验】缺少 username 登录返回422",
+    )
+    assert verdict["subtype"] == "wrong_explicit_status_assertion"
+    assert verdict["fix_hint"]["assertion"]["status_code"] == 422
+
+
+def test_401_before_extract_is_not_misclassified_as_missing_api_field():
+    """会话失效导致的提取失败应交给语义修复，不能说接口没返回字段。"""
+    verdict = _triage(_step(
+        code=401,
+        error="参数提取失败：access_token ($.data.access_token)；HTTP 401",
+        output={"detail": "会话已失效"},
+        target="http://h/api/auth/refresh",
+    ))
+    assert verdict["classification"] == CLS_CASE
+    assert verdict["subtype"] == "auth_lifecycle"
+    assert verdict["needs_semantic_fix"] is True
+
+
+def test_invalid_role_before_extract_is_sent_to_semantic_fix():
+    verdict = _triage(_step(
+        code=422,
+        error="参数提取失败：user_id ($.data.id)；HTTP 422",
+        output={"detail": "非法 role_code，可选: ['admin', 'test']"},
+        target="http://h/api/users",
+    ))
+    assert verdict["subtype"] == "invalid_enum"
+    assert verdict["needs_semantic_fix"] is True
+
+
 def test_cross_class_status_mismatch_is_left_to_l2():
     """2xx vs 4xx 含语义分歧（到底该不该拒绝），L1 不判。"""
     v = _triage(_step(code=200, error="断言失败 1/1 条:\n[equal] status_code: 200 != 401",
@@ -201,13 +283,16 @@ def _fake_triage():
              "fix_hint": {"extract": {"token": "$.data.access_token"}}},
             {"case_id": 3, "case_name": "C", "classification": "待定", "subtype": None,
              "summary": "需 AI 判断", "evidence": "断言不符", "suggestion": "用 AI 分析"},
+            {"case_id": 4, "case_name": "D", "classification": CLS_CASE,
+             "subtype": "auth_lifecycle", "needs_semantic_fix": True,
+             "summary": "先被 401 拒绝", "evidence": "会话已失效", "suggestion": "修会话语义"},
         ]
     }
 
 
 def test_undetermined_ids_are_the_ones_sent_to_llm():
     from server.services.failure_triage import undetermined_case_ids
-    assert undetermined_case_ids(_fake_triage()) == {3}
+    assert undetermined_case_ids(_fake_triage()) == {3, 4}
 
 
 def test_l1_items_exclude_undetermined_and_match_diagnosis_shape():

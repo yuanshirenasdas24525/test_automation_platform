@@ -368,17 +368,11 @@ def _authenticate_api_key(db: DBDep, request: Request, raw_key: str) -> User:
     return user
 
 
-# ---------------------------------------------------------------------------
-# 依赖：从 Bearer Token / X-API-Key 获取当前用户（给其他路由用的）
-# ---------------------------------------------------------------------------
-def get_current_user(
+def _authenticate_bearer(
     db: DBDep,
-    request: Request,
-    creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    api_key: str | None = Depends(api_key_scheme),
+    creds: HTTPAuthorizationCredentials | None,
 ) -> User:
-    if api_key:
-        return _authenticate_api_key(db, request, api_key)
+    """只使用 Bearer token 认证，供明确禁止 API Key 的资源复用。"""
     if creds is None:
         raise HTTPException(status_code=401, detail="未提供认证 token")
     payload = _decode_token(creds.credentials, "access")
@@ -400,6 +394,28 @@ def get_current_user(
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="用户不存在或已停用")
     return user
+
+
+# ---------------------------------------------------------------------------
+# 依赖：从 Bearer Token / X-API-Key 获取当前用户（给其他路由用的）
+# ---------------------------------------------------------------------------
+def get_current_user_bearer(
+    db: DBDep,
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> User:
+    """仅允许 Bearer token；OpenAPI 也只声明 HTTPBearer。"""
+    return _authenticate_bearer(db, creds)
+
+
+def get_current_user(
+    db: DBDep,
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    api_key: str | None = Depends(api_key_scheme),
+) -> User:
+    if api_key:
+        return _authenticate_api_key(db, request, api_key)
+    return _authenticate_bearer(db, creds)
 
 
 def _get_optional_user(
@@ -443,10 +459,36 @@ class LoginResponse(pydantic.BaseModel):
     user: dict
 
 
+class LoginEnvelope(pydantic.BaseModel):
+    status: str
+    data: LoginResponse
+
+
+class RefreshResponseData(pydantic.BaseModel):
+    access_token: str
+    expires_in: int
+
+
+class RefreshResponse(pydantic.BaseModel):
+    status: str
+    data: RefreshResponseData
+
+
+class HTTPErrorResponse(pydantic.BaseModel):
+    detail: Any
+
+
 # ---------------------------------------------------------------------------
 # 端点
 # ---------------------------------------------------------------------------
-@router.post("/login")
+@router.post(
+    "/login",
+    response_model=LoginEnvelope,
+    responses={
+        401: {"model": HTTPErrorResponse, "description": "用户名或密码错误"},
+        429: {"model": HTTPErrorResponse, "description": "登录失败次数过多"},
+    },
+)
 def login(payload: LoginRequest, request: Request, db: DBDep):
     ip = _client_ip(request)
 
@@ -507,15 +549,21 @@ def login(payload: LoginRequest, request: Request, db: DBDep):
     }
 
 
-@router.get("/me")
-def me(current_user: User = Depends(get_current_user)):
+@router.get(
+    "/me",
+    responses={401: {"model": HTTPErrorResponse, "description": "未认证或会话失效"}},
+)
+def me(current_user: User = Depends(get_current_user_bearer)):
     return {"status": "success", "data": current_user.to_dict()}
 
 
-@router.get("/sessions")
+@router.get(
+    "/sessions",
+    responses={401: {"model": HTTPErrorResponse, "description": "未认证或会话失效"}},
+)
 def list_sessions(
     db: DBDep,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_bearer),
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ):
     current_session_id: int | None = None
@@ -540,7 +588,11 @@ def list_sessions(
     return {"status": "success", "data": data}
 
 
-@router.post("/refresh")
+@router.post(
+    "/refresh",
+    response_model=RefreshResponse,
+    responses={401: {"model": HTTPErrorResponse, "description": "refresh token 无效或会话失效"}},
+)
 def refresh_token(payload: RefreshRequest, db: DBDep):
     decoded = _decode_token(payload.refresh_token, "refresh")
     user_id = decoded.get("sub")
@@ -572,7 +624,10 @@ def refresh_token(payload: RefreshRequest, db: DBDep):
     }
 
 
-@router.post("/logout")
+@router.post(
+    "/logout",
+    responses={401: {"model": HTTPErrorResponse, "description": "refresh token 无效或已过期"}},
+)
 def logout(payload: LogoutRequest, db: DBDep):
     if not payload.refresh_token:
         return {"status": "success", "message": "已退出登录"}
@@ -587,17 +642,27 @@ def logout(payload: LogoutRequest, db: DBDep):
     return {"status": "success", "message": "已退出登录"}
 
 
-@router.post("/logout-all")
-def logout_all(db: DBDep, current_user: User = Depends(get_current_user)):
+@router.post(
+    "/logout-all",
+    responses={401: {"model": HTTPErrorResponse, "description": "未认证或会话失效"}},
+)
+def logout_all(db: DBDep, current_user: User = Depends(get_current_user_bearer)):
     count = revoke_user_sessions(db, current_user.id, "logout_all")
     return {"status": "success", "data": {"revoked": count}, "message": "已退出全部设备"}
 
 
-@router.put("/password")
+@router.put(
+    "/password",
+    responses={
+        400: {"model": HTTPErrorResponse, "description": "旧密码错误或当前用户未设置密码"},
+        401: {"model": HTTPErrorResponse, "description": "未认证或会话失效"},
+        403: {"model": HTTPErrorResponse, "description": "内置管理员禁止修改密码"},
+    },
+)
 def change_password(
     payload: ChangePasswordRequest,
     db: DBDep,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_bearer),
 ):
     if current_user.username == PROTECTED_ADMIN_USERNAME:
         raise HTTPException(status_code=403, detail="admin 账号为系统内置账号，禁止修改密码")
@@ -612,3 +677,30 @@ def change_password(
     revoke_user_sessions(db, current_user.id, "password_changed")
     db.session.flush()
     return {"status": "success", "message": "密码修改成功"}
+
+
+# ---------------------------------------------------------------------------
+# 临时测试沙盒接口 —— 供「变更调整 / 新增用例」功能实测用，可随时删除。
+# 免登录（auth 路由属公开组），2 必填 + 2 非必填，恒返回 hello。
+# ---------------------------------------------------------------------------
+class EchoTestRequest(pydantic.BaseModel):
+    username: str                          # 必填：用户名
+    amount: int                            # 必填：数量（整数）
+    note: str | None = None                # 非必填：备注
+    tags: list[str] | None = None          # 非必填：标签列表
+
+
+@router.post("/echo_test")
+def echo_test(payload: EchoTestRequest):
+    """回显测试接口：POST username(必填,str) + amount(必填,int) + note(可选,str)
+    + tags(可选,list[str])，恒返回 message="hello" 并回显入参。缺必填字段 → 422。"""
+    return {
+        "status": "success",
+        "message": "hello",
+        "data": {
+            "username": payload.username,
+            "amount": payload.amount,
+            "note": payload.note,
+            "tags": payload.tags,
+        },
+    }

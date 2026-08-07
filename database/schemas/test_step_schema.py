@@ -30,7 +30,7 @@ class Assertion(BaseModel):
     type: Literal[
         "equal", "not_equal", "contains", "not_contains",
         "jsonpath", "text_equal", "text_contains",
-        "regex", "gt", "lt", "in", "not_null", "is_null",
+        "regex", "gt", "lt", "in", "not_null", "is_not_null", "is_null",
     ] = Field(..., description="断言类型")
     target: Optional[str] = Field(None, description="断言目标（JSONPath / 元素 locator / 字段路径）")
     expected: Any = Field(None, description="期望值")

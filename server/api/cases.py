@@ -38,6 +38,10 @@ from server.services.edit_history_service import (
     rollback_test_case_events,
     snapshot_test_case,
 )
+from server.services.api_case_admission import (
+    needs_manual_adjustment,
+    validate_ai_interface_admission,
+)
 from database.models.test_step import ALL_STEP_TYPES, TestStep
 
 router = APIRouter(prefix="/test_cases", tags=["test_cases"])
@@ -210,11 +214,18 @@ def create_case(
     # steps / case_type 属于新增字段，不在 TestCase model 列里，单独处理
     steps_field_provided = "steps" in case.model_fields_set
     steps = payload.pop("steps", None)
+    if not payload.get("source"):
+        payload["source"] = "manual"
     if payload.get("case_type") is None:
         payload["case_type"] = _infer_case_type({"steps": steps, **payload})
 
     if payload.get("case_type") != "functional" and (not steps_field_provided or not steps):
         raise HTTPException(status_code=422, detail="自动化用例必须提交 steps，后端不再兜底生成步骤")
+
+    try:
+        validate_ai_interface_admission(payload, steps_provided=steps_field_provided)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     explicit_order = payload.get("sort_order")
     if explicit_order is not None:
@@ -294,12 +305,29 @@ def update_case(
     # 同时清掉 NUL（Postgres 存不下，否则更新写库 500）
     payload = _strip_nul_chars(case.model_dump(exclude_unset=True))
     # steps 是子表，单独走 _replace_case_steps；不能 setattr 到 ORM 上
+    steps_field_provided = "steps" in case.model_fields_set
     steps = payload.pop("steps", None)
     # case_type 显式传 None 也别覆盖（前端有时会带 case_type=null）
     if payload.get("case_type") is None and "case_type" in payload:
         payload.pop("case_type")
     # sort_order 不通过这条接口改 —— 想换顺序走 /api/reorder
     payload.pop("sort_order", None)
+
+    previous_metadata = getattr(db_case, "generation_metadata", None)
+    if needs_manual_adjustment(previous_metadata) or "generation_metadata" in payload:
+        effective_payload = {
+            "source": payload.get("source", getattr(db_case, "source", "manual")),
+            "generation_metadata": payload.get("generation_metadata", previous_metadata),
+            "skip": payload.get("skip", bool(db_case.skip)),
+        }
+        try:
+            validate_ai_interface_admission(
+                effective_payload,
+                previous_metadata=previous_metadata,
+                steps_provided=steps_field_provided,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     changes: list[dict] = []
     for key, value in payload.items():
@@ -315,7 +343,7 @@ def update_case(
     # steps 处理：
     #   1) 前端送了 steps 字段（不管是空还是有值）→ 整体替换
     #   2) 前端没送 steps → 保持 DB 原值，不再兜底生成步骤
-    if "steps" in case.model_fields_set:
+    if steps_field_provided:
         next_case_type = (payload.get("case_type") or db_case.case_type or "api").lower()
         if next_case_type != "functional" and not steps:
             raise HTTPException(status_code=422, detail="自动化用例必须提交至少一个 step")
@@ -362,7 +390,7 @@ class RenumberRequest(pydantic.BaseModel):
 
 
 # 匹配名字开头已有的序号前缀，如 "0001 "、"12. "、"003、"，用于去重/幂等
-_NUM_PREFIX_RE = re.compile(r"^\s*\d{2,}[\s.、:：\-_)]+")
+_NUM_PREFIX_RE = re.compile(r"^\s*\d+[\s.、:：\-_)]+")
 
 
 @router.post("/renumber")
@@ -496,6 +524,8 @@ def _serialize_case(c: TestCase, *, include_steps: bool = False, db=None) -> dic
         "assertion": c.assertion,
         "wait_time": c.wait_time,
         "repeat_count": getattr(c, "repeat_count", 1) or 1,
+        "source": getattr(c, "source", "manual") or "manual",
+        "generation_metadata": getattr(c, "generation_metadata", None),
         "sort_order": c.sort_order,
         # 前/后置步骤属于真实执行定义，必须在编辑详情中公开，不能成为隐藏逻辑。
         "pre_hook": c.pre_hook or [],

@@ -7,7 +7,12 @@
         "path": "/api/login",                   # 支持完整 URL 或 相对路径（拼 base_url）
         "headers": {"X-Trace": "abc"},          # dict，不是 JSON 字符串
         "data_type": "application/json",        # json / form / multipart / x-www-form-urlencoded
-        "params": {"username": "${USERNAME}"},  # dict / list，支持 ${var} 占位符
+        "path_params": {"id": "${user_id}"},    # 替换 OpenAPI 路径模板 {id}
+        "query_params": {"page": 1},             # URL query
+        "json": {"username": "${USERNAME}"},   # JSON 请求体
+        "form": null,                              # form-urlencoded / multipart 文本字段
+        "files": null,                             # {字段名: 文件路径}
+        "params": {},                              # 历史兼容字段；新用例不再混用
         "file_path": null,                      # multipart 用
         "sql_query": null,                      # 可选：默认请求后跑 SQL 校验；sql_query_phase='before' 可改为请求前
     }
@@ -171,7 +176,11 @@ def _v1_json_assertion_to_rules(raw: Any) -> list[dict]:
             if not t:
                 continue
             ev = expected.strip().lower() if isinstance(expected, str) else expected
-            if isinstance(expected, str) and ev in _NOT_NULL:
+            if isinstance(expected, str) and ev.startswith("type:") and ev.removeprefix("type:") in {
+                "string", "number", "integer", "boolean", "array", "object", "null",
+            }:
+                out.append({"type": "type", "target": t, "expected": ev.removeprefix("type:")})
+            elif isinstance(expected, str) and ev in _NOT_NULL:
                 out.append({"type": "is_not_null", "target": t, "expected": None})
             elif isinstance(expected, str) and ev in _IS_NULL:
                 out.append({"type": "is_null", "target": t, "expected": None})
@@ -227,9 +236,15 @@ class HttpRequestStepRunner(BaseStepRunner):
 
         headers_in = config.get("headers") or {}
         params_in = config.get("params") or {}
-        file_path = config.get("file_path")
+        has_partitioned_request = any(
+            key in config for key in ("path_params", "query_params", "json", "form", "files")
+        )
+        file_path = config.get("files") if "files" in config else config.get("file_path")
 
         # 1) 变量替换（${var} → ctx/pool 里的值）
+        path_params = self._resolve_dict(config.get("path_params") or {}, ctx)
+        for name, value in path_params.items():
+            path = path.replace(f"{{{name}}}", str(value))
         url = self._resolve_url(path, ctx)
         headers = self._resolve_dict(headers_in, ctx)
         # base_header 合并（保持跟 v1 行为一致）
@@ -239,10 +254,28 @@ class HttpRequestStepRunner(BaseStepRunner):
         # 服务端会当成无效 token 返回 401，正好符合"过期/无效 token"类负向用例预期。
         headers = self._latin1_safe_headers(headers)
         params_template = self._decode_jsonish_value(params_in)
-        body = self._resolve_value(params_template, ctx)
+        query_template = self._decode_jsonish_value(config.get("query_params") or {})
+        json_template = self._decode_jsonish_value(config.get("json"))
+        form_template = self._decode_jsonish_value(config.get("form"))
+        query_params = self._resolve_value(query_template, ctx)
+        if has_partitioned_request:
+            if data_type == "application/x-www-form-urlencoded":
+                body_template = form_template
+            elif data_type == "multipart/form-data":
+                body_template = form_template
+            else:
+                body_template = json_template
+        elif method in ("GET", "HEAD", "OPTIONS"):
+            # 历史用例只有 params：读取类请求按 query 发送，避免 GET JSON body。
+            query_params = self._resolve_value(params_template, ctx)
+            body_template = None
+        else:
+            body_template = params_template
+        body = self._resolve_value(body_template, ctx)
         if str(config.get("sql_query_phase") or "").lower() == "before":
             self._apply_sql_query(config.get("sql_query"), ctx)
-        files = self.processor.handler_files(file_path) if file_path else None
+        resolved_file_path = self._resolve_value(file_path, ctx) if file_path else None
+        files = self.processor.handler_files(resolved_file_path) if resolved_file_path else None
 
         crypto = RequestCryptoProcessor(self._encryption_config(), vars=self._merged_pool(ctx))
         headers, body, crypto_request_meta = crypto.apply_request(headers, body)
@@ -254,8 +287,10 @@ class HttpRequestStepRunner(BaseStepRunner):
             "method": method,
             "url": url,
             "headers": headers,
+            "path_params": path_params,
+            "query_params": query_params,
             "params": params_template,
-            "body_template": params_template,
+            "body_template": body_template,
             "body": body,
         }
         if crypto_request_meta:
@@ -272,14 +307,25 @@ class HttpRequestStepRunner(BaseStepRunner):
             "请求方法": method,
             "请求地址": url,
             "请求头": headers,
-            "实际填写的": params_template,
+            "路径参数": path_params,
+            "查询参数": query_params,
+            "实际填写的": body_template,
             "请求填写的": body,
             "加解密": crypto_request_meta or "未启用",
         })
 
         # 3) 发请求
         timeout = float(step.get("timeout") or 30)
-        response_body, status_code = self._send(method, url, headers, body, files, data_type, timeout)
+        response_body, status_code = self._send(
+            method,
+            url,
+            headers,
+            query_params,
+            body,
+            files,
+            data_type,
+            timeout,
+        )
         response_body, crypto_response_meta = crypto.apply_response(response_body)
 
         # 认证缓存只在单轮测试运行内生效。任意成功登录都刷新同凭据缓存；若缓存 token
@@ -373,11 +419,13 @@ class HttpRequestStepRunner(BaseStepRunner):
                     error_details,
                     attachment_name="参数提取错误详情",
                 )
-            # pre_hook 是主步骤的硬依赖，声明的变量缺失必须直接失败。
+            # pre_hook 是主步骤的硬依赖；新契约编译器会给后续步骤依赖的提取规则
+            # 标 required=true。普通历史用例没有该标记时继续只留痕，保持兼容。
             # AI 自愈模式下，普通 HTTP 步骤的提取异常也必须成为一个明确断点，
             # 才能在继续下游请求前立即让需求约束诊断判断“路径写错”还是“该负向
             # 用例本就不该提取”。普通运行仍保持历史语义，只在 Allure 留痕。
-            if step.get("_is_hook") or bool(ctx.get_var("_ai_heal_enabled")):
+            required_extract_failed = any(bool(item.get("必需")) for item in extract_failures)
+            if step.get("_is_hook") or required_extract_failed or bool(ctx.get_var("_ai_heal_enabled")):
                 raise AssertionError(error_message)
 
         if str(config.get("sql_query_phase") or "after").lower() != "before":
@@ -564,6 +612,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         method: str,
         url: str,
         headers: dict,
+        query_params: Any,
         body: Any,
         files: Any,
         data_type: str,
@@ -576,10 +625,16 @@ class HttpRequestStepRunner(BaseStepRunner):
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        kwargs: dict = {"method": method, "url": url, "headers": headers, "timeout": timeout}
+        kwargs: dict = {
+            "method": method,
+            "url": url,
+            "headers": headers,
+            "timeout": timeout,
+            "params": query_params or None,
+        }
 
         if data_type == "application/x-www-form-urlencoded":
-            kwargs["params"] = body
+            kwargs["data"] = body
         elif data_type == "multipart/form-data":
             kwargs["data"] = body
             kwargs["files"] = files
@@ -659,6 +714,7 @@ class HttpRequestStepRunner(BaseStepRunner):
                     "表达式": str(expression) if expression else (
                         "赋值表达式" if src == "value" else None
                     ),
+                    "必需": bool(rule.get("required")),
                     "原因": (
                         "赋值引用的变量不存在"
                         if src == "value"
@@ -741,6 +797,21 @@ class HttpRequestStepRunner(BaseStepRunner):
                     assert actual is None, f"[is_null] {target}: {actual!r} is not None"
                 elif t == "is_not_null":
                     assert actual not in (None, "", [], {}), f"[is_not_null] {target}: 空值 {actual!r}"
+                elif t in ("type", "is_type"):
+                    expected_type = str(expected or "").strip().lower()
+                    type_matches = {
+                        "string": isinstance(actual, str),
+                        "number": isinstance(actual, (int, float)) and not isinstance(actual, bool),
+                        "integer": isinstance(actual, int) and not isinstance(actual, bool),
+                        "boolean": isinstance(actual, bool),
+                        "array": isinstance(actual, list),
+                        "object": isinstance(actual, dict),
+                        "null": actual is None,
+                    }
+                    assert expected_type in type_matches, f"[type] 不支持的期望类型: {expected_type!r}"
+                    assert type_matches[expected_type], (
+                        f"[type] {target}: {type(actual).__name__} 不是 {expected_type}"
+                    )
                 elif t == "raw":
                     assert actual == expected, f"[raw] {target}: {actual!r} != {expected!r}"
                 else:

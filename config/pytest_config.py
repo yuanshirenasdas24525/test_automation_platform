@@ -100,6 +100,66 @@ def pytest_addoption(parser):
 # -----------------------------------------------------------------------------
 # App 会话跨 case 持久化 —— 一轮 pytest 跑完统一收尾
 # -----------------------------------------------------------------------------
+def _calibrate_shared_accounts(session) -> None:
+    """跑前校准：把配置中心声明的共享测试账号密码重置回配置值。
+
+    动机：接口用例里有"改密码/删除"等破坏性操作，个别用例会在运行中改坏共享
+    账号（如 demo_admin），导致后续所有登录它的用例级联 401。每轮开跑前归零一次，
+    让污染不跨轮累积——这是测试环境该有的"每轮干净桌子"。
+
+    作用对象：由 --report_id 定位到项目，读配置中心 default_parameters 的
+    user_admin / password_admin，把平台 users 表里该账号的密码重置为配置密码。
+    校准失败只记日志，绝不阻塞测试。
+    """
+    db = None
+    try:
+        report_id = session.config.getoption("--report_id")
+        if not report_id:
+            return
+        import bcrypt
+        from sqlalchemy import text
+        from database.db import DB
+        from utils.reload_config import config_center
+
+        db = DB()
+        pid = db.session.execute(
+            text("SELECT project_id FROM test_reports WHERE id = :r"),
+            {"r": int(report_id)},
+        ).scalar()
+        if pid is None:
+            return
+        try:
+            config_center.reload(db.sql, project_id=pid, category="api")
+        except Exception:  # noqa: BLE001
+            pass
+        dp = config_center.get("default_parameters", project_id=pid) or {}
+        if not isinstance(dp, dict):
+            return
+        acct, pw = dp.get("user_admin"), dp.get("password_admin")
+        if acct and pw:
+            hashed = bcrypt.hashpw(str(pw).encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            db.session.execute(
+                text("UPDATE users SET password_hash = :h WHERE username = :u"),
+                {"h": hashed, "u": acct},
+            )
+            db.session.commit()
+            print(f"[跑前校准] 已重置共享账号 {acct} 密码为配置值")
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("[跑前校准] 失败（已忽略）：%s", exc)
+        try:
+            if db is not None:
+                db.session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        try:
+            if db is not None:
+                db.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def pytest_sessionstart(session):  # noqa: ARG001
     """新一轮 pytest run 开始前，把 AppSessionRegistry singleton 重置一次。
 
@@ -127,6 +187,8 @@ def pytest_sessionstart(session):  # noqa: ARG001
         reset_run_shared_vars()
     except ImportError:
         pass
+    # 跑前校准：把配置的共享测试账号密码归零，避免上一轮用例改坏它、污染本轮
+    _calibrate_shared_accounts(session)
 
 
 def pytest_sessionfinish(session, exitstatus):  # noqa: ARG001

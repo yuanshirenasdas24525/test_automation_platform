@@ -32,6 +32,11 @@ _SENSITIVE_KEY_RE = re.compile(
     r"(password|passwd|pwd|secret|token|authorization|cookie|api[_-]?key)",
     re.IGNORECASE,
 )
+_STATUS_MISMATCH_RE = re.compile(r"status_code:\s*(\d{3})\s*!=\s*(\d{3})")
+_STATUS_INTENT_RE = re.compile(
+    r"(?:返回|http(?:\s*状态码)?)[：:\s_-]*(\d{3})",
+    re.IGNORECASE,
+)
 
 
 def _loads(raw: Any) -> Any:
@@ -415,9 +420,28 @@ def _assertion_matches_response(target: str, expected: Any, view: _StepView) -> 
     return actual == expected or str(actual) == str(expected)
 
 
+def _previous_expected_status(view: _StepView) -> int | None:
+    for result in getattr(view, "assertion_results", []) or []:
+        if isinstance(result, dict) and result.get("target") == "status_code":
+            try:
+                return int(result.get("expected"))
+            except (TypeError, ValueError):
+                pass
+    match = _STATUS_MISMATCH_RE.search(str(getattr(view, "error_message", "") or ""))
+    return int(match.group(2)) if match else None
+
+
+def _explicit_statuses(case: dict | None, evidence: list[Any]) -> set[int]:
+    """跨状态族修改必须能在用户用例/需求文字中找到目标码；证据文本仅作兼容兜底。"""
+    source: Any = _case_intent(case or {}) if case else evidence
+    text = json.dumps(source, ensure_ascii=False, default=str)
+    return {int(value) for value in _STATUS_INTENT_RE.findall(text)}
+
+
 def _validate_model_decision(
     decision: dict[str, Any],
     view: _StepView,
+    case: dict | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """程序化门禁：语义证据不足或不能被真实响应验证的候选一律不应用。"""
     if str(decision.get("classification") or "").strip() != "用例问题":
@@ -468,6 +492,21 @@ def _validate_model_decision(
 
     request_changed = bool(fix.get("params") or fix.get("headers"))
     assertion_patch = fix.get("assertion") or {}
+    if "status_code" in assertion_patch:
+        previous_status = _previous_expected_status(view)
+        try:
+            next_status = int(assertion_patch["status_code"])
+        except (TypeError, ValueError):
+            return None, "status_code 修复值不是合法整数"
+        if (
+            previous_status is not None
+            and previous_status // 100 != next_status // 100
+            and next_status not in _explicit_statuses(case, evidence)
+        ):
+            return None, (
+                f"禁止仅迎合真实响应把状态码从 {previous_status} 跨状态族改为 {next_status}；"
+                f"用例名称、描述或需求必须明确写出“返回{next_status}”"
+            )
     if assertion_patch and not request_changed:
         verified_assertions = {
             str(target): expected
@@ -576,7 +615,7 @@ def heal_case_inline(
             return None
 
     if decision is not None:
-        fix, rejected_reason = _validate_model_decision(decision, view)
+        fix, rejected_reason = _validate_model_decision(decision, view, case)
         if fix is None:
             logger.info(
                 "[inline_heal] case=%s step=%s 候选未放行：%s",

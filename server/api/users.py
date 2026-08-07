@@ -9,21 +9,29 @@ from __future__ import annotations
 import random
 import re
 import string
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
 import bcrypt
 import pydantic
 from fastapi import APIRouter, HTTPException, Path, Query
 from sqlalchemy import or_
 
-from server.api.deps import CurrentUserDep, DBDep
-from server.api.auth import revoke_user_sessions
+from server.api.deps import BearerUserDep, DBDep
+from server.api.auth import HTTPErrorResponse, revoke_user_sessions
 from database.models import User, Role, ALL_ROLE_CODES
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 PROTECTED_ADMIN_USERNAME = "admin"
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+# 枚举顺序也会成为契约编译器的安全默认值；最低权限 test 必须放首位，
+# 避免 AI 把未知角色修正成 admin。
+RoleCode = Literal["test", "dev", "ops", "pm", "ui", "admin"]
+
+AUTH_ADMIN_RESPONSES = {
+    401: {"model": HTTPErrorResponse, "description": "未认证或会话失效"},
+    403: {"model": HTTPErrorResponse, "description": "仅管理员可访问"},
+}
 
 
 def _is_protected_admin(user: User) -> bool:
@@ -58,17 +66,19 @@ class UserCreate(pydantic.BaseModel):
     email: str | None = pydantic.Field(None, max_length=255)
     password: str = pydantic.Field(..., min_length=6, max_length=128)
     is_active: bool = True
-    role_codes: list[str] = pydantic.Field(..., min_length=1)
+    role_codes: list[RoleCode] = pydantic.Field(..., min_length=1)
 
     @pydantic.field_validator("username")
     @classmethod
     def validate_username(cls, value: str) -> str:
         return _validate_username(value)
 
-    @pydantic.field_validator("role_codes")
+    @pydantic.field_validator("role_codes", mode="before")
     @classmethod
-    def validate_role_codes(cls, value: list[str]) -> list[str]:
+    def validate_role_codes(cls, value: Any) -> list[str]:
         """创建账号时至少指定一个有效职务（角色）。"""
+        if not isinstance(value, list):
+            raise ValueError("role_codes 必须是数组")
         cleaned = [str(item).strip() for item in value]
         if any(not item for item in cleaned):
             raise ValueError("role_code 不能为空")
@@ -102,11 +112,13 @@ class UserUpdate(pydantic.BaseModel):
 
 
 class RoleAssign(pydantic.BaseModel):
-    role_codes: list[str]
+    role_codes: list[RoleCode]
 
-    @pydantic.field_validator("role_codes")
+    @pydantic.field_validator("role_codes", mode="before")
     @classmethod
-    def validate_role_codes(cls, value: list[str]) -> list[str]:
+    def validate_role_codes(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            raise ValueError("role_codes 必须是数组")
         cleaned = [str(item).strip() for item in value]
         if not cleaned:
             raise ValueError("role_codes 不能为空")
@@ -129,8 +141,14 @@ def _parse_bool_query(value: str | None) -> bool | None:
 
 # ============ 用户 CRUD ============
 
-@router.post("")
-def create_user(payload: UserCreate, db: DBDep, current_user: CurrentUserDep):
+@router.post(
+    "",
+    responses={
+        **AUTH_ADMIN_RESPONSES,
+        409: {"model": HTTPErrorResponse, "description": "username 或 email 已存在"},
+    },
+)
+def create_user(payload: UserCreate, db: DBDep, current_user: BearerUserDep):
     _assert_admin(current_user)
     if db.session.query(User).filter(User.username == payload.username).first():
         raise HTTPException(status_code=409, detail="username 已存在")
@@ -159,10 +177,10 @@ def create_user(payload: UserCreate, db: DBDep, current_user: CurrentUserDep):
     return {"status": "success", "data": {**data, "user": data}}
 
 
-@router.get("")
+@router.get("", responses=AUTH_ADMIN_RESPONSES)
 def list_users(
     db: DBDep,
-    current_user: CurrentUserDep,
+    current_user: BearerUserDep,
     is_active: str | None = Query(None),
     role_code: str | None = Query(None),
     q: str | None = Query(None),
@@ -183,8 +201,11 @@ def list_users(
     return {"status": "success", "data": [u.to_dict() for u in rows]}
 
 
-@router.get("/{user_id}")
-def get_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: CurrentUserDep):
+@router.get(
+    "/{user_id}",
+    responses={**AUTH_ADMIN_RESPONSES, 404: {"model": HTTPErrorResponse, "description": "用户不存在"}},
+)
+def get_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: BearerUserDep):
     _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
@@ -192,8 +213,15 @@ def get_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: Curre
     return {"status": "success", "data": user.to_dict()}
 
 
-@router.put("/{user_id}")
-def update_user(user_id: Annotated[int, Path(gt=0)], payload: UserUpdate, db: DBDep, current_user: CurrentUserDep):
+@router.put(
+    "/{user_id}",
+    responses={
+        **AUTH_ADMIN_RESPONSES,
+        404: {"model": HTTPErrorResponse, "description": "用户不存在"},
+        409: {"model": HTTPErrorResponse, "description": "username 已存在"},
+    },
+)
+def update_user(user_id: Annotated[int, Path(gt=0)], payload: UserUpdate, db: DBDep, current_user: BearerUserDep):
     _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
@@ -233,8 +261,11 @@ def update_user(user_id: Annotated[int, Path(gt=0)], payload: UserUpdate, db: DB
     return {"status": "success", "data": user.to_dict()}
 
 
-@router.delete("/{user_id}")
-def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: CurrentUserDep):
+@router.delete(
+    "/{user_id}",
+    responses={**AUTH_ADMIN_RESPONSES, 404: {"model": HTTPErrorResponse, "description": "用户不存在"}},
+)
+def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: BearerUserDep):
     _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
@@ -248,8 +279,11 @@ def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: Cu
 
 # ============ 角色管理 ============
 
-@router.post("/{user_id}/roles")
-def set_user_roles(user_id: Annotated[int, Path(gt=0)], payload: RoleAssign, db: DBDep, current_user: CurrentUserDep):
+@router.post(
+    "/{user_id}/roles",
+    responses={**AUTH_ADMIN_RESPONSES, 404: {"model": HTTPErrorResponse, "description": "用户不存在"}},
+)
+def set_user_roles(user_id: Annotated[int, Path(gt=0)], payload: RoleAssign, db: DBDep, current_user: BearerUserDep):
     _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()
     if user is None:
@@ -266,12 +300,15 @@ def set_user_roles(user_id: Annotated[int, Path(gt=0)], payload: RoleAssign, db:
     return {"status": "success", "data": user.to_dict()}
 
 
-@router.delete("/{user_id}/roles/{role_code}")
+@router.delete(
+    "/{user_id}/roles/{role_code}",
+    responses={**AUTH_ADMIN_RESPONSES, 404: {"model": HTTPErrorResponse, "description": "用户或角色不存在"}},
+)
 def remove_user_role(
     user_id: Annotated[int, Path(gt=0)],
     role_code: Annotated[str, Path(min_length=1)],
     db: DBDep,
-    current_user: CurrentUserDep,
+    current_user: BearerUserDep,
 ):
     _assert_admin(current_user)
     user = db.session.query(User).filter(User.id == user_id).first()

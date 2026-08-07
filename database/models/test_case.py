@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from sqlalchemy import Column, Integer, String, ForeignKey, Boolean, Text
 from sqlalchemy.orm import relationship
 
@@ -109,6 +111,9 @@ class TestCase(Base):
     # ============ M7 AI 一键生成回填 ============
     # source = manual / ai_m7（后续 m8 自动化生成会扩展到 ai_m8_auto 等）
     source = Column(String(20), nullable=False, default="manual", server_default="manual", index=True)
+    # AI 接口用例的可追溯信息：生成 run/model/prompt/契约 hash、编译器版本、
+    # 静态门禁和探测结果。人工用例为 NULL，不把运行期大对象塞进普通字段。
+    generation_metadata = Column(JSONType, nullable=True)
     # 回指 ai_case_drafts.id（来源草稿）；逻辑删 draft 时 SET NULL
     draft_id = Column(Integer, ForeignKey("ai_case_drafts.id", ondelete="SET NULL"), nullable=True)
     # 直接关联到需求（绕开 module 反查）

@@ -30,6 +30,7 @@ import { StepEditor, validateStepsForCategory } from "@/components/case/step-edi
 import { casesApi, configApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
+import { manualAdjustmentInfo } from "@/lib/case-manual-adjustment";
 import type {
   CaseType,
   ContentNode,
@@ -414,6 +415,7 @@ export function CaseDialog({
   });
 
   const detail = caseDetailQuery.data;
+  const manualAdjustment = manualAdjustmentInfo(detail ?? existing ?? {});
 
   const databaseConnectionsQuery = useQuery({
     queryKey: ["database-connections", projectId],
@@ -604,6 +606,47 @@ export function CaseDialog({
               </p>
             ) : null}
           </div>
+
+          {manualAdjustment.pending ? (
+            <div className="space-y-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <div className="font-medium">需人工调整 · 当前已跳过执行</div>
+              {manualAdjustment.reasons.length ? (
+                <ul className="list-disc space-y-1 pl-5 text-xs">
+                  {manualAdjustment.reasons.map((reason, index) => (
+                    <li key={index}>{reason}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <label className="flex cursor-pointer items-start gap-2 rounded border border-red-200 bg-background/80 p-2 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                  checked={!form.watch("skip")}
+                  onChange={(event) =>
+                    form.setValue("skip", !event.target.checked, { shouldDirty: true })
+                  }
+                />
+                <span>
+                  <span className="font-medium">我已完成调整，保存后启用该用例</span>
+                  <span className="mt-0.5 block text-muted-foreground">
+                    请先修正上面的请求、依赖变量或断言；勾选后本次保存会解除标记并允许执行。
+                  </span>
+                </span>
+              </label>
+            </div>
+          ) : (
+            <label className="flex w-fit cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-primary"
+                checked={form.watch("skip") ?? false}
+                onChange={(event) =>
+                  form.setValue("skip", event.target.checked, { shouldDirty: true })
+                }
+              />
+              跳过执行
+            </label>
+          )}
 
           {isApi ? (
             <div className="rounded-md border border-amber-300/70 bg-amber-50/40 p-3 dark:bg-amber-950/10">

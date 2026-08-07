@@ -334,6 +334,86 @@ def test_report_fix_rebinds_replaced_parameter_to_original_variable():
     }]
 
 
+def test_report_fix_blocks_cross_family_status_change_without_explicit_intent():
+    """AI 不能只因本次实际 401，就把“成功”用例的 200 断言改成 401。"""
+    case = ORMTestCase(id=13, module_id=1, name="获取当前用户成功", case_type="api")
+    step = ORMTestStep(
+        id=23,
+        case_id=13,
+        step_order=0,
+        step_name="获取当前用户",
+        step_type="http_request",
+        config={"method": "GET", "path": "/api/auth/me"},
+        assertion=[{"type": "equal", "target": "status_code", "expected": 200}],
+    )
+    case.steps = [step]
+    row = SimpleNamespace(
+        status="failed",
+        step_id=23,
+        step_type="http_request",
+        output_data='{"detail":"会话已失效"}',
+        status_code=401,
+    )
+
+    checked = _preflight_one(
+        {
+            "case_id": 13,
+            "name": case.name,
+            "classification": "用例问题",
+            "fix": {"assertion": {"status_code": 401}},
+        },
+        {13: case},
+        {13: [row]},
+        {},
+        {13: 0},
+    )
+
+    assert checked["eligible"] is False
+    assert any("跨状态族" in item["reason"] for item in checked["dropped"])
+
+
+def test_report_fix_allows_cross_family_status_change_with_explicit_intent():
+    case = ORMTestCase(
+        id=14,
+        module_id=1,
+        name="【鉴权】未提供 token 获取当前用户返回401",
+        case_type="api",
+    )
+    step = ORMTestStep(
+        id=24,
+        case_id=14,
+        step_order=0,
+        step_name="未认证访问",
+        step_type="http_request",
+        config={"method": "GET", "path": "/api/auth/me"},
+        assertion=[{"type": "equal", "target": "status_code", "expected": 200}],
+    )
+    case.steps = [step]
+    row = SimpleNamespace(
+        status="failed",
+        step_id=24,
+        step_type="http_request",
+        output_data='{"detail":"未提供认证 token"}',
+        status_code=401,
+    )
+
+    checked = _preflight_one(
+        {
+            "case_id": 14,
+            "name": case.name,
+            "classification": "用例问题",
+            "fix": {"assertion": {"status_code": 401}},
+        },
+        {14: case},
+        {14: [row]},
+        {},
+        {14: 0},
+    )
+
+    assert checked["eligible"] is True
+    assert checked["fix"]["assertion"] == {"status_code": 401}
+
+
 def test_report_step_fix_keeps_literal_extract_on_target_step():
     """多步骤参数修复必须把同名赋值落到被修改的步骤。"""
     case = ORMTestCase(id=12, module_id=1, name="场景登录", case_type="api")

@@ -17,6 +17,7 @@ import pytest
 from runners.case_executor import CaseExecutor
 from runners.context.auth_cache import RunAuthCache
 from runners.context.execution_context import ExecutionContext
+from runners.context.run_variable_pool import update_run_shared_vars
 from runners.protocol import StepStatus
 
 
@@ -61,11 +62,7 @@ def _try_heal_and_retry(
     *,
     model_name: str | None,
 ):
-    """逐失败请求生成候选修复，验证通过后才落库；最多三轮。
-
-    一轮修好前面的请求后，如果同一用例在后续请求暴露了新错误，会继续处理下一处。
-    某轮候选没有修好目标请求时恢复内存快照，并返回应用该候选前的真实失败结果。
-    """
+    """只生成一个候选；整条用例重跑通过后才落库，否则恢复原定义。"""
     from database.db import DB
     from server.services.inline_heal import (
         heal_case_inline,
@@ -76,71 +73,58 @@ def _try_heal_and_retry(
     db = None
     try:
         db = DB()
-        current_result = failed_result
-        current_ctx = failed_ctx
-        changed = False
+        before_candidate = copy.deepcopy(case)
+        healed = heal_case_inline(
+            case,
+            failed_result,
+            failed_ctx,
+            session=db.session,
+            model_name=model_name,
+        )
+        if not healed:
+            return None
 
-        for round_no in range(1, 4):
-            before_candidate = copy.deepcopy(case)
-            healed = heal_case_inline(
-                case,
-                current_result,
-                current_ctx,
-                session=db.session,
-                model_name=model_name,
-            )
-            if not healed:
-                break
+        print(
+            f"[inline_heal] 用例「{case.get('name')}」安全候选："
+            f"{healed['subtype']} → 改了 {healed['parts']}；正在整条验证…"
+        )
+        record_property("inline_heal_candidate", {
+            key: value for key, value in healed.items() if key != "fix"
+        })
 
-            print(
-                f"[inline_heal] 用例「{case.get('name')}」第 {round_no} 轮："
-                f"{healed['subtype']} → 改了 {healed['parts']}；正在验证…"
-            )
-            record_property(f"inline_heal_round_{round_no}", {
-                key: value for key, value in healed.items() if key != "fix"
-            })
-
-            retry_ctx = _execution_context(record_property, heal_enabled=True)
-            retried = CaseExecutor().run(case, retry_ctx)
-            if not repaired_step_passed(retried, retry_ctx, healed):
-                case.clear()
-                case.update(before_candidate)
-                record_property(
-                    f"inline_heal_result_{round_no}",
-                    "候选修复未解决目标请求，已丢弃且未落库",
-                )
-                return (current_result, current_ctx) if changed else None
-
-            try:
-                persisted = persist_verified_heal(
-                    db.session,
-                    int(case.get("id")),
-                    healed,
-                )
-            except Exception as exc:  # noqa: BLE001
-                db.session.rollback()
-                persisted = False
-                print(f"[inline_heal] 验证已通过，但修复落库失败：{exc}")
-            if not persisted:
-                case.clear()
-                case.update(before_candidate)
-                record_property(
-                    f"inline_heal_result_{round_no}",
-                    "验证通过但无法安全落库，已丢弃候选",
-                )
-                return (current_result, current_ctx) if changed else None
-
-            changed = True
-            current_result = retried
-            current_ctx = retry_ctx
+        retry_ctx = _execution_context(record_property, heal_enabled=True)
+        retried = CaseExecutor().run(case, retry_ctx)
+        target_passed = repaired_step_passed(retried, retry_ctx, healed)
+        if not target_passed or retried.status != StepStatus.PASSED:
+            case.clear()
+            case.update(before_candidate)
             record_property(
-                f"inline_heal_result_{round_no}",
-                "目标请求验证通过，修复已落库",
+                "inline_heal_result",
+                "候选未让整条用例通过，已恢复原配置且未落库",
             )
-            if retried.status == StepStatus.PASSED:
-                return retried, retry_ctx
+            return None
 
-        return (current_result, current_ctx) if changed else None
+        try:
+            persisted = persist_verified_heal(
+                db.session,
+                int(case.get("id")),
+                healed,
+            )
+        except Exception as exc:  # noqa: BLE001
+            db.session.rollback()
+            persisted = False
+            print(f"[inline_heal] 整条验证通过，但修复落库失败：{exc}")
+        if not persisted:
+            case.clear()
+            case.update(before_candidate)
+            record_property(
+                "inline_heal_result",
+                "整条验证通过但无法安全落库，已恢复原配置",
+            )
+            return None
+
+        record_property("inline_heal_result", "整条用例验证通过，候选修复已落库")
+        return retried, retry_ctx
     except Exception as exc:  # noqa: BLE001
         # 自愈本身出错绝不能改变用例结论
         print(f"[inline_heal] 自愈失败（已忽略）：{exc}")
@@ -228,9 +212,10 @@ class TestService:
             if healed is not None:
                 result, ctx = healed
 
-        for key, value in ctx.vars.items():
-            if not str(key).startswith("_"):
-                _RUN_SHARED_VARS[str(key)] = value
+        # 普通业务变量仍只在整条用例通过后发布；token 则按真实登录/登出/改密的
+        # JWT 生命周期更新。失败用例若已经签发新会话，不能让旧 token 留在池里继续
+        # 造成几十条连锁 401。
+        update_run_shared_vars(_RUN_SHARED_VARS, result, ctx)
         record_property("variable_pool", dict(_RUN_SHARED_VARS))
 
         # 把最终聚合结果也写进 record_property，便于平台 tasks 层消费

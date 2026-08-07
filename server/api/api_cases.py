@@ -23,6 +23,7 @@ from database.models import (
 )
 from database.models.edit_operation import ENTITY_TYPE_TEST_CASE
 from server.services.edit_history_service import merge_test_case_edit_history
+from server.services.api_case_admission import needs_manual_adjustment
 
 # 可选当前用户：带 token 解出 User，否则 None（记录清除标记的 operator 用）
 OptionalUserDep = Annotated[Optional[User], Depends(_get_optional_user)]
@@ -122,6 +123,8 @@ def _serialize_case(
         "assertion": None,
         "wait_time": None,
         "repeat_count": getattr(case, "repeat_count", 1) or 1,
+        "source": getattr(case, "source", "manual") or "manual",
+        "generation_metadata": getattr(case, "generation_metadata", None),
         # 步骤数：>1 视为"多步骤用例"，前端换图标
         "step_count": step_count,
         "latest_run": latest_run,
@@ -238,6 +241,7 @@ def list_api_cases(
     status: str | None = Query(None, description="多值逗号分隔，可包含 pending"),
     keyword: str | None = Query(None),
     flag_type: str | None = Query(None, description="按 AI 标记筛选：manual_fix/interface_defect/environment/ai_fixed"),
+    manual_adjustment: bool = Query(False, description="只看生成后等待人工调整的用例"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=0, le=500, description="0 表示不分页"),
 ):
@@ -269,6 +273,11 @@ def list_api_cases(
         filtered = [
             case for case in filtered
             if (flag_map.get(case.id) or {}).get("flag_type") == want_flag
+        ]
+    if manual_adjustment:
+        filtered = [
+            case for case in filtered
+            if needs_manual_adjustment(getattr(case, "generation_metadata", None))
         ]
     total = len(filtered)
     if page_size == 0:

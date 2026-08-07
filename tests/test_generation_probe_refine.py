@@ -5,6 +5,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from server.services.generation_probe_refine import (
+    _cross_case_probe_refs,
     format_sample,
     apply_refinements,
     validate_isolation,
@@ -88,3 +89,49 @@ def test_isolation_ignores_non_destructive():
     draft = {"name": "登录成功", "steps": [
         {"config": {"method": "POST", "path": "/api/auth/login", "params": {}}}]}
     assert validate_isolation(draft) == []
+
+
+def test_isolation_ignores_human_readable_text_steps():
+    """重新校验收到评审展示用的字符串 steps 时不能 500。"""
+    draft = {
+        "name": "登录成功",
+        "steps": ["发送登录请求", "校验响应并提取 token"],
+    }
+
+    assert validate_isolation(draft) == []
+
+
+def test_isolation_ignores_negative_validation_of_destructive_path():
+    """改密/登出的 4xx 参数校验用例不会进入成功变更分支，不要求建一次性账号。"""
+    draft = {
+        "name": "缺少 new_password 修改密码失败",
+        "compiled_case": {
+            "steps": [
+                {
+                    "config": {"method": "PUT", "path": "/api/auth/password", "json": {"old_password": "x"}},
+                    "assertion": [{"target": "status_code", "type": "equals", "expected": 422}],
+                }
+            ]
+        },
+    }
+    assert validate_isolation(draft) == []
+
+
+def test_probe_detects_cross_case_variable_that_cannot_be_seeded_alone():
+    """前序用例产出的 token 在单条 probe 中没有真实值，应跳过而非制造假 401。"""
+    compiled = {
+        "generation_metadata": {"carried_variables": ["access_token"]},
+        "pre_hook": [],
+        "steps": [
+            {
+                "config": {
+                    "method": "GET",
+                    "path": "/api/auth/me",
+                    "headers": {"Authorization": "Bearer ${access_token}"},
+                },
+                "extract": None,
+            }
+        ],
+    }
+
+    assert _cross_case_probe_refs(compiled) == {"access_token"}

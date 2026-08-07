@@ -1,0 +1,48 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "echo_test sandbox", "version": "1.0.0" },
+  "servers": [{ "url": "http://localhost:54351" }],
+  "paths": {
+    "/api/auth/echo_test": {
+      "post": {
+        "summary": "回显测试接口：2必填(username/amount)+2非必填(note/tags)，成功返回 message=hello",
+        "operationId": "echoTest",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["username", "amount"],
+                "properties": {
+                  "username": { "type": "string", "description": "用户名（必填）" },
+                  "amount": { "type": "integer", "description": "数量（必填，整数）" },
+                  "note": { "type": "string", "description": "备注（可选）" },
+                  "tags": { "type": "array", "items": { "type": "string" }, "description": "标签（可选）" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功，返回 message=hello 并回显入参",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "success" },
+                    "message": { "type": "string", "example": "hello" },
+                    "data": { "type": "object" }
+                  }
+                }
+              }
+            }
+          },
+          "422": { "description": "缺少必填字段（username/amount）或类型错误" }
+        }
+      }
+    }
+  }
+}

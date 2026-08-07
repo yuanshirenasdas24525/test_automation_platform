@@ -357,6 +357,7 @@ def test_failed_extract_does_not_overwrite_existing_variable(monkeypatch):
         "变量名": "token",
         "来源": "response.body",
         "表达式": "$.data.token",
+        "必需": False,
         "原因": "未匹配到值（JSONPath 无效、响应结构变化或接口返回失败）",
     }]
 

@@ -249,6 +249,10 @@ export interface ContentNode {
   wait_time?: number | null;
   /** 单用例重复执行次数，默认 1 */
   repeat_count?: number | null;
+  /** AI 生成来源与生成期校验/人工调整信息。 */
+  source?: string | null;
+  generation_metadata?: Record<string, unknown> | null;
+  tags?: string[] | null;
   /** 步骤数；>1 视为多步骤用例（前端换图标） */
   step_count?: number | null;
   last_status?: string | null;
@@ -274,6 +278,9 @@ export interface TestCaseCreate {
   /** 用户可见、可编辑的前/后置步骤；传 [] 表示显式清空。 */
   pre_hook?: TestCaseHookDraft[] | null;
   post_hook?: TestCaseHookDraft[] | null;
+  /** AI 接口生成来源与契约/编译/探测追踪信息。 */
+  source?: string | null;
+  generation_metadata?: Record<string, unknown> | null;
 
   /** 历史 HTTP 字段：数据库列暂留，执行定义以 steps 为准。 */
   method?: string | null;
@@ -521,6 +528,11 @@ export interface FunctionalTestHistoryRun extends FunctionalCaseRun {
 /** AI 生成的一条功能用例草稿（来自 /functional_cases/ai_generate_batch）。 */
 export interface AiGeneratedCase {
   name: string;
+  category?: string;
+  operation_id?: string;
+  scenario_type?: string;
+  field?: string;
+  mutation?: string;
   preconditions: string[];
   steps: string[];
   expected: string[];
@@ -532,6 +544,11 @@ export interface AiGeneratedCase {
   method?: string;
   path?: string;
   headers?: Record<string, unknown>;
+  path_params?: Record<string, unknown>;
+  query_params?: Record<string, unknown>;
+  json?: Record<string, unknown>;
+  form?: Record<string, unknown>;
+  files?: Record<string, unknown>;
   body?: Record<string, unknown>;
   extract?: Record<string, unknown>;
   assertion?: Record<string, unknown>;
@@ -561,14 +578,29 @@ export interface AiGeneratedCase {
     function_hints?: string[];
     cleanup_required?: boolean;
   };
+  /** 服务端按 OpenAPI 契约编译出的唯一入库载荷；试跑与正式执行均使用它。 */
+  compiled_case?: TestCaseCreate;
+  probe?: {
+    status?: "passed" | "failed" | "skipped";
+    reason?: string;
+    actual_status?: number | null;
+    expected_status?: number | null;
+  };
+  probe_refined?: boolean;
 }
 
 /** 场景用例里的一次接口调用。 */
 export interface AiGeneratedRequest {
   name?: string;
+  operation_id?: string;
   method?: string;
   path: string;
+  path_params?: Record<string, unknown>;
+  query_params?: Record<string, unknown>;
   headers?: Record<string, unknown>;
+  json?: Record<string, unknown>;
+  form?: Record<string, unknown>;
+  files?: Record<string, unknown>;
   body?: Record<string, unknown>;
   extract?: Record<string, unknown>;
   assertion?: Record<string, unknown>;
@@ -737,6 +769,28 @@ export interface AiRun {
   created_at?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+}
+
+/** 模块下某一次 AI 用例生成的持久化历史摘要。 */
+export interface AiGenerationHistoryItem {
+  run_id: number;
+  module_id: number;
+  mode: "functional" | "interface";
+  status: AiRunStatus;
+  model?: string | null;
+  provider?: string | null;
+  operator?: string | null;
+  created_at?: string | null;
+  digest: string;
+  point_count: number;
+  case_count: number;
+  written_count: number;
+  stage: "input" | "outline" | "cases";
+}
+
+/** 生成历史详情；draft 保留完整大纲、详细用例、选择和写入状态。 */
+export interface AiGenerationHistoryDetail extends AiGenerationHistoryItem {
+  draft: Record<string, unknown>;
 }
 
 /** 需求点（来自 requirements 表）。 */

@@ -77,6 +77,7 @@ import {
   runsApi,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
+import { markForManualAdjustment } from "@/lib/case-manual-adjustment";
 import type {
   AiGeneratedCase,
   AiOutlinePoint,
@@ -88,6 +89,7 @@ import type {
   FunctionalSpec,
   FunctionalTestHistoryRun,
   Requirement,
+  TestCaseCreate,
 } from "@/types/domain";
 
 /**
@@ -2436,107 +2438,13 @@ function buildTeardownHooks(generated: AiGeneratedCase): Array<Record<string, un
   return hooks;
 }
 
-function mergeCreatedCaseOrder(
-  existing: Array<{ id: number; name: string; sort_order?: number | null }>,
-  created: AiGeneratedCase[],
-  createdIds: number[],
-) {
-  const merged: number[] = [];
-  const used = new Set<number>();
-  created.forEach((c, k) => {
-    if (c.after === "__START__") {
-      merged.push(createdIds[k]);
-      used.add(k);
-    }
-  });
-  for (const e of existing) {
-    merged.push(e.id);
-    created.forEach((c, k) => {
-      if (!used.has(k) && c.after && c.after !== "__START__" && c.after === e.name) {
-        merged.push(createdIds[k]);
-        used.add(k);
-      }
-    });
-  }
-  created.forEach((_c, k) => {
-    if (!used.has(k)) merged.push(createdIds[k]);
-  });
-  return merged;
-}
-
-/**
- * 接口用例按依赖做拓扑排序（问题9-12）：
- *  - 依赖 = 用例 A 引用了 ${var}，而 ${var} 由用例 B 的 extract 产出 ⇒ B 必须排在 A 前；
- *  - `externalVars`：模块已有用例（及变量池）能产出的变量名，视为已满足，
- *    避免新用例引用「已有登录用例的 token」时被误判为缺依赖（问题11）；
- *  - Kahn 拓扑排序：入度为 0 的按 interfaceCaseRank 启发式先后；
- *  - **环检测**：存在循环依赖时剩余用例按 rank 兜底排出，返回 hasCycle 供上层提示（问题12）。
- */
-function orderInterfaceCasesForExecution(
-  cases: AiGeneratedCase[],
-  externalVars: Set<string> = new Set(),
-): { ordered: AiGeneratedCase[]; hasCycle: boolean } {
-  const n = cases.length;
-  const produces = cases.map((c) => producedVariables(c));
-  const refs = cases.map((c) => referencedVariables(c));
-
-  // 变量 → 产出它的用例下标（同名多个取第一个产出者）
-  const producerOf = new Map<string, number>();
-  produces.forEach((set, i) => {
-    set.forEach((name) => {
-      if (!producerOf.has(name)) producerOf.set(name, i);
-    });
-  });
-
-  // 建依赖边：j 产出、i 引用 ⇒ j 必须在 i 前（j → i）
-  const indeg = new Array(n).fill(0);
-  const edges: number[][] = Array.from({ length: n }, () => []);
-  for (let i = 0; i < n; i++) {
-    const dep = new Set<number>();
-    refs[i].forEach((name) => {
-      if (externalVars.has(name)) return; // 已有用例/变量池满足
-      const j = producerOf.get(name);
-      if (j != null && j !== i) dep.add(j);
-    });
-    dep.forEach((j) => {
-      edges[j].push(i);
-      indeg[i] += 1;
-    });
-  }
-
-  const sortReady = (arr: number[]) =>
-    arr.sort((a, b) => interfaceCaseRank(cases[a]) - interfaceCaseRank(cases[b]) || a - b);
-
-  const orderedIdx: number[] = [];
-  const placed = new Array(n).fill(false);
-  let ready = sortReady([...Array(n).keys()].filter((i) => indeg[i] === 0));
-  while (ready.length) {
-    const i = ready.shift()!;
-    if (placed[i]) continue;
-    placed[i] = true;
-    orderedIdx.push(i);
-    for (const k of edges[i]) {
-      indeg[k] -= 1;
-      if (indeg[k] === 0 && !placed[k]) ready.push(k);
-    }
-    ready = sortReady(ready.filter((x) => !placed[x]));
-  }
-
-  // 环：剩余未放置的按 rank 兜底排出
-  const hasCycle = orderedIdx.length < n;
-  if (hasCycle) {
-    const rest = [...Array(n).keys()]
-      .filter((i) => !placed[i])
-      .sort((a, b) => interfaceCaseRank(cases[a]) - interfaceCaseRank(cases[b]) || a - b);
-    orderedIdx.push(...rest);
-  }
-  return { ordered: orderedIdx.map((i) => cases[i]), hasCycle };
-}
-
 function producedVariables(c: AiGeneratedCase) {
   const names = new Set(Object.keys(c.extract ?? {}).filter(Boolean));
   for (const req of c.requests ?? []) {
     for (const k of Object.keys(req.extract ?? {})) if (k) names.add(k);
+  }
+  for (const step of c.compiled_case?.steps ?? []) {
+    for (const rule of step.extract ?? []) if (rule.name) names.add(String(rule.name));
   }
   return names;
 }
@@ -2545,6 +2453,10 @@ function referencedVariables(c: AiGeneratedCase) {
   const text = JSON.stringify({
     path: c.path,
     headers: c.headers,
+    path_params: c.path_params,
+    query_params: c.query_params,
+    json: c.json,
+    form: c.form,
     body: c.body,
     sql: c.sql,
     requests: c.requests,
@@ -2555,18 +2467,52 @@ function referencedVariables(c: AiGeneratedCase) {
   return new Set([...text.matchAll(/\$\{([A-Za-z_][\w.-]*)\}/g)].map((m) => m[1].split(".")[0]));
 }
 
-function interfaceCaseRank(c: AiGeneratedCase) {
-  // 前置链最先执行（它准备账号并产出共享 token，后面都依赖它）
-  if (/前置链/.test(c.name)) return 5;
-  const text = `${c.name} ${c.method ?? ""} ${c.path ?? ""} ${c.steps.join(" ")} ${c.expected.join(" ")}`.toLowerCase();
-  if (/login|登录|auth|token/.test(text)) return 10;
-  if (/register|signup|create|add|新增|创建|注册|准备/.test(text)) return 20;
-  if (/get|list|query|search|detail|获取|查询|列表|详情/.test(text)) return 30;
-  if (/put|patch|update|modify|修改|更新/.test(text)) return 40;
-  if (/delete|remove|删除|移除/.test(text)) return 50;
-  if (/缺失|为空|null|非法|错误|边界|超长|鉴权|越权|未带|过期|异常/.test(text)) return 80;
-  return 60;
+
+function isAiCaseBlocked(c: AiGeneratedCase, mode: "functional" | "interface") {
+  if (c.needs_fix) return true;
+  if (mode !== "interface") return false;
+  const metadata = c.compiled_case?.generation_metadata as {
+    preflight?: { passed?: boolean; errors?: unknown[] };
+  } | undefined;
+  return !c.compiled_case
+    || metadata?.preflight?.passed !== true
+    || Boolean(metadata.preflight.errors?.length);
 }
+
+
+const AI_CASE_SEQUENCE_PREFIX_RE = /^\s*\d+(?:[.、:：\-_)]\s*|\s+)/;
+
+function stripAiCaseSequence(name: string) {
+  return String(name || "").replace(AI_CASE_SEQUENCE_PREFIX_RE, "").trim();
+}
+
+function aiCaseCandidateKey(
+  c: AiGeneratedCase,
+  generationRunId: number | null,
+  contractHash: unknown,
+) {
+  return [
+    "ai-interface",
+    generationRunId ?? String(contractHash || "draft"),
+    stripAiCaseSequence(c.name).toLowerCase(),
+    String(c.operation_id || ""),
+    String(c.method || "").toUpperCase(),
+    String(c.path || ""),
+  ].join("|");
+}
+
+function storedCaseMatchesCandidate(
+  stored: { name: string; generation_metadata?: Record<string, unknown> | null },
+  candidate: AiGeneratedCase,
+  generationRunId: number | null,
+  contractHash: unknown,
+) {
+  const storedKey = stored.generation_metadata?.ai_generation_candidate_key;
+  const candidateKey = aiCaseCandidateKey(candidate, generationRunId, contractHash);
+  return storedKey === candidateKey
+    || stripAiCaseSequence(stored.name) === stripAiCaseSequence(candidate.name);
+}
+
 
 type AiBatchFailure = {
   id: string;
@@ -2586,11 +2532,13 @@ type AiGenerateDraft = {
   docUrls: string;
   setupDoc?: string;
   dimensions?: string[];
-  smartInsert: boolean;
+  smartInsert?: boolean;
   modelName: string;
   gapModelName?: string;
   stage: "input" | "outline" | "cases";
   digest: string;
+  apiContract?: Record<string, unknown>;
+  generationRunId?: number | null;
   points: AiOutlinePoint[];
   pickedPoints: number[];
   genQueue: AiOutlinePoint[];
@@ -2724,21 +2672,22 @@ export function AiGenerateDialog({
   onClose: () => void;
   onInserted: () => void;
 }) {
-  const BATCH_SIZE = 6;
+  // 小批量先过契约编译和安全探测，再扩展后续批次；减少一次生成大量必挂用例。
+  const BATCH_SIZE = 4;
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"functional" | "interface">(initialMode);
-  const [coverage, setCoverage] = useState<"standard" | "full" | "exhaustive">("full");
+  const [coverage, setCoverage] = useState<"standard" | "full" | "exhaustive">("standard");
   // 接口模式可选：勾选要生成的维度（空 = 按覆盖力度自动取舍全部）
   const [dimensions, setDimensions] = useState<Set<string>>(new Set());
   const [docUrls, setDocUrls] = useState("");
   // 接口模式可选：前置链账号准备接口信息（用户直接粘贴）
   const [setupDoc, setSetupDoc] = useState("");
-  const [smartInsert, setSmartInsert] = useState(true);
   const [gapFilling, setGapFilling] = useState(false);
   const [modelName, setModelName] = useState("");
   const [gapModelName, setGapModelName] = useState("");
   const [enhanceAgentName, setEnhanceAgentName] = useState("");
   const [enhancing, setEnhancing] = useState(false);
+  const [revalidating, setRevalidating] = useState(false);
   const [enhanceSummary, setEnhanceSummary] = useState<{
     summary: string;
     issues: string[];
@@ -2749,12 +2698,15 @@ export function AiGenerateDialog({
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
   // 抽屉顶部 Tab：模块大纲（长期保存）/ 生成用例（AI 向导）
-  const [view, setView] = useState<"outline" | "generate">("generate");
+  const [view, setView] = useState<"outline" | "generate" | "history">("generate");
+  const [historyLoadingRunId, setHistoryLoadingRunId] = useState<number | null>(null);
   const [draftNotice, setDraftNotice] = useState("");
   const [savedDraft, setSavedDraft] = useState<AiGenerateDraft | null>(null);
   const [outlining, setOutlining] = useState(false);
   const [outlineError, setOutlineError] = useState("");
   const [digest, setDigest] = useState("");
+  const [apiContract, setApiContract] = useState<Record<string, unknown>>({});
+  const [generationRunId, setGenerationRunId] = useState<number | null>(null);
   const [points, setPoints] = useState<AiOutlinePoint[]>([]);
   const [pickedPoints, setPickedPoints] = useState<Set<number>>(new Set());
   const [genQueue, setGenQueue] = useState<AiOutlinePoint[]>([]);
@@ -2769,11 +2721,18 @@ export function AiGenerateDialog({
   const stopRef = useRef(false);
   const dragCaseRef = useRef<number | null>(null);
   const insertingRef = useRef(false);
+  const revalidateKeyRef = useRef("");
   const [cases, setCases] = useState<AiGeneratedCase[]>([]);
   const casesRef = useRef<AiGeneratedCase[]>([]);
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [inserting, setInserting] = useState(false);
   const [writtenNames, setWrittenNames] = useState<Set<string>>(new Set()); // 已写入的用例名（防重复、支持分次写）
+  const writtenNamesRef = useRef<Set<string>>(new Set());
+  const pendingSelectionKeyRef = useRef("");
+  const queryClient = useQueryClient();
+  const apiContractOperationCount = Array.isArray(apiContract.operations)
+    ? apiContract.operations.length
+    : 0;
 
   const modelsQuery = useQuery({
     queryKey: ["ai-models", projectId],
@@ -2786,6 +2745,11 @@ export function AiGenerateDialog({
   const apiModels = models.filter((m) => !isCliProvider(String(m.provider)));
   const cliAgents = models.filter((m) => isCliProvider(String(m.provider)));
   const gapModels = models;
+  const generationHistoryQuery = useQuery({
+    queryKey: ["ai-case-generation-history", moduleId, mode],
+    queryFn: () => functionalCasesApi.aiGenerationHistory(moduleId as number, mode, 50),
+    enabled: open && view === "history" && moduleId != null,
+  });
 
   // 从需求池导入：选需求 → 选其分析文档 → 填入下方需求文本
   const [reqPickId, setReqPickId] = useState<number | null>(null);
@@ -2843,8 +2807,82 @@ export function AiGenerateDialog({
   }, [cases]);
 
   useEffect(() => {
+    writtenNamesRef.current = writtenNames;
+  }, [writtenNames]);
+
+  useEffect(() => {
+    if (!open || stage !== "cases" || !moduleId || cases.length === 0) return;
+    let cancelled = false;
+    const previousWritten = new Set(writtenNamesRef.current);
+    const contractHash = apiContract.hash;
+    const selectionKey = `${moduleId}:${generationRunId ?? String(contractHash || "draft")}:${cases
+      .map((candidate) => candidate.name)
+      .sort()
+      .join("|")}`;
+    const shouldSelectPendingCases = pendingSelectionKeyRef.current !== selectionKey;
+    pendingSelectionKeyRef.current = selectionKey;
+
+    void (mode === "interface"
+      ? automationCasesApi.list({ moduleId, pageSize: 500 }).then((result) => result.items)
+      : functionalCasesApi.list({ moduleId, pageSize: 500 }).then((result) => result.items)
+    ).then((storedCases) => {
+      if (cancelled) return;
+      const currentWritten = new Set<string>();
+      cases.forEach((candidate) => {
+        if (storedCases.some((stored) => storedCaseMatchesCandidate(
+          stored,
+          candidate,
+          generationRunId,
+          contractHash,
+        ))) {
+          currentWritten.add(candidate.name);
+        }
+      });
+      const restoredIndexes: number[] = [];
+      cases.forEach((candidate, index) => {
+        if (previousWritten.has(candidate.name) && !currentWritten.has(candidate.name)) {
+          restoredIndexes.push(index);
+        }
+      });
+      setWrittenNames(currentWritten);
+      setPicked((previous) => {
+        const next = new Set(previous);
+        cases.forEach((candidate, index) => {
+          if (currentWritten.has(candidate.name)) next.delete(index);
+          else if (
+            shouldSelectPendingCases
+            && !candidate.duplicate
+            && isAiCaseBlocked(candidate, mode)
+          ) next.add(index);
+        });
+        restoredIndexes.forEach((index) => next.add(index));
+        return next;
+      });
+      if (restoredIndexes.length) {
+        toast.info(`检测到 ${restoredIndexes.length} 条已删除用例，已恢复为可补写`);
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        pendingSelectionKeyRef.current = "";
+        toast.error(`检测已删除用例失败：${errorMessage(error)}`);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    apiContract.hash,
+    cases,
+    generationRunId,
+    mode,
+    moduleId,
+    open,
+    stage,
+  ]);
+
+  useEffect(() => {
     if (!moduleId || !localTaskTypeKey) return;
-    const running = outlining || gapFilling || batchRunning || enhancing;
+    const running = outlining || gapFilling || batchRunning || enhancing || revalidating;
     if (!running) {
       removeLocalInProgressTask(localTaskTypeKey);
       return;
@@ -2856,6 +2894,8 @@ export function AiGenerateDialog({
         ? "查漏补缺"
         : enhancing
           ? "高级补全"
+          : revalidating
+            ? "重新校验"
           : `生成详细用例 ${cursor}/${genQueue.length || points.length || 0}`;
     updateLocalInProgressTask({
       id: aiGenerateTaskId(projectId, moduleId, mode),
@@ -2881,6 +2921,7 @@ export function AiGenerateDialog({
     gapFilling,
     batchRunning,
     enhancing,
+    revalidating,
     cursor,
     genQueue.length,
     points.length,
@@ -2928,11 +2969,10 @@ export function AiGenerateDialog({
     setSavedDraft(null);
     setText(draft?.text ?? "");
     setMode(draft?.mode ?? initialMode);
-    setCoverage(draft?.coverage ?? "full");
+    setCoverage(draft?.coverage ?? "standard");
     setDimensions(new Set(draft?.dimensions ?? []));
     setDocUrls(draft?.docUrls ?? "");
     setSetupDoc(draft?.setupDoc ?? "");
-    setSmartInsert(draft?.smartInsert ?? true);
     setModelName(draft?.modelName ?? "");
     setGapModelName(draft?.gapModelName ?? draft?.modelName ?? "");
     setStage(restoredCases.length || (draft?.genQueue.length ?? 0) > 0
@@ -2942,6 +2982,8 @@ export function AiGenerateDialog({
         : "input");
     setOutlineError("");
     setDigest(draft?.digest ?? "");
+    setApiContract(draft?.apiContract ?? {});
+    setGenerationRunId(draft?.generationRunId ?? null);
     setPoints(draft?.points ?? []);
     setPickedPoints(new Set(draft?.pickedPoints ?? []));
     setGenQueue(draft?.genQueue ?? []);
@@ -2985,7 +3027,7 @@ export function AiGenerateDialog({
       docUrls,
       setupDoc,
       dimensions: [...dimensions],
-      smartInsert,
+      smartInsert: false,
       modelName,
       gapModelName,
       // 导航回大纲/编辑需求不应覆盖可恢复节点；始终记录现有的最高完成阶段。
@@ -2995,6 +3037,8 @@ export function AiGenerateDialog({
           ? "outline"
           : stage,
       digest,
+      apiContract,
+      generationRunId,
       points,
       pickedPoints: [...pickedPoints],
       genQueue,
@@ -3014,11 +3058,12 @@ export function AiGenerateDialog({
     docUrls,
     setupDoc,
     dimensions,
-    smartInsert,
     modelName,
     gapModelName,
     stage,
     digest,
+    apiContract,
+    generationRunId,
     points,
     pickedPoints,
     genQueue,
@@ -3026,6 +3071,74 @@ export function AiGenerateDialog({
     failedBatches,
     cases,
     picked,
+    writtenNames,
+  ]);
+
+  useEffect(() => {
+    if (!moduleId || !generationRunId || !draftReadyRef.current) return;
+    if (!digest && points.length === 0 && cases.length === 0) return;
+    const timer = window.setTimeout(() => {
+      const snapshot: AiGenerateDraft = {
+        version: 1,
+        savedAt: Date.now(),
+        text,
+        mode,
+        coverage,
+        docUrls,
+        setupDoc,
+        dimensions: [...dimensions],
+        smartInsert: false,
+        modelName,
+        gapModelName,
+        stage: cases.length > 0 || genQueue.length > 0
+          ? "cases"
+          : points.length > 0 || digest
+            ? "outline"
+            : stage,
+        digest,
+        apiContract,
+        generationRunId,
+        points,
+        pickedPoints: [...pickedPoints],
+        genQueue,
+        cursor,
+        failedBatches,
+        cases,
+        picked: [...picked],
+        writtenNames: [...writtenNames],
+      };
+      void functionalCasesApi
+        .saveAiGenerationHistory(generationRunId, moduleId, snapshot as unknown as Record<string, unknown>)
+        .then(() => queryClient.invalidateQueries({
+          queryKey: ["ai-case-generation-history", moduleId, mode],
+        }))
+        .catch(() => {
+          // 数据库历史保存失败时仍保留 localStorage 副本，不打断当前生成流程。
+        });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [
+    apiContract,
+    cases,
+    coverage,
+    cursor,
+    digest,
+    dimensions,
+    docUrls,
+    failedBatches,
+    gapModelName,
+    genQueue,
+    generationRunId,
+    mode,
+    modelName,
+    moduleId,
+    picked,
+    pickedPoints,
+    points,
+    queryClient,
+    setupDoc,
+    stage,
+    text,
     writtenNames,
   ]);
 
@@ -3081,6 +3194,8 @@ export function AiGenerateDialog({
         docs,
       }, controller.signal);
       setDigest(res.digest);
+      setApiContract(res.api_contract ?? {});
+      setGenerationRunId(res.generation_run_id ?? null);
       setPoints(res.points);
       setPickedPoints(new Set(res.points.map((_, i) => i)));
       setStage("outline");
@@ -3127,16 +3242,38 @@ export function AiGenerateDialog({
       try {
         // 跨批次把前面已产出的变量名带过去，避免后批引用前批 extract 出的 ${id} 被误判缺来源
         const carriedVars = new Set<string>();
-        for (const c of acc) producedVariables(c).forEach((v) => carriedVars.add(v));
+        for (const c of acc) {
+          // case 级 teardown 会在该用例 finally 中立即清理数据；它产出的 id/token
+          // 不能冒充成跨批次可复用变量。
+          if (c.teardown_api?.length || c.teardown_sql) continue;
+          producedVariables(c).forEach((v) => carriedVars.add(v));
+        }
         const res = await functionalCasesApi.aiGenerateBatch({
           module_id: moduleId,
           model_name: modelName,
           digest,
           points: chunk,
           done_names: acc.map((c) => c.name),
+          done_cases: acc.map((c) => {
+            const metadata = c.compiled_case?.generation_metadata as {
+              preflight?: { passed?: boolean };
+            } | undefined;
+            return {
+              name: c.name,
+              produces: [...producedVariables(c)],
+              depends_on: [...referencedVariables(c)],
+              cleanup_scope: (c.teardown_api?.length || c.teardown_sql) ? "case" : "suite",
+              preflight_passed: Boolean(metadata?.preflight?.passed && !isAiCaseBlocked(c, mode)),
+            };
+          }),
           mode,
           carried_vars: [...carriedVars],
           setup_doc: mode === "interface" ? setupDoc.trim() : "",
+          doc_urls: mode === "interface"
+            ? [docUrls.trim(), text.trim()].filter(Boolean).join("\n")
+            : "",
+          api_contract: mode === "interface" ? apiContract : {},
+          generation_run_id: generationRunId,
         });
         if (stopRef.current) break;
         acc = [...acc, ...res.cases];
@@ -3155,11 +3292,14 @@ export function AiGenerateDialog({
           setFailedBatches((prev) => prev.filter((item) => item.id !== options.retryFailureId));
         }
         setCases(acc);
-        // 默认全选，但两类不勾：与现有用例重名的（duplicate）、
-        // 以及静态校验判定"执行必挂"的（needs_fix，如变量悬空——实测这类通过率为 0）。
-        // 不勾≠丢弃：用例仍在列表里，用户确认后可手动勾选入库。
+        // 默认全选非重复用例。红色候选允许入库，但会强制标记“需人工调整”并
+        // skip=true，只有在完整编辑器里修正并确认后才能执行。
         setPicked(
-          new Set(acc.map((c, i) => (c.duplicate || c.needs_fix ? -1 : i)).filter((i) => i >= 0)),
+          new Set(
+            acc
+              .map((c, i) => (c.duplicate ? -1 : i))
+              .filter((i) => i >= 0),
+          ),
         );
       } catch (e) {
         if (stopRef.current) break;
@@ -3191,6 +3331,11 @@ export function AiGenerateDialog({
     const q = points.filter((_, i) => pickedPoints.has(i));
     if (!q.length) {
       toast.info("请至少选一个测试点");
+      return;
+    }
+    if (mode === "interface" && apiContractOperationCount === 0) {
+      toast.error("没有读取到 OpenAPI 契约，请返回接口说明重新生成大纲；系统不会再生成整批必挂用例");
+      setStage("input");
       return;
     }
     setGenQueue(q);
@@ -3230,16 +3375,17 @@ export function AiGenerateDialog({
     draftReadyRef.current = false;
     setText(draft.text ?? "");
     setMode(draft.mode ?? initialMode);
-    setCoverage(draft.coverage ?? "full");
+    setCoverage(draft.coverage ?? "standard");
     setDimensions(new Set(draft.dimensions ?? []));
     setDocUrls(draft.docUrls ?? "");
     setSetupDoc(draft.setupDoc ?? "");
-    setSmartInsert(draft.smartInsert ?? true);
     setModelName(draft.modelName ?? "");
     setGapModelName(draft.gapModelName ?? draft.modelName ?? "");
     setStage(draft.stage ?? "input");
     setOutlineError("");
     setDigest(draft.digest ?? "");
+    setApiContract(draft.apiContract ?? {});
+    setGenerationRunId(draft.generationRunId ?? null);
     setPoints(draft.points ?? []);
     setPickedPoints(new Set(draft.pickedPoints ?? []));
     setGenQueue(draft.genQueue ?? []);
@@ -3265,14 +3411,15 @@ export function AiGenerateDialog({
     setSavedDraft(null);
     setText("");
     setMode(initialMode);
-    setCoverage("full");
+    setCoverage("standard");
     setDimensions(new Set());
     setDocUrls("");
     setSetupDoc("");
-    setSmartInsert(true);
     setStage("input");
     setOutlineError("");
     setDigest("");
+    setApiContract({});
+    setGenerationRunId(null);
     setPoints([]);
     setPickedPoints(new Set());
     setGenQueue([]);
@@ -3290,83 +3437,197 @@ export function AiGenerateDialog({
     toast.success("已清除 AI 生成草稿");
   };
 
+  const restoreGenerationHistory = async (runId: number) => {
+    if (!moduleId) return;
+    setHistoryLoadingRunId(runId);
+    try {
+      const detail = await functionalCasesApi.aiGenerationHistoryDetail(runId, moduleId);
+      const draft = detail.draft as unknown as Partial<AiGenerateDraft>;
+      const restoredPoints = draft.points ?? [];
+      const restoredCases = draft.cases ?? [];
+      draftReadyRef.current = false;
+      setText(draft.text ?? "");
+      setMode(draft.mode ?? initialMode);
+      setCoverage(draft.coverage ?? "standard");
+      setDimensions(new Set(draft.dimensions ?? []));
+      setDocUrls(draft.docUrls ?? "");
+      setSetupDoc(draft.setupDoc ?? "");
+      setModelName(draft.modelName ?? detail.model ?? "");
+      setGapModelName(draft.gapModelName ?? draft.modelName ?? detail.model ?? "");
+      setStage(restoredCases.length || (draft.genQueue?.length ?? 0) > 0 ? "cases" : "outline");
+      setOutlineError("");
+      setDigest(draft.digest ?? "");
+      setApiContract(draft.apiContract ?? {});
+      setGenerationRunId(detail.run_id);
+      setPoints(restoredPoints);
+      setPickedPoints(new Set(draft.pickedPoints ?? restoredPoints.map((_, index) => index)));
+      setGenQueue(draft.genQueue ?? restoredPoints);
+      setCursor(draft.cursor ?? (restoredCases.length ? restoredPoints.length : 0));
+      setFailedBatches(draft.failedBatches ?? []);
+      setCases(restoredCases);
+      casesRef.current = restoredCases;
+      setPicked(new Set(draft.picked ?? restoredCases.map((_, index) => index)));
+      setWrittenNames(new Set(draft.writtenNames ?? []));
+      setSavedDraft(null);
+      setDraftNotice(
+        `已打开数据库历史 #${detail.run_id}（${detail.created_at ? new Date(detail.created_at).toLocaleString() : "时间未知"}）`,
+      );
+      setView("generate");
+      setEnhanceSummary(null);
+      window.setTimeout(() => {
+        draftReadyRef.current = true;
+      }, 0);
+      toast.success("已恢复该次生成记录，可继续审阅或写入");
+    } catch (error) {
+      handleApiError(error);
+    } finally {
+      setHistoryLoadingRunId(null);
+    }
+  };
+
   const insert = async () => {
     if (!moduleId || cases.length === 0) return;
     if (insertingRef.current) return; // 防快速多点
-    // 只写「已勾选且还没写过」的，支持分次写入、绝不重复
-    const chosen = cases.filter((_, i) => picked.has(i) && !writtenNames.has(cases[i].name));
-    if (chosen.length === 0) {
-      toast.info("勾选的用例都已写入");
+    const selected = cases.filter((_c, index) => picked.has(index));
+    if (selected.length === 0) {
+      toast.info("请至少勾选一条要写入的用例");
       return;
     }
     insertingRef.current = true;
     setInserting(true);
     try {
+      let writtenCases: AiGeneratedCase[] = [];
+      let chosen: AiGeneratedCase[] = [];
+      const sequenceByCase = new Map(cases.map((candidate, index) => [candidate, index + 1]));
+      const contractHash = apiContract.hash;
       if (mode === "interface") {
-        const existing =
-          smartInsert
-            ? (await automationCasesApi.list({ moduleId, pageSize: 500 })).items
-                .slice()
-                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-            : [];
-        // 模块已有用例能产出的变量（如已有登录用例的 token）视为已满足，避免误判缺依赖
-        const externalVars = new Set<string>();
-        for (const e of existing) {
-          try {
-            const d = JSON.parse((e as { extract_data?: string }).extract_data || "{}");
-            if (d && typeof d === "object") Object.keys(d).forEach((k) => k && externalVars.add(k));
-          } catch {
-            /* 忽略无法解析的 extract_data */
-          }
-        }
-        const { ordered, hasCycle } = orderInterfaceCasesForExecution(chosen, externalVars);
-        if (hasCycle) {
-          toast.warning("检测到用例间存在循环依赖，已尽力排序但请人工核对执行顺序");
+        // 写入前再次以数据库为准做对账：仍存在的跳过，已经删除的自动进入补写集合。
+        const existing = (await automationCasesApi.list({ moduleId, pageSize: 500 })).items
+          .slice()
+          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        chosen = selected.filter((candidate) => !existing.some((stored) =>
+          storedCaseMatchesCandidate(
+            stored,
+            candidate,
+            generationRunId,
+            contractHash,
+          ),
+        ));
+        if (chosen.length === 0) {
+          setWrittenNames(new Set(cases
+            .filter((candidate) => existing.some((stored) => storedCaseMatchesCandidate(
+              stored,
+              candidate,
+              generationRunId,
+              contractHash,
+            )))
+            .map((candidate) => candidate.name)));
+          toast.info("勾选的用例当前都已存在，无需重复写入");
+          return;
         }
         const createdIds: number[] = [];
-        for (const c of ordered) {
-          const res = await casesApi.create(toInterfaceCase(moduleId, c));
-          createdIds.push(res.id);
+        const runnableIds: number[] = [];
+        const createdCases: AiGeneratedCase[] = [];
+        const failedCases: Array<{ name: string; message: string }> = [];
+        let manualAdjustmentCount = 0;
+        // 严格按审阅列表从上到下顺序写入；勾掉部分用例时保留剩余项的相对顺序。
+        for (const c of chosen) {
+          // 新链路直接使用服务端契约编译产物；前端旧转换器仅兼容历史草稿。
+          // 这样静态校验、在线探测和正式入库不会再各自生成一份步骤。
+          const sequence = sequenceByCase.get(c) ?? cases.indexOf(c) + 1;
+          const basePayload: TestCaseCreate = c.compiled_case
+            ? { ...c.compiled_case, module_id: moduleId }
+            : toInterfaceCase(moduleId, c);
+          const metadata = {
+            ...(basePayload.generation_metadata ?? {}),
+            ai_generation_candidate_key: aiCaseCandidateKey(c, generationRunId, contractHash),
+            ai_generation_sequence: sequence,
+          };
+          let payload: TestCaseCreate = {
+            ...basePayload,
+            name: stripAiCaseSequence(c.name),
+            source: "ai_interface",
+            generation_metadata: metadata,
+          };
+          const blocked = isAiCaseBlocked(c, mode);
+          if (blocked) {
+            payload = markForManualAdjustment(
+              payload,
+              c.blocking_warnings ?? c.warnings ?? ["生成期校验未通过，请人工调整后再启用执行"],
+            );
+          }
+          try {
+            const res = await casesApi.create(payload);
+            createdIds.push(res.id);
+            createdCases.push(c);
+            if (blocked) manualAdjustmentCount += 1;
+            else runnableIds.push(res.id);
+          } catch (error) {
+            failedCases.push({ name: c.name, message: errorMessage(error) });
+          }
         }
-        if (smartInsert && existing.length) {
-          const merged = mergeCreatedCaseOrder(existing, ordered, createdIds);
-          await casesApi.reorder(
-            merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
-          );
+        writtenCases = createdCases;
+        if (createdIds.length) {
+          try {
+            // 与列表页“按顺序编号”按钮共用同一个后端规则：按 sort_order 生成 0001/0002…。
+            await automationCasesApi.renumber(moduleId, { enable: true, caseType: "api" });
+          } catch (error) {
+            toast.warning(`用例已按 AI 顺序写入，但统一编号失败：${errorMessage(error)}`);
+          }
+        }
+        if (failedCases.length) {
+          toast.error(`仍有 ${failedCases.length} 条写入失败`, {
+            duration: 20000,
+            description: failedCases
+              .slice(0, 3)
+              .map((item) => `${item.name}：${item.message}`)
+              .join("；"),
+          });
         }
         // P0-2 试跑：写入成功后一键回归本批，跑绿=已验证，跑挂=真 bug 或用例要修
         if (createdIds.length) {
-          toast.success(`已写入 ${createdIds.length} 条接口用例`, {
-            duration: 15000,
-            description: "建议立即试跑本批：跑通即验证可用，失败尽早暴露问题",
-            action: {
-              label: `试跑本批（${createdIds.length}）`,
-              onClick: () => {
-                void runsApi
-                  .trigger({ project: projectId, category: "api", case_ids: createdIds })
-                  .then((r) =>
-                    toast.success(
-                      `试跑已提交（${r.case_number ?? createdIds.length} 条），到「执行记录」查看报告`,
-                    ),
-                  )
-                  .catch((e) => handleApiError(e));
-              },
+          toast.success(
+            `已写入 ${createdIds.length} 条接口用例`,
+            {
+              duration: 15000,
+              description: manualAdjustmentCount
+                ? `其中 ${runnableIds.length} 条可执行，${manualAdjustmentCount} 条已标记“需人工调整”并跳过执行`
+                : "全部通过生成期校验，可直接试跑",
+              action: runnableIds.length
+                ? {
+                    label: `试跑可执行用例（${runnableIds.length}）`,
+                    onClick: () => {
+                      void runsApi
+                        .trigger({ project: projectId, category: "api", case_ids: runnableIds })
+                        .then((r) =>
+                          toast.success(
+                            `试跑已提交（${r.case_number ?? runnableIds.length} 条），到「执行记录」查看报告`,
+                          ),
+                        )
+                        .catch((e) => handleApiError(e));
+                    },
+                  }
+                : undefined,
             },
-          });
+          );
         }
       } else {
-        // AI 智能插入：先取现有有序用例，创建后按每条 after 合并重排
-        const existing =
-          smartInsert
-            ? (await functionalCasesApi.list({ moduleId, pageSize: 500 })).items
-                .slice()
-                .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
-            : [];
+        // 先取现有用例做去重；新用例始终按 AI 审阅列表顺序追加。
+        const existing = (await functionalCasesApi.list({ moduleId, pageSize: 500 })).items
+          .slice()
+          .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0));
+        chosen = selected.filter((candidate) => !existing.some((stored) =>
+          stripAiCaseSequence(stored.name) === stripAiCaseSequence(candidate.name),
+        ));
+        if (chosen.length === 0) {
+          toast.info("勾选的用例当前都已存在，无需重复写入");
+          return;
+        }
         const createdIds: number[] = [];
         for (const c of chosen) {
           const res = await functionalCasesApi.create({
             module_id: moduleId,
-            name: c.name,
+            name: stripAiCaseSequence(c.name),
             priority: 3,
             functional_spec: {
               preconditions: c.preconditions,
@@ -3376,20 +3637,24 @@ export function AiGenerateDialog({
           });
           createdIds.push(res.id);
         }
-        if (smartInsert && existing.length) {
-          // 合并：把每条新用例插到它 after 指定的现有用例之后（同锚点保持本次顺序）
-          const merged = mergeCreatedCaseOrder(existing, chosen, createdIds);
-          await casesApi.reorder(
-            merged.map((id, idx) => ({ type: "case" as const, id, new_order: idx })),
-          );
+        if (createdIds.length) {
+          try {
+            await automationCasesApi.renumber(moduleId, {
+              enable: true,
+              caseType: "functional",
+            });
+          } catch (error) {
+            toast.warning(`用例已按 AI 顺序写入，但统一编号失败：${errorMessage(error)}`);
+          }
         }
+        writtenCases = chosen;
       }
-      setWrittenNames((prev) => new Set([...prev, ...chosen.map((c) => c.name)]));
+      setWrittenNames((prev) => new Set([...prev, ...writtenCases.map((c) => c.name)]));
       if (mode !== "interface") {
         // interface 分支已在上面弹带「试跑本批」动作的 toast，这里避免重复
-        toast.success(`已写入 ${chosen.length} 条用例（可继续生成后再写新增的）`);
+        toast.success(`已写入 ${writtenCases.length} 条用例（可继续生成后再写新增的）`);
       }
-      onInserted();
+      if (writtenCases.length) onInserted();
     } catch (e) {
       handleApiError(e);
     } finally {
@@ -3398,13 +3663,14 @@ export function AiGenerateDialog({
     }
   };
 
-  const togglePick = (i: number) =>
+  const togglePick = (i: number) => {
     setPicked((p) => {
       const n = new Set(p);
       if (n.has(i)) n.delete(i);
       else n.add(i);
       return n;
     });
+  };
 
   const togglePoint = (i: number) =>
     setPickedPoints((p) => {
@@ -3435,6 +3701,7 @@ export function AiGenerateDialog({
         // 带上生成大纲时的原始材料：查漏只有 digest 会信息不对称，模型找不出字段级遗漏
         text,
         doc_urls: docUrls,
+        api_contract: apiContract,
       };
       const res = useCli
         ? await functionalCasesApi.aiOutlineGapsCli(body)
@@ -3463,6 +3730,76 @@ export function AiGenerateDialog({
     }
   };
 
+  const revalidateCases = useCallback(async (silent = false) => {
+    if (!moduleId || mode !== "interface" || cases.length === 0 || apiContractOperationCount === 0) {
+      return;
+    }
+    setRevalidating(true);
+    try {
+      const res = await functionalCasesApi.aiRevalidateCases({
+        module_id: moduleId,
+        cases,
+        api_contract: apiContract,
+        generation_run_id: generationRunId,
+      });
+      setCases(res.cases);
+      casesRef.current = res.cases;
+      setPicked(new Set(
+        res.cases
+          .map((caseItem, index) => (caseItem.duplicate ? -1 : index))
+          .filter((index) => index >= 0),
+      ));
+      toast.success(`重新校验 ${res.total} 条：可写入 ${res.writable} 条，拦截 ${res.blocked} 条`);
+    } catch (error) {
+      if (!silent) handleApiError(error);
+      else toast.error(`自动重新校验失败：${errorMessage(error)}`);
+    } finally {
+      setRevalidating(false);
+    }
+  }, [
+    apiContract,
+    apiContractOperationCount,
+    cases,
+    generationRunId,
+    mode,
+    moduleId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !open
+      || stage !== "cases"
+      || batchRunning
+      || revalidating
+      || mode !== "interface"
+      || apiContractOperationCount === 0
+      || cases.length === 0
+    ) return;
+    const needsCurrentCompiler = cases.some((caseItem) => {
+      const metadata = caseItem.compiled_case?.generation_metadata as {
+        compiler_version?: string;
+      } | undefined;
+      return metadata?.compiler_version !== "2.1";
+    });
+    if (!needsCurrentCompiler) return;
+    const contractHash = String(apiContract.hash ?? "");
+    const key = `${moduleId}:${contractHash}:${cases.length}:${cases.map((item) => item.name).join("|")}`;
+    if (revalidateKeyRef.current === key) return;
+    revalidateKeyRef.current = key;
+    void revalidateCases(true);
+  }, [
+    apiContract,
+    apiContractOperationCount,
+    batchRunning,
+    cases,
+    mode,
+    moduleId,
+    open,
+    revalidateCases,
+    revalidating,
+    stage,
+  ]);
+
   const enhanceCases = async () => {
     if (!moduleId || cases.length === 0) return;
     if (!enhanceAgentName) {
@@ -3479,12 +3816,16 @@ export function AiGenerateDialog({
         cases,
         mode,
         target_extra_count: Math.max(3, Math.ceil(cases.length * 0.3)),
+        api_contract: mode === "interface" ? apiContract : {},
+        generation_run_id: generationRunId,
       });
       setCases(res.cases);
       casesRef.current = res.cases;
       setPicked(
         new Set(
-          res.cases.map((c, i) => (c.duplicate ? -1 : i)).filter((i) => i >= 0),
+          res.cases
+            .map((c, i) => (c.duplicate ? -1 : i))
+            .filter((i) => i >= 0),
         ),
       );
       setEnhanceSummary({
@@ -3516,6 +3857,9 @@ export function AiGenerateDialog({
 
   const pendingInsertCount = cases.filter(
     (c, i) => picked.has(i) && !writtenNames.has(c.name),
+  ).length;
+  const pendingManualAdjustmentCount = cases.filter(
+    (c, i) => picked.has(i) && !writtenNames.has(c.name) && isAiCaseBlocked(c, mode),
   ).length;
 
   const generateFooter = view === "generate" ? (
@@ -3558,11 +3902,16 @@ export function AiGenerateDialog({
         <Button variant="outline" onClick={onClose}>
           关闭
         </Button>
-        <Button onClick={insert} disabled={inserting || batchRunning || enhancing || pendingInsertCount === 0}>
+        <Button
+          onClick={insert}
+          disabled={inserting || batchRunning || enhancing || revalidating || pendingInsertCount === 0}
+        >
           {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
           {pendingInsertCount === 0 && writtenNames.size > 0
             ? "已全部写入"
-            : `写入当前模块（${pendingInsertCount}）`}
+            : pendingManualAdjustmentCount > 0
+              ? `写入 ${pendingInsertCount} 条（待调整 ${pendingManualAdjustmentCount}）`
+              : `可写入 ${pendingInsertCount} 条`}
         </Button>
       </DialogFooter>
     )
@@ -3583,13 +3932,93 @@ export function AiGenerateDialog({
         </>
       }
     >
-      <div className="flex-1 space-y-3 overflow-auto p-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
         <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
           <button onClick={() => setView("generate")} className={cn("rounded px-3 py-1", view === "generate" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>生成用例</button>
-          <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>模块大纲</button>
+          <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>变更调整</button>
+          <button
+            onClick={() => setView("history")}
+            className={cn("inline-flex items-center gap-1 rounded px-3 py-1", view === "history" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}
+          >
+            <History className="h-3.5 w-3.5" />生成历史
+          </button>
         </div>
         {view === "outline" ? (
           <ModuleOutlinePanel moduleId={moduleId} projectId={projectId} mode={mode} onApplied={onInserted} />
+        ) : view === "history" ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium">历史生成记录</div>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  大纲、详细用例、勾选和写入状态均保存到数据库，可打开任意一次继续处理。
+                </p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8"
+                disabled={generationHistoryQuery.isFetching}
+                onClick={() => void generationHistoryQuery.refetch()}
+              >
+                {generationHistoryQuery.isFetching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                刷新
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {generationHistoryQuery.isLoading ? (
+                <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />正在读取生成历史…
+                </div>
+              ) : generationHistoryQuery.isError ? (
+                <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                  生成历史读取失败，请刷新重试。
+                </div>
+              ) : generationHistoryQuery.data?.length ? (
+                generationHistoryQuery.data.map((item) => (
+                  <div key={item.run_id} className="rounded-lg border bg-card p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
+                          <span>生成记录 #{item.run_id}</span>
+                          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+                            {item.stage === "cases" ? "已生成详细用例" : "仅大纲"}
+                          </span>
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {item.created_at ? new Date(item.created_at).toLocaleString() : "时间未知"}
+                          {item.model ? ` · ${item.model}` : ""}
+                          {item.operator ? ` · ${item.operator}` : ""}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                          <span>测试点 {item.point_count}</span>
+                          <span>详细用例 {item.case_count}</span>
+                          <span>已写入 {item.written_count}</span>
+                        </div>
+                        {item.digest ? (
+                          <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">{item.digest}</p>
+                        ) : null}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 shrink-0"
+                        disabled={historyLoadingRunId != null}
+                        onClick={() => void restoreGenerationHistory(item.run_id)}
+                      >
+                        {historyLoadingRunId === item.run_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                        查看/继续
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
+                  当前模块还没有 AI 生成历史。完成一次“生成大纲”后会自动保存。
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
         <>
         <p className="text-xs text-muted-foreground">
@@ -3611,7 +4040,7 @@ export function AiGenerateDialog({
         ) : null}
 
         {stage === "input" ? (
-          <div className="space-y-3">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             {allowModeSwitch ? (
               <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
                 {(["functional", "interface"] as const).map((mo) => (
@@ -3883,7 +4312,7 @@ export function AiGenerateDialog({
             </details>
           </div>
         ) : stage === "outline" ? (
-          <div className="space-y-3">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
@@ -3933,7 +4362,7 @@ export function AiGenerateDialog({
                 <div className="mt-1 whitespace-pre-wrap">{digest}</div>
               </details>
             ) : null}
-            <div className="max-h-[45vh] space-y-1 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
               {points.map((p, i) => (
                 <label
                   key={i}
@@ -3952,7 +4381,7 @@ export function AiGenerateDialog({
             </div>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 已生成 {cases.length} 条 · 测试点 {cursor}/{genQueue.length}
@@ -4043,6 +4472,18 @@ export function AiGenerateDialog({
                     )}
                     一键补全
                   </Button>
+                  {mode === "interface" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void revalidateCases(false)}
+                      disabled={revalidating || enhancing || apiContractOperationCount === 0}
+                      className="h-8"
+                    >
+                      {revalidating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                      重新校验 {cases.length} 条
+                    </Button>
+                  ) : null}
                   <span className="text-[11px] text-muted-foreground">
                     用会员 CLI Agent 审稿、补边界/异常/安全场景，结果仍需勾选后写入。
                   </span>
@@ -4097,26 +4538,26 @@ export function AiGenerateDialog({
                 </div>
               </div>
             ) : null}
-            {cases.length > 0 && !batchRunning && cases.some((c) => c.needs_fix) ? (
+            {cases.length > 0 && !batchRunning && cases.some((c) => isAiCaseBlocked(c, mode)) ? (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                ⛔ 有 <span className="font-semibold">{cases.filter((c) => c.needs_fix).length}</span> 条用例
-                存在执行必挂的问题（变量找不到来源、引用顺序颠倒等），已默认不勾选。
-                悬停红色徽标看具体原因；确认没问题也可以手动勾选后入库。
+                ⛔ 有 <span className="font-semibold">
+                  {cases.filter((c) => isAiCaseBlocked(c, mode)).length}
+                </span> 条用例
+                未通过生成期校验。它们可以勾选入库，但会自动标记“需人工调整”并跳过执行；
+                在完整编辑器中修正并确认后才能启用，不会直接污染执行通过率。
+                {mode === "interface" && apiContractOperationCount === 0 ? (
+                  <button
+                    className="ml-2 font-medium text-red-900 underline underline-offset-2"
+                    onClick={() => setStage("input")}
+                  >
+                    当前草稿契约为空，返回重新读取
+                  </button>
+                ) : null}
               </div>
             ) : null}
             {cases.length > 0 && !batchRunning ? (
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>已按执行依赖排序；可拖动左侧手柄调整顺序</span>
-                {mode === "functional" ? (
-                  <label className="flex cursor-pointer items-center gap-1.5 text-foreground/80">
-                    <input
-                      type="checkbox"
-                      checked={smartInsert}
-                      onChange={(e) => setSmartInsert(e.target.checked)}
-                    />
-                    AI 智能插入位置（插到现有用例之间，而非追加末尾）
-                  </label>
-                ) : null}
+                <span>将严格按当前列表从上到下写入；可拖动左侧手柄调整顺序</span>
               </div>
             ) : null}
             <div className="space-y-2 pr-1">
@@ -4155,13 +4596,20 @@ export function AiGenerateDialog({
                       onChange={() => togglePick(i)}
                       className="mt-1"
                     />
-                    <div className="min-w-0 flex-1 cursor-pointer" onClick={() => togglePick(i)}>
+                    <div
+                      className="min-w-0 flex-1 cursor-pointer"
+                      onClick={() => togglePick(i)}
+                    >
                       <div className="font-medium">
                         <span className="mr-1 text-muted-foreground">{i + 1}.</span>
                         {c.name}
-                        {c.duplicate ? (
+                        {writtenNames.has(c.name) ? (
                           <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-normal text-amber-700">
-                            已存在
+                            已写入
+                          </span>
+                        ) : c.duplicate ? (
+                          <span className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-normal text-sky-700">
+                            已删除 · 可补写
                           </span>
                         ) : null}
                         {c.auto_repaired ? (
@@ -4172,12 +4620,12 @@ export function AiGenerateDialog({
                             已自动修复
                           </span>
                         ) : null}
-                        {c.needs_fix ? (
+                        {isAiCaseBlocked(c, mode) ? (
                           <span
                             className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-normal text-red-700"
-                            title={`执行必挂，已默认不勾选：\n${(c.blocking_warnings ?? c.warnings ?? []).join("\n")}`}
+                            title={`入库后将跳过执行，需人工调整：\n${(c.blocking_warnings ?? c.warnings ?? []).join("\n")}`}
                           >
-                            ⛔ 需修复（默认不入库）
+                            ⛔ 校验未通过（不可勾选执行）· 需人工调整
                           </span>
                         ) : null}
                         {c.warnings?.length ? (
@@ -4189,11 +4637,6 @@ export function AiGenerateDialog({
                           </span>
                         ) : null}
                       </div>
-                      {smartInsert && mode === "functional" && c.after ? (
-                        <div className="mt-0.5 text-[11px] text-primary/70">
-                          插入到{c.after === "__START__" ? "最前面" : `「${c.after}」之后`}
-                        </div>
-                      ) : null}
                       {c.preconditions.length ? (
                         <div className="mt-1 text-xs text-muted-foreground">
                           <span className="font-medium text-foreground/70">前置：</span>

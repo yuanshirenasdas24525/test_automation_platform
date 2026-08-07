@@ -152,7 +152,7 @@ def test_empty_fix_changes_nothing():
 
 
 def test_model_fix_without_requirement_evidence_is_rejected():
-    view = SimpleNamespace(status_code=200, output_data={"code": 0})
+    view = SimpleNamespace(status_code=200, output_data={"code": 0}, assertion_results=[], error_message="")
     fix, reason = _validate_model_decision({
         "classification": "用例问题",
         "intent_supported": True,
@@ -168,6 +168,8 @@ def test_requirement_guarded_extract_fix_must_exist_in_real_response():
     view = SimpleNamespace(
         status_code=200,
         output_data={"data": {"access_token": "secret"}},
+        assertion_results=[],
+        error_message="",
     )
     fix, reason = _validate_model_decision({
         "classification": "用例问题",
@@ -183,6 +185,48 @@ def test_requirement_guarded_extract_fix_must_exist_in_real_response():
     }, view)
     assert reason is None
     assert fix == {"extract": {"token": "$.data.access_token"}}
+
+
+def test_cross_family_status_heal_requires_explicit_case_intent():
+    view = SimpleNamespace(
+        status_code=401,
+        output_data={"detail": "会话已失效"},
+        assertion_results=[{"target": "status_code", "expected": 200}],
+        error_message="[equal] status_code: 401 != 200",
+    )
+    decision = {
+        "classification": "用例问题",
+        "intent_supported": True,
+        "requirement_evidence": ["接口真实返回了 401"],
+        "confidence": 0.99,
+        "fix": {"assertion": {"status_code": 401}},
+    }
+    fix, reason = _validate_model_decision(decision, view, {"name": "获取当前用户成功"})
+    assert fix is None
+    assert "跨状态族" in str(reason)
+
+
+def test_cross_family_status_heal_accepts_explicit_case_intent():
+    view = SimpleNamespace(
+        status_code=401,
+        output_data={"detail": "未提供认证 token"},
+        assertion_results=[{"target": "status_code", "expected": 200}],
+        error_message="[equal] status_code: 401 != 200",
+    )
+    decision = {
+        "classification": "用例问题",
+        "intent_supported": True,
+        "requirement_evidence": ["用例名称明确要求返回401"],
+        "confidence": 0.99,
+        "fix": {"assertion": {"status_code": 401}},
+    }
+    fix, reason = _validate_model_decision(
+        decision,
+        view,
+        {"name": "【鉴权】未提供 token 获取当前用户返回401"},
+    )
+    assert reason is None
+    assert fix == {"assertion": {"status_code": 401}}
 
 
 def test_ai_prompt_payload_redacts_real_secrets_but_keeps_variable_refs():

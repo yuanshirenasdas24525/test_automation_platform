@@ -66,6 +66,10 @@ import {
   type ModulePickerNode,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import {
+  manualAdjustmentInfo,
+  resolveManualAdjustment,
+} from "@/lib/case-manual-adjustment";
 import type {
   AiCaseFlag,
   AiFlagClearReason,
@@ -108,6 +112,7 @@ const CASE_LABELS: Record<CaseType, string> = {
   functional: "功能",
 };
 type AutomationTabCaseType = Exclude<CaseType, "functional" | "mixed">;
+type CaseFlagFilter = AiFlagType | "manual_adjustment" | "all";
 
 function isUiPlatform(value: string | null): value is UiPlatform {
   return value === "web" || value === "android" || value === "ios";
@@ -327,8 +332,8 @@ function getTimeValue(value: string | null | undefined): number {
   return Number.isNaN(time) ? 0 : time;
 }
 
-function Checkbox({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) {
-  return <input type="checkbox" checked={checked} onChange={onCheckedChange} className="h-4 w-4 rounded border-input accent-primary" />;
+function Checkbox({ checked, onCheckedChange, disabled = false }: { checked: boolean; onCheckedChange: () => void; disabled?: boolean }) {
+  return <input type="checkbox" checked={checked} disabled={disabled} onChange={onCheckedChange} className="h-4 w-4 rounded border-input accent-primary disabled:cursor-not-allowed disabled:opacity-40" />;
 }
 
 function Badge({ children, className }: { children: ReactNode; variant?: "outline"; className?: string }) {
@@ -357,7 +362,7 @@ export function AutomationCasesPage({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState<ApiRunStatus | "all">("all");
-  const [flagFilter, setFlagFilter] = useState<AiFlagType | "all">("all");
+  const [flagFilter, setFlagFilter] = useState<CaseFlagFilter>("all");
   const [flagDialogCase, setFlagDialogCase] = useState<ApiCase | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -437,7 +442,11 @@ export function AutomationCasesPage({
       moduleId: moduleId!,
       caseType,
       status: status === "all" ? undefined : status,
-      flagType: isApiWorkbench && flagFilter !== "all" ? flagFilter : undefined,
+      flagType:
+        isApiWorkbench && flagFilter !== "all" && flagFilter !== "manual_adjustment"
+          ? flagFilter
+          : undefined,
+      manualAdjustment: isApiWorkbench && flagFilter === "manual_adjustment",
       keyword,
       page,
       pageSize,
@@ -650,7 +659,7 @@ export function AutomationCasesPage({
 
   const submitCase = async (values: CaseFormValues) => {
     if (moduleId == null || editor == null) return;
-    const payload: TestCaseCreate = {
+    let payload: TestCaseCreate = {
       module_id: editor === "new" ? moduleId : editor.module_id,
       name: values.name,
       description: values.description,
@@ -675,6 +684,16 @@ export function AutomationCasesPage({
     if (finalSteps) {
       payload.steps = finalSteps;
     }
+    const resolvingManualAdjustment =
+      editor !== "new" && manualAdjustmentInfo(editor).pending && values.skip === false;
+    if (editor !== "new" && resolvingManualAdjustment) {
+      payload = resolveManualAdjustment({
+        ...payload,
+        source: editor.source ?? "ai_interface",
+        tags: editor.tags,
+        generation_metadata: editor.generation_metadata,
+      });
+    }
     setEditorSaving(true);
     try {
       if (editor === "new") {
@@ -682,7 +701,7 @@ export function AutomationCasesPage({
         toast.success("用例已创建");
       } else {
         await automationCasesApi.update(editor.id, payload, quickEdit ? editSession ?? undefined : undefined);
-        toast.success("用例已更新");
+        toast.success(resolvingManualAdjustment ? "已标记为调整完成并启用用例" : "用例已更新");
       }
       setEditor(null);
       invalidate();
@@ -758,8 +777,8 @@ export function AutomationCasesPage({
                 <Button size="sm" disabled={runMutation.isPending} onClick={() => runMutation.mutate({ ids: [...selected] })}>
                   <Play className="h-4 w-4" />运行选中（{selected.size}）
                 </Button>
-                {/* AI 自愈运行：每个失败请求立即结合用例名称、描述、关联需求和真实响应诊断。
-                    候选修复只有在当前用例重跑验证通过后才会落库。 */}
+                {/* 安全自愈运行：每个失败请求立即结合用例名称、描述、关联需求和真实响应诊断。
+                    只尝试一个候选，且整条用例重跑通过后才会落库。 */}
                 <Select value={healModel} onValueChange={setHealModel}>
                   <SelectTrigger className="h-8 w-[148px]" title="自愈时用于需求约束诊断的模型">
                     <SelectValue placeholder="选择自愈模型" />
@@ -776,7 +795,7 @@ export function AutomationCasesPage({
                   disabled={runMutation.isPending || !healModel}
                   title={
                     healModel
-                      ? "每个失败请求立即按用例名称、描述和需求诊断；候选修复验证通过后才落库"
+                      ? "每个失败请求只尝试一个候选；整条用例重跑通过后才落库，否则恢复原配置"
                       : "请先在项目配置中启用一个 AI 模型"
                   }
                   onClick={() => runMutation.mutate({
@@ -785,7 +804,7 @@ export function AutomationCasesPage({
                     model: healModel,
                   })}
                 >
-                  <Sparkles className="h-4 w-4" />AI 自愈运行
+                  <Sparkles className="h-4 w-4" />安全自愈运行
                 </Button>
               </>
             ) : null}
@@ -806,10 +825,11 @@ export function AutomationCasesPage({
               </SelectContent>
             </Select>
             {isApiWorkbench ? (
-              <Select value={flagFilter} onValueChange={(value) => { setFlagFilter(value as AiFlagType | "all"); setPage(1); }}>
+              <Select value={flagFilter} onValueChange={(value) => { setFlagFilter(value as CaseFlagFilter); setPage(1); }}>
                 <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">全部标记</SelectItem>
+                  <SelectItem value="manual_adjustment">生成待调整</SelectItem>
                   <SelectItem value="manual_fix">需人工</SelectItem>
                   <SelectItem value="interface_defect">疑似接口缺陷</SelectItem>
                   <SelectItem value="environment">环境问题</SelectItem>
@@ -1968,14 +1988,17 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
   onFirstInput: (rowId: string) => void;
   onRemoveNewRow: (rowId: string) => void;
 }) {
-  const allSelected = cases.length > 0 && cases.every((row) => selected.has(row.id));
+  const selectableCases = quickEdit
+    ? cases
+    : cases.filter((row) => !manualAdjustmentInfo(row).pending);
+  const allSelected = selectableCases.length > 0 && selectableCases.every((row) => selected.has(row.id));
   const caseLabel = CASE_LABELS[caseType];
   const gridClass = quickEdit
     ? "grid-cols-[36px_minmax(180px,1.1fr)_90px_minmax(180px,1.2fr)_minmax(220px,1.4fr)_minmax(220px,1.4fr)_90px_120px]"
     : "grid-cols-[36px_1.1fr_100px_1.5fr_120px_150px]";
   return <div className="overflow-x-auto rounded-lg border bg-card">
     <div className={cn("grid min-w-max items-center gap-2 border-b bg-muted/40 px-3 py-2 text-xs text-muted-foreground", gridClass)}>
-      <Checkbox checked={allSelected} onCheckedChange={() => onSelected(allSelected ? new Set() : new Set(cases.map((row) => row.id)))} />
+      <Checkbox checked={allSelected} onCheckedChange={() => onSelected(allSelected ? new Set() : new Set(selectableCases.map((row) => row.id)))} />
       <span>用例名称</span><span>{caseType === "api" ? "方法" : "类型"}</span><span>{caseType === "api" ? "路径" : "步骤"}</span>
       {quickEdit ? <><span>请求头</span><span>请求参数</span><span>排序</span></> : <span>最近结果</span>}
       <span className="text-right">操作</span>
@@ -1998,11 +2021,23 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
         ))}
         <QuickEditRow key={`case-${row.id}`} row={row} sessionId={sessionId} checked={selected.has(row.id)} onChecked={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} onEdit={() => onEdit(row)} onDelete={() => onDelete(row)} onInsertAbove={() => onInsertAbove(row.id, row.sort_order)} onUp={() => index > 0 && onReorder(row, "up")} onDown={() => index < cases.length - 1 && onReorder(row, "down")} onSaved={onSaved} />
       </Fragment>
-    ) : (
-      <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", gridClass)}>
-        <Checkbox checked={selected.has(row.id)} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
+    ) : (() => {
+      const manualAdjustment = manualAdjustmentInfo(row);
+      return (
+      <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", manualAdjustment.pending && "bg-red-50/50", gridClass)}>
+        <Checkbox checked={selected.has(row.id)} disabled={manualAdjustment.pending} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
         <div className="flex min-w-0 items-center gap-1.5">
           <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
+          {manualAdjustment.pending ? (
+            <button
+              type="button"
+              onClick={() => onEdit(row)}
+              title={`当前跳过执行；点击打开编辑器\n${manualAdjustment.reasons.join("\n")}`}
+              className="flex shrink-0 items-center gap-1 rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium leading-none text-red-700"
+            >
+              <Wrench className="h-3 w-3" />需人工调整
+            </button>
+          ) : null}
           {enableAiActions ? <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} /> : null}
         </div>
         <Badge variant="outline" className="w-fit font-mono">{caseType === "api" ? row.method ?? "GET" : caseLabel}</Badge>
@@ -2010,13 +2045,14 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
           {caseType === "api" ? row.path || "--" : `${row.step_count ?? 0} 个步骤`}
         </span>
         <StatusBadge
-          status={row.latest_run?.status ?? "pending"}
-          clickable={row.latest_run != null}
+          status={row.skip ? "skipped" : row.latest_run?.status ?? "pending"}
+          clickable={!row.skip && row.latest_run != null}
           onClick={() => row.latest_run && onShowRunDetail(row)}
         />
-        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="运行" onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button>{enableAiActions ? <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button> : null}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
+        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title={manualAdjustment.pending ? "请先完成人工调整并启用" : "运行"} disabled={manualAdjustment.pending} onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button>{enableAiActions ? <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button> : null}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
       </div>
-    ))}
+      );
+    })())}
     {quickEdit ? newRows.filter((item) => item.aboveCaseId == null).map((item, index, bottomRows) => (
       <QuickCreateRow
         key={item.tempId}
@@ -2501,7 +2537,7 @@ function RecordsDialog({
 
   // AI 读取真实响应 → 生成 fix → 服务端预检 + 应用 + 重跑验证闭环。
   // 模型输出只是候选：分类过滤 / JSONPath 对真实响应预检 / 变量产出校验 / params 合并
-  // 都在服务端做；应用后自动重跑，绿变红自动按快照回滚，修复率不会为负。
+  // 都在服务端做；应用后自动重跑，未转绿/绿变红/验证异常都按快照回滚。
   const applyAiReportFixes = async () => {
     const reportId = analysis?.reportId;
     if (!reportId) return;
@@ -2528,7 +2564,7 @@ function RecordsDialog({
         return;
       }
       // 服务端应用：预检（分类过滤/真实响应 JSONPath 预检/变量校验/params 合并）
-      // + 每用例快照 + 自动重跑验证；绿变红的用例后端自动回滚。
+      // + 每用例快照 + 自动重跑验证；只有红转绿的候选会永久保留。
       const applyRes = await functionalCasesApi.aiApplyReportFixes({ ai_run_id: runId });
       const appliedCount = applyRes.applied.length;
       const skippedCount = applyRes.skipped.length;
@@ -2543,10 +2579,10 @@ function RecordsDialog({
       }
       onInvalidate();
       if (applyRes.verify_report_id == null) {
-        toast.success(`已应用 ${appliedCount} 条修复（拦截 ${skippedCount} 条），未触发自动验证，请手动重跑核对`);
+        toast.warning("没有创建验证报告，候选修改不会被视为已验证；请刷新后重试");
         return;
       }
-      toast.info(`已应用 ${appliedCount} 条修复（预检拦截 ${skippedCount} 条），正在重跑验证；仍失败的会带新证据自动再修（最多 3 轮），绿变红自动回滚…`);
+      toast.info(`已生成 ${appliedCount} 条候选修复（预检拦截 ${skippedCount} 条），正在安全重跑；最多 2 轮，只有红转绿才保留…`);
 
       type VerifyResult = {
         status: string;
@@ -2577,18 +2613,18 @@ function RecordsDialog({
       }
       onInvalidate();
       if (!verify) {
-        toast.info("多轮验证仍在后台执行，结果稍后可在测试记录里查看（绿变红会自动回滚）");
+        toast.info("安全验证仍在后台执行，结果稍后可在测试记录里查看（未转绿的候选会自动回滚）");
         return;
       }
       if (verify.status !== "done") {
-        toast.warning(verify.message || "验证未正常完成，已应用的修复保留，请手动重跑核对");
+        toast.warning(verify.message || "验证未正常完成，未验证的候选修复已自动回滚");
         return;
       }
       const collateral = verify.collateral_regressed_count ?? 0;
       const summary =
         `${verify.rounds_used ?? 1} 轮修复完成：生效 ${verify.fixed_count ?? 0} 条（红→绿）；` +
-        `绿变红 ${verify.regressed_count ?? 0} 条（已自动回滚 ${verify.rolled_back_count ?? 0}）；` +
-        `仍失败 ${verify.still_red_count ?? 0} 条` +
+        `未通过验证并回滚 ${verify.rolled_back_count ?? 0} 条；` +
+        `仍失败 ${verify.still_red_count ?? 0} 条（保持原配置）` +
         (collateral > 0 ? `；另有 ${collateral} 条未修改用例被连带打挂，请人工检查` : "") +
         (verify.note ? `（${verify.note}）` : "");
       if ((verify.fixed_count ?? 0) > 0 && (verify.regressed_count ?? 0) === 0 && collateral === 0) {
@@ -2823,7 +2859,7 @@ function ReportAnalysisDialog({
                     : "ml-auto h-7 px-2 text-xs"
                 }
                 disabled={aiFixing}
-                title="用 AI 读取真实响应，批量修复请求参数/提取/断言；应用前程序化预检，应用后自动重跑验证（最多 3 轮），绿变红自动回滚"
+                title="用 AI 读取真实响应，批量生成候选修复；最多安全验证 2 轮，未转绿、绿变红或验证超时都会自动回滚"
                 onClick={async () => {
                   setAiFixing(true);
                   try {
@@ -2834,7 +2870,7 @@ function ReportAnalysisDialog({
                 }}
               >
                 {aiFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                AI 修复参数并应用
+                AI 修复参数（安全验证）
               </Button>
             </div>
             {aiOutput?.ai_summary ? (

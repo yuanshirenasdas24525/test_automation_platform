@@ -35,6 +35,10 @@ _EXTRACT_FAIL_RE = re.compile(r"参数提取失败：(.+?)(?:；|$)")
 _EXTRACT_ITEM_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)")
 # "[equal] status_code: 401 != 201" —— 左实际、右期望
 _STATUS_ASSERT_RE = re.compile(r"status_code:\s*(\d{3})\s*!=\s*(\d{3})")
+_EXPLICIT_STATUS_INTENT_RE = re.compile(
+    r"(?:返回|http(?:\s*状态码)?)[：:\s_-]*(\d{3})",
+    re.IGNORECASE,
+)
 # 连接层失败（不是被测服务返回的，是根本没连上）
 _CONN_HINTS = (
     "ConnectionError", "Max retries", "Connection refused", "Timeout", "timed out",
@@ -93,11 +97,47 @@ def _extract_failed_vars(error_message: str) -> list[tuple[str, str]]:
     return [(name, expr.strip()) for name, expr in _EXTRACT_ITEM_RE.findall(m.group(1))]
 
 
+def _auth_failure_assertion_intent(
+    *,
+    case_name: str,
+    step_name: str,
+    target: str,
+) -> bool:
+    """判断 401/403 是否正是用例标题明确表达的鉴权失败结果。"""
+    text = f"{case_name} {step_name}".lower().replace("_", " ")
+    path = (target or "").lower()
+    if any(hint in text for hint in ("返回401", "返回 401", "返回403", "返回 403")):
+        return True
+    if "refresh" in path and any(
+        hint in text
+        for hint in (
+            "无效refresh token", "无效 refresh token", "无效刷新令牌",
+            "已登出", "登出后", "退出后", "已退出", "会话已失效",
+            "refresh token失效", "refresh token 失效", "刷新令牌失效",
+            "撤销", "注销后",
+        )
+    ):
+        return True
+    if any(hint in path for hint in ("/login", "/signin", "/sign-in", "/auth/token")):
+        return "旧密码" in text and any(
+            hint in text
+            for hint in ("失败", "拒绝", "密码已改", "修改密码后", "改密后")
+        )
+    return False
+
+
+def _explicit_status_intent(*, case_name: str, step_name: str) -> set[int]:
+    """从标题/步骤名读取明确写出的 HTTP 状态码，只把这种铁证用于跨状态族修复。"""
+    text = f"{case_name} {step_name}"
+    return {int(value) for value in _EXPLICIT_STATUS_INTENT_RE.findall(text)}
+
+
 def triage_step(
     step: TestStepReport,
     *,
     producers: dict[str, int],
     failed_case_ids: set[int],
+    case_name: str = "",
 ) -> Optional[dict]:
     """给单个失败步骤定性。返回 None 表示 L1 判不了（留给 L2）。
 
@@ -247,9 +287,72 @@ def triage_step(
             "fix_hint": {"assertion": {"status_code": actual}},
         }
 
+    # 4.8) 用例标题已经明确写的是鉴权失败，但断言却被编译成成功码。
+    #      这类跨 2xx/4xx 比较通常有业务歧义，只有标题/步骤存在铁证时才自动定性。
+    if (
+        actual in (401, 403)
+        and expected is not None
+        and 200 <= expected < 300
+        and _auth_failure_assertion_intent(
+            case_name=case_name,
+            step_name=step.step_name or "",
+            target=step.target or "",
+        )
+    ):
+        return {
+            "classification": CLS_CASE,
+            "subtype": "wrong_auth_status_assertion",
+            "summary": f"鉴权失败符合用例意图（{actual}），但断言被错误编译为 {expected}",
+            "evidence": err[:200],
+            "suggestion": f"把当前失败步骤的状态码断言改成 {actual}",
+            "fix_hint": {"assertion": {"status_code": actual}},
+        }
+
+    # 4.9) 标题/步骤名明确写了实际返回码，断言却被编译成另一个状态码。
+    #      允许跨 2xx/4xx 自动修，但必须有明确文字证据，不能把偶发实际响应当契约。
+    if (
+        actual is not None and expected is not None and actual != expected
+        and actual in _explicit_status_intent(
+            case_name=case_name,
+            step_name=step.step_name or "",
+        )
+    ):
+        return {
+            "classification": CLS_CASE,
+            "subtype": "wrong_explicit_status_assertion",
+            "summary": f"用例意图明确要求返回 {actual}，但断言被错误编译为 {expected}",
+            "evidence": f"标题/步骤名明确包含返回码 {actual}；{err[:160]}",
+            "suggestion": f"把当前失败步骤的状态码断言改成 {actual}",
+            "fix_hint": {"assertion": {"status_code": actual}},
+        }
+
     # 5) extract 路径写错：值其实在响应里，只是 JSONPath 指错了 —— 能直接算出正确路径
     failed_vars = _extract_failed_vars(err)
     if failed_vars and body is not None:
+        # 请求先被 4xx 拒绝时，响应自然不会有成功响应字段。这里不能再归为“接口少字段”，
+        # 也不能机械删除 extract；应把真实拒绝原因连同完整响应交给 L2 做语义修复。
+        if isinstance(code, int) and 400 <= code < 500:
+            detail = body.get("detail") if isinstance(body, dict) else None
+            detail_text = json.dumps(detail, ensure_ascii=False, default=str) if detail is not None else ""
+            combined = f"{err} {detail_text}".lower()
+            if code in (401, 403):
+                subtype = "auth_lifecycle"
+                summary = f"请求先被鉴权拒绝（{code}），提取失败只是后果"
+            elif code == 422 and any(h in combined for h in ("role_code", "enum", "枚举", "可选")):
+                subtype = "invalid_enum"
+                summary = "请求参数不符合枚举/字段契约（422），提取失败只是后果"
+            else:
+                subtype = "request_rejected_before_extract"
+                summary = f"请求先被接口拒绝（{code}），提取失败只是后果"
+            return {
+                "classification": CLS_CASE,
+                "subtype": subtype,
+                "summary": summary,
+                "evidence": f"HTTP {code}；响应 detail={detail_text[:160] or '（无）'}",
+                "suggestion": "先依据请求契约和业务场景修正请求/状态码断言，再校验成功响应的提取路径",
+                "needs_semantic_fix": True,
+            }
+
         from server.services.ai_fix_service import find_jsonpath_candidates
         fixes: dict[str, str] = {}
         for name, _expr in failed_vars:
@@ -316,7 +419,12 @@ def triage_report(session: Session, report_id: int) -> dict:
         if not _failed(step) or step.case_id in seen:
             continue
         seen.add(step.case_id)          # 每条用例只按它第一个失败步骤定性
-        verdict = triage_step(step, producers=producers, failed_case_ids=failed_case_ids)
+        verdict = triage_step(
+            step,
+            producers=producers,
+            failed_case_ids=failed_case_ids,
+            case_name=names.get(step.case_id) or "",
+        )
         if verdict and verdict.get("fix_hint"):
             target = first_http.get(step.case_id)
             # step_id 可能因为步骤被重建而对不上，退回按步骤名比对
@@ -351,8 +459,14 @@ def triage_report(session: Session, report_id: int) -> dict:
         "report_id": report_id,
         "report_status": report.status,
         "total_failed": len(cases),
-        "triaged": sum(1 for c in cases if c["classification"] != CLS_UNKNOWN),
-        "undetermined": sum(1 for c in cases if c["classification"] == CLS_UNKNOWN),
+        "triaged": sum(
+            1 for c in cases
+            if c["classification"] != CLS_UNKNOWN and not c.get("needs_semantic_fix")
+        ),
+        "undetermined": sum(
+            1 for c in cases
+            if c["classification"] == CLS_UNKNOWN or c.get("needs_semantic_fix")
+        ),
         "by_classification": by_class,
         "cases": cases,
     }
@@ -366,7 +480,9 @@ def undetermined_case_ids(triage: dict) -> set[int]:
     return {
         int(c["case_id"])
         for c in triage.get("cases") or []
-        if c.get("classification") == CLS_UNKNOWN and c.get("case_id") is not None
+        if (
+            c.get("classification") == CLS_UNKNOWN or c.get("needs_semantic_fix")
+        ) and c.get("case_id") is not None
     }
 
 
@@ -383,8 +499,8 @@ def as_diagnosis_items(triage: dict, module_ids: dict[int, Optional[int]] | None
     module_ids = module_ids or {}
     items: list[dict] = []
     for c in triage.get("cases") or []:
-        if c.get("classification") == CLS_UNKNOWN:
-            continue          # 留给 LLM，别在这里占位
+        if c.get("classification") == CLS_UNKNOWN or c.get("needs_semantic_fix"):
+            continue          # 留给 LLM，别在这里占位或重复生成结论
         cid = c.get("case_id")
         hint = c.get("fix_hint") or {}
         findings = [c.get("summary") or "", f"依据：{c.get('evidence') or ''}"]

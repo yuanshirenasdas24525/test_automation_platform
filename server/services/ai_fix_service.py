@@ -20,7 +20,7 @@
 
   3. compare_and_rollback —— 重跑后按用例对比新旧报告：
        green→red 自动按事件回滚（快照恢复），red→green 记为修复成功，
-       red→red 记为无效（保留改动，人工判断）。修复率在机制上不再可能为负。
+       red→red 也视为未验证修复并自动回滚。只有重跑转绿的修改才会永久保留。
 """
 from __future__ import annotations
 
@@ -48,6 +48,10 @@ from utils.parameter_flow import (
 from utils.platform_utils import extractor
 
 _VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][\w.-]*)\}")
+_STATUS_INTENT_RE = re.compile(
+    r"(?:返回|http(?:\s*状态码)?)[：:\s_-]*(\d{3})",
+    re.IGNORECASE,
+)
 
 # 断言 expected 像"每次执行都会变的动态值"→ 等值断言下次必挂，强制转 not_empty
 _DYNAMIC_VALUE_RE = re.compile(
@@ -63,6 +67,23 @@ _DYNAMIC_TARGET_HINTS = ("token", "sign", "session", "ticket", "nonce", "timesta
 _NOT_EMPTY_SENTINELS = {"not_empty", "notempty", "not_null", "notnull", "非空"}
 
 _RED_STATUSES = {"failed", "broken", "error"}
+
+
+def _status_family(value: Any) -> int | None:
+    try:
+        return int(value) // 100
+    except (TypeError, ValueError):
+        return None
+
+
+def _explicit_case_statuses(case: TestCase, first_http: Any) -> set[int]:
+    """只从用户可见的用例/步骤说明读取明确状态码，作为跨状态族修复依据。"""
+    text = " ".join((
+        str(getattr(case, "name", "") or ""),
+        str(getattr(case, "description", "") or ""),
+        str(getattr(first_http, "step_name", "") or ""),
+    ))
+    return {int(value) for value in _STATUS_INTENT_RE.findall(text)}
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +909,20 @@ def _preflight_one(
         if target.startswith("sql:") or str(expected).startswith("sql:"):
             _drop("assertion", f"{target}: SQL 断言无法预检，请人工确认后手动添加")
             continue
+        if target == "status_code" and target in existing_assertion:
+            previous = existing_assertion[target]
+            if (
+                _status_family(previous) is not None
+                and _status_family(expected) is not None
+                and _status_family(previous) != _status_family(expected)
+                and int(expected) not in _explicit_case_statuses(case, first_http)
+            ):
+                _drop(
+                    "assertion",
+                    f"禁止仅凭一次真实响应把状态码从 {previous} 跨状态族改为 {expected}；"
+                    f"用例名称/描述/步骤名需明确写出“返回{expected}”",
+                )
+                continue
         # 动态值 → 强制 not_empty
         if not (isinstance(expected, str) and expected.strip().lower() in _NOT_EMPTY_SENTINELS) \
                 and _looks_dynamic(target, expected):
@@ -1223,7 +1258,7 @@ def compare_and_rollback(
     batch_id: int | None,
     applied: list[dict],
 ) -> dict:
-    """按用例对比新旧报告；green→red 自动回滚。返回三桶统计。"""
+    """按用例对比新旧报告；绿变红和红仍红都回滚，只有验证转绿才保留。"""
     old_rows = _load_report_rows(session, orig_report_id)
     new_rows = _load_report_rows(session, verify_report_id)
 
@@ -1249,6 +1284,8 @@ def compare_and_rollback(
                 rollback_event_ids.append(int(a["event_id"]))
         elif old_s == "failed" and new_s == "failed":
             still_red.append(entry)
+            if a.get("event_id"):
+                rollback_event_ids.append(int(a["event_id"]))
         elif old_s == "passed" and new_s == "passed":
             kept_green.append(entry)
         else:
@@ -1269,7 +1306,7 @@ def compare_and_rollback(
                 session,
                 batch_id=batch_id,
                 event_ids=rollback_event_ids,
-                reason=f"AI 修复验证：{len(rollback_event_ids)} 条用例绿变红，自动回滚",
+                reason=f"AI 修复验证：{len(rollback_event_ids)} 条修改未通过转绿验证，自动回滚",
                 force=False,
             )
             if rollback_result.get("conflicts"):
@@ -1293,6 +1330,34 @@ def compare_and_rollback(
         "rollback_conflicts": rollback_result.get("conflicts") or [],
         "rollback_error": rollback_result.get("error"),
     }
+
+
+def rollback_applied_fixes(
+    session: Session,
+    *,
+    batch_id: int | None,
+    applied: list[dict],
+    reason: str,
+) -> dict:
+    """验证任务无法得出结论时，回滚本轮所有候选修改，避免未验证内容留库。"""
+    event_ids = [
+        int(item["event_id"])
+        for item in applied
+        if item.get("event_id") is not None
+    ]
+    if not batch_id or not event_ids:
+        return {"rolled_back": 0, "conflicts": []}
+    try:
+        return rollback_test_case_events(
+            session,
+            batch_id=batch_id,
+            event_ids=event_ids,
+            reason=reason,
+            force=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.error("[ai_fix] 未验证修改回滚失败：%s", exc)
+        return {"rolled_back": 0, "conflicts": [], "error": str(exc)}
 
 
 def compute_final_summary(

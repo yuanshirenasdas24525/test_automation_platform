@@ -1,4 +1,6 @@
 # coding: utf-8
+from __future__ import annotations
+
 import os
 import mimetypes
 from config.settings import ProjectPaths
@@ -117,6 +119,12 @@ class FileParameter:
         if not file_list:
             LOGGER.info(f"文件列表为空: {file_list}")
             return None
-        file_list = [list_path.strip() for list_path in file_list.split(";")]
+        if isinstance(file_list, dict):
+            file_list = [
+                {"key": str(key), "path": path}
+                for key, path in file_list.items()
+            ]
+        elif isinstance(file_list, str):
+            file_list = [list_path.strip() for list_path in file_list.split(";")]
 
         return self.process_file_list(file_list)

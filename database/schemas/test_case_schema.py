@@ -29,6 +29,8 @@ class _TestCaseBase(BaseModel):
     timeout: int = 60
     retry: int = 0
     repeat_count: int = 1
+    source: str = "manual"
+    generation_metadata: Optional[Dict[str, Any]] = None
 
 
 class TestCaseCreateV2(_TestCaseBase):
@@ -52,6 +54,8 @@ class TestCaseUpdateV2(BaseModel):
     timeout: Optional[int] = None
     retry: Optional[int] = None
     repeat_count: Optional[int] = None
+    source: Optional[str] = None
+    generation_metadata: Optional[Dict[str, Any]] = None
 
 
 class TestCaseReadV2(_TestCaseBase):

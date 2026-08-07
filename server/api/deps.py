@@ -44,11 +44,12 @@ DBDep = Annotated[DB, Depends(get_db)]
 # ---------------------------------------------------------------------------
 from fastapi import HTTPException  # noqa: E402
 
-from server.api.auth import get_current_user  # noqa: E402
+from server.api.auth import get_current_user, get_current_user_bearer  # noqa: E402
 
 from database.models import User  # noqa: E402
 
 CurrentUserDep = Annotated[User, Depends(get_current_user)]
+BearerUserDep = Annotated[User, Depends(get_current_user_bearer)]
 
 
 def require_roles(*codes: str):
