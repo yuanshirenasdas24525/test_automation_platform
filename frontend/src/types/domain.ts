@@ -528,6 +528,10 @@ export interface FunctionalTestHistoryRun extends FunctionalCaseRun {
 /** AI 生成的一条功能用例草稿（来自 /functional_cases/ai_generate_batch）。 */
 export interface AiGeneratedCase {
   name: string;
+  /** 变更调整专用；普通生成用例缺省(视为 add)。delete 无详情(无 compiled_case)。 */
+  action?: "add" | "modify" | "delete";
+  /** modify/delete 指向现有用例。 */
+  target_case_id?: number | null;
   category?: string;
   operation_id?: string;
   scenario_type?: string;
@@ -611,6 +615,11 @@ export interface AiGeneratedRequest {
 export interface AiOutlinePoint {
   title: string;
   category: string;
+  /** 变更调整专用；普通生成用例缺省(视为 add)。 */
+  action?: "add" | "modify" | "delete";
+  /** modify/delete 指向现有用例；add 为 null。 */
+  target_case_id?: number | null;
+  endpoint?: { method: string; path: string } | null;
 }
 
 /** AI 项目概览（模块关联图谱，存在项目上）。 */
