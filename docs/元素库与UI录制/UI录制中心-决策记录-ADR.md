@@ -1,13 +1,13 @@
 # UI 录制中心 — 决策记录（ADR）
 
-> 文档版本：v1.1
-> 定版日期：2026-07-18（ADR-01~10）；2026-07-20 新增 ADR-11/12（待定版）
+> 文档版本：v1.2
+> 定版日期：2026-07-18（ADR-01~10）；2026-08-08 定版 ADR-11~14
 > 关联文档：[`UI录制中心-需求文档与实施方案.md`](./UI录制中心-需求文档与实施方案.md) v1.3
 >
 > **本文档是 UI 录制中心所有架构与产品决策的事实源。**
 > 所有开发会话（含 AI 开发）必须以本文档为准；变更决策必须先修订本文档再改代码。
-> v1.0 的十项决策原随需求文档评审定版，本文件为其独立成文；v1.1 新增两项
-> 代码库对照评审发现的待定决策（ADR-11 / ADR-12），要求阶段 0 结束前定版。
+> v1.0 的十项决策原随需求文档评审定版，本文件为其独立成文；v1.2 已结合
+> 实际交付的宿主机 Recorder Agent 和技术上下文边界完成 ADR-11～14 定版。
 
 ---
 
@@ -79,7 +79,7 @@
 
 ---
 
-## ADR-11 API↔Recorder 控制通道 【待定版 — 阶段 0 必须定版】
+## ADR-11 API↔Recorder 控制通道 【已定版】
 
 **问题**：录制是长会话 + 交互式控制。REST 控制请求（start / pause / perform_action / capture_snapshot / stop）到达 FastAPI 进程，而 Playwright/Appium Session 对象存活在录制进程中；Celery 无法把任务定向路由到"持有该 Session 的特定 Worker 进程"，因此"专用 Celery Worker 管理录制 Session"在没有可寻址机制之前不可行。实时画面帧回传（录制进程 → API → 前端 WebSocket）同样需要跨进程通道。
 
@@ -90,9 +90,9 @@
 | A. Recorder Agent（推荐） | 每个录制节点一个小型 HTTP/WS 服务进程，API 按 `agent_id` 转发控制命令 | 寻址天然成立（同 Appium Server 模式）；生命周期独立；契合 ADR-10 宿主机部署 | 新增常驻进程的部署/健康检查/鉴权 |
 | B. Worker 内命令队列 | Worker 内线程持 Session、消费 Redis 命令队列（每会话一个 key） | 不新增进程形态 | 占用 Worker 槽位 30 分钟级；重启恢复复杂；命令与帧全走 Redis 链路长 |
 
-**推荐方向**：方案 A，且 Recorder Agent 作为阶段 1 交付物（而非"中期引入"）。定版时需补：Agent 进程管理方式、与 API 层的鉴权约定、帧通道传输格式。
+**决策**：采用方案 A。Recorder Agent 由 `start-dev.sh` 在 macOS 宿主机启动，持有 Playwright/Appium 长会话；FastAPI 通过 HTTP 控制并按序号增量拉取事件。Agent 可通过 `UI_RECORDER_AGENT_SECRET` 和 `X-Recorder-Secret` 使用共享密钥鉴权。首个版本采用 1～2 秒轮询截图/事件，不引入 Redis 定向队列；需要更高帧率时再升级 WebSocket 帧通道。
 
-## ADR-12 Web Recorder 部署位置与有头模式 【待定版 — 阶段 0 必须定版】
+## ADR-12 Web Recorder 部署位置与有头模式 【已定版】
 
 **问题**：需求文档 12.1 要求 Playwright 有头模式 + 注入监听器捕获用户真实操作；但按 ADR-10，Celery Worker 在 Docker 容器内（无 DISPLAY），现有 `runners/web/adapters.py` 的 PlaywrightAdapter 在无 DISPLAY 时强制降级 headless——"用户直接操作弹出的有头浏览器"在容器内不成立。
 
@@ -103,4 +103,12 @@
 | A. 宿主机原生运行（推荐） | Web Recorder 与 Appium 同侧原生跑（配合 ADR-11 的 Agent 形态），有头浏览器弹在用户桌面 | 操作真实浏览器、事件注入捕获、体验最好；契合本地化部署 | 录制绑定宿主机环境；宿主机需装 Playwright 内核 |
 | B. 容器内 headless + 画面转发 | Web 端操作也走 ADR-02 式远程画面转发 | 部署统一；适配远期远程/多用户 | 交互延迟；事件注入方案作废 |
 
-**推荐方向**：方案 A；方案 B 作为远期远程录制能力的演进方向记录。定版时需同步更新需求文档 11.4 部署图与 FR-02 预检项（宿主机 Playwright 内核检查）。
+**决策**：采用方案 A。Web Recorder 原生运行在宿主机，默认打开有头 Playwright 浏览器；容器只保存控制面和录制结果。方案 B 仅作为未来远程节点能力记录。
+
+## ADR-13 技术上下文保留 【已定版】
+
+**决策**：录制会话事件、去重后的页面/模拟器快照、定位器证据和离线包随项目保留，默认不自动过期；连续实时帧不永久保存。密码、Cookie、Authorization、API Key 等在 Agent 侧先脱敏，单正文和单会话制品均设容量上限。删除项目或录制会话时按外键级联删除元数据，制品清理通过后续 StorageService/审计任务完成。
+
+## ADR-14 移动端网络采集边界 【已定版】
+
+**决策**：Web 必须采集 XHR/Fetch 并用于本地 Mock。Android/iOS Native Network 只有在测试代理或应用内 SDK 已配置时才承诺请求正文；未配置、证书固定或驱动不支持时，必须在环境事件和界面展示明确的降级原因，不得伪装成“已采集且无请求”。首个移动端切片采集画面、UI Tree、远程动作、设备日志和环境，Native Network 标记为降级。

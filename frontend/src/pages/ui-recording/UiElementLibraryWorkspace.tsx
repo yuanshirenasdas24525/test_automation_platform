@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
   CircleDot,
+  Crosshair,
   Database,
   ExternalLink,
+  GripVertical,
   Layers3,
   Loader2,
   Monitor,
@@ -13,9 +15,12 @@ import {
   Pause,
   Play,
   Search,
+  Send,
   Smartphone,
   Square,
   Terminal,
+  Undo2,
+  RefreshCw,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -37,13 +42,25 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ApiError, uiRecordingsApi } from "@/lib/api";
+import {
+  ApiError,
+  appPackagesApi,
+  casesApi,
+  devicesApi,
+  modulesApi,
+  uiRecordingsApi,
+  type AppPackage,
+  type Device,
+  type ModulePickerNode,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type {
   UiElement,
+  UiPageSnapshot,
   UiPlatform,
   UiRecordingEvent,
   UiRecordingSession,
+  UiRecordingStepDraft,
   UiRecordingStatus,
 } from "@/types/domain";
 
@@ -78,6 +95,13 @@ function messageOf(error: unknown): string {
   return "操作失败";
 }
 
+function randomId(prefix: string): string {
+  const value = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}-${value}`;
+}
+
 function formatTime(value: string | null | undefined): string {
   if (!value) return "--";
   const date = new Date(value);
@@ -90,18 +114,57 @@ function formatTime(value: string | null | undefined): string {
   });
 }
 
-function groupPages(elements: UiElement[]) {
-  const pages = new Map<string, { pageKey: string; pageName: string; elements: UiElement[] }>();
+function isSimulatorDevice(device: Device): boolean {
+  const capabilities = device.capabilities ?? {};
+  const deviceType = String(capabilities.device_type ?? "").toLocaleLowerCase();
+  const udid = device.udid.toLocaleLowerCase();
+  return capabilities.is_simulator === true
+    || deviceType === "emulator"
+    || deviceType === "simulator"
+    || udid.startsWith("emulator-")
+    || udid.startsWith("simulator-");
+}
+
+type UiPageGroup = {
+  pageKey: string;
+  pageName: string;
+  elements: UiElement[];
+  snapshots: UiPageSnapshot[];
+};
+
+function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
+  const pages = new Map<string, UiPageGroup>();
+  for (const snapshot of snapshots) {
+    const page = pages.get(snapshot.page_key) ?? {
+      pageKey: snapshot.page_key,
+      pageName: snapshot.page_name,
+      elements: [],
+      snapshots: [],
+    };
+    page.snapshots.push(snapshot);
+    pages.set(snapshot.page_key, page);
+  }
   for (const element of elements) {
     const page = pages.get(element.page_key) ?? {
       pageKey: element.page_key,
       pageName: element.page_name,
       elements: [],
+      snapshots: [],
     };
     page.elements.push(element);
     pages.set(element.page_key, page);
   }
-  return [...pages.values()].sort((a, b) => a.pageName.localeCompare(b.pageName, "zh-CN"));
+  return [...pages.values()]
+    .map((page) => ({
+      ...page,
+      snapshots: page.snapshots.sort((a, b) => b.snapshot_version - a.snapshot_version),
+    }))
+    .sort((a, b) => {
+      const latestA = a.snapshots[0]?.created_at ?? "";
+      const latestB = b.snapshots[0]?.created_at ?? "";
+      return latestB.localeCompare(latestA)
+        || a.pageName.localeCompare(b.pageName, "zh-CN");
+    });
 }
 
 function eventLabel(event: UiRecordingEvent): string {
@@ -110,9 +173,14 @@ function eventLabel(event: UiRecordingEvent): string {
     "agent.paused": "录制已暂停",
     "agent.resumed": "录制已继续",
     "agent.disconnected": "Recorder Agent 已停止",
+    "agent.pick_mode": "拾取模式已切换",
     "page.navigation": "页面跳转",
     "page.ready": "页面加载完成",
+    "page.snapshot": "页面快照已归档",
+    "offline.package": "离线业务包已生成",
+    "environment.snapshot": "运行环境已采集",
     "user.click": "点击元素",
+    "user.pick": "拾取元素",
     "user.input": "输入内容",
     "user.change": "修改选项",
     "user.submit": "提交表单",
@@ -139,6 +207,8 @@ export function UiElementLibraryWorkspace({
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const [clientInstanceId] = useState(() => randomId("ui-recorder"));
+  const isPopout = new URLSearchParams(window.location.search).get("presentation") === "popout";
   const [platform, setPlatform] = useState<UiPlatform>(initialPlatform);
   const [keyword, setKeyword] = useState("");
   const [pageKey, setPageKey] = useState<string | null>(null);
@@ -147,7 +217,14 @@ export function UiElementLibraryWorkspace({
   const [startOpen, setStartOpen] = useState(false);
   const [targetUrl, setTargetUrl] = useState(() => window.location.origin);
   const [browser, setBrowser] = useState("chromium");
-
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [selectedPackageId, setSelectedPackageId] = useState("none");
+  const [mobileInput, setMobileInput] = useState("");
+  const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
+  const [draftModuleId, setDraftModuleId] = useState("");
+  const [draftCaseName, setDraftCaseName] = useState("");
+  const [floatingVisible, setFloatingVisible] = useState(true);
+  const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
     setPlatform(initialPlatform);
@@ -162,11 +239,23 @@ export function UiElementLibraryWorkspace({
     setPageKey(null);
     setSelectedElementId(null);
     setSessionOverride(null);
+    setSelectedDeviceId("");
+    setSelectedPackageId("none");
+    setMobileInput("");
+    setStepDraft(null);
+    setDraftModuleId("");
+    setDraftCaseName("");
   }, [platform]);
 
   const elementsQuery = useQuery({
     queryKey: ["ui-elements", projectId, platform],
     queryFn: () => uiRecordingsApi.listElements({ projectId, platform }),
+    enabled: open && Number.isFinite(projectId),
+    refetchInterval: open ? 2000 : false,
+  });
+  const snapshotsQuery = useQuery({
+    queryKey: ["ui-page-snapshots", projectId, platform],
+    queryFn: () => uiRecordingsApi.listSnapshots({ projectId, platform }),
     enabled: open && Number.isFinite(projectId),
     refetchInterval: open ? 2000 : false,
   });
@@ -179,6 +268,53 @@ export function UiElementLibraryWorkspace({
       return sessions.some((session) => ACTIVE_STATUSES.includes(session.status)) ? 3000 : false;
     },
   });
+  const devicesQuery = useQuery({
+    queryKey: ["ui-recording-devices", platform],
+    queryFn: () => devicesApi.list({ platform: platform === "android" ? "Android" : "iOS" }),
+    enabled: open && platform !== "web",
+  });
+  const appPackagesQuery = useQuery({
+    queryKey: ["ui-recording-app-packages", projectId, platform],
+    queryFn: () => appPackagesApi.list({
+      platform: platform as "android" | "ios",
+      project_id: projectId,
+    }),
+    enabled: open && platform !== "web",
+  });
+  const mobilePreflightQuery = useQuery({
+    queryKey: ["ui-recording-mobile-preflight"],
+    queryFn: () => uiRecordingsApi.mobilePreflight(),
+    enabled: open && platform !== "web",
+    refetchInterval: startOpen && platform !== "web" ? 3000 : false,
+    retry: false,
+  });
+  const draftModulesQuery = useQuery({
+    queryKey: ["ui-recording-draft-modules", projectId],
+    queryFn: () => modulesApi.listForPicker(projectId),
+    enabled: open && stepDraft != null,
+  });
+  const draftModules = useMemo<ModulePickerNode[]>(
+    () => draftModulesQuery.data ?? [],
+    [draftModulesQuery.data],
+  );
+
+  useEffect(() => {
+    if (stepDraft == null || draftModuleId || draftModules.length === 0) return;
+    setDraftModuleId(String(draftModules[0].id));
+  }, [draftModuleId, draftModules, stepDraft]);
+  const simulatorDevices = useMemo(
+    () => (devicesQuery.data ?? []).filter(isSimulatorDevice),
+    [devicesQuery.data],
+  );
+  const mobilePackages = useMemo<AppPackage[]>(
+    () => appPackagesQuery.data ?? [],
+    [appPackagesQuery.data],
+  );
+
+  useEffect(() => {
+    if (platform === "web" || selectedDeviceId || simulatorDevices.length === 0) return;
+    setSelectedDeviceId(String(simulatorDevices[0].id));
+  }, [platform, selectedDeviceId, simulatorDevices]);
 
   const elements = useMemo(() => elementsQuery.data ?? [], [elementsQuery.data]);
   const normalizedKeyword = keyword.trim().toLocaleLowerCase();
@@ -190,9 +326,21 @@ export function UiElementLibraryWorkspace({
     }),
     [elements, normalizedKeyword],
   );
-  const pages = useMemo(() => groupPages(filteredElements), [filteredElements]);
+  const filteredSnapshots = useMemo(
+    () => (snapshotsQuery.data ?? []).filter((snapshot) => {
+      if (!normalizedKeyword) return true;
+      return [snapshot.page_name, snapshot.page_key, snapshot.url ?? ""]
+        .some((value) => value.toLocaleLowerCase().includes(normalizedKeyword));
+    }),
+    [normalizedKeyword, snapshotsQuery.data],
+  );
+  const pages = useMemo(
+    () => groupPages(filteredElements, filteredSnapshots),
+    [filteredElements, filteredSnapshots],
+  );
   const activePageKey = pageKey ?? pages[0]?.pageKey ?? null;
   const activePage = pages.find((page) => page.pageKey === activePageKey) ?? null;
+  const activeSnapshot = activePage?.snapshots[0] ?? null;
   const visibleElements = activePage?.elements ?? [];
   const selectedElement =
     elements.find((element) => element.id === selectedElementId) ?? visibleElements[0] ?? null;
@@ -212,33 +360,92 @@ export function UiElementLibraryWorkspace({
     refetchInterval: 1000,
   });
   const events = eventsQuery.data ?? [];
+  const controlLease = (session?.capabilities.control_lease ?? null) as {
+    owner_id?: string;
+    expires_at?: string;
+  } | null;
+  const hasControl = !session || !ACTIVE_STATUSES.includes(session.status)
+    || controlLease?.owner_id === clientInstanceId;
+  const pickMode = session?.capabilities.pick_mode === true;
+  const offlineReplay = (session?.capabilities.offline_replay ?? null) as {
+    ready?: boolean;
+    page_count?: number;
+    resource_count?: number;
+    mock_count?: number;
+    archive_bytes?: number;
+    integrity_verified?: boolean;
+    limitations?: string[];
+  } | null;
+  const mobileScenario = (session?.capabilities.mobile_scenario ?? null) as {
+    ready?: boolean;
+    snapshot_count?: number;
+    limitations?: string[];
+  } | null;
+  const leaseSessionId = session?.id ?? null;
+  const leaseSessionStatus = session?.status ?? null;
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ui-recordings", projectId, platform] });
   };
 
   const startMutation = useMutation({
-    mutationFn: async (input: { targetUrl: string; browser: string }) => {
+    mutationFn: async (input: {
+      targetUrl?: string;
+      browser?: string;
+      deviceId?: number;
+      appPackageId?: number;
+    }) => {
       const draft = await uiRecordingsApi.create({
         project_id: projectId,
         platform,
         name: `${PLATFORM_META[platform].label} 录制 ${new Date().toLocaleString("zh-CN")}`,
-        source_url: input.targetUrl,
+        source_url: platform === "web" ? input.targetUrl : undefined,
+        device_id: input.deviceId,
+        app_package_id: input.appPackageId,
         capture_config: {
-          browser: input.browser,
+          browser: input.browser ?? "chromium",
           headless: false,
           viewport: { width: 1440, height: 900 },
           offline_level: 3,
           reuse_existing_assertions: true,
         },
       });
-      return uiRecordingsApi.control(draft.id, "start");
+      return uiRecordingsApi.control(draft.id, "start", {
+        client_instance_id: clientInstanceId,
+        command_id: randomId("start"),
+        takeover: true,
+      });
     },
     onSuccess: async (next) => {
       setSessionOverride(next);
       setStartOpen(false);
       await refresh();
-      toast.success("受控浏览器已打开，录制已开始");
+      toast.success(platform === "web" ? "受控浏览器已打开，录制已开始" : "模拟器已连接，录制已开始");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const reopenMobileMutation = useMutation({
+    mutationFn: async (previous: UiRecordingSession) => {
+      if (!previous.device_id) throw new Error("原录制没有绑定模拟器，无法重开场景");
+      const draft = await uiRecordingsApi.create({
+        project_id: projectId,
+        platform: previous.platform,
+        name: `${previous.name} · 场景重开`,
+        device_id: previous.device_id,
+        app_package_id: previous.app_package_id ?? undefined,
+        capture_config: previous.capture_config,
+      });
+      return uiRecordingsApi.control(draft.id, "start", {
+        client_instance_id: clientInstanceId,
+        command_id: randomId("mobile-reopen"),
+        takeover: true,
+      });
+    },
+    onSuccess: async (next) => {
+      setSessionOverride(next);
+      await refresh();
+      toast.success("已按原模拟器和应用版本重开场景");
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -247,7 +454,10 @@ export function UiElementLibraryWorkspace({
     mutationFn: ({ sessionId, action }: {
       sessionId: number;
       action: "pause" | "resume" | "stop";
-    }) => uiRecordingsApi.control(sessionId, action),
+    }) => uiRecordingsApi.control(sessionId, action, {
+      client_instance_id: clientInstanceId,
+      command_id: randomId(action),
+    }),
     onSuccess: async (next) => {
       setSessionOverride(next);
       await refresh();
@@ -256,10 +466,140 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  const pickModeMutation = useMutation({
+    mutationFn: ({ sessionId, enabled }: { sessionId: number; enabled: boolean }) =>
+      uiRecordingsApi.setPickMode(sessionId, {
+        client_instance_id: clientInstanceId,
+        command_id: randomId("pick"),
+        enabled,
+      }),
+    onSuccess: async (next) => {
+      setSessionOverride(next);
+      await refresh();
+      toast.success(next.capabilities.pick_mode ? "已进入非破坏性拾取" : "已退出拾取模式");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const mobileActionMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      action,
+      ...payload
+    }: {
+      sessionId: number;
+      action: "tap" | "input" | "swipe" | "back" | "refresh";
+      x?: number;
+      y?: number;
+      end_x?: number;
+      end_y?: number;
+      duration_ms?: number;
+      text?: string;
+    }) => uiRecordingsApi.performMobileAction(sessionId, {
+      client_instance_id: clientInstanceId,
+      command_id: randomId(`mobile-${action}`),
+      action,
+      ...payload,
+    }),
+    onSuccess: async (next) => {
+      setSessionOverride(next);
+      await Promise.all([
+        refresh(),
+        queryClient.invalidateQueries({ queryKey: ["ui-recording-events", next.id] }),
+        queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] }),
+        queryClient.invalidateQueries({ queryKey: ["ui-elements", projectId, platform] }),
+      ]);
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const replayMutation = useMutation({
+    mutationFn: (sessionId: number) => uiRecordingsApi.startReplay(sessionId, browser),
+    onSuccess: (replay) => {
+      toast.success(
+        `离线回放已打开：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
+      );
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const stepDraftMutation = useMutation({
+    mutationFn: (sessionId: number) => uiRecordingsApi.stepDraft(sessionId),
+    onSuccess: (draft) => {
+      setStepDraft(draft);
+      setDraftCaseName(draft.suggested_name);
+      setDraftModuleId("");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const commitDraftMutation = useMutation({
+    mutationFn: async () => {
+      if (!stepDraft || !draftModuleId) throw new Error("请选择用例所属模块");
+      const steps = stepDraft.steps.map(({ source_event_id: _sourceEventId, ...step }) => step);
+      return casesApi.create({
+        module_id: Number(draftModuleId),
+        name: draftCaseName.trim() || stepDraft.suggested_name,
+        description: `由 UI 录制会话 #${stepDraft.session_id} 生成，已保留原始技术上下文。`,
+        case_type: stepDraft.case_type,
+        priority: 2,
+        steps,
+        source: "manual",
+        generation_metadata: {
+          source: "ui_recording",
+          ui_recording_session_id: stepDraft.session_id,
+          source_event_count: stepDraft.source_event_count,
+          warnings: stepDraft.warnings,
+        },
+      });
+    },
+    onSuccess: async ({ id }) => {
+      setStepDraft(null);
+      await queryClient.invalidateQueries({ queryKey: ["content", projectId] });
+      toast.success(`用例草稿已保存（#${id}），可在用例编辑器中继续补充断言`);
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  useEffect(() => {
+    if (!open || leaseSessionId == null || leaseSessionStatus == null
+      || !ACTIVE_STATUSES.includes(leaseSessionStatus)) return;
+    let disposed = false;
+    const heartbeat = async (first: boolean) => {
+      try {
+        const next = await uiRecordingsApi.updateLease(leaseSessionId, {
+          client_instance_id: clientInstanceId,
+          action: first && isPopout ? "takeover" : first ? "claim" : "heartbeat",
+        });
+        if (!disposed) setSessionOverride(next);
+      } catch {
+        if (!disposed) {
+          await queryClient.invalidateQueries({ queryKey: ["ui-recordings", projectId, platform] });
+        }
+      }
+    };
+    void heartbeat(true);
+    const timer = window.setInterval(() => void heartbeat(false), 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    clientInstanceId,
+    isPopout,
+    leaseSessionId,
+    leaseSessionStatus,
+    open,
+    platform,
+    projectId,
+    queryClient,
+  ]);
+
   const openPopout = () => {
     const url = new URL(window.location.href);
     url.searchParams.set("uiElements", platform);
     url.searchParams.set("presentation", "popout");
+    if (session) url.searchParams.set("uiSession", String(session.id));
     const popup = window.open(url.toString(), `ui-elements-${projectId}`, "popup,width=1320,height=820");
     if (!popup) toast.error("浏览器阻止了独立窗口，请允许本站打开弹窗");
   };
@@ -271,9 +611,18 @@ export function UiElementLibraryWorkspace({
 
   if (!open) return null;
 
-  const sessionBusy = startMutation.isPending || controlMutation.isPending;
+  const sessionBusy = startMutation.isPending
+    || reopenMobileMutation.isPending
+    || controlMutation.isPending
+    || pickModeMutation.isPending
+    || mobileActionMutation.isPending;
   const platformRuntime = PLATFORM_META[platform];
   const statusMeta = session ? STATUS_META[session.status] : null;
+  const mobileSessionActive = session != null && ACTIVE_STATUSES.includes(session.status);
+  const mobilePreflight = mobilePreflightQuery.data;
+  const mobilePreflightReady = platform === "android"
+    ? mobilePreflight?.platform_ready.android === true
+    : platform === "ios" && mobilePreflight?.platform_ready.ios === true;
 
   return (
     <div className="fixed inset-0 z-50 flex min-w-[980px] flex-col bg-background text-foreground">
@@ -284,7 +633,7 @@ export function UiElementLibraryWorkspace({
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold">可视化元素库</h1>
+              <h1 className="text-lg font-semibold">{isPopout ? "录制独立控制窗口" : "可视化元素库"}</h1>
               <span className="rounded-full border bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
                 离线业务回放 Level 3
               </span>
@@ -323,51 +672,58 @@ export function UiElementLibraryWorkspace({
             <Button
               size="sm"
               disabled={sessionBusy}
-              onClick={() => {
-                if (platform !== "web") {
-                  toast.info("Android/iOS 模拟器录制将在下一阶段开放");
-                  return;
-                }
-                setStartOpen(true);
-              }}
+              onClick={() => setStartOpen(true)}
             >
               {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CircleDot className="h-4 w-4" />}
               开始录制
             </Button>
           ) : null}
-          {session?.status === "recording" ? (
+          {session?.status === "completed" && offlineReplay?.ready ? (
             <Button
               size="sm"
               variant="outline"
-              disabled={sessionBusy}
-              onClick={() => controlMutation.mutate({ sessionId: session.id, action: "pause" })}
+              disabled={replayMutation.isPending}
+              onClick={() => replayMutation.mutate(session.id)}
             >
-              <Pause className="h-4 w-4" />暂停
+              {replayMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              离线回放
             </Button>
           ) : null}
-          {session?.status === "paused" ? (
-            <Button
-              size="sm"
-              disabled={sessionBusy}
-              onClick={() => controlMutation.mutate({ sessionId: session.id, action: "resume" })}
-            >
-              <Play className="h-4 w-4" />继续
-            </Button>
-          ) : null}
-          {session && ["recording", "paused"].includes(session.status) ? (
+          {session?.status === "completed" && platform !== "web" && mobileScenario?.ready ? (
             <Button
               size="sm"
               variant="outline"
-              disabled={sessionBusy}
-              onClick={() => controlMutation.mutate({ sessionId: session.id, action: "stop" })}
+              disabled={reopenMobileMutation.isPending}
+              onClick={() => reopenMobileMutation.mutate(session)}
             >
-              <Square className="h-3.5 w-3.5" />停止
+              {reopenMobileMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <RefreshCw className="h-4 w-4" />}
+              重开场景
+            </Button>
+          ) : null}
+          {session?.status === "completed" ? (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={stepDraftMutation.isPending}
+              onClick={() => stepDraftMutation.mutate(session.id)}
+            >
+              {stepDraftMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : <ChevronRight className="h-4 w-4" />}
+              生成用例草稿
+            </Button>
+          ) : null}
+          {session && ACTIVE_STATUSES.includes(session.status) && !floatingVisible ? (
+            <Button size="sm" variant="outline" onClick={() => setFloatingVisible(true)}>
+              显示录制条
             </Button>
           ) : null}
           <Button size="icon" variant="ghost" title="打开独立窗口" onClick={openPopout}>
             <ExternalLink className="h-4 w-4" />
           </Button>
-          <Button size="icon" variant="ghost" title="关闭" onClick={onClose}>
+          <Button size="icon" variant="ghost" title="关闭" onClick={isPopout ? () => window.close() : onClose}>
             <X className="h-5 w-5" />
           </Button>
         </div>
@@ -416,7 +772,7 @@ export function UiElementLibraryWorkspace({
                 >
                   <span className="truncate">{page.pageName}</span>
                   <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {page.elements.length}
+                    {page.elements.length} 元素 · {page.snapshots.length} 版本
                   </span>
                 </button>
               ))
@@ -433,6 +789,40 @@ export function UiElementLibraryWorkspace({
                   <span>{session.event_count} 个事件</span>
                   <span>{formatTime(session.updated_at)}</span>
                 </div>
+                {offlineReplay?.ready ? (
+                  <>
+                    <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
+                      离线包可用 · {offlineReplay.page_count ?? 0} 页 · {offlineReplay.resource_count ?? 0} 资源 · {offlineReplay.mock_count ?? 0} Mock
+                      {offlineReplay.integrity_verified ? " · SHA-256 已校验" : ""}
+                    </div>
+                    {offlineReplay.limitations?.length ? (
+                      <details className="mt-2 text-[10px] text-muted-foreground">
+                        <summary className="cursor-pointer">查看能力限制（{offlineReplay.limitations.length}）</summary>
+                        <ul className="mt-1 list-disc space-y-1 pl-4">
+                          {offlineReplay.limitations.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </>
+                ) : mobileScenario?.ready ? (
+                  <>
+                    <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
+                      模拟器场景可重开 · {mobileScenario.snapshot_count ?? session.snapshot_count} 个画面版本
+                    </div>
+                    {mobileScenario.limitations?.length ? (
+                      <details className="mt-2 text-[10px] text-muted-foreground">
+                        <summary className="cursor-pointer">查看场景恢复限制</summary>
+                        <ul className="mt-1 list-disc space-y-1 pl-4">
+                          {mobileScenario.limitations.map((item) => <li key={item}>{item}</li>)}
+                        </ul>
+                      </details>
+                    ) : null}
+                  </>
+                ) : session.status === "completed" ? (
+                  <div className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-[10px] text-amber-700">
+                    {platform === "web" ? "本次录制未生成可交互离线包" : "本次录制未生成可重开场景"}
+                  </div>
+                ) : null}
               </div>
             ) : (
               <div className="text-xs text-muted-foreground">尚无录制会话</div>
@@ -464,23 +854,48 @@ export function UiElementLibraryWorkspace({
                       {activePage ? `offline://project/${projectId}/${activePage.pageKey}` : "offline://等待页面快照"}
                     </div>
                   </div>
-                  <ElementStage
-                    platform={platform}
-                    elements={visibleElements}
-                    selectedElementId={selectedElement?.id ?? null}
-                    onSelect={setSelectedElementId}
-                  />
-                </div>
-              ) : (
-                <div className="flex items-center gap-8">
-                  <div className="h-[520px] w-[260px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700">
-                    <div className="mx-auto mt-2 h-5 w-24 rounded-full bg-slate-800 dark:bg-slate-700" />
+                  {activeSnapshot?.has_screenshot ? (
+                    <SnapshotStage
+                      snapshot={activeSnapshot}
+                      elements={visibleElements}
+                      selectedElementId={selectedElement?.id ?? null}
+                      onSelect={setSelectedElementId}
+                    />
+                  ) : (
                     <ElementStage
                       platform={platform}
                       elements={visibleElements}
                       selectedElementId={selectedElement?.id ?? null}
                       onSelect={setSelectedElementId}
                     />
+                  )}
+                </div>
+              ) : (
+                <div className="flex items-center gap-8">
+                  <div className="h-[560px] w-[300px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700">
+                    <div className="mx-auto mt-2 h-5 w-24 rounded-full bg-slate-800 dark:bg-slate-700" />
+                    {activeSnapshot?.has_screenshot ? (
+                      <MobileSnapshotStage
+                        snapshot={activeSnapshot}
+                        disabled={
+                          !mobileSessionActive
+                          || !hasControl
+                          || mobileActionMutation.isPending
+                        }
+                        pickMode={pickMode}
+                        onGesture={(gesture) => {
+                          if (!session) return;
+                          mobileActionMutation.mutate({ sessionId: session.id, ...gesture });
+                        }}
+                      />
+                    ) : (
+                      <ElementStage
+                        platform={platform}
+                        elements={visibleElements}
+                        selectedElementId={selectedElement?.id ?? null}
+                        onSelect={setSelectedElementId}
+                      />
+                    )}
                   </div>
                   <div className="w-64 space-y-3">
                     <div className="rounded-xl border bg-background p-4">
@@ -489,12 +904,69 @@ export function UiElementLibraryWorkspace({
                         {platform === "android" ? "Android Emulator" : "iOS Simulator"}
                       </div>
                       <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        首期只连接模拟器。页面画面、点击输入和元素树由 Appium 转发。
+                        直接点击或拖动画面即可经 Appium 操作模拟器；拾取模式下只识别元素，不执行点击。
                       </p>
                     </div>
-                    <ContextCapability icon={<Database className="h-4 w-4" />} label="UI Tree" value="等待 Agent" />
-                    <ContextCapability icon={<Terminal className="h-4 w-4" />} label="设备日志" value="等待 Agent" />
-                    <ContextCapability icon={<Network className="h-4 w-4" />} label="Network" value="能力预检" />
+                    <ContextCapability
+                      icon={<Database className="h-4 w-4" />}
+                      label="UI Tree"
+                      value={activeSnapshot?.has_document ? "已采集" : "等待 Agent"}
+                    />
+                    <ContextCapability
+                      icon={<Terminal className="h-4 w-4" />}
+                      label="设备日志"
+                      value={session?.capabilities.device_logs === "best_effort" ? "尽力采集" : "等待 Agent"}
+                    />
+                    <ContextCapability
+                      icon={<Network className="h-4 w-4" />}
+                      label="Native Network"
+                      value={session?.capabilities.native_network === false ? "已降级" : "能力预检"}
+                    />
+                    <div className="rounded-xl border bg-background p-3">
+                      <div className="mb-2 text-xs font-medium">向当前焦点输入</div>
+                      <div className="flex gap-2">
+                        <Input
+                          value={mobileInput}
+                          onChange={(event) => setMobileInput(event.target.value)}
+                          placeholder="先点击输入框"
+                          className="h-8 text-xs"
+                        />
+                        <Button
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          disabled={!mobileSessionActive || !hasControl || !mobileInput || mobileActionMutation.isPending}
+                          onClick={() => {
+                            if (!session) return;
+                            mobileActionMutation.mutate({
+                              sessionId: session.id,
+                              action: "input",
+                              text: mobileInput,
+                            });
+                            setMobileInput("");
+                          }}
+                        >
+                          <Send className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!mobileSessionActive || !hasControl || mobileActionMutation.isPending}
+                          onClick={() => session && mobileActionMutation.mutate({ sessionId: session.id, action: "back" })}
+                        >
+                          <Undo2 className="h-3.5 w-3.5" />返回
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!mobileSessionActive || !hasControl || mobileActionMutation.isPending}
+                          onClick={() => session && mobileActionMutation.mutate({ sessionId: session.id, action: "refresh" })}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5" />刷新
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -600,52 +1072,580 @@ export function UiElementLibraryWorkspace({
         </aside>
       </div>
 
+      {session && ACTIVE_STATUSES.includes(session.status) && floatingVisible && !stopConfirmOpen ? (
+        <RecorderFloatingBar
+          session={session}
+          busy={sessionBusy}
+          hasControl={hasControl}
+          pickMode={pickMode}
+          onPause={() => controlMutation.mutate({ sessionId: session.id, action: "pause" })}
+          onResume={() => controlMutation.mutate({ sessionId: session.id, action: "resume" })}
+          onStop={() => setStopConfirmOpen(true)}
+          onTogglePick={() => pickModeMutation.mutate({ sessionId: session.id, enabled: !pickMode })}
+          onPopout={openPopout}
+          onMinimize={() => setFloatingVisible(false)}
+        />
+      ) : null}
+
       <Dialog open={startOpen} onOpenChange={(next) => !startMutation.isPending && setStartOpen(next)}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle>开始 Web 录制</DialogTitle>
+            <DialogTitle>开始 {PLATFORM_META[platform].label} 录制</DialogTitle>
             <DialogDescription>
-              Recorder Agent 将打开一个独立的可见浏览器。请在该浏览器中正常操作被测系统。
+              {platform === "web"
+                ? "Recorder Agent 将打开一个独立的可见浏览器。请在该浏览器中正常操作被测系统。"
+                : "Recorder Agent 将连接已启动的模拟器和 Appium Server，后续操作都在平台远程画面中完成。"}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
-            <label className="block space-y-1.5 text-sm">
-              <span className="font-medium">目标地址</span>
-              <Input
-                autoFocus
-                value={targetUrl}
-                onChange={(event) => setTargetUrl(event.target.value)}
-                placeholder="https://staging.example.com/login"
-              />
-              <span className="block text-xs text-muted-foreground">必须填写完整的 http/https URL。</span>
-            </label>
-            <label className="block space-y-1.5 text-sm">
-              <span className="font-medium">浏览器内核</span>
-              <Select value={browser} onValueChange={setBrowser}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="chromium">Chromium（推荐）</SelectItem>
-                  <SelectItem value="firefox">Firefox</SelectItem>
-                  <SelectItem value="webkit">WebKit</SelectItem>
-                </SelectContent>
-              </Select>
-            </label>
+            {platform === "web" ? (
+              <>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">目标地址</span>
+                  <Input
+                    autoFocus
+                    value={targetUrl}
+                    onChange={(event) => setTargetUrl(event.target.value)}
+                    placeholder="https://staging.example.com/login"
+                  />
+                  <span className="block text-xs text-muted-foreground">必须填写完整的 http/https URL。</span>
+                </label>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">浏览器内核</span>
+                  <Select value={browser} onValueChange={setBrowser}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="chromium">Chromium（推荐）</SelectItem>
+                      <SelectItem value="firefox">Firefox</SelectItem>
+                      <SelectItem value="webkit">WebKit</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </label>
+              </>
+            ) : (
+              <>
+                <div className={cn(
+                  "rounded-lg border px-3 py-2.5 text-xs",
+                  mobilePreflightReady
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                    : "border-amber-200 bg-amber-50 text-amber-800",
+                )}>
+                  {mobilePreflightQuery.isLoading
+                    ? "正在检查 Appium 与已启动模拟器…"
+                    : mobilePreflightReady
+                      ? `宿主机已就绪 · Appium ${mobilePreflight?.appium.version || "running"} · ${
+                        platform === "android"
+                          ? mobilePreflight?.android_devices.length ?? 0
+                          : mobilePreflight?.ios_devices.length ?? 0
+                      } 台已启动`
+                      : mobilePreflightQuery.error
+                        ? `Recorder Agent 预检失败：${messageOf(mobilePreflightQuery.error)}`
+                        : platform === "ios" && mobilePreflight?.ios_issues.length
+                          ? `iOS 环境未就绪：${mobilePreflight.ios_issues.join("；")}`
+                          : "宿主机未就绪：请启动 Appium、对应驱动和所选平台模拟器。"}
+                </div>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">模拟器</span>
+                  <Select value={selectedDeviceId} onValueChange={setSelectedDeviceId}>
+                    <SelectTrigger><SelectValue placeholder="选择已注册模拟器" /></SelectTrigger>
+                    <SelectContent>
+                      {simulatorDevices.map((device) => (
+                        <SelectItem key={device.id} value={String(device.id)}>
+                          {device.device_name || device.udid} · {device.platform_version || "未知版本"} · {device.status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {devicesQuery.isLoading ? (
+                    <span className="block text-xs text-muted-foreground">正在读取设备池…</span>
+                  ) : simulatorDevices.length === 0 ? (
+                    <span className="block text-xs text-amber-700">
+                      没有已注册模拟器。请先在设备管理中注册，并设置 capabilities.is_simulator=true。
+                    </span>
+                  ) : null}
+                </label>
+                <label className="block space-y-1.5 text-sm">
+                  <span className="font-medium">应用包（可选）</span>
+                  <Select value={selectedPackageId} onValueChange={setSelectedPackageId}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">连接当前已打开的应用</SelectItem>
+                      {mobilePackages.map((item) => (
+                        <SelectItem key={item.id} value={String(item.id)}>
+                          {item.name} · {item.version || "未知版本"}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </>
+            )}
             <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">
-              自动采集：点击与输入、页面跳转、Console、页面异常、XHR/Fetch、操作截图、URL、浏览器和视口信息。密码输入默认脱敏。
+              {platform === "web"
+                ? "自动采集：点击与输入、页面跳转、Console、页面异常、XHR/Fetch、操作截图、URL、浏览器和视口信息。密码输入默认脱敏。"
+                : "自动采集：模拟器画面、UI Tree、点击/输入/滑动、Accessibility/ID/XPath 定位器、设备与应用环境。Native Network 未配置代理或 SDK 时会明确标记降级。"}
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" disabled={startMutation.isPending} onClick={() => setStartOpen(false)}>取消</Button>
             <Button
-              disabled={startMutation.isPending || !/^https?:\/\//i.test(targetUrl.trim())}
-              onClick={() => startMutation.mutate({ targetUrl: targetUrl.trim(), browser })}
+              disabled={
+                startMutation.isPending
+                || (platform === "web" ? !/^https?:\/\//i.test(targetUrl.trim()) : !selectedDeviceId)
+              }
+              onClick={() => startMutation.mutate(
+                platform === "web"
+                  ? { targetUrl: targetUrl.trim(), browser }
+                  : {
+                      deviceId: Number(selectedDeviceId),
+                      appPackageId: selectedPackageId === "none" ? undefined : Number(selectedPackageId),
+                    },
+              )}
             >
               {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CircleDot className="h-4 w-4" />}
-              {startMutation.isPending ? "正在启动浏览器…" : "打开浏览器并录制"}
+              {startMutation.isPending
+                ? platform === "web" ? "正在启动浏览器…" : "正在连接模拟器…"
+                : platform === "web" ? "打开浏览器并录制" : "连接模拟器并录制"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog
+        open={stepDraft != null}
+        onOpenChange={(next) => {
+          if (!next && !commitDraftMutation.isPending) setStepDraft(null);
+        }}
+      >
+        <DialogContent className="max-h-[86vh] sm:max-w-[720px]">
+          <DialogHeader>
+            <DialogTitle>确认录制生成的用例草稿</DialogTitle>
+            <DialogDescription>
+              动作已转换为现有 v2 Runner 步骤；本期不自动新增断言，保存后可在原用例编辑器中继续补充。
+            </DialogDescription>
+          </DialogHeader>
+          {stepDraft ? (
+            <div className="min-h-0 space-y-4 overflow-y-auto py-1">
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1.5 text-sm">
+                  <span className="font-medium">用例名称</span>
+                  <Input value={draftCaseName} onChange={(event) => setDraftCaseName(event.target.value)} />
+                </label>
+                <label className="space-y-1.5 text-sm">
+                  <span className="font-medium">所属模块</span>
+                  <Select value={draftModuleId} onValueChange={setDraftModuleId}>
+                    <SelectTrigger><SelectValue placeholder="选择模块" /></SelectTrigger>
+                    <SelectContent>
+                      {draftModules.map((module) => (
+                        <SelectItem key={module.id} value={String(module.id)}>{module.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+              </div>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between text-xs font-medium">
+                  <span>执行步骤</span>
+                  <span className="text-muted-foreground">{stepDraft.steps.length} 步</span>
+                </div>
+                <div className="max-h-[330px] space-y-2 overflow-y-auto rounded-lg border bg-muted/20 p-2">
+                  {stepDraft.steps.length ? stepDraft.steps.map((step) => (
+                    <div key={`${step.step_order}-${step.source_event_id ?? step.step_type}`} className="rounded-md border bg-background px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="grid h-5 w-5 place-items-center rounded-full bg-primary/10 text-[10px] font-semibold text-primary">
+                          {step.step_order}
+                        </span>
+                        <span className="text-xs font-medium">{step.step_name}</span>
+                        <code className="ml-auto text-[10px] text-muted-foreground">{step.step_type}</code>
+                      </div>
+                      {step.config.locator || step.config.url || step.config.value ? (
+                        <div className="mt-1.5 truncate pl-7 text-[10px] text-muted-foreground">
+                          {step.config.by ? `${String(step.config.by)}=` : ""}
+                          {String(step.config.locator ?? step.config.url ?? step.config.value ?? "")}
+                        </div>
+                      ) : null}
+                    </div>
+                  )) : (
+                    <div className="p-6 text-center text-xs text-amber-700">
+                      本次录制没有可转换的用户动作，请返回页面补录点击或输入。
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {stepDraft.warnings.length ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                  <div className="font-medium">需要人工确认</div>
+                  <ul className="mt-1.5 list-disc space-y-1 pl-4">
+                    {stepDraft.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" disabled={commitDraftMutation.isPending} onClick={() => setStepDraft(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={
+                commitDraftMutation.isPending
+                || !stepDraft?.steps.length
+                || !draftModuleId
+                || !draftCaseName.trim()
+              }
+              onClick={() => commitDraftMutation.mutate()}
+            >
+              {commitDraftMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              保存到用例库
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
+        <DialogContent className="sm:max-w-[430px]">
+          <DialogHeader>
+            <DialogTitle>停止本次录制？</DialogTitle>
+            <DialogDescription>
+              {platform === "web"
+                ? "停止后受控浏览器会关闭，并开始整理页面快照、元素和离线回放数据。"
+                : "停止后 Appium 会话会关闭、模拟器租约会释放，并保留画面、UI Tree、动作和定位器证据。"}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setStopConfirmOpen(false)}>继续录制</Button>
+            <Button
+              variant="destructive"
+              disabled={!session || controlMutation.isPending}
+              onClick={() => {
+                if (!session) return;
+                setStopConfirmOpen(false);
+                controlMutation.mutate({ sessionId: session.id, action: "stop" });
+              }}
+            >
+              确认停止
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RecorderFloatingBar({
+  session,
+  busy,
+  hasControl,
+  pickMode,
+  onPause,
+  onResume,
+  onStop,
+  onTogglePick,
+  onPopout,
+  onMinimize,
+}: {
+  session: UiRecordingSession;
+  busy: boolean;
+  hasControl: boolean;
+  pickMode: boolean;
+  onPause: () => void;
+  onResume: () => void;
+  onStop: () => void;
+  onTogglePick: () => void;
+  onPopout: () => void;
+  onMinimize: () => void;
+}) {
+  const [position, setPosition] = useState(() => ({
+    x: Math.max(12, window.innerWidth - 520),
+    y: 94,
+  }));
+  const [dragOffset, setDragOffset] = useState<{ x: number; y: number } | null>(null);
+  const status = STATUS_META[session.status];
+
+  const move = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!dragOffset) return;
+    setPosition({
+      x: Math.min(Math.max(8, event.clientX - dragOffset.x), Math.max(8, window.innerWidth - 500)),
+      y: Math.min(Math.max(8, event.clientY - dragOffset.y), Math.max(8, window.innerHeight - 72)),
+    });
+  };
+
+  return (
+    <div
+      className="fixed z-[80] flex h-[58px] w-[488px] items-center gap-1 rounded-2xl border bg-background/95 px-2 shadow-2xl backdrop-blur"
+      style={{ left: position.x, top: position.y }}
+    >
+      <button
+        type="button"
+        className="grid h-10 w-7 touch-none cursor-grab place-items-center rounded-lg text-muted-foreground hover:bg-muted active:cursor-grabbing"
+        title="拖动录制条"
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDragOffset({ x: event.clientX - position.x, y: event.clientY - position.y });
+        }}
+        onPointerMove={move}
+        onPointerUp={(event) => {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+          setDragOffset(null);
+        }}
+      >
+        <GripVertical className="h-4 w-4" />
+      </button>
+      <div className="mr-1 min-w-[78px] border-r pr-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+          <span className={cn("h-2 w-2 rounded-full", session.status === "recording" ? "animate-pulse bg-red-500" : "bg-amber-500")} />
+          {status.label}
+        </div>
+        <div className="mt-0.5 text-[9px] text-muted-foreground">{hasControl ? "本窗口控制" : "其他窗口控制"}</div>
+      </div>
+      {session.status === "recording" ? (
+        <Button size="sm" variant="ghost" disabled={busy || !hasControl} onClick={onPause}>
+          <Pause className="h-4 w-4" />暂停
+        </Button>
+      ) : (
+        <Button size="sm" variant="ghost" disabled={busy || !hasControl} onClick={onResume}>
+          <Play className="h-4 w-4" />继续
+        </Button>
+      )}
+      <Button
+        size="sm"
+        variant={pickMode ? "default" : "ghost"}
+        disabled={busy || !hasControl}
+        onClick={onTogglePick}
+        title="拾取时点击只选择元素，不触发业务动作"
+      >
+        <Crosshair className="h-4 w-4" />拾取
+      </Button>
+      <Button size="icon" variant="ghost" onClick={onPopout} title="弹出独立窗口">
+        <ExternalLink className="h-4 w-4" />
+      </Button>
+      <Button size="icon" variant="ghost" disabled={busy || !hasControl} onClick={onStop} title="停止录制">
+        <Square className="h-3.5 w-3.5" />
+      </Button>
+      <Button size="icon" variant="ghost" onClick={onMinimize} title="收起录制条">
+        <X className="h-4 w-4" />
+      </Button>
+    </div>
+  );
+}
+
+function MobileSnapshotStage({
+  snapshot,
+  disabled,
+  pickMode,
+  onGesture,
+}: {
+  snapshot: UiPageSnapshot;
+  disabled: boolean;
+  pickMode: boolean;
+  onGesture: (gesture:
+    | { action: "tap"; x: number; y: number }
+    | { action: "swipe"; x: number; y: number; end_x: number; end_y: number; duration_ms: number }
+  ) => void;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [gestureStart, setGestureStart] = useState<{
+    clientX: number;
+    clientY: number;
+    x: number;
+    y: number;
+    startedAt: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let objectUrl: string | null = null;
+    setImageUrl(null);
+    setImageError(null);
+    void uiRecordingsApi.snapshotImage(snapshot.id)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (disposed) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setImageUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if (!disposed) setImageError(messageOf(error));
+      });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [snapshot.id]);
+
+  const imagePoint = (clientX: number, clientY: number) => {
+    const image = imageRef.current;
+    if (!image) return null;
+    const rect = image.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    return {
+      x: Math.max(0, Math.min(
+        image.naturalWidth - 1,
+        Math.round((clientX - rect.left) * image.naturalWidth / rect.width),
+      )),
+      y: Math.max(0, Math.min(
+        image.naturalHeight - 1,
+        Math.round((clientY - rect.top) * image.naturalHeight / rect.height),
+      )),
+    };
+  };
+
+  if (imageError) {
+    return <div className="grid h-[515px] place-items-center px-4 text-center text-xs text-red-600">{imageError}</div>;
+  }
+  if (!imageUrl) {
+    return <div className="grid h-[515px] place-items-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
+  }
+
+  return (
+    <div className="relative mt-2 flex h-[515px] touch-none items-center justify-center overflow-hidden bg-black">
+      <img
+        ref={imageRef}
+        src={imageUrl}
+        alt={snapshot.page_name}
+        draggable={false}
+        className={cn(
+          "max-h-full max-w-full select-none object-contain",
+          disabled ? "cursor-not-allowed opacity-80" : pickMode ? "cursor-crosshair" : "cursor-pointer",
+        )}
+        onPointerDown={(event) => {
+          if (disabled) return;
+          const point = imagePoint(event.clientX, event.clientY);
+          if (!point) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setGestureStart({
+            clientX: event.clientX,
+            clientY: event.clientY,
+            x: point.x,
+            y: point.y,
+            startedAt: performance.now(),
+          });
+        }}
+        onPointerUp={(event) => {
+          if (!gestureStart || disabled) return;
+          const end = imagePoint(event.clientX, event.clientY);
+          setGestureStart(null);
+          if (!end) return;
+          const distance = Math.hypot(
+            event.clientX - gestureStart.clientX,
+            event.clientY - gestureStart.clientY,
+          );
+          if (distance < 12 || pickMode) {
+            onGesture({ action: "tap", x: gestureStart.x, y: gestureStart.y });
+            return;
+          }
+          onGesture({
+            action: "swipe",
+            x: gestureStart.x,
+            y: gestureStart.y,
+            end_x: end.x,
+            end_y: end.y,
+            duration_ms: Math.max(
+              150,
+              Math.min(1500, Math.round(performance.now() - gestureStart.startedAt)),
+            ),
+          });
+        }}
+        onPointerCancel={() => setGestureStart(null)}
+      />
+      <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[9px] text-white">
+        {disabled ? "等待录制控制权" : pickMode ? "拾取模式：点击不会执行" : "点击操作 · 拖动滑屏"}
+      </div>
+    </div>
+  );
+}
+
+function SnapshotStage({
+  snapshot,
+  elements,
+  selectedElementId,
+  onSelect,
+}: {
+  snapshot: UiPageSnapshot;
+  elements: UiElement[];
+  selectedElementId: number | null;
+  onSelect: (id: number) => void;
+}) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let objectUrl: string | null = null;
+    setImageUrl(null);
+    setImageError(null);
+    void uiRecordingsApi.snapshotImage(snapshot.id)
+      .then((blob) => {
+        objectUrl = URL.createObjectURL(blob);
+        if (disposed) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        setImageUrl(objectUrl);
+      })
+      .catch((error: unknown) => {
+        if (!disposed) setImageError(messageOf(error));
+      });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [snapshot.id]);
+
+  const viewport = snapshot.environment.viewport as {
+    width?: number;
+    height?: number;
+  } | undefined;
+  const viewportWidth = Number(viewport?.width || 1);
+  const viewportHeight = Number(viewport?.height || 1);
+
+  if (imageError) {
+    return <div className="grid flex-1 place-items-center text-xs text-red-600">{imageError}</div>;
+  }
+  if (!imageUrl) {
+    return <div className="grid flex-1 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-4 dark:bg-slate-950">
+      <div className="relative inline-block max-h-full max-w-full overflow-hidden rounded-lg border bg-background shadow-sm">
+        <img src={imageUrl} alt={snapshot.page_name} className="block max-h-[560px] max-w-full" />
+        {elements.map((element) => {
+          const bounds = element.attributes.bounds as {
+            x?: number;
+            y?: number;
+            width?: number;
+            height?: number;
+          } | undefined;
+          if (!bounds || bounds.width == null || bounds.height == null) return null;
+          const left = Math.max(0, Math.min(100, (Number(bounds.x || 0) / viewportWidth) * 100));
+          const top = Math.max(0, Math.min(100, (Number(bounds.y || 0) / viewportHeight) * 100));
+          const width = Math.max(1, Math.min(100 - left, (Number(bounds.width) / viewportWidth) * 100));
+          const height = Math.max(1, Math.min(100 - top, (Number(bounds.height) / viewportHeight) * 100));
+          return (
+            <button
+              key={element.id}
+              type="button"
+              aria-label={`选择元素：${element.semantic_name}`}
+              title={element.semantic_name}
+              onClick={() => onSelect(element.id)}
+              className={cn(
+                "absolute rounded border-2 bg-primary/10 transition hover:border-primary hover:bg-primary/20",
+                selectedElementId === element.id
+                  ? "border-primary ring-2 ring-primary/30"
+                  : "border-violet-400/80",
+              )}
+              style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

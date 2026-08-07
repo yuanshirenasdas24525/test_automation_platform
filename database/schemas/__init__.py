@@ -21,11 +21,17 @@ from .device_schema import (
     DeviceRead, DeviceHeartbeat, DeviceAcquireRequest, DeviceAcquireResponse,
 )
 from .ui_recording import (
+    UiRecordingControlRequest,
     UiRecordingCreate,
     UiRecordingEventCreate,
     UiRecordingEventBatchCreate,
+    UiRecordingLeaseRequest,
+    UiRecordingMobileActionRequest,
+    UiRecordingPickModeRequest,
+    UiRecordingReplayRequest,
     UiRecordingRead,
     UiRecordingEventRead,
+    UiPageSnapshotRead,
     UiElementLocatorRead,
     UiElementRead,
 )
@@ -41,6 +47,10 @@ __all__ = [
     # Device
     "DeviceRead", "DeviceHeartbeat", "DeviceAcquireRequest", "DeviceAcquireResponse",
     # UI recording
-    "UiRecordingCreate", "UiRecordingEventCreate", "UiRecordingEventBatchCreate",
+    "UiRecordingCreate", "UiRecordingControlRequest", "UiRecordingLeaseRequest",
+    "UiRecordingPickModeRequest", "UiRecordingMobileActionRequest",
+    "UiRecordingEventCreate", "UiRecordingEventBatchCreate",
+    "UiRecordingReplayRequest",
     "UiRecordingRead", "UiRecordingEventRead", "UiElementLocatorRead", "UiElementRead",
+    "UiPageSnapshotRead",
 ]

@@ -124,6 +124,48 @@ export interface UiRecordingEvent {
   created_at: string;
 }
 
+export interface UiOfflineReplay {
+  replay_id: string;
+  session_id: number;
+  entry_url: string;
+  page_count: number;
+  resource_count: number;
+  mock_count: number;
+  offline_enforced: boolean;
+  integrity_verified: boolean;
+  limitations: string[];
+}
+
+export interface UiPageSnapshot {
+  id: number;
+  session_id: number;
+  project_id: number;
+  platform: UiPlatform;
+  page_key: string;
+  page_name: string;
+  state_name: string | null;
+  url: string | null;
+  snapshot_version: number;
+  fingerprint: string;
+  has_screenshot: boolean;
+  has_document: boolean;
+  has_offline_package: boolean;
+  is_interactive: boolean;
+  resource_manifest: Record<string, unknown>;
+  environment: Record<string, unknown>;
+  limitations: unknown[];
+  created_at: string;
+}
+
+export interface UiRecordingStepDraft {
+  session_id: number;
+  case_type: UiPlatform;
+  suggested_name: string;
+  steps: Array<TestStepDraft & { source_event_id?: number | null }>;
+  warnings: string[];
+  source_event_count: number;
+}
+
 export interface UiElementLocator {
   id: number;
   strategy: string;

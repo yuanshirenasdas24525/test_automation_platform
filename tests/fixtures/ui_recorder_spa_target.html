@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Recorder SPA 稳定态回归页</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; font-family: system-ui, sans-serif; background: #f5f7fb; color: #172033; }
+      main { min-height: 100vh; display: grid; place-items: center; }
+      .card { width: 420px; padding: 32px; border: 1px solid #dce3ee; border-radius: 16px; background: white; box-shadow: 0 18px 45px rgb(34 52 84 / 12%); }
+      label, input, button { display: block; width: 100%; }
+      input, button { height: 44px; margin-top: 8px; border-radius: 8px; }
+      input { margin-bottom: 18px; border: 1px solid #bfc9d9; padding: 0 12px; }
+      button { border: 0; background: #2563eb; color: white; font-weight: 700; }
+      .dashboard { width: min(900px, 90vw); }
+      .dashboard h1 { font-size: 38px; }
+      .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+      .metric { padding: 24px; border-radius: 14px; background: white; border: 1px solid #dce3ee; }
+    </style>
+  </head>
+  <body>
+    <main id="app"><p data-state="boot">加载中...</p></main>
+    <script>
+      const app = document.querySelector("#app");
+      const renderLogin = () => {
+        app.innerHTML = `
+          <form class="card" id="login-form">
+            <h1>登录</h1>
+            <label>用户名<input id="username" value="demo" /></label>
+            <label>密码<input id="password" type="password" value="secret" /></label>
+            <button id="login" type="submit">登录</button>
+          </form>`;
+        document.querySelector("#login-form").addEventListener("submit", (event) => {
+          event.preventDefault();
+          app.innerHTML = '<p data-state="redirecting">登录成功，正在跳转...</p>';
+          setTimeout(() => {
+            history.pushState({}, "", "/workspace/admin");
+            app.innerHTML = '<p data-state="route-loading">页面加载中...</p>';
+            setTimeout(() => {
+              app.innerHTML = `
+                <section class="dashboard" data-state="ready">
+                  <h1>管理工作台</h1>
+                  <p>异步数据与路由均已完成。</p>
+                  <div class="metrics">
+                    <article class="metric">用户 128</article>
+                    <article class="metric">项目 24</article>
+                    <article class="metric">用例 2,048</article>
+                  </div>
+                </section>`;
+            }, 700);
+          }, 250);
+        });
+        if (new URLSearchParams(location.search).get("auto") === "1") {
+          setTimeout(() => document.querySelector("#login-form").requestSubmit(), 2500);
+        }
+      };
+      setTimeout(renderLogin, 700);
+    </script>
+  </body>
+</html>

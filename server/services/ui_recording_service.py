@@ -1,8 +1,10 @@
 """UI 录制会话状态机、事件接收与序列化服务。"""
 from __future__ import annotations
 
-from datetime import datetime
+import hashlib
+from datetime import datetime, timedelta
 from typing import Any, Iterable
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -16,6 +18,8 @@ from database.models import (
     UI_RECORDING_RECORDING,
     UiElement,
     UiElementLocator,
+    UiMockExchange,
+    UiPageSnapshot,
     UiRecordingEvent,
     UiRecordingSession,
 )
@@ -24,6 +28,97 @@ from database.schemas.ui_recording import UiRecordingEventCreate
 
 class UiRecordingTransitionError(ValueError):
     """会话状态不允许执行目标动作。"""
+
+
+class UiRecordingControlLeaseError(ValueError):
+    """录制控制权当前由另一个页面持有。"""
+
+
+CONTROL_LEASE_SECONDS = 8
+
+
+def _active_control_lease(session: UiRecordingSession) -> dict[str, Any]:
+    lease = dict((session.capabilities or {}).get("control_lease") or {})
+    expires_at = lease.get("expires_at")
+    if not expires_at:
+        return {}
+    try:
+        expires = datetime.fromisoformat(str(expires_at))
+    except ValueError:
+        return {}
+    return lease if expires > datetime.now() else {}
+
+
+def update_control_lease(
+    session: UiRecordingSession,
+    client_instance_id: str,
+    action: str,
+) -> dict[str, Any]:
+    """领取、续约、接管或释放录制控制权。"""
+    current = _active_control_lease(session)
+    owner_id = str(current.get("owner_id") or "")
+    if action == "release":
+        if owner_id and owner_id != client_instance_id:
+            raise UiRecordingControlLeaseError("当前窗口不是录制控制端，不能释放控制权")
+        next_capabilities = dict(session.capabilities or {})
+        next_capabilities.pop("control_lease", None)
+        session.capabilities = next_capabilities
+        return {}
+
+    if owner_id and owner_id != client_instance_id and action != "takeover":
+        raise UiRecordingControlLeaseError("录制控制权正在另一个窗口中使用")
+
+    lease = {
+        "owner_id": client_instance_id,
+        "expires_at": (datetime.now() + timedelta(seconds=CONTROL_LEASE_SECONDS)).isoformat(),
+        "lease_seconds": CONTROL_LEASE_SECONDS,
+        "processed_commands": list(current.get("processed_commands") or [])[-20:],
+    }
+    session.capabilities = {
+        **(session.capabilities or {}),
+        "control_lease": lease,
+    }
+    return lease
+
+
+def ensure_control_lease(
+    session: UiRecordingSession,
+    client_instance_id: str | None,
+    command_id: str | None,
+    *,
+    takeover: bool = False,
+) -> bool:
+    """校验控制权并登记幂等命令；返回 True 表示命令已处理。"""
+    if not client_instance_id:
+        return False
+    action = "takeover" if takeover else "heartbeat"
+    lease = update_control_lease(session, client_instance_id, action)
+    commands = list(lease.get("processed_commands") or [])
+    if command_id and command_id in commands:
+        return True
+    if command_id:
+        commands.append(command_id)
+        lease["processed_commands"] = commands[-20:]
+        session.capabilities = {
+            **(session.capabilities or {}),
+            "control_lease": lease,
+        }
+    return False
+
+
+def is_control_command_processed(
+    session: UiRecordingSession,
+    client_instance_id: str | None,
+    command_id: str | None,
+) -> bool:
+    """判断同一控制端的命令是否已成功登记。"""
+    if not client_instance_id or not command_id:
+        return False
+    lease = _active_control_lease(session)
+    return (
+        lease.get("owner_id") == client_instance_id
+        and command_id in set(lease.get("processed_commands") or [])
+    )
 
 
 _ACTION_TARGETS: dict[str, tuple[set[str], str]] = {
@@ -38,8 +133,8 @@ _ACTION_TARGETS: dict[str, tuple[set[str], str]] = {
 }
 
 
-def apply_control_action(session: UiRecordingSession, action: str) -> UiRecordingSession:
-    """按状态机执行控制动作，并更新生命周期时间。"""
+def validate_control_action(session: UiRecordingSession, action: str) -> str:
+    """只校验状态转换，供 API 在调用外部 Agent 前使用。"""
     rule = _ACTION_TARGETS.get(action)
     if rule is None:
         raise UiRecordingTransitionError(f"未知录制动作：{action}")
@@ -49,6 +144,12 @@ def apply_control_action(session: UiRecordingSession, action: str) -> UiRecordin
         raise UiRecordingTransitionError(
             f"当前状态 {current_status} 不能执行 {action}"
         )
+    return target
+
+
+def apply_control_action(session: UiRecordingSession, action: str) -> UiRecordingSession:
+    """按状态机执行控制动作，并更新生命周期时间。"""
+    target = validate_control_action(session, action)
 
     now = datetime.now()
     session.status = target
@@ -170,12 +271,19 @@ def append_events(
             }
         elif item.event_type == "agent.disconnected":
             capabilities = {**capabilities, "recorder_agent_connected": False}
+        elif item.event_type == "offline.package":
+            capabilities = {
+                **capabilities,
+                "offline_replay": dict(item.payload or {}),
+            }
 
     if created:
         session.capabilities = capabilities
         db.flush()
         for row in created:
             db.refresh(row)
+        _materialize_snapshots(db, session, created)
+        _materialize_mock_exchanges(db, session, created)
         _materialize_elements(db, session, created)
         session.context_summary = _updated_context_summary(
             session.context_summary or {},
@@ -184,6 +292,203 @@ def append_events(
         )
         db.flush()
     return created, skipped
+
+
+def _artifact_uri(session_id: int, relative_path: Any) -> str | None:
+    path = str(relative_path or "").strip()
+    if not path:
+        return None
+    if path.startswith("/"):
+        return path
+    return f"data/ui_recordings/session_{session_id}/{path}"
+
+
+def _materialize_snapshots(
+    db: Session,
+    session: UiRecordingSession,
+    events: list[UiRecordingEvent],
+) -> None:
+    """把 Agent 产出的 DOM/截图清单沉淀为页面快照版本。"""
+    environment_event = next(
+        (event for event in reversed(events) if event.event_type == "environment.snapshot"),
+        None,
+    )
+    if environment_event is None:
+        environment_event = (
+            db.query(UiRecordingEvent)
+            .filter(
+                UiRecordingEvent.session_id == session.id,
+                UiRecordingEvent.event_type == "environment.snapshot",
+            )
+            .order_by(UiRecordingEvent.sequence_no.desc())
+            .first()
+        )
+    environment = dict(environment_event.payload or {}) if environment_event else {}
+    for event in events:
+        if event.event_type != "page.snapshot":
+            continue
+        payload = event.payload or {}
+        fingerprint = str(payload.get("fingerprint") or "").strip()
+        if not fingerprint:
+            continue
+        existing = (
+            db.query(UiPageSnapshot)
+            .filter(
+                UiPageSnapshot.session_id == session.id,
+                UiPageSnapshot.fingerprint == fingerprint,
+            )
+            .first()
+        )
+        if existing is not None:
+            event.snapshot_after_id = existing.id
+            continue
+        page_key = str(payload.get("page_key") or event.page_key or "about:blank")[:255]
+        version = int(
+            db.query(func.count(UiPageSnapshot.id))
+            .filter(
+                UiPageSnapshot.project_id == session.project_id,
+                UiPageSnapshot.platform == session.platform,
+                UiPageSnapshot.page_key == page_key,
+            )
+            .scalar()
+            or 0
+        ) + 1
+        snapshot = UiPageSnapshot(
+            session_id=session.id,
+            project_id=session.project_id,
+            platform=session.platform,
+            page_key=page_key,
+            page_name=str(payload.get("title") or page_key)[:200],
+            state_name=str(payload.get("state_name") or "")[:120] or None,
+            url=str(payload.get("url") or "") or None,
+            route=urlsplit(str(payload.get("url") or "")).path[:500] or None,
+            app_identifier=str(payload.get("app_identifier") or "")[:255] or None,
+            snapshot_version=version,
+            fingerprint=fingerprint,
+            screenshot_uri=_artifact_uri(session.id, payload.get("screenshot_path")),
+            document_uri=_artifact_uri(session.id, payload.get("document_path")),
+            tree_uri=(
+                _artifact_uri(session.id, payload.get("document_path"))
+                if session.platform in {"android", "ios"}
+                else None
+            ),
+            is_interactive=True,
+            environment=environment,
+            limitations=[],
+        )
+        db.add(snapshot)
+        db.flush()
+        event.snapshot_after_id = snapshot.id
+        (
+            db.query(UiElement)
+            .filter(
+                UiElement.project_id == session.project_id,
+                UiElement.platform == session.platform,
+                UiElement.page_key == page_key,
+            )
+            .update(
+                {
+                    UiElement.first_snapshot_id: func.coalesce(
+                        UiElement.first_snapshot_id,
+                        snapshot.id,
+                    ),
+                    UiElement.last_snapshot_id: snapshot.id,
+                },
+                synchronize_session=False,
+            )
+        )
+
+    package_event = next(
+        (event for event in reversed(events) if event.event_type == "offline.package"),
+        None,
+    )
+    if package_event is None:
+        return
+    package = dict(package_event.payload or {})
+    manifest_path = str(package.get("manifest_path") or "") or None
+    limitations = list(package.get("limitations") or [])
+    manifest_summary = {
+        "page_count": int(package.get("page_count") or 0),
+        "resource_count": int(package.get("resource_count") or 0),
+        "mock_count": int(package.get("mock_count") or 0),
+        "archive_bytes": int(package.get("archive_bytes") or 0),
+        "ready": bool(package.get("ready")),
+        "integrity_verified": bool(package.get("integrity_verified")),
+    }
+    for snapshot in (
+        db.query(UiPageSnapshot)
+        .filter(UiPageSnapshot.session_id == session.id)
+        .all()
+    ):
+        snapshot.offline_package_uri = manifest_path
+        snapshot.resource_manifest = manifest_summary
+        snapshot.limitations = limitations
+        snapshot.is_interactive = bool(package.get("ready"))
+
+
+def _normalized_request_url(value: str) -> str:
+    parts = urlsplit(value)
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
+
+
+def _materialize_mock_exchanges(
+    db: Session,
+    session: UiRecordingSession,
+    events: list[UiRecordingEvent],
+) -> None:
+    """将 network.request/response 配对为可顺序回放的本地 Mock。"""
+    responses = [event for event in events if event.event_type == "network.response"]
+    if not responses:
+        return
+    request_events = (
+        db.query(UiRecordingEvent)
+        .filter(
+            UiRecordingEvent.session_id == session.id,
+            UiRecordingEvent.event_type == "network.request",
+        )
+        .all()
+    )
+    requests_by_key = {
+        str((event.payload or {}).get("request_key") or ""): event
+        for event in request_events
+        if (event.payload or {}).get("request_key")
+    }
+    existing_keys = {
+        row[0]
+        for row in (
+            db.query(UiMockExchange.exchange_key)
+            .filter(UiMockExchange.session_id == session.id)
+            .all()
+        )
+    }
+    for response_event in responses:
+        if response_event.event_key in existing_keys:
+            continue
+        response_payload = dict(response_event.payload or {})
+        request_key = str(response_payload.get("request_key") or "")
+        request_event = requests_by_key.get(request_key)
+        if request_event is None:
+            continue
+        request_payload = dict(request_event.payload or {})
+        method = str(request_payload.get("method") or "GET").upper()[:12]
+        url = str(request_payload.get("url") or response_payload.get("url") or "")
+        body = str(request_payload.get("body") or "")
+        db.add(UiMockExchange(
+            session_id=session.id,
+            exchange_key=response_event.event_key,
+            sequence_no=response_event.sequence_no,
+            method=method,
+            url=url,
+            request_key=request_key[:64],
+            request=request_payload,
+            response=response_payload,
+            match_rule={
+                "method": method,
+                "url": _normalized_request_url(url),
+                "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+            },
+            timing={"duration_ms": response_payload.get("duration_ms")},
+        ))
 
 
 def _materialize_elements(
@@ -200,6 +505,16 @@ def _materialize_elements(
         if not fingerprint:
             continue
         page_key = event.page_key or "about:blank"
+        latest_snapshot = (
+            db.query(UiPageSnapshot)
+            .filter(
+                UiPageSnapshot.project_id == session.project_id,
+                UiPageSnapshot.platform == session.platform,
+                UiPageSnapshot.page_key == page_key,
+            )
+            .order_by(UiPageSnapshot.created_at.desc(), UiPageSnapshot.id.desc())
+            .first()
+        )
         element = (
             db.query(UiElement)
             .filter(
@@ -221,6 +536,8 @@ def _materialize_elements(
                 element_type=str(raw.get("element_type") or "element")[:100],
                 fingerprint=fingerprint,
                 attributes=attributes,
+                first_snapshot_id=latest_snapshot.id if latest_snapshot else None,
+                last_snapshot_id=latest_snapshot.id if latest_snapshot else None,
             )
             db.add(element)
             db.flush()
@@ -228,6 +545,9 @@ def _materialize_elements(
             element.semantic_name = str(raw.get("semantic_name") or element.semantic_name)[:200]
             element.element_type = str(raw.get("element_type") or element.element_type)[:100]
             element.attributes = {**(element.attributes or {}), **attributes}
+            if latest_snapshot is not None:
+                element.first_snapshot_id = element.first_snapshot_id or latest_snapshot.id
+                element.last_snapshot_id = latest_snapshot.id
 
         locator_items = raw.get("locators") if isinstance(raw.get("locators"), list) else []
         for item in locator_items:
@@ -342,6 +662,223 @@ def serialize_event(event: UiRecordingEvent) -> dict[str, Any]:
         "payload": event.payload or {},
         "created_at": event.created_at,
     }
+
+
+def serialize_snapshot(snapshot: UiPageSnapshot) -> dict[str, Any]:
+    return {
+        "id": snapshot.id,
+        "session_id": snapshot.session_id,
+        "project_id": snapshot.project_id,
+        "platform": snapshot.platform,
+        "page_key": snapshot.page_key,
+        "page_name": snapshot.page_name,
+        "state_name": snapshot.state_name,
+        "url": snapshot.url,
+        "snapshot_version": snapshot.snapshot_version,
+        "fingerprint": snapshot.fingerprint,
+        "has_screenshot": bool(snapshot.screenshot_uri),
+        "has_document": bool(snapshot.document_uri),
+        "has_offline_package": bool(snapshot.offline_package_uri),
+        "is_interactive": snapshot.is_interactive,
+        "resource_manifest": snapshot.resource_manifest or {},
+        "environment": snapshot.environment or {},
+        "limitations": snapshot.limitations or [],
+        "created_at": snapshot.created_at,
+    }
+
+
+def _preferred_event_locator(
+    element: dict[str, Any] | None,
+    platform: str,
+) -> tuple[str, str] | None:
+    if not isinstance(element, dict):
+        return None
+    supported = (
+        {"id", "css", "name", "text", "link", "xpath"}
+        if platform == "web"
+        else {
+            "id",
+            "xpath",
+            "accessibility_id",
+            "android_uiautomator",
+            "ios_predicate",
+            "ios_class_chain",
+            "class_name",
+            "name",
+        }
+    )
+    candidates = [
+        item
+        for item in (element.get("locators") or [])
+        if isinstance(item, dict)
+        and str(item.get("strategy") or "").lower() in supported
+        and str(item.get("locator") or "").strip()
+    ]
+    if not candidates:
+        return None
+    selected = max(candidates, key=lambda item: int(item.get("score") or 0))
+    return (
+        str(selected.get("strategy") or "").lower(),
+        str(selected.get("locator") or ""),
+    )
+
+
+def compile_recording_step_draft(
+    session: UiRecordingSession,
+    events: list[UiRecordingEvent],
+) -> dict[str, Any]:
+    """把已录制用户动作编译成现有 v2 Runner 可执行的 TestStep 草稿。"""
+    steps: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    def append_step(
+        event: UiRecordingEvent | None,
+        step_type: str,
+        step_name: str,
+        config: dict[str, Any],
+    ) -> None:
+        steps.append({
+            "step_order": len(steps) + 1,
+            "step_name": step_name[:255],
+            "step_type": step_type,
+            "skip": False,
+            "config": config,
+            "extract": [],
+            "assertion": [],
+            "wait_before": 0,
+            "timeout": 30,
+            "retry": 0,
+            "on_failure": "stop",
+            "source_event_id": event.id if event else None,
+        })
+
+    if session.platform == "web" and session.source_url:
+        append_step(None, "web_goto", f"打开 {session.source_url}", {"url": session.source_url})
+
+    for event in events:
+        event_type = event.event_type
+        if event_type == "user.pick":
+            continue
+        payload = dict(event.payload or {})
+        element = payload.get("element") if isinstance(payload.get("element"), dict) else None
+        locator = _preferred_event_locator(element, session.platform)
+        semantic_name = str((element or {}).get("semantic_name") or "当前元素")
+
+        if session.platform == "web":
+            if event_type not in {"user.click", "user.input", "user.change"}:
+                if event_type in {"user.submit", "user.scroll"}:
+                    warnings.append(
+                        f"事件 #{event.sequence_no} {event_type} 没有独立 Runner，已保留在技术上下文中"
+                    )
+                continue
+            if locator is None:
+                warnings.append(f"事件 #{event.sequence_no} 缺少可执行定位器，未生成步骤")
+                continue
+            by, locator_value = locator
+            if event_type == "user.click":
+                append_step(
+                    event,
+                    "web_click",
+                    f"点击 {semantic_name}",
+                    {"by": by, "locator": locator_value},
+                )
+            elif event_type == "user.input":
+                append_step(
+                    event,
+                    "web_input",
+                    f"输入 {semantic_name}",
+                    {
+                        "by": by,
+                        "locator": locator_value,
+                        "value": payload.get("value") or "",
+                        "clear_first": True,
+                    },
+                )
+                if payload.get("redacted"):
+                    warnings.append(f"步骤 {len(steps)} 含脱敏变量 ${{password}}，执行前需配置变量")
+            else:
+                tag = str(((element or {}).get("attributes") or {}).get("tag") or "")
+                if tag == "select":
+                    append_step(
+                        event,
+                        "web_select",
+                        f"选择 {semantic_name}",
+                        {"by": by, "locator": locator_value, "value": payload.get("value")},
+                    )
+                else:
+                    append_step(
+                        event,
+                        "web_click",
+                        f"切换 {semantic_name}",
+                        {"by": by, "locator": locator_value},
+                    )
+            continue
+
+        if event_type in {"user.tap", "user.input"}:
+            if locator is None:
+                warnings.append(f"事件 #{event.sequence_no} 缺少可执行移动定位器，未生成步骤")
+                continue
+            by, locator_value = locator
+            if event_type == "user.tap":
+                append_step(
+                    event,
+                    "app_tap",
+                    f"点击 {semantic_name}",
+                    {"by": by, "locator": locator_value},
+                )
+            else:
+                append_step(
+                    event,
+                    "app_input",
+                    f"输入 {semantic_name}",
+                    {
+                        "by": by,
+                        "locator": locator_value,
+                        "value": payload.get("value") or "",
+                        "clear_first": True,
+                    },
+                )
+                if payload.get("redacted"):
+                    warnings.append(f"步骤 {len(steps)} 含脱敏变量 ${{password}}，执行前需配置变量")
+        elif event_type == "user.swipe":
+            append_step(
+                event,
+                "app_swipe",
+                "滑动模拟器画面",
+                {
+                    "x1": payload.get("x"),
+                    "y1": payload.get("y"),
+                    "x2": payload.get("end_x"),
+                    "y2": payload.get("end_y"),
+                    "duration": payload.get("duration_ms") or 400,
+                },
+            )
+        elif event_type == "user.back":
+            append_step(event, "app_back", "返回上一页", {})
+        elif event_type == "user.refresh":
+            warnings.append(
+                f"事件 #{event.sequence_no} refresh 仅用于刷新录制画面，不生成执行步骤"
+            )
+
+    return {
+        "session_id": session.id,
+        "case_type": session.platform,
+        "suggested_name": session.name,
+        "steps": steps,
+        "warnings": warnings,
+        "source_event_count": len(events),
+    }
+
+
+def build_recording_step_draft(db: Session, session: UiRecordingSession) -> dict[str, Any]:
+    """读取会话事件并生成 TestStep 草稿。"""
+    events = (
+        db.query(UiRecordingEvent)
+        .filter(UiRecordingEvent.session_id == session.id)
+        .order_by(UiRecordingEvent.sequence_no)
+        .all()
+    )
+    return compile_recording_step_draft(session, events)
 
 
 def serialize_element(element: UiElement) -> dict[str, Any]:

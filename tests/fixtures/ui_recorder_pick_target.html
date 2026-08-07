@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Recorder Pick Fixture</title>
+  </head>
+  <body>
+    <button id="danger-action" type="button">执行真实业务动作</button>
+    <script>
+      const button = document.querySelector("#danger-action");
+      button.addEventListener("click", () => {
+        fetch("/business-action", { method: "POST" });
+      });
+      window.setTimeout(() => button.click(), 1500);
+    </script>
+  </body>
+</html>

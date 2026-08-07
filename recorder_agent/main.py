@@ -11,14 +11,19 @@ import json
 import logging
 import os
 import platform as host_platform
+import re
+import shutil
+import subprocess
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, Request, Response
@@ -31,6 +36,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _ARTIFACT_ROOT = _PROJECT_ROOT / "data" / "ui_recordings"
 _MAX_EVENT_BUFFER = 10_000
 _MAX_BODY_BYTES = 64 * 1024
+_MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+_ARCHIVE_RESOURCE_TYPES = {"document", "stylesheet", "script", "image", "font"}
 _SENSITIVE_HEADERS = {
     "authorization",
     "cookie",
@@ -152,9 +159,21 @@ _RECORDER_SCRIPT = r"""
     });
   };
 
-  document.addEventListener("click", (event) => emit("user.click", event.target, {
-    button: event.button,
-  }), true);
+  let pickMode = false;
+  window.__uiRecorderSetPickMode = (enabled) => {
+    pickMode = Boolean(enabled);
+    document.documentElement.dataset.uiRecorderPickMode = pickMode ? "true" : "false";
+  };
+
+  document.addEventListener("click", (event) => {
+    if (pickMode) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      emit("user.pick", event.target, { button: event.button });
+      return;
+    }
+    emit("user.click", event.target, { button: event.button });
+  }, true);
 
   const inputTimers = new WeakMap();
   document.addEventListener("input", (event) => {
@@ -226,6 +245,34 @@ def _limited_text(value: str | None) -> tuple[str | None, bool]:
     return encoded[:_MAX_BODY_BYTES].decode("utf-8", errors="replace"), True
 
 
+def _safe_replay_headers(headers: dict[str, str]) -> dict[str, str]:
+    """移除离线 fulfill 时会失效或造成安全干扰的响应头。"""
+    blocked = {
+        "content-length",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "set-cookie",
+        "content-security-policy",
+        "content-security-policy-report-only",
+        "strict-transport-security",
+    }
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in blocked
+    }
+
+
+def _package_artifact_path(session_root: Path, value: Any) -> Path:
+    """解析离线制品相对路径，并禁止逃逸当前 Session 目录。"""
+    root = session_root.resolve()
+    path = (root / str(value or "")).resolve()
+    if path != root and root not in path.parents:
+        raise ValueError("离线制品路径逃逸 Session 目录")
+    return path
+
+
 class RecorderStartRequest(BaseModel):
     session_id: int = Field(..., gt=0)
     target_url: str = Field(..., min_length=1, max_length=4000)
@@ -243,6 +290,55 @@ class RecorderStartRequest(BaseModel):
         return value.strip()
 
 
+class PickModeRequest(BaseModel):
+    enabled: bool
+
+
+class ReplayStartRequest(BaseModel):
+    session_id: int = Field(..., gt=0)
+    browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
+    headless: bool = False
+
+
+class MobileRecorderStartRequest(BaseModel):
+    """启动 Android Emulator / iOS Simulator Appium 录制。"""
+
+    session_id: int = Field(..., gt=0)
+    platform: str = Field(..., pattern="^(android|ios)$")
+    appium_url: str = Field(..., min_length=1, max_length=1000)
+    udid: str = Field(..., min_length=1, max_length=128)
+    device_name: str | None = Field(None, max_length=128)
+    platform_version: str | None = Field(None, max_length=32)
+    app_path: str | None = Field(None, max_length=2000)
+    app_identifier: str | None = Field(None, max_length=255)
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("appium_url")
+    @classmethod
+    def validate_appium_url(cls, value: str) -> str:
+        parsed = urlparse(value.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("appium_url 必须是完整的 http/https URL")
+        return value.rstrip("/")
+
+
+class MobileActionRequest(BaseModel):
+    """平台远程画面转发给 Appium 的用户动作。"""
+
+    action: str = Field(..., pattern="^(tap|input|swipe|back|refresh)$")
+    x: int | None = Field(None, ge=0)
+    y: int | None = Field(None, ge=0)
+    end_x: int | None = Field(None, ge=0)
+    end_y: int | None = Field(None, ge=0)
+    duration_ms: int = Field(400, ge=100, le=5000)
+    text: str | None = Field(None, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def validate_text(cls, value: str | None) -> str | None:
+        return value if value is None else value[:4000]
+
+
 @dataclass
 class RecorderRuntime:
     session_id: int
@@ -251,13 +347,25 @@ class RecorderRuntime:
     context: BrowserContext
     started_monotonic: float = field(default_factory=time.monotonic)
     paused: bool = False
+    pick_mode: bool = False
     stopped: bool = False
     sequence_no: int = 0
     events: list[dict[str, Any]] = field(default_factory=list)
     pages: set[Page] = field(default_factory=set)
     request_keys: dict[Request, str] = field(default_factory=dict)
     request_started_monotonic: dict[Request, float] = field(default_factory=dict)
+    resources: dict[str, dict[str, Any]] = field(default_factory=dict)
+    page_records: list[dict[str, Any]] = field(default_factory=list)
+    snapshot_fingerprints: set[str] = field(default_factory=set)
+    snapshot_tasks: dict[Page, asyncio.Task[None]] = field(default_factory=dict)
+    archive_bytes: int = 0
+    archive_skipped: int = 0
+    offline_package: dict[str, Any] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def session_root(self) -> Path:
+        return _ARTIFACT_ROOT / f"session_{self.session_id}"
 
     async def emit(
         self,
@@ -268,7 +376,7 @@ class RecorderRuntime:
         page: Page | None = None,
         severity: str = "info",
     ) -> dict[str, Any] | None:
-        if self.paused and source == "user":
+        if self.paused and source != "agent" and event_type not in {"user.pick", "page.snapshot"}:
             return None
         async with self.lock:
             self.sequence_no += 1
@@ -277,7 +385,8 @@ class RecorderRuntime:
             element = payload.get("element")
             if isinstance(element, dict):
                 seed = str(element.pop("fingerprint_seed", ""))
-                element["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+                if not element.get("fingerprint"):
+                    element["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
             event = {
                 "event_key": event_key,
                 "sequence_no": self.sequence_no,
@@ -326,12 +435,8 @@ class RecorderRuntime:
         )
         page.on(
             "framenavigated",
-            lambda frame: frame == page.main_frame and asyncio.create_task(self.emit(
-                "page.navigation",
-                "browser",
-                {"url": frame.url, "title": ""},
-                page=page,
-            )),
+            lambda frame: frame == page.main_frame
+            and asyncio.create_task(self.handle_navigation(page, frame.url)),
         )
         page.on("request", lambda request: asyncio.create_task(self.capture_request(page, request)))
         page.on("response", lambda response: asyncio.create_task(self.capture_response(page, response)))
@@ -342,6 +447,111 @@ class RecorderRuntime:
                 "page.closed", "browser", {"url": page.url}, page=page,
             )),
         )
+        page.on(
+            "domcontentloaded",
+            lambda: asyncio.create_task(self.handle_dom_content_loaded(page)),
+        )
+
+    async def handle_dom_content_loaded(self, page: Page) -> None:
+        """导航完成后恢复拾取状态，并等待页面稳定后保存业务页面。"""
+        if self.pick_mode:
+            try:
+                await page.evaluate("window.__uiRecorderSetPickMode?.(true)")
+            except Exception:  # noqa: BLE001
+                pass
+        if self.paused or self.stopped:
+            return
+        self.schedule_page_snapshot(page, "domcontentloaded", delay_ms=800)
+
+    async def handle_navigation(self, page: Page, url: str) -> None:
+        """同时覆盖整页导航与 React Router 等 History API 路由变化。"""
+        await self.emit(
+            "page.navigation",
+            "browser",
+            {"url": url, "title": ""},
+            page=page,
+        )
+        if self.paused or self.stopped:
+            return
+        self.schedule_page_snapshot(page, "navigation", delay_ms=800)
+
+    def schedule_page_snapshot(self, page: Page, reason: str, *, delay_ms: int = 800) -> None:
+        """合并短时间内的路由/交互信号，只归档最终稳定状态。"""
+        if self.paused or self.stopped or page.is_closed():
+            return
+        previous = self.snapshot_tasks.get(page)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        task = asyncio.create_task(
+            self.capture_stable_page_document(page, reason, delay_ms=delay_ms),
+        )
+        self.snapshot_tasks[page] = task
+
+        def remove_finished(finished: asyncio.Task[None]) -> None:
+            if self.snapshot_tasks.get(page) is finished:
+                self.snapshot_tasks.pop(page, None)
+
+        task.add_done_callback(remove_finished)
+
+    async def capture_stable_page_document(
+        self,
+        page: Page,
+        reason: str,
+        *,
+        delay_ms: int = 800,
+    ) -> None:
+        """在有界等待内确认 SPA 已渲染，避免把加载骨架当成页面快照。"""
+        try:
+            if delay_ms:
+                await page.wait_for_timeout(delay_ms)
+            await self.wait_for_page_stability(page)
+            await self.capture_page_document(page, reason=reason)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "稳定态快照失败 session=%s reason=%s: %s",
+                self.session_id,
+                reason,
+                exc,
+            )
+
+    async def wait_for_page_stability(self, page: Page) -> None:
+        """等待连续三个 DOM 采样一致；最长约 5 秒，不被长期轮询请求卡住。"""
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=2_000)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await page.wait_for_load_state("networkidle", timeout=2_000)
+        except Exception:  # noqa: BLE001
+            # 业务页可能存在轮询；networkidle 只作优化，不能成为保存快照的前提。
+            pass
+
+        previous: str | None = None
+        stable_samples = 0
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not page.is_closed():
+            signature = await page.evaluate(
+                """() => JSON.stringify({
+                  url: location.href,
+                  ready: document.readyState,
+                  htmlLength: document.documentElement?.outerHTML.length || 0,
+                  textLength: document.body?.innerText.length || 0,
+                  childCount: document.body?.getElementsByTagName("*").length || 0,
+                  scrollWidth: document.documentElement?.scrollWidth || 0,
+                  scrollHeight: document.documentElement?.scrollHeight || 0,
+                  resourceCount: performance.getEntriesByType("resource").length,
+                })""",
+            )
+            if signature == previous:
+                stable_samples += 1
+                if stable_samples >= 2:
+                    return
+            else:
+                previous = signature
+                stable_samples = 0
+            await page.wait_for_timeout(300)
 
     async def handle_user_event(self, source: dict[str, Any], payload: dict[str, Any]) -> None:
         page = source.get("page")
@@ -351,9 +561,31 @@ class RecorderRuntime:
         clean_payload = dict(payload)
         clean_payload.pop("event_type", None)
         clean_payload["url"] = page.url
-        await self.emit(event_type, "user", clean_payload, page=page)
-        if event_type in {"user.click", "user.input", "user.change"}:
+        emitted = await self.emit(event_type, "user", clean_payload, page=page)
+        if emitted and event_type in {"user.click", "user.pick", "user.input", "user.change"}:
             asyncio.create_task(self.capture_screenshot(page, event_type))
+        if emitted and event_type in {"user.click", "user.input", "user.change", "user.submit"}:
+            self.schedule_page_snapshot(page, event_type, delay_ms=800)
+
+    async def set_pick_mode(self, enabled: bool) -> None:
+        """在所有受控页面中切换非破坏性拾取。"""
+        self.pick_mode = enabled
+        await asyncio.gather(
+            *(
+                page.evaluate(
+                    "enabled => window.__uiRecorderSetPickMode?.(enabled)",
+                    enabled,
+                )
+                for page in self.pages
+                if not page.is_closed()
+            ),
+            return_exceptions=True,
+        )
+        await self.emit(
+            "agent.pick_mode",
+            "agent",
+            {"enabled": enabled},
+        )
 
     async def capture_screenshot(self, page: Page, reason: str) -> None:
         if self.stopped:
@@ -374,7 +606,7 @@ class RecorderRuntime:
             logger.debug("截图失败 session=%s: %s", self.session_id, exc)
 
     async def capture_request(self, page: Page, request: Request) -> None:
-        if request.resource_type not in {"xhr", "fetch"}:
+        if self.paused or request.resource_type not in {"xhr", "fetch"}:
             return
         request_key = uuid.uuid4().hex
         self.request_keys[request] = request_key
@@ -396,7 +628,11 @@ class RecorderRuntime:
         )
 
     async def capture_response(self, page: Page, response: Response) -> None:
+        if self.paused:
+            return
         request = response.request
+        if request.resource_type in _ARCHIVE_RESOURCE_TYPES:
+            await self.capture_resource(response)
         if request.resource_type not in {"xhr", "fetch"}:
             return
         started_at = self.request_started_monotonic.pop(request, None)
@@ -431,8 +667,39 @@ class RecorderRuntime:
             severity="error" if response.status >= 400 else "info",
         )
 
+    async def capture_resource(self, response: Response) -> None:
+        """归档离线重放需要的 HTML、JS、CSS、字体和图片。"""
+        url = response.url
+        if url in self.resources:
+            return
+        try:
+            body = await response.body()
+            headers = await response.all_headers()
+        except Exception as exc:  # noqa: BLE001
+            self.archive_skipped += 1
+            logger.debug("资源归档失败 session=%s url=%s: %s", self.session_id, url, exc)
+            return
+        if self.archive_bytes + len(body) > _MAX_ARCHIVE_BYTES:
+            self.archive_skipped += 1
+            return
+        resource_dir = self.session_root / "resources"
+        resource_dir.mkdir(parents=True, exist_ok=True)
+        resource_name = f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.bin"
+        resource_path = resource_dir / resource_name
+        resource_path.write_bytes(body)
+        self.archive_bytes += len(body)
+        self.resources[url] = {
+            "url": url,
+            "path": str(resource_path.relative_to(self.session_root)),
+            "status": response.status,
+            "headers": _safe_replay_headers(headers),
+            "resource_type": response.request.resource_type,
+            "size": len(body),
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
+
     async def capture_request_failed(self, page: Page, request: Request) -> None:
-        if request.resource_type not in {"xhr", "fetch"}:
+        if self.paused or request.resource_type not in {"xhr", "fetch"}:
             return
         started_at = self.request_started_monotonic.pop(request, None)
         await self.emit(
@@ -453,10 +720,145 @@ class RecorderRuntime:
             severity="error",
         )
 
+    async def capture_page_document(
+        self,
+        page: Page,
+        *,
+        reason: str = "manual",
+    ) -> dict[str, Any] | None:
+        """保存一个可追踪的页面 DOM 状态和全页截图。"""
+        if page.is_closed():
+            return None
+        url = page.url
+        title = await page.title()
+        html = await page.content()
+        fingerprint = hashlib.sha256(f"{url}\n{html}".encode("utf-8")).hexdigest()
+        if fingerprint in self.snapshot_fingerprints:
+            return next(
+                (item for item in self.page_records if item["fingerprint"] == fingerprint),
+                None,
+            )
+        index = len(self.page_records) + 1
+        document_dir = self.session_root / "documents"
+        screenshot_dir = self.session_root / "screenshots"
+        document_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        document_path = document_dir / f"page_{index}_{fingerprint[:12]}.html"
+        screenshot_path = screenshot_dir / f"page_{index}_{fingerprint[:12]}.png"
+        document_path.write_text(html, encoding="utf-8")
+        await page.screenshot(path=str(screenshot_path), full_page=False)
+        screenshot_bytes = screenshot_path.read_bytes()
+        page_record = {
+            "url": url,
+            "title": title,
+            "page_key": _page_key(url),
+            "fingerprint": fingerprint,
+            "document_path": str(document_path.relative_to(self.session_root)),
+            "screenshot_path": str(screenshot_path.relative_to(self.session_root)),
+            "document_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
+            "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest(),
+            "capture_reason": reason,
+        }
+        self.snapshot_fingerprints.add(fingerprint)
+        self.page_records.append(page_record)
+        await self.emit("page.snapshot", "browser", page_record, page=page)
+        return page_record
+
+    async def build_offline_package(self) -> dict[str, Any]:
+        """停止前保存页面 DOM，并生成严格离线回放清单。"""
+        offline_dir = self.session_root / "offline"
+        offline_dir.mkdir(parents=True, exist_ok=True)
+
+        for page in self.pages:
+            if page.is_closed():
+                continue
+            try:
+                pending = self.snapshot_tasks.pop(page, None)
+                if pending is not None and not pending.done():
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+                await self.wait_for_page_stability(page)
+                await self.capture_page_document(page, reason="session.stop")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("页面快照失败 session=%s: %s", self.session_id, exc)
+        pages = list(self.page_records)
+
+        requests_by_key = {
+            str(event["payload"].get("request_key")): event
+            for event in self.events
+            if event["event_type"] == "network.request"
+            and event["payload"].get("request_key")
+        }
+        mocks: list[dict[str, Any]] = []
+        for event in self.events:
+            if event["event_type"] != "network.response":
+                continue
+            response_payload = event["payload"]
+            request_key = str(response_payload.get("request_key") or "")
+            request_event = requests_by_key.get(request_key)
+            if request_event is None:
+                continue
+            request_payload = request_event["payload"]
+            mocks.append({
+                "exchange_key": event["event_key"],
+                "sequence_no": event["sequence_no"],
+                "request_key": request_key,
+                "method": request_payload.get("method") or "GET",
+                "url": request_payload.get("url") or response_payload.get("url"),
+                "request": request_payload,
+                "response": response_payload,
+            })
+
+        limitations = [
+            "WebSocket、流式响应和 Service Worker 缓存暂不进入离线包",
+            "只有录制期间实际加载的静态资源和 XHR/Fetch 响应可离线回放",
+        ]
+        if self.archive_skipped:
+            limitations.append(f"{self.archive_skipped} 个资源因读取失败或容量上限未归档")
+        manifest = {
+            "version": 1,
+            "session_id": self.session_id,
+            "entry_url": pages[0]["url"] if pages else None,
+            "created_at": datetime.now().isoformat(),
+            "pages": pages,
+            "resources": list(self.resources.values()),
+            "mocks": mocks,
+            "archive_bytes": self.archive_bytes,
+            "limitations": limitations,
+            "offline_enforced": True,
+            "integrity": "sha256",
+        }
+        manifest_path = offline_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        package = {
+            "manifest_path": str(manifest_path),
+            "entry_url": manifest["entry_url"],
+            "page_count": len(pages),
+            "resource_count": len(self.resources),
+            "mock_count": len(mocks),
+            "archive_bytes": self.archive_bytes,
+            "limitations": limitations,
+            "ready": bool(pages),
+            "integrity_verified": True,
+        }
+        self.offline_package = package
+        await self.emit("offline.package", "agent", package)
+        return package
+
     async def close(self) -> None:
         if self.stopped:
             return
         self.stopped = True
+        pending_tasks = list(self.snapshot_tasks.values())
+        self.snapshot_tasks.clear()
+        for task in pending_tasks:
+            if not task.done():
+                task.cancel()
+        if pending_tasks:
+            await asyncio.gather(*pending_tasks, return_exceptions=True)
         try:
             await self.context.close()
         finally:
@@ -466,7 +868,594 @@ class RecorderRuntime:
                 await self.playwright.stop()
 
 
-_SESSIONS: dict[int, RecorderRuntime] = {}
+_ANDROID_BOUNDS_RE = re.compile(r"\[(?P<x1>-?\d+),(?P<y1>-?\d+)\]\[(?P<x2>-?\d+),(?P<y2>-?\d+)\]")
+
+
+def _mobile_node_bounds(attributes: dict[str, str]) -> dict[str, int] | None:
+    """兼容 Android bounds 与 iOS x/y/width/height。"""
+    match = _ANDROID_BOUNDS_RE.fullmatch(attributes.get("bounds") or "")
+    if match:
+        x1 = int(match.group("x1"))
+        y1 = int(match.group("y1"))
+        x2 = int(match.group("x2"))
+        y2 = int(match.group("y2"))
+        return {
+            "x": x1,
+            "y": y1,
+            "width": max(0, x2 - x1),
+            "height": max(0, y2 - y1),
+        }
+    try:
+        return {
+            "x": round(float(attributes["x"])),
+            "y": round(float(attributes["y"])),
+            "width": max(0, round(float(attributes["width"]))),
+            "height": max(0, round(float(attributes["height"]))),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _mobile_element_from_source(
+    source: str,
+    x: int,
+    y: int,
+    platform: str,
+) -> dict[str, Any] | None:
+    """从当前 UI Tree 中解析坐标命中的最小元素，并生成移动定位器。"""
+    try:
+        root = ET.fromstring(source)
+    except ET.ParseError:
+        return None
+
+    candidates: list[tuple[int, ET.Element, str, dict[str, int]]] = []
+
+    def walk_with_path(node: ET.Element, path: str) -> None:
+        attributes = {str(key): str(value) for key, value in node.attrib.items()}
+        bounds = _mobile_node_bounds(attributes)
+        if bounds:
+            right = bounds["x"] + bounds["width"]
+            bottom = bounds["y"] + bounds["height"]
+            if bounds["x"] <= x <= right and bounds["y"] <= y <= bottom:
+                candidates.append((bounds["width"] * bounds["height"], node, path, bounds))
+        tag_counts: dict[str, int] = {}
+        for child in list(node):
+            child_tag = str(child.tag).split("}")[-1]
+            tag_counts[child_tag] = tag_counts.get(child_tag, 0) + 1
+            walk_with_path(child, f"{path}/{child_tag}[{tag_counts[child_tag]}]")
+
+    root_tag = str(root.tag).split("}")[-1]
+    walk_with_path(root, f"/{root_tag}[1]")
+    if not candidates:
+        return None
+    _area, node, xpath, bounds = min(candidates, key=lambda item: item[0])
+    attrs = {str(key): str(value) for key, value in node.attrib.items()}
+    element_type = attrs.get("class") or attrs.get("type") or str(node.tag).split("}")[-1]
+    resource_id = attrs.get("resource-id") or attrs.get("resourceId") or ""
+    accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
+    text = attrs.get("text") or attrs.get("label") or attrs.get("value") or ""
+    semantic_name = accessibility or text or resource_id.rsplit("/", 1)[-1] or element_type
+    locators: list[dict[str, Any]] = []
+    if platform == "android":
+        if resource_id:
+            locators.append({"strategy": "id", "locator": resource_id, "score": 98})
+        if accessibility:
+            locators.append({"strategy": "accessibility_id", "locator": accessibility, "score": 96})
+        if text:
+            escaped = text.replace('"', '\\"')
+            locators.append({
+                "strategy": "android_uiautomator",
+                "locator": f'new UiSelector().text("{escaped}")',
+                "score": 82,
+            })
+    else:
+        if accessibility:
+            locators.append({"strategy": "accessibility_id", "locator": accessibility, "score": 96})
+            predicate_value = accessibility.replace("'", "\\'")
+            locators.append({
+                "strategy": "ios_predicate",
+                "locator": f"name == '{predicate_value}'",
+                "score": 90,
+            })
+            locators.append({
+                "strategy": "ios_class_chain",
+                "locator": f"**/{element_type}[`name == '{predicate_value}'`]",
+                "score": 86,
+            })
+    if text and not any(item["locator"] == text for item in locators):
+        locators.append({"strategy": "text", "locator": text, "score": 76})
+    locators.append({"strategy": "xpath", "locator": xpath, "score": 62})
+    return {
+        "semantic_name": semantic_name[:200],
+        "element_type": element_type[:100],
+        "fingerprint_seed": "|".join(
+            [platform, element_type, resource_id, accessibility, text, xpath]
+        ),
+        "attributes": {
+            **attrs,
+            "bounds": bounds,
+        },
+        "locators": locators,
+    }
+
+
+def _mobile_options(body: MobileRecorderStartRequest):
+    """构建严格 W3C 的 Appium Options。"""
+    caps: dict[str, Any] = {
+        "platformName": "Android" if body.platform == "android" else "iOS",
+        "appium:automationName": "UiAutomator2" if body.platform == "android" else "XCUITest",
+        "appium:udid": body.udid,
+        "appium:deviceName": body.device_name or body.udid,
+        "appium:noReset": True,
+        "appium:newCommandTimeout": 1800,
+    }
+    if body.platform_version:
+        caps["appium:platformVersion"] = body.platform_version
+    if body.app_path:
+        app_path = Path(body.app_path).expanduser().resolve()
+        if not app_path.is_file():
+            raise ValueError(f"应用包文件不存在：{app_path}")
+        caps["appium:app"] = str(app_path)
+    if body.app_identifier:
+        key = "appium:appPackage" if body.platform == "android" else "appium:bundleId"
+        caps[key] = body.app_identifier
+    for key, value in body.capabilities.items():
+        if key in {"is_simulator", "device_type", "basePath", "appium:basePath"}:
+            continue
+        normalized = key if key == "platformName" or ":" in key else f"appium:{key}"
+        caps[normalized] = value
+    if body.platform == "android":
+        from appium.options.android import UiAutomator2Options
+
+        return UiAutomator2Options().load_capabilities(caps)
+    from appium.options.ios import XCUITestOptions
+
+    return XCUITestOptions().load_capabilities(caps)
+
+
+@dataclass
+class MobileRecorderRuntime:
+    """一个由 Appium 持有的模拟器录制会话。"""
+
+    session_id: int
+    driver: Any
+    platform: str
+    udid: str
+    app_identifier: str | None
+    started_monotonic: float = field(default_factory=time.monotonic)
+    paused: bool = False
+    pick_mode: bool = False
+    stopped: bool = False
+    sequence_no: int = 0
+    events: list[dict[str, Any]] = field(default_factory=list)
+    snapshot_fingerprints: set[str] = field(default_factory=set)
+    last_element: dict[str, Any] | None = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    driver_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    @property
+    def session_root(self) -> Path:
+        return _ARTIFACT_ROOT / f"session_{self.session_id}"
+
+    async def emit(
+        self,
+        event_type: str,
+        source: str,
+        payload: dict[str, Any],
+        *,
+        severity: str = "info",
+    ) -> dict[str, Any] | None:
+        if self.paused and source != "agent" and event_type not in {"user.pick", "page.snapshot"}:
+            return None
+        async with self.lock:
+            self.sequence_no += 1
+            element = payload.get("element")
+            if isinstance(element, dict):
+                seed = str(element.pop("fingerprint_seed", ""))
+                if not element.get("fingerprint"):
+                    element["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+            event = {
+                "event_key": uuid.uuid4().hex,
+                "sequence_no": self.sequence_no,
+                "event_type": event_type,
+                "source": source,
+                "severity": severity,
+                "page_key": str(payload.get("page_key") or f"{self.platform}:{self.udid}")[:255],
+                "occurred_at": datetime.now().isoformat(),
+                "monotonic_ms": int((time.monotonic() - self.started_monotonic) * 1000),
+                "payload": payload,
+            }
+            self.events.append(event)
+            if len(self.events) > _MAX_EVENT_BUFFER:
+                self.events = self.events[-_MAX_EVENT_BUFFER:]
+            return event
+
+    def _read_state_sync(self) -> dict[str, Any]:
+        screenshot = self.driver.get_screenshot_as_png()
+        source = self.driver.page_source
+        rect = self.driver.get_window_rect()
+        capabilities = dict(getattr(self.driver, "capabilities", {}) or {})
+        current_context = str(getattr(self.driver, "current_context", "NATIVE_APP"))
+        contexts = [str(item) for item in (getattr(self.driver, "contexts", []) or [])]
+        page_name = str(
+            capabilities.get("appium:bundleId")
+            or capabilities.get("bundleId")
+            or self.app_identifier
+            or capabilities.get("appium:appPackage")
+            or capabilities.get("appPackage")
+            or current_context
+        )
+        if self.platform == "android":
+            try:
+                package = str(self.driver.current_package)
+                activity = str(self.driver.current_activity)
+                page_name = activity or package or page_name
+            except Exception:  # noqa: BLE001
+                package = self.app_identifier
+                activity = None
+            page_key = f"{package or 'android'}:{activity or current_context}"
+        else:
+            package = self.app_identifier
+            activity = None
+            page_key = f"{package or 'ios'}:{current_context}"
+        return {
+            "screenshot": screenshot,
+            "source": source,
+            "rect": rect,
+            "context": current_context,
+            "contexts": contexts,
+            "page_name": page_name,
+            "page_key": page_key[:255],
+            "app_identifier": package,
+            "activity": activity,
+            "capabilities": capabilities,
+        }
+
+    async def capture_snapshot(self, reason: str) -> dict[str, Any] | None:
+        """保存模拟器截图与 UI Tree；连续相同状态只保留一个版本。"""
+        if self.stopped:
+            return None
+        async with self.driver_lock:
+            state = await asyncio.to_thread(self._read_state_sync)
+        screenshot = state["screenshot"]
+        source = str(state["source"])
+        fingerprint = hashlib.sha256(
+            str(state["page_key"]).encode("utf-8") + b"\n" + source.encode("utf-8")
+        ).hexdigest()
+        if fingerprint in self.snapshot_fingerprints:
+            return None
+        snapshot_index = len(self.snapshot_fingerprints) + 1
+        document_dir = self.session_root / "documents"
+        screenshot_dir = self.session_root / "screenshots"
+        document_dir.mkdir(parents=True, exist_ok=True)
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+        document_path = document_dir / f"mobile_{snapshot_index}_{fingerprint[:12]}.xml"
+        screenshot_path = screenshot_dir / f"mobile_{snapshot_index}_{fingerprint[:12]}.png"
+        document_path.write_text(source, encoding="utf-8")
+        screenshot_path.write_bytes(screenshot)
+        self.snapshot_fingerprints.add(fingerprint)
+        payload = {
+            "url": f"appium://{self.udid}/{state['context']}",
+            "title": state["page_name"],
+            "page_title": state["page_name"],
+            "page_key": state["page_key"],
+            "state_name": reason,
+            "fingerprint": fingerprint,
+            "document_path": str(document_path.relative_to(self.session_root)),
+            "screenshot_path": str(screenshot_path.relative_to(self.session_root)),
+            "app_identifier": state["app_identifier"],
+            "activity": state["activity"],
+            "context": state["context"],
+            "contexts": state["contexts"],
+            "viewport": state["rect"],
+        }
+        await self.emit("page.snapshot", "device", payload)
+        return payload
+
+    async def set_pick_mode(self, enabled: bool) -> None:
+        self.pick_mode = enabled
+        await self.emit("agent.pick_mode", "agent", {"enabled": enabled})
+
+    async def perform_action(self, body: MobileActionRequest) -> None:
+        """执行平台远程动作，并把动作与命中元素、前后画面关联起来。"""
+        if self.stopped:
+            raise RuntimeError("移动录制会话已停止")
+        if body.action in {"tap", "swipe"} and (body.x is None or body.y is None):
+            raise ValueError(f"{body.action} 动作必须包含 x/y")
+        if body.action == "swipe" and (body.end_x is None or body.end_y is None):
+            raise ValueError("swipe 动作必须包含 end_x/end_y")
+        if body.action == "input" and body.text is None:
+            raise ValueError("input 动作必须包含 text")
+
+        async with self.driver_lock:
+            source = await asyncio.to_thread(lambda: self.driver.page_source)
+            state = await asyncio.to_thread(self._read_state_sync)
+            element = None
+            if body.x is not None and body.y is not None:
+                element = _mobile_element_from_source(source, body.x, body.y, self.platform)
+                if element is not None:
+                    self.last_element = element
+            elif body.action == "input":
+                element = self.last_element
+            event_type = f"user.{body.action}"
+            payload: dict[str, Any] = {
+                "page_key": state["page_key"],
+                "page_title": state["page_name"],
+                "url": f"appium://{self.udid}/{state['context']}",
+                "element": element,
+                "x": body.x,
+                "y": body.y,
+            }
+            if body.action == "tap" and self.pick_mode:
+                event_type = "user.pick"
+            elif body.action == "tap":
+                await asyncio.to_thread(self._tap_sync, int(body.x or 0), int(body.y or 0))
+            elif body.action == "input":
+                sensitive = bool(
+                    element
+                    and str((element.get("attributes") or {}).get("password") or "").lower() == "true"
+                )
+                await asyncio.to_thread(self._input_sync, body.text or "")
+                payload.update({
+                    "value": "${password}" if sensitive else body.text,
+                    "redacted": sensitive,
+                })
+            elif body.action == "swipe":
+                await asyncio.to_thread(
+                    self.driver.swipe,
+                    int(body.x or 0),
+                    int(body.y or 0),
+                    int(body.end_x or 0),
+                    int(body.end_y or 0),
+                    body.duration_ms,
+                )
+                payload.update({
+                    "end_x": body.end_x,
+                    "end_y": body.end_y,
+                    "duration_ms": body.duration_ms,
+                })
+            elif body.action == "back":
+                await asyncio.to_thread(self.driver.back)
+            elif body.action == "refresh":
+                event_type = "user.refresh"
+
+        await self.emit(event_type, "user", payload)
+        if event_type != "user.pick":
+            await asyncio.sleep(0.35)
+        await self.capture_snapshot(event_type)
+
+    def _tap_sync(self, x: int, y: int) -> None:
+        if self.platform == "android":
+            try:
+                self.driver.execute_script("mobile: clickGesture", {"x": x, "y": y})
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                self.driver.execute_script("mobile: tap", {"x": x, "y": y})
+                return
+            except Exception:  # noqa: BLE001
+                pass
+        self.driver.tap([(x, y)], 100)
+
+    def _input_sync(self, value: str) -> None:
+        active = self.driver.switch_to.active_element
+        active.send_keys(value)
+
+    async def capture_device_logs(self) -> None:
+        """尽力读取设备日志；驱动不支持时显式降级，不影响录制。"""
+        log_type = "logcat" if self.platform == "android" else "syslog"
+        try:
+            async with self.driver_lock:
+                entries = await asyncio.to_thread(self.driver.get_log, log_type)
+        except Exception as exc:  # noqa: BLE001
+            await self.emit(
+                "device.log_unavailable",
+                "device",
+                {
+                    "page_key": f"{self.platform}:{self.udid}",
+                    "log_type": log_type,
+                    "reason": str(exc)[:1000],
+                },
+            )
+            return
+        filtered_entries = []
+        for entry in list(entries or []):
+            message = str(entry.get("message") or "")
+            if "channel read:" in message or "AppiumResponse:" in message:
+                continue
+            filtered_entries.append(entry)
+        for entry in filtered_entries[-50:]:
+            await self.emit(
+                "device.log",
+                "device",
+                {
+                    "page_key": f"{self.platform}:{self.udid}",
+                    "log_type": log_type,
+                    "level": entry.get("level"),
+                    "message": str(entry.get("message") or "")[:4000],
+                    "timestamp": entry.get("timestamp"),
+                },
+                severity="error" if str(entry.get("level") or "").upper() == "SEVERE" else "info",
+            )
+
+    async def close(self) -> None:
+        if self.stopped:
+            return
+        self.stopped = True
+        async with self.driver_lock:
+            await asyncio.to_thread(self.driver.quit)
+
+
+@dataclass
+class OfflineReplayRuntime:
+    """一个严格断网的离线回放浏览器。"""
+
+    replay_id: str
+    playwright: Playwright
+    browser: Browser
+    context: BrowserContext
+    page: Page
+    stats: dict[str, int]
+
+    async def close(self) -> None:
+        try:
+            await self.context.close()
+        finally:
+            try:
+                await self.browser.close()
+            finally:
+                await self.playwright.stop()
+
+
+_SESSIONS: dict[int, RecorderRuntime | MobileRecorderRuntime] = {}
+_REPLAYS: dict[str, OfflineReplayRuntime] = {}
+
+
+async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplayRuntime, dict[str, Any]]:
+    session_root = _ARTIFACT_ROOT / f"session_{body.session_id}"
+    manifest_path = session_root / "offline" / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="离线回放包不存在，请先完成一次 Web 录制")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"离线回放清单损坏：{exc}") from exc
+    entry_url = str(manifest.get("entry_url") or "")
+    if not entry_url:
+        raise HTTPException(status_code=422, detail="离线回放包没有入口页面")
+
+    try:
+        integrity_items = [
+            (item["document_path"], item["document_sha256"])
+            for item in manifest.get("pages") or []
+        ] + [
+            (item["screenshot_path"], item["screenshot_sha256"])
+            for item in manifest.get("pages") or []
+        ] + [
+            (item["path"], item["sha256"])
+            for item in manifest.get("resources") or []
+        ]
+        for relative_path, expected_hash in integrity_items:
+            artifact = _package_artifact_path(session_root, relative_path)
+            actual_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                raise ValueError(f"制品哈希不匹配：{relative_path}")
+    except (KeyError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"离线回放包完整性校验失败：{exc}") from exc
+
+    page_groups: dict[str, list[dict[str, Any]]] = {}
+    for item in manifest.get("pages") or []:
+        page_groups.setdefault(str(item["url"]), []).append(item)
+    page_indexes: dict[str, int] = {}
+    resources = {str(item["url"]): item for item in manifest.get("resources") or []}
+    mock_groups: dict[str, list[dict[str, Any]]] = {}
+    for exchange in manifest.get("mocks") or []:
+        key = f"{str(exchange.get('method') or 'GET').upper()} {exchange.get('url')}"
+        mock_groups.setdefault(key, []).append(exchange)
+    mock_indexes: dict[str, int] = {}
+    stats = {"requests": 0, "page_hits": 0, "resource_hits": 0, "mock_hits": 0, "misses": 0}
+
+    playwright = await async_playwright().start()
+    browser_type = getattr(playwright, body.browser)
+    try:
+        browser = await browser_type.launch(headless=body.headless)
+        context = await browser.new_context(service_workers="block")
+    except Exception as exc:  # noqa: BLE001
+        await playwright.stop()
+        raise HTTPException(status_code=503, detail=f"离线浏览器启动失败：{exc}") from exc
+
+    async def route_offline(route) -> None:
+        request = route.request
+        stats["requests"] += 1
+        url = request.url
+        method = request.method.upper()
+        if request.resource_type in {"xhr", "fetch"}:
+            key = f"{method} {url}"
+            candidates = mock_groups.get(key) or []
+            if candidates:
+                stats["mock_hits"] += 1
+                index = min(mock_indexes.get(key, 0), len(candidates) - 1)
+                mock_indexes[key] = index + 1
+                response = candidates[index].get("response") or {}
+                await route.fulfill(
+                    status=int(response.get("status") or 200),
+                    headers=_safe_replay_headers(response.get("headers") or {}),
+                    body=str(response.get("body") or ""),
+                )
+                return
+            stats["misses"] += 1
+            await route.fulfill(
+                status=599,
+                content_type="application/json; charset=utf-8",
+                body=json.dumps({
+                    "offline_error": "未命中录制期 Mock，已阻止访问原服务",
+                    "method": method,
+                    "url": url,
+                }, ensure_ascii=False),
+            )
+            return
+
+        page_candidates = page_groups.get(url) or []
+        if page_candidates:
+            stats["page_hits"] += 1
+            index = min(page_indexes.get(url, 0), len(page_candidates) - 1)
+            page_indexes[url] = index + 1
+            page_record = page_candidates[index]
+            try:
+                path = _package_artifact_path(session_root, page_record["document_path"])
+            except ValueError as exc:
+                await route.fulfill(status=599, body=str(exc))
+                return
+            await route.fulfill(
+                status=200,
+                content_type="text/html; charset=utf-8",
+                body=path.read_bytes(),
+            )
+            return
+        resource = resources.get(url)
+        if resource:
+            stats["resource_hits"] += 1
+            try:
+                path = _package_artifact_path(session_root, resource["path"])
+            except ValueError as exc:
+                await route.fulfill(status=599, body=str(exc))
+                return
+            await route.fulfill(
+                status=int(resource.get("status") or 200),
+                headers=_safe_replay_headers(resource.get("headers") or {}),
+                body=path.read_bytes(),
+            )
+            return
+        stats["misses"] += 1
+        await route.fulfill(
+            status=599,
+            content_type="text/plain; charset=utf-8",
+            body=f"Offline resource miss: {url}",
+        )
+
+    try:
+        await context.route("**/*", route_offline)
+        page = await context.new_page()
+        await page.goto(entry_url, wait_until="domcontentloaded", timeout=60_000)
+    except Exception as exc:  # noqa: BLE001
+        await context.close()
+        await browser.close()
+        await playwright.stop()
+        raise HTTPException(status_code=502, detail=f"打开离线页面失败：{exc}") from exc
+
+    replay_id = uuid.uuid4().hex
+    runtime = OfflineReplayRuntime(
+        replay_id=replay_id,
+        playwright=playwright,
+        browser=browser,
+        context=context,
+        page=page,
+        stats=stats,
+    )
+    _REPLAYS[replay_id] = runtime
+    return runtime, manifest
 
 
 async def _authorize(x_recorder_secret: str | None = Header(None)) -> None:
@@ -599,12 +1588,223 @@ async def _start_runtime(body: RecorderStartRequest) -> RecorderRuntime:
     return runtime
 
 
+async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecorderRuntime:
+    """连接 Appium，并采集模拟器初始画面、UI Tree 与环境。"""
+    existing = _SESSIONS.get(body.session_id)
+    if existing is not None and not existing.stopped:
+        raise HTTPException(status_code=409, detail="该录制会话已经在 Agent 中运行")
+    try:
+        from appium import webdriver
+
+        options = _mobile_options(body)
+        driver = await asyncio.to_thread(
+            webdriver.Remote,
+            command_executor=body.appium_url,
+            options=options,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Appium 模拟器会话启动失败：{exc}",
+        ) from exc
+
+    runtime = MobileRecorderRuntime(
+        session_id=body.session_id,
+        driver=driver,
+        platform=body.platform,
+        udid=body.udid,
+        app_identifier=body.app_identifier,
+    )
+    _SESSIONS[body.session_id] = runtime
+    try:
+        async with runtime.driver_lock:
+            state = await asyncio.to_thread(runtime._read_state_sync)
+        await runtime.emit(
+            "agent.connected",
+            "agent",
+            {
+                "page_key": state["page_key"],
+                "agent_id": f"mobile-agent-{os.getpid()}",
+                "capabilities": {
+                    "screen": True,
+                    "ui_tree": True,
+                    "user_events": True,
+                    "device_logs": "best_effort",
+                    "native_network": False,
+                    "locators": [
+                        "id",
+                        "accessibility_id",
+                        "android_uiautomator",
+                        "ios_predicate",
+                        "ios_class_chain",
+                        "xpath",
+                    ],
+                    "platform": body.platform,
+                },
+            },
+        )
+        await runtime.emit(
+            "environment.snapshot",
+            "environment",
+            {
+                "page_key": state["page_key"],
+                "url": f"appium://{body.udid}/{state['context']}",
+                "platform": body.platform,
+                "udid": body.udid,
+                "device_name": body.device_name,
+                "platform_version": body.platform_version,
+                "app_identifier": body.app_identifier,
+                "viewport": state["rect"],
+                "contexts": state["contexts"],
+                "network": {
+                    "native_capture": False,
+                    "unavailable_reason": (
+                        "Native Network 代理/SDK 尚未配置；当前只记录 Appium 已提供的网络元数据"
+                    ),
+                },
+                "host_os": {
+                    "system": host_platform.system(),
+                    "release": host_platform.release(),
+                    "machine": host_platform.machine(),
+                },
+            },
+        )
+        await runtime.capture_snapshot("session.start")
+    except Exception as exc:  # noqa: BLE001
+        await runtime.close()
+        raise HTTPException(status_code=502, detail=f"采集模拟器初始画面失败：{exc}") from exc
+    return runtime
+
+
+def _run_preflight_command(args: list[str]) -> tuple[int, str]:
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+    return completed.returncode, (completed.stdout or completed.stderr or "").strip()
+
+
+def _mobile_preflight_sync() -> dict[str, Any]:
+    """检查宿主机 Appium、Android Emulator 与 iOS Simulator 条件。"""
+    tools = {name: shutil.which(name) for name in ("adb", "appium", "xcrun")}
+    android_devices: list[dict[str, str]] = []
+    if tools["adb"]:
+        _code, output = _run_preflight_command([str(tools["adb"]), "devices", "-l"])
+        for line in output.splitlines()[1:]:
+            parts = line.strip().split()
+            if len(parts) < 2:
+                continue
+            android_devices.append({
+                "udid": parts[0],
+                "state": parts[1],
+                "description": " ".join(parts[2:]),
+            })
+
+    ios_devices: list[dict[str, str]] = []
+    if tools["xcrun"]:
+        code, output = _run_preflight_command([
+            str(tools["xcrun"]),
+            "simctl",
+            "list",
+            "devices",
+            "booted",
+            "--json",
+        ])
+        if code == 0:
+            try:
+                payload = json.loads(output)
+                for runtime_name, devices in (payload.get("devices") or {}).items():
+                    for device in devices or []:
+                        if device.get("state") != "Booted":
+                            continue
+                        ios_devices.append({
+                            "udid": str(device.get("udid") or ""),
+                            "state": "booted",
+                            "description": f"{device.get('name') or ''} · {runtime_name}",
+                        })
+            except ValueError:
+                pass
+
+    appium: dict[str, Any] = {
+        "installed": bool(tools["appium"]),
+        "running": False,
+        "url": "http://127.0.0.1:4723",
+    }
+    try:
+        with urlopen("http://127.0.0.1:4723/status", timeout=2) as response:  # noqa: S310
+            status_payload = json.loads(response.read().decode("utf-8"))
+        appium["running"] = response.status == 200
+        appium["version"] = (
+            (status_payload.get("value") or {}).get("build") or {}
+        ).get("version")
+    except Exception as exc:  # noqa: BLE001
+        appium["reason"] = str(exc)[:500]
+
+    drivers: dict[str, Any] = {}
+    if tools["appium"]:
+        code, output = _run_preflight_command([
+            str(tools["appium"]),
+            "driver",
+            "list",
+            "--installed",
+            "--json",
+        ])
+        if code == 0:
+            try:
+                drivers = json.loads(output)
+            except ValueError:
+                pass
+    ios_issues: list[str] = []
+    xcuitest = drivers.get("xcuitest") or {}
+    if not xcuitest.get("installed"):
+        ios_issues.append("未安装 Appium XCUITest Driver")
+    install_path = Path(str(xcuitest.get("installPath") or ""))
+    if install_path.is_dir() and not os.access(install_path, os.W_OK):
+        ios_issues.append(
+            f"XCUITest Driver 目录不可写（{install_path}），WebDriverAgent 构建会失败"
+        )
+
+    platform_ready = {
+        "android": bool(appium["running"] and android_devices and (drivers.get("uiautomator2") or {}).get("installed")),
+        "ios": bool(appium["running"] and ios_devices and not ios_issues),
+    }
+
+    return {
+        "tools": tools,
+        "appium": appium,
+        "drivers": {
+            name: {
+                "installed": bool(value.get("installed")),
+                "version": value.get("version"),
+                "install_path": value.get("installPath"),
+            }
+            for name, value in drivers.items()
+            if name in {"uiautomator2", "xcuitest"}
+        },
+        "android_devices": android_devices,
+        "ios_devices": ios_devices,
+        "ios_issues": ios_issues,
+        "platform_ready": platform_ready,
+        "ready": any(platform_ready.values()),
+    }
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     yield
     await asyncio.gather(
         *(runtime.close() for runtime in list(_SESSIONS.values())),
+        return_exceptions=True,
+    )
+    await asyncio.gather(
+        *(runtime.close() for runtime in list(_REPLAYS.values())),
         return_exceptions=True,
     )
 
@@ -619,6 +1819,35 @@ async def health():
         "data": {
             "ok": True,
             "active_sessions": sum(not runtime.stopped for runtime in _SESSIONS.values()),
+        },
+    }
+
+
+@app.get("/mobile/preflight", dependencies=[Depends(_authorize)])
+async def mobile_preflight():
+    return {
+        "status": "success",
+        "data": await asyncio.to_thread(_mobile_preflight_sync),
+    }
+
+
+@app.post("/mobile/sessions", dependencies=[Depends(_authorize)])
+async def start_mobile_session(body: MobileRecorderStartRequest):
+    runtime = await _start_mobile_runtime(body)
+    return {
+        "status": "success",
+        "data": {
+            "session_id": runtime.session_id,
+            "status": "recording",
+            "agent_id": f"mobile-agent-{os.getpid()}",
+            "capabilities": {
+                "screen": True,
+                "ui_tree": True,
+                "user_events": True,
+                "device_logs": "best_effort",
+                "native_network": False,
+                "mobile_remote_actions": True,
+            },
         },
     }
 
@@ -692,15 +1921,128 @@ async def resume_session(session_id: int):
     return {"status": "success", "data": {"status": "recording"}}
 
 
+@app.post("/sessions/{session_id}/pick-mode", dependencies=[Depends(_authorize)])
+async def update_pick_mode(session_id: int, body: PickModeRequest):
+    runtime = _SESSIONS.get(session_id)
+    if runtime is None or runtime.stopped:
+        raise HTTPException(status_code=404, detail="Agent 会话不存在或已停止")
+    await runtime.set_pick_mode(body.enabled)
+    return {
+        "status": "success",
+        "data": {"enabled": runtime.pick_mode},
+    }
+
+
+@app.post("/sessions/{session_id}/actions", dependencies=[Depends(_authorize)])
+async def perform_mobile_action(session_id: int, body: MobileActionRequest):
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, MobileRecorderRuntime) or runtime.stopped:
+        raise HTTPException(status_code=404, detail="移动录制会话不存在或已停止")
+    try:
+        await runtime.perform_action(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        await runtime.emit(
+            "agent.error",
+            "agent",
+            {"message": f"移动动作执行失败：{exc}"},
+            severity="error",
+        )
+        raise HTTPException(status_code=502, detail=f"移动动作执行失败：{exc}") from exc
+    return {
+        "status": "success",
+        "data": {
+            "status": "paused" if runtime.paused else "recording",
+            "event_count": len(runtime.events),
+        },
+    }
+
+
 @app.post("/sessions/{session_id}/stop", dependencies=[Depends(_authorize)])
 async def stop_session(session_id: int):
     runtime = _SESSIONS.get(session_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="Agent 会话不存在")
-    if not runtime.stopped:
-        await runtime.emit("agent.disconnected", "agent", {"reason": "stopped"})
-        await runtime.close()
+    if isinstance(runtime, RecorderRuntime):
+        if not runtime.stopped:
+            package = await runtime.build_offline_package()
+            await runtime.emit("agent.disconnected", "agent", {"reason": "stopped"})
+            await runtime.close()
+        else:
+            package = runtime.offline_package or {}
+    else:
+        package = {}
+        if not runtime.stopped:
+            await runtime.capture_snapshot("session.stop")
+            await runtime.capture_device_logs()
+            await runtime.emit("agent.disconnected", "agent", {"reason": "stopped"})
+            await runtime.close()
+        mobile_scenario = {
+            "ready": True,
+            "platform": runtime.platform,
+            "udid": runtime.udid,
+            "app_identifier": runtime.app_identifier,
+            "snapshot_count": len(runtime.snapshot_fingerprints),
+            "limitations": [
+                "场景重开会连接同一模拟器与应用版本，但暂不自动还原应用私有数据",
+                "Native Network 需要测试代理或 SDK；未配置时保持显式降级",
+            ],
+        }
+    if isinstance(runtime, RecorderRuntime):
+        mobile_scenario = {}
+    return {
+        "status": "success",
+        "data": {
+            "status": "stopped",
+            "offline_package": package,
+            "mobile_scenario": mobile_scenario,
+        },
+    }
+
+
+@app.post("/replays", dependencies=[Depends(_authorize)])
+async def start_replay(body: ReplayStartRequest):
+    runtime, manifest = await _start_offline_replay(body)
+    return {
+        "status": "success",
+        "data": {
+            "replay_id": runtime.replay_id,
+            "session_id": body.session_id,
+            "entry_url": manifest.get("entry_url"),
+            "page_count": len(manifest.get("pages") or []),
+            "resource_count": len(manifest.get("resources") or []),
+            "mock_count": len(manifest.get("mocks") or []),
+            "offline_enforced": True,
+            "integrity_verified": True,
+            "limitations": manifest.get("limitations") or [],
+        },
+    }
+
+
+@app.post("/replays/{replay_id}/stop", dependencies=[Depends(_authorize)])
+async def stop_replay(replay_id: str):
+    runtime = _REPLAYS.pop(replay_id, None)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    await runtime.close()
     return {"status": "success", "data": {"status": "stopped"}}
+
+
+@app.get("/replays/{replay_id}", dependencies=[Depends(_authorize)])
+async def get_replay(replay_id: str):
+    runtime = _REPLAYS.get(replay_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    return {
+        "status": "success",
+        "data": {
+            "replay_id": replay_id,
+            "url": runtime.page.url,
+            "title": await runtime.page.title(),
+            "stats": dict(runtime.stats),
+        },
+    }
 
 
 if __name__ == "__main__":

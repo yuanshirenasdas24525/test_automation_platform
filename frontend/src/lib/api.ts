@@ -102,9 +102,12 @@ import type {
   VersionTestSummary,
   VersionUpdate,
   UiElement,
+  UiOfflineReplay,
+  UiPageSnapshot,
   UiPlatform,
   UiRecordingEvent,
   UiRecordingSession,
+  UiRecordingStepDraft,
 } from "@/types/domain";
 
 export class ApiError extends Error {
@@ -2221,7 +2224,27 @@ export const changeAdjustApi = {
 // UI 录制中心与可视化元素库
 // =============================================================================
 
+export interface UiMobilePreflight {
+  ready: boolean;
+  tools: Record<string, string | null>;
+  appium: {
+    installed: boolean;
+    running: boolean;
+    url: string;
+    version?: string | null;
+    reason?: string;
+  };
+  drivers: Record<string, { installed: boolean; version?: string; install_path?: string }>;
+  android_devices: Array<{ udid: string; state: string; description: string }>;
+  ios_devices: Array<{ udid: string; state: string; description: string }>;
+  ios_issues: string[];
+  platform_ready: { android: boolean; ios: boolean };
+}
+
 export const uiRecordingsApi = {
+  mobilePreflight() {
+    return request<UiMobilePreflight>("/api/ui-recordings/mobile-preflight");
+  },
   list(projectId: number, platform?: UiPlatform) {
     const qs = new URLSearchParams({ project_id: String(projectId) });
     if (platform) qs.set("platform", platform);
@@ -2244,10 +2267,68 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
-  control(sessionId: number, action: "start" | "pause" | "resume" | "stop" | "cancel") {
+  control(
+    sessionId: number,
+    action: "start" | "pause" | "resume" | "stop" | "cancel",
+    control?: {
+      client_instance_id: string;
+      command_id: string;
+      takeover?: boolean;
+    },
+  ) {
     return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/${action}`, {
       method: "POST",
+      body: control,
     });
+  },
+  updateLease(
+    sessionId: number,
+    payload: {
+      client_instance_id: string;
+      action: "claim" | "heartbeat" | "takeover" | "release";
+    },
+  ) {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/control-lease`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  setPickMode(
+    sessionId: number,
+    payload: { client_instance_id: string; command_id: string; enabled: boolean },
+  ) {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/pick-mode`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  performMobileAction(
+    sessionId: number,
+    payload: {
+      client_instance_id: string;
+      command_id: string;
+      action: "tap" | "input" | "swipe" | "back" | "refresh";
+      x?: number;
+      y?: number;
+      end_x?: number;
+      end_y?: number;
+      duration_ms?: number;
+      text?: string;
+    },
+  ) {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/mobile-actions`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  startReplay(sessionId: number, browser = "chromium") {
+    return request<UiOfflineReplay>(`/api/ui-recordings/${sessionId}/replay`, {
+      method: "POST",
+      body: { browser, headless: false },
+    });
+  },
+  stepDraft(sessionId: number) {
+    return request<UiRecordingStepDraft>(`/api/ui-recordings/${sessionId}/step-draft`);
   },
   listEvents(sessionId: number, afterSequence = 0) {
     return request<UiRecordingEvent[]>(
@@ -2267,5 +2348,21 @@ export const uiRecordingsApi = {
     if (args.status) qs.set("status", args.status);
     if (args.keyword?.trim()) qs.set("keyword", args.keyword.trim());
     return request<UiElement[]>(`/api/ui-elements?${qs.toString()}`);
+  },
+  listSnapshots(args: { projectId: number; platform?: UiPlatform; pageKey?: string }) {
+    const qs = new URLSearchParams({ project_id: String(args.projectId) });
+    if (args.platform) qs.set("platform", args.platform);
+    if (args.pageKey) qs.set("page_key", args.pageKey);
+    return request<UiPageSnapshot[]>(`/api/ui-page-snapshots?${qs.toString()}`);
+  },
+  async snapshotImage(snapshotId: number): Promise<Blob> {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`/api/ui-page-snapshots/${snapshotId}/screenshot`, { headers });
+    if (!response.ok) {
+      throw new ApiError("页面截图加载失败", response.status);
+    }
+    return response.blob();
   },
 };

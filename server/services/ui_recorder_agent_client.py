@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from database.models import UiRecordingSession
+from database.models import AppPackage, Device, UiRecordingSession
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class RecorderAgentError(RuntimeError):
@@ -22,8 +27,14 @@ def _headers() -> dict[str, str]:
     return {"X-Recorder-Secret": secret} if secret else {}
 
 
-def _request(method: str, path: str, *, body: dict[str, Any] | None = None) -> Any:
-    timeout = httpx.Timeout(connect=3.0, read=75.0, write=10.0, pool=3.0)
+def _request(
+    method: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    read_timeout: float = 75.0,
+) -> Any:
+    timeout = httpx.Timeout(connect=3.0, read=read_timeout, write=10.0, pool=3.0)
     try:
         with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=timeout) as client:
             response = client.request(method, path, json=body)
@@ -63,8 +74,105 @@ def start_web_session(session: UiRecordingSession) -> dict[str, Any]:
     )
 
 
+def _host_appium_url(device: Device) -> str:
+    """生成宿主机 Recorder Agent 可访问的 Appium 地址。"""
+    from runners.app.session import _build_appium_url
+
+    url = _build_appium_url({
+        "agent_host": device.agent_host,
+        "appium_port": device.appium_port,
+        "capabilities": device.capabilities,
+    })
+    parts = urlsplit(url)
+    hostname = parts.hostname or "localhost"
+    if hostname == "host.docker.internal":
+        port = f":{parts.port}" if parts.port else ""
+        return urlunsplit((parts.scheme, f"127.0.0.1{port}", parts.path, "", ""))
+    return url
+
+
+def start_mobile_session(
+    session: UiRecordingSession,
+    device: Device,
+    app_package: AppPackage | None,
+) -> dict[str, Any]:
+    """通过宿主机 Appium 连接 Android Emulator 或 iOS Simulator。"""
+    app_path: str | None = None
+    app_identifier: str | None = None
+    if app_package is not None:
+        path = Path(app_package.file_path)
+        app_path = str(path if path.is_absolute() else (_PROJECT_ROOT / path).resolve())
+        app_identifier = (
+            app_package.app_package
+            if session.platform == "android"
+            else app_package.bundle_id
+        )
+    return _request(
+        "POST",
+        "/mobile/sessions",
+        body={
+            "session_id": session.id,
+            "platform": session.platform,
+            "appium_url": _host_appium_url(device),
+            "udid": device.udid,
+            "device_name": device.device_name,
+            "platform_version": device.platform_version,
+            "app_path": app_path,
+            "app_identifier": app_identifier,
+            "capabilities": device.capabilities or {},
+        },
+        read_timeout=180.0,
+    )
+
+
 def control_web_session(session_id: int, action: str) -> dict[str, Any]:
     return _request("POST", f"/sessions/{session_id}/{action}")
+
+
+def control_agent_session(session_id: int, action: str) -> dict[str, Any]:
+    """控制 Web 或移动端 Agent 会话。"""
+    return _request("POST", f"/sessions/{session_id}/{action}")
+
+
+def set_web_pick_mode(session_id: int, enabled: bool) -> dict[str, Any]:
+    """切换受控页面的非破坏性元素拾取模式。"""
+    return _request(
+        "POST",
+        f"/sessions/{session_id}/pick-mode",
+        body={"enabled": enabled},
+    )
+
+
+def set_agent_pick_mode(session_id: int, enabled: bool) -> dict[str, Any]:
+    """切换 Web 注入拾取或移动远程画面的非破坏性拾取。"""
+    return _request(
+        "POST",
+        f"/sessions/{session_id}/pick-mode",
+        body={"enabled": enabled},
+    )
+
+
+def perform_mobile_action(session_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """将前端远程画面动作转发给持有 Appium Driver 的 Agent。"""
+    return _request("POST", f"/sessions/{session_id}/actions", body=payload)
+
+
+def start_web_replay(
+    session_id: int,
+    *,
+    browser: str,
+    headless: bool,
+) -> dict[str, Any]:
+    """从 Agent 本地归档启动严格离线回放浏览器。"""
+    return _request(
+        "POST",
+        "/replays",
+        body={
+            "session_id": session_id,
+            "browser": browser,
+            "headless": headless,
+        },
+    )
 
 
 def pull_web_events(session_id: int, after_sequence: int, limit: int = 500) -> list[dict[str, Any]]:
@@ -75,6 +183,17 @@ def pull_web_events(session_id: int, after_sequence: int, limit: int = 500) -> l
     return data if isinstance(data, list) else []
 
 
+def pull_agent_events(session_id: int, after_sequence: int, limit: int = 500) -> list[dict[str, Any]]:
+    """拉取 Web 或移动端统一事件。"""
+    return pull_web_events(session_id, after_sequence, limit)
+
+
 def agent_health() -> dict[str, Any]:
     data = _request("GET", "/health")
     return data if isinstance(data, dict) else {"ok": False}
+
+
+def mobile_preflight() -> dict[str, Any]:
+    """读取宿主机模拟器和 Appium 的即时可用状态。"""
+    data = _request("GET", "/mobile/preflight")
+    return data if isinstance(data, dict) else {"ready": False}

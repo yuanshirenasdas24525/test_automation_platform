@@ -49,6 +49,50 @@ class UiRecordingEventBatchCreate(BaseModel):
     events: list[UiRecordingEventCreate] = Field(..., min_length=1, max_length=500)
 
 
+class UiRecordingControlRequest(BaseModel):
+    """录制控制端身份和命令幂等键。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    command_id: str = Field(..., min_length=8, max_length=80)
+    takeover: bool = False
+
+
+class UiRecordingLeaseRequest(BaseModel):
+    """独立窗口和主窗口之间的短租约操作。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    action: str = Field("heartbeat", pattern="^(claim|heartbeat|takeover|release)$")
+
+
+class UiRecordingPickModeRequest(BaseModel):
+    """切换受控浏览器中的非破坏性元素拾取模式。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    command_id: str = Field(..., min_length=8, max_length=80)
+    enabled: bool
+
+
+class UiRecordingReplayRequest(BaseModel):
+    """启动严格离线的受控浏览器回放。"""
+
+    browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
+    headless: bool = False
+
+
+class UiRecordingMobileActionRequest(BaseModel):
+    """移动端远程画面动作及录制控制身份。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    command_id: str = Field(..., min_length=8, max_length=80)
+    action: str = Field(..., pattern="^(tap|input|swipe|back|refresh)$")
+    x: int | None = Field(None, ge=0)
+    y: int | None = Field(None, ge=0)
+    end_x: int | None = Field(None, ge=0)
+    end_y: int | None = Field(None, ge=0)
+    duration_ms: int = Field(400, ge=100, le=5000)
+    text: str | None = Field(None, max_length=4000)
+
+
 class UiRecordingRead(BaseModel):
     id: int
     project_id: int
@@ -90,6 +134,27 @@ class UiRecordingEventRead(BaseModel):
     occurred_at: datetime
     monotonic_ms: int | None
     payload: dict[str, Any]
+    created_at: datetime
+
+
+class UiPageSnapshotRead(BaseModel):
+    id: int
+    session_id: int
+    project_id: int
+    platform: str
+    page_key: str
+    page_name: str
+    state_name: str | None
+    url: str | None
+    snapshot_version: int
+    fingerprint: str
+    has_screenshot: bool
+    has_document: bool
+    has_offline_package: bool
+    is_interactive: bool
+    resource_manifest: dict[str, Any]
+    environment: dict[str, Any]
+    limitations: list[Any]
     created_at: datetime
 
 

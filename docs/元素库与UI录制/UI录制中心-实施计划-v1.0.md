@@ -158,7 +158,7 @@ GET  /api/ui-elements/{id}
 
 M0 控制面已经交付：数据模型、迁移、会话控制 API、事件接收契约、项目级元素查询接口，以及用例页入口和可视化工作区均已落地。
 
-M1 已完成首个可验收的 Web 录制切片：
+M1 已完成：
 
 - 宿主机 Recorder Agent 能启动受控 Chromium / Firefox / WebKit 浏览器；
 - 录制、暂停、继续、停止由服务端真实控制，不再只是前端状态切换；
@@ -167,8 +167,45 @@ M1 已完成首个可验收的 Web 录制切片：
 - 点击或输入后生成截图，并提取 ID、CSS、name、text、link、XPath 候选定位器；
 - 事件增量写入数据库，同时归并为项目元素和主定位器；
 - 元素库工作区实时展示事件时间线、元素、定位器和 Agent 连接状态。
+- 录制控制改为 488px 紧凑悬浮条，可在当前视口内自由拖动和收起；
+- 主窗口与独立窗口通过 8 秒短租约同步控制权，命令使用幂等键防止重复执行；
+- 拾取模式会在捕获阶段阻止真实业务点击，仅采集元素、截图和定位器；
+- 停止录制前二次确认，暂停期间停止普通事件、Console、Network 和画面采集。
 
-本切片尚未交付 M2 的资源归档、请求 Mock 和业务流程离线回放，也未交付 M3 的 Android/iOS 模拟器录制。悬浮条自由拖动和独立窗口将在 M1 后续切片补齐。
+M2 已完成首个可验收切片：
+
+- 录制期间归档已访问页面的 HTML、JS、CSS、字体和图片，单会话默认上限 100MB；
+- 页面导航和停止时保存 DOM、视口截图与页面版本，并与项目元素按 `page_key` 联合展示；
+- XHR/Fetch 请求与响应配对写入 `ui_mock_exchanges`，保留多响应顺序；
+- 停止时生成带页面、资源、Mock、容量和限制说明的 `manifest.json`；
+- 页面文档、截图和静态资源记录 SHA-256，回放启动前逐文件校验，损坏包拒绝打开；
+- 离线浏览器通过 Playwright Route 强制拦截所有请求：命中本地页面/资源/Mock，未命中返回 599，不访问原服务；
+- 元素库可从已完成会话打开离线回放，并在真实页面截图上叠加可点击元素热区；
+- 已实测原页面服务完全关闭时页面加载成功、内联交互脚本运行、Fetch 命中 Mock，`misses=0`。
+
+M3 已完成首个可验收切片：
+
+- Recorder Agent 提供 Appium、UiAutomator2/XCUITest 驱动和已启动模拟器预检；
+- 移动录制必须绑定显式标识的模拟器，开始时占用设备、停止/取消时释放；
+- Android/iOS 共用 Appium Session，采集模拟器截图、UI Tree、Activity/Context、设备/应用/视口环境；
+- 元素库工作区直接显示真实模拟器截图，点击、拖动、返回、刷新和文本输入均经平台转发；
+- 非破坏性拾取可从坐标命中的 UI Tree 节点生成 Android ID/Accessibility ID/UiAutomator/XPath，或 iOS Accessibility ID/Predicate/Class Chain/XPath；
+- 停止时尽力采集 logcat/syslog，过滤 Appium 协议噪声；Native Network 未配置代理/SDK 时明确标记降级；
+- 完成会话保存同一模拟器与应用版本绑定，可通过“重开场景”继续补录，并明确暂不恢复应用私有数据。
+
+真实验证结果：Android Emulator `emulator-5554` 已完成启动、画面/UI Tree、非破坏性拾取、真实点击、暂停、继续、停止和 logcat 闭环。iOS 代码路径和定位器单测已通过，但当前宿主机的 XCUITest Driver 目录由 root 持有且 Xcode/WebDriverAgent 无法匹配现有 Simulator runtime，预检会显示未就绪；修复宿主机驱动权限/版本后再做 iOS 真机式端到端验收。
+
+M2 仍需继续增强复杂请求匹配规则、跨域 iframe、文件上传、WebSocket/流式响应的能力报告，以及登录、列表、筛选、分页、详情、表单的完整业务样本验收。M3 仍需补应用私有数据/初始化脚本还原、WebView 混合树与 Native Network 代理/SDK。
+
+M4 已完成首个用例草稿切片：
+
+- 已完成录制可生成现有 v2 Runner 的 `TestStep` 草稿；
+- Web 自动映射 `web_goto/web_click/web_input/web_select`，移动端映射 `app_tap/app_input/app_swipe/app_back`；
+- 定位器按平台可执行白名单和录制评分选主定位器，非破坏性 `user.pick` 不会误生成动作步骤；
+- 密码值保持 `${password}` 脱敏变量并提示人工配置；无对应 Runner 的滚动、提交、刷新事件保留在技术上下文并展示警告；
+- 用户确认用例名称、模块和步骤后保存到现有用例库，断言继续在原步骤编辑器维护。
+
+M4 仍需把同一上下文事件协议接入正式 v2 执行与 Allure/报告页，并支持草稿内逐步删除、改定位器等更细的人工调整。
 
 ## 8. 验证策略
 
@@ -176,6 +213,7 @@ M1 已完成首个可验收的 Web 录制切片：
 - API：状态机合法/非法转换、批量事件顺序与项目授权；
 - 数据库：Alembic upgrade/downgrade 脚本人工 review；
 - TypeScript：`npm run typecheck`、`npm run build`、`npm run lint`；
-- UI：Web/Android/iOS 入口、平台筛选、空状态、创建会话和控制按钮；
+- UI：Web/Android/iOS 入口、平台筛选、空状态、创建会话、悬浮控制条、独立窗口和截图热区；
 - Recorder：真实 Web 页面端到端采集、事件入库与定位器归并；
-- 后续：模拟器端到端采集与 Web 离线断网业务流程回放。
+- 离线：停止原页面服务后启动回放，验证页面/资源/Mock 命中和未命中请求阻断；
+- 后续：完整业务样本断网验收、iOS 宿主机修复后的端到端采集，以及移动场景数据还原。
