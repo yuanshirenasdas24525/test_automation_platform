@@ -464,6 +464,8 @@ export function AutomationCasesPage({
   const modules = (contentQuery.data ?? []).filter((node) => node.type === "module");
   const cases = casesQuery.data?.items ?? [];
   const total = casesQuery.data?.total ?? 0;
+  // 用例名带 "0001 " / "12. " / "003、" 这类序号前缀 → 视为已编号；编号按钮据此在"加/去"间切换。
+  const numbered = cases.length > 0 && cases.some((c) => /^\d{2,}[ .、]/.test(String(c.name ?? "")));
   const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
 
   const invalidate = () => {
@@ -767,10 +769,16 @@ export function AutomationCasesPage({
           </>
         ) : (
           <>
-            <Button variant="outline" size="sm" disabled={moduleId == null || renumbering} onClick={() => renumberCases(true)} title="按执行顺序给用例名加 0001/0002… 前缀">
-              {renumbering ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListOrdered className="h-4 w-4" />}按顺序编号
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={moduleId == null || renumbering}
+              onClick={() => renumberCases(!numbered)}
+              title={numbered ? "去掉用例名上的序号前缀" : "按执行顺序给用例名加 0001/0002… 前缀"}
+            >
+              {renumbering ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListOrdered className="h-4 w-4" />}
+              {numbered ? "去掉编号" : "按顺序编号"}
             </Button>
-            <Button variant="ghost" size="sm" disabled={moduleId == null || renumbering} onClick={() => renumberCases(false)} title="去掉用例名上的序号前缀">去掉编号</Button>
             <Button variant="outline" size="sm" disabled={moduleId == null} onClick={exportCases}><Download className="h-4 w-4" />导出</Button>
             {selected.size > 0 ? (
               <>
