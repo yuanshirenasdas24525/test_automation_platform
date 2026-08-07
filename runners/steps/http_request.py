@@ -298,20 +298,30 @@ class HttpRequestStepRunner(BaseStepRunner):
         set_allure_link(url)
         ctx_vars_display = {k: v for k, v in ctx.vars.items()
                             if not k.startswith("_")}
+        # 变量池直接作为一步展示，不再套一层 "Set up"。
         add_allure_step(
-            "Set up",
+            "变量池",
             ctx_vars_display or "(空)",
             attachment_name="变量池",
         )
+        # "实际填写"保留 ${var} 占位（模板），"实际请求"是变量解析后的真实值。
+        _base_url_disp = self._get_base_url()
+        _tmpl_url = path if path.startswith(("http://", "https://")) else (
+            f"{_base_url_disp.rstrip('/')}/{path.lstrip('/')}" if _base_url_disp else path
+        )
         add_allure_step("Request", {
-            "请求方法": method,
-            "请求地址": url,
-            "请求头": headers,
-            "路径参数": path_params,
-            "查询参数": query_params,
-            "实际填写的": body_template,
-            "请求填写的": body,
-            "加解密": crypto_request_meta or "未启用",
+            "实际填写": {
+                "请求方法": method,
+                "请求地址": _tmpl_url,
+                "请求头": headers_in,
+                "请求参数": body_template,
+            },
+            "实际请求": {
+                "请求方法": method,
+                "请求地址": url,
+                "请求头": headers,
+                "请求参数": body,
+            },
         })
 
         # 3) 发请求
@@ -351,10 +361,8 @@ class HttpRequestStepRunner(BaseStepRunner):
         ctx.record("output_data", response_body)
         if crypto_response_meta:
             ctx.record("crypto_response", crypto_response_meta)
-        add_allure_step(f"Response (HTTP {status_code})", {
-            "响应体": response_body,
-            "加解密": crypto_response_meta or "未启用",
-        })
+        # 直接展示响应结果，不再套「响应体/加解密」外层。
+        add_allure_step(f"Response (HTTP {status_code})", response_body)
 
         # 4) extract：把响应里的值塞进 ctx.vars 和 processor.extra_pool
         # 多步骤 API 用例从 StepEditor 存的是 config.extract_data（v1 JSON），它是编辑器的
@@ -667,6 +675,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         snapshot_vars: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         extracted: dict[str, Any] = {}
+        extracted_display: dict[str, Any] = {}  # 附件展示：变量名 → {提取公式, 结果}
         failures: list[dict[str, Any]] = []
         value_ctx = ctx
         if snapshot_vars is not None:
@@ -730,6 +739,11 @@ class HttpRequestStepRunner(BaseStepRunner):
                 continue
 
             extracted[name] = val
+            extracted_display[str(name)] = {
+                "提取公式": rule.get("jsonpath") or rule.get("path")
+                or (str(rule.get("value")) if src == "value" else src),
+                "结果": val,
+            }
             ctx.set_var(name, val)
             # 同步到 processor 变量池，供老 RequestDataProcessor 逻辑使用
             try:
@@ -738,7 +752,7 @@ class HttpRequestStepRunner(BaseStepRunner):
                 pass
 
         if extracted:
-            add_allure_step("Extracted", extracted)
+            add_allure_step("提取参数", extracted_display or extracted)
         return extracted, failures
 
     # ---------------------- assertion ----------------------
@@ -851,12 +865,17 @@ class HttpRequestStepRunner(BaseStepRunner):
                 results.append(item_result)
                 add_allure_step("Assertion", item_result)
 
+        # 断言结果直接展示成「预期X == 实际Y」/「预期X =! 实际Y」。
+        _assert_lines = [
+            f"{r['target']}：预期 {r['expected']} {'==' if r['status'] == 'passed' else '=!'} 实际 {r['actual']}"
+            for r in results
+        ]
         if failures:
             ctx.record("assertion_results", results)
             add_allure_step("断言结果", {
                 "通过": f"{len(passed)} 条",
                 "失败": f"{len(failures)} 条",
-                "详情": results,
+                "详情": _assert_lines,
             })
             raise AssertionError(
                 f"断言失败 {len(failures)}/{len(passed) + len(failures)} 条:\n"
@@ -866,7 +885,7 @@ class HttpRequestStepRunner(BaseStepRunner):
         if passed:
             ctx.record("assertion_results", results)
             LOGGER.info("断言全部通过 %s 条", len(passed))
-            add_allure_step("断言结果", {"通过": f"{len(passed)} 条", "状态": "全部通过", "详情": results})
+            add_allure_step("断言结果", {"通过": f"{len(passed)} 条", "状态": "全部通过", "详情": _assert_lines})
 
     def _resolve_assertion_actual(
         self,
