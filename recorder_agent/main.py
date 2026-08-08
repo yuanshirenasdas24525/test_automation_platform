@@ -217,6 +217,64 @@ _RECORDER_SCRIPT = r"""
       scroll_y: Math.round(window.scrollY),
     });
   }, true);
+
+  const isVisible = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none"
+      && style.visibility !== "hidden"
+      && Number(style.opacity || 1) > 0
+      && rect.width > 2
+      && rect.height > 2
+      && rect.bottom >= 0
+      && rect.right >= 0
+      && rect.top <= window.innerHeight
+      && rect.left <= window.innerWidth;
+  };
+
+  const visibleModal = () => Array.from(document.querySelectorAll(
+    'dialog[open], [role="dialog"][aria-modal="true"], [aria-modal="true"]',
+  )).find(isVisible) || null;
+
+  window.__uiRecorderCollectElements = () => {
+    const modal = visibleModal();
+    const root = modal || document;
+    const selector = [
+      "a[href]", "button", "input", "select", "textarea", "summary",
+      '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
+      '[role="tab"]', '[role="menuitem"]', '[contenteditable="true"]', "[data-testid]",
+    ].join(",");
+    return Array.from(root.querySelectorAll(selector))
+      .filter(isVisible)
+      .slice(0, 500)
+      .map(describe)
+      .filter(Boolean);
+  };
+
+  window.__uiRecorderDescribeAt = (x, y) => describe(document.elementFromPoint(x, y));
+  window.__uiRecorderPageMeta = () => {
+    const modal = visibleModal();
+    const headingSelectors = [
+      "[data-page-title]", "main h1", "main h2", "[role=main] h1", "[role=main] h2", "h1",
+    ];
+    const pageHeading = headingSelectors
+      .map((selector) => document.querySelector(selector))
+      .find(isVisible);
+    const modalHeading = modal
+      ? Array.from(modal.querySelectorAll('[data-dialog-title], [role="heading"], h1, h2, h3'))
+        .find(isVisible)
+      : null;
+    const pageName = (pageHeading?.innerText || pageHeading?.textContent || document.title || location.pathname)
+      .replace(/\s+/g, " ").trim().slice(0, 200);
+    const modalName = (modalHeading?.innerText || modalHeading?.textContent || modal?.getAttribute("aria-label") || "弹窗")
+      .replace(/\s+/g, " ").trim().slice(0, 100);
+    return {
+      page_name: pageName,
+      state_name: modal ? `弹窗：${modalName}` : "默认页面",
+      modal_open: Boolean(modal),
+    };
+  };
 })();
 """
 
@@ -298,6 +356,14 @@ class ReplayStartRequest(BaseModel):
     session_id: int = Field(..., gt=0)
     browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
     headless: bool = False
+
+
+class WebActionRequest(BaseModel):
+    """平台预览画面转发到受控 Playwright 页面的动作。"""
+
+    action: str = Field(..., pattern="^(click|pick|back|refresh)$")
+    x: int | None = Field(None, ge=0)
+    y: int | None = Field(None, ge=0)
 
 
 class MobileRecorderStartRequest(BaseModel):
@@ -461,7 +527,7 @@ class RecorderRuntime:
                 pass
         if self.paused or self.stopped:
             return
-        self.schedule_page_snapshot(page, "domcontentloaded", delay_ms=800)
+        self.schedule_page_snapshot(page, "domcontentloaded", delay_ms=350)
 
     async def handle_navigation(self, page: Page, url: str) -> None:
         """同时覆盖整页导航与 React Router 等 History API 路由变化。"""
@@ -473,9 +539,9 @@ class RecorderRuntime:
         )
         if self.paused or self.stopped:
             return
-        self.schedule_page_snapshot(page, "navigation", delay_ms=800)
+        self.schedule_page_snapshot(page, "navigation", delay_ms=350)
 
-    def schedule_page_snapshot(self, page: Page, reason: str, *, delay_ms: int = 800) -> None:
+    def schedule_page_snapshot(self, page: Page, reason: str, *, delay_ms: int = 350) -> None:
         """合并短时间内的路由/交互信号，只归档最终稳定状态。"""
         if self.paused or self.stopped or page.is_closed():
             return
@@ -498,7 +564,7 @@ class RecorderRuntime:
         page: Page,
         reason: str,
         *,
-        delay_ms: int = 800,
+        delay_ms: int = 350,
     ) -> None:
         """在有界等待内确认 SPA 已渲染，避免把加载骨架当成页面快照。"""
         try:
@@ -517,20 +583,15 @@ class RecorderRuntime:
             )
 
     async def wait_for_page_stability(self, page: Page) -> None:
-        """等待连续三个 DOM 采样一致；最长约 5 秒，不被长期轮询请求卡住。"""
+        """等待连续三个 DOM 采样一致；有界快速采集，不被长期轮询请求卡住。"""
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=2_000)
+            await page.wait_for_load_state("domcontentloaded", timeout=1_000)
         except Exception:  # noqa: BLE001
-            pass
-        try:
-            await page.wait_for_load_state("networkidle", timeout=2_000)
-        except Exception:  # noqa: BLE001
-            # 业务页可能存在轮询；networkidle 只作优化，不能成为保存快照的前提。
             pass
 
         previous: str | None = None
         stable_samples = 0
-        deadline = time.monotonic() + 3.0
+        deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline and not page.is_closed():
             signature = await page.evaluate(
                 """() => JSON.stringify({
@@ -551,7 +612,7 @@ class RecorderRuntime:
             else:
                 previous = signature
                 stable_samples = 0
-            await page.wait_for_timeout(300)
+            await page.wait_for_timeout(200)
 
     async def handle_user_event(self, source: dict[str, Any], payload: dict[str, Any]) -> None:
         page = source.get("page")
@@ -565,7 +626,49 @@ class RecorderRuntime:
         if emitted and event_type in {"user.click", "user.pick", "user.input", "user.change"}:
             asyncio.create_task(self.capture_screenshot(page, event_type))
         if emitted and event_type in {"user.click", "user.input", "user.change", "user.submit"}:
-            self.schedule_page_snapshot(page, event_type, delay_ms=800)
+            self.schedule_page_snapshot(page, event_type, delay_ms=300)
+
+    async def perform_web_action(self, body: WebActionRequest) -> None:
+        """把平台快照上的点击转发给当前受控页面，并同步生成新状态快照。"""
+        page = next(
+            (candidate for candidate in reversed(self.context.pages) if not candidate.is_closed()),
+            None,
+        )
+        if page is None:
+            raise ValueError("当前没有可操作的 Web 页面")
+        if body.action in {"click", "pick"} and (body.x is None or body.y is None):
+            raise ValueError(f"{body.action} 动作必须提供 x/y 坐标")
+
+        if body.action == "pick":
+            element = await page.evaluate(
+                "({x, y}) => window.__uiRecorderDescribeAt?.(x, y) || null",
+                {"x": body.x, "y": body.y},
+            )
+            if not isinstance(element, dict):
+                raise ValueError("坐标位置没有可拾取元素")
+            await self.emit(
+                "user.pick",
+                "user",
+                {
+                    "url": page.url,
+                    "page_title": await page.title(),
+                    "element": element,
+                },
+                page=page,
+            )
+            return
+        if body.action == "click":
+            await page.mouse.click(body.x or 0, body.y or 0)
+        elif body.action == "back":
+            await page.go_back(wait_until="domcontentloaded", timeout=10_000)
+        elif body.action == "refresh":
+            await page.reload(wait_until="domcontentloaded", timeout=30_000)
+
+        pending = self.snapshot_tasks.pop(page, None)
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await self.capture_stable_page_document(page, f"web.{body.action}", delay_ms=250)
 
     async def set_pick_mode(self, enabled: bool) -> None:
         """在所有受控页面中切换非破坏性拾取。"""
@@ -633,6 +736,8 @@ class RecorderRuntime:
         request = response.request
         if request.resource_type in _ARCHIVE_RESOURCE_TYPES:
             await self.capture_resource(response)
+        if request.resource_type in {"document", "stylesheet", "script"} and not self.stopped:
+            self.schedule_page_snapshot(page, f"resource.{request.resource_type}", delay_ms=350)
         if request.resource_type not in {"xhr", "fetch"}:
             return
         started_at = self.request_started_monotonic.pop(request, None)
@@ -666,6 +771,9 @@ class RecorderRuntime:
             page=page,
             severity="error" if response.status >= 400 else "info",
         )
+        if not self.stopped:
+            # 首屏数据或弹框内容可能在导航后才返回；响应完成后补采最终 DOM。
+            self.schedule_page_snapshot(page, "network.response", delay_ms=250)
 
     async def capture_resource(self, response: Response) -> None:
         """归档离线重放需要的 HTML、JS、CSS、字体和图片。"""
@@ -732,6 +840,24 @@ class RecorderRuntime:
         url = page.url
         title = await page.title()
         html = await page.content()
+        page_meta = await page.evaluate(
+            "() => window.__uiRecorderPageMeta?.() || ({ page_name: document.title, state_name: '默认页面' })",
+        )
+        if not isinstance(page_meta, dict):
+            page_meta = {"page_name": title, "state_name": "默认页面"}
+        visible_elements = await page.evaluate(
+            "() => window.__uiRecorderCollectElements?.() || []",
+        )
+        normalized_elements: list[dict[str, Any]] = []
+        for raw_element in visible_elements if isinstance(visible_elements, list) else []:
+            if not isinstance(raw_element, dict):
+                continue
+            item = dict(raw_element)
+            seed = str(item.pop("fingerprint_seed", ""))
+            if not seed:
+                continue
+            item["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+            normalized_elements.append(item)
         fingerprint = hashlib.sha256(f"{url}\n{html}".encode("utf-8")).hexdigest()
         if fingerprint in self.snapshot_fingerprints:
             return next(
@@ -751,6 +877,9 @@ class RecorderRuntime:
         page_record = {
             "url": url,
             "title": title,
+            "page_name": str(page_meta.get("page_name") or title),
+            "state_name": str(page_meta.get("state_name") or "默认页面"),
+            "modal_open": bool(page_meta.get("modal_open")),
             "page_key": _page_key(url),
             "fingerprint": fingerprint,
             "document_path": str(document_path.relative_to(self.session_root)),
@@ -758,6 +887,10 @@ class RecorderRuntime:
             "document_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
             "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest(),
             "capture_reason": reason,
+            "visible_elements": normalized_elements,
+            "visible_element_fingerprints": [
+                item["fingerprint"] for item in normalized_elements
+            ],
         }
         self.snapshot_fingerprints.add(fingerprint)
         self.page_records.append(page_record)
@@ -1930,6 +2063,32 @@ async def update_pick_mode(session_id: int, body: PickModeRequest):
     return {
         "status": "success",
         "data": {"enabled": runtime.pick_mode},
+    }
+
+
+@app.post("/sessions/{session_id}/web-actions", dependencies=[Depends(_authorize)])
+async def perform_web_action(session_id: int, body: WebActionRequest):
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, RecorderRuntime) or runtime.stopped:
+        raise HTTPException(status_code=404, detail="Web 录制会话不存在或已停止")
+    try:
+        await runtime.perform_web_action(body)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        await runtime.emit(
+            "agent.error",
+            "agent",
+            {"message": f"Web 动作执行失败：{exc}"},
+            severity="error",
+        )
+        raise HTTPException(status_code=502, detail=f"Web 动作执行失败：{exc}") from exc
+    return {
+        "status": "success",
+        "data": {
+            "status": "paused" if runtime.paused else "recording",
+            "event_count": len(runtime.events),
+        },
     }
 
 

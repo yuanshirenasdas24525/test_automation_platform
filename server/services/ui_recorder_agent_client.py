@@ -157,6 +157,11 @@ def perform_mobile_action(session_id: int, payload: dict[str, Any]) -> dict[str,
     return _request("POST", f"/sessions/{session_id}/actions", body=payload)
 
 
+def perform_web_action(session_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """将平台快照上的动作转发给持有 Playwright Page 的 Agent。"""
+    return _request("POST", f"/sessions/{session_id}/web-actions", body=payload)
+
+
 def start_web_replay(
     session_id: int,
     *,

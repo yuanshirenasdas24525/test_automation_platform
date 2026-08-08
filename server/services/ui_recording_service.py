@@ -303,6 +303,23 @@ def _artifact_uri(session_id: int, relative_path: Any) -> str | None:
     return f"data/ui_recordings/session_{session_id}/{path}"
 
 
+def _visible_element_bounds(items: Any) -> dict[str, dict[str, Any]]:
+    """从 Agent 可见元素清单提取当前快照坐标，忽略不可信结构。"""
+    if not isinstance(items, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for item in items[:500]:
+        if not isinstance(item, dict) or not item.get("fingerprint"):
+            continue
+        attributes = item.get("attributes")
+        if not isinstance(attributes, dict):
+            continue
+        bounds = attributes.get("bounds")
+        if isinstance(bounds, dict):
+            result[str(item["fingerprint"])] = dict(bounds)
+    return result
+
+
 def _materialize_snapshots(
     db: Session,
     session: UiRecordingSession,
@@ -358,7 +375,7 @@ def _materialize_snapshots(
             project_id=session.project_id,
             platform=session.platform,
             page_key=page_key,
-            page_name=str(payload.get("title") or page_key)[:200],
+            page_name=str(payload.get("page_name") or payload.get("title") or page_key)[:200],
             state_name=str(payload.get("state_name") or "")[:120] or None,
             url=str(payload.get("url") or "") or None,
             route=urlsplit(str(payload.get("url") or "")).path[:500] or None,
@@ -373,30 +390,21 @@ def _materialize_snapshots(
                 else None
             ),
             is_interactive=True,
+            resource_manifest={
+                "visible_element_fingerprints": list(
+                    payload.get("visible_element_fingerprints") or [],
+                )[:500],
+                "visible_element_bounds": _visible_element_bounds(
+                    payload.get("visible_elements"),
+                ),
+                "modal_open": bool(payload.get("modal_open")),
+            },
             environment=environment,
             limitations=[],
         )
         db.add(snapshot)
         db.flush()
         event.snapshot_after_id = snapshot.id
-        (
-            db.query(UiElement)
-            .filter(
-                UiElement.project_id == session.project_id,
-                UiElement.platform == session.platform,
-                UiElement.page_key == page_key,
-            )
-            .update(
-                {
-                    UiElement.first_snapshot_id: func.coalesce(
-                        UiElement.first_snapshot_id,
-                        snapshot.id,
-                    ),
-                    UiElement.last_snapshot_id: snapshot.id,
-                },
-                synchronize_session=False,
-            )
-        )
 
     package_event = next(
         (event for event in reversed(events) if event.event_type == "offline.package"),
@@ -421,7 +429,10 @@ def _materialize_snapshots(
         .all()
     ):
         snapshot.offline_package_uri = manifest_path
-        snapshot.resource_manifest = manifest_summary
+        snapshot.resource_manifest = {
+            **(snapshot.resource_manifest or {}),
+            **manifest_summary,
+        }
         snapshot.limitations = limitations
         snapshot.is_interactive = bool(package.get("ready"))
 
@@ -496,98 +507,130 @@ def _materialize_elements(
     session: UiRecordingSession,
     events: list[UiRecordingEvent],
 ) -> None:
-    """把用户事件里的真实 DOM 元素证据沉淀到项目元素库。"""
+    """把用户事件和页面快照里的可交互 DOM 元素沉淀到项目元素库。"""
     for event in events:
-        raw = (event.payload or {}).get("element")
-        if not isinstance(raw, dict):
-            continue
-        fingerprint = str(raw.get("fingerprint") or "").strip()
-        if not fingerprint:
+        payload = dict(event.payload or {})
+        raw_items: list[dict[str, Any]] = []
+        raw_element = payload.get("element")
+        if isinstance(raw_element, dict):
+            raw_items.append(raw_element)
+        if event.event_type == "page.snapshot":
+            raw_items.extend(
+                item
+                for item in list(payload.get("visible_elements") or [])[:500]
+                if isinstance(item, dict)
+            )
+        if not raw_items:
             continue
         page_key = event.page_key or "about:blank"
-        latest_snapshot = (
-            db.query(UiPageSnapshot)
-            .filter(
-                UiPageSnapshot.project_id == session.project_id,
-                UiPageSnapshot.platform == session.platform,
-                UiPageSnapshot.page_key == page_key,
-            )
-            .order_by(UiPageSnapshot.created_at.desc(), UiPageSnapshot.id.desc())
-            .first()
+        snapshot = (
+            db.get(UiPageSnapshot, event.snapshot_after_id)
+            if event.snapshot_after_id is not None
+            else None
         )
-        element = (
-            db.query(UiElement)
-            .filter(
-                UiElement.project_id == session.project_id,
-                UiElement.platform == session.platform,
-                UiElement.page_key == page_key,
-                UiElement.fingerprint == fingerprint,
-            )
-            .first()
-        )
-        attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
-        if element is None:
-            element = UiElement(
-                project_id=session.project_id,
-                platform=session.platform,
-                page_key=page_key,
-                page_name=str((event.payload or {}).get("page_title") or page_key)[:200],
-                semantic_name=str(raw.get("semantic_name") or "未命名元素")[:200],
-                element_type=str(raw.get("element_type") or "element")[:100],
-                fingerprint=fingerprint,
-                attributes=attributes,
-                first_snapshot_id=latest_snapshot.id if latest_snapshot else None,
-                last_snapshot_id=latest_snapshot.id if latest_snapshot else None,
-            )
-            db.add(element)
-            db.flush()
-        else:
-            element.semantic_name = str(raw.get("semantic_name") or element.semantic_name)[:200]
-            element.element_type = str(raw.get("element_type") or element.element_type)[:100]
-            element.attributes = {**(element.attributes or {}), **attributes}
-            if latest_snapshot is not None:
-                element.first_snapshot_id = element.first_snapshot_id or latest_snapshot.id
-                element.last_snapshot_id = latest_snapshot.id
-
-        locator_items = raw.get("locators") if isinstance(raw.get("locators"), list) else []
-        for item in locator_items:
-            if not isinstance(item, dict):
-                continue
-            strategy = str(item.get("strategy") or "").strip().lower()
-            locator_value = str(item.get("locator") or "").strip()
-            if not strategy or not locator_value:
-                continue
-            locator = (
-                db.query(UiElementLocator)
+        if snapshot is None:
+            snapshot = (
+                db.query(UiPageSnapshot)
                 .filter(
-                    UiElementLocator.element_id == element.id,
-                    UiElementLocator.strategy == strategy,
-                    UiElementLocator.locator == locator_value,
+                    UiPageSnapshot.session_id == session.id,
+                    UiPageSnapshot.page_key == page_key,
+                )
+                .order_by(UiPageSnapshot.created_at.desc(), UiPageSnapshot.id.desc())
+                .first()
+            )
+        page_name = str(
+            payload.get("page_name")
+            or payload.get("page_title")
+            or (snapshot.page_name if snapshot is not None else page_key)
+        )[:200]
+
+        for raw in raw_items:
+            fingerprint = str(raw.get("fingerprint") or "").strip()
+            if not fingerprint:
+                continue
+            element = (
+                db.query(UiElement)
+                .filter(
+                    UiElement.project_id == session.project_id,
+                    UiElement.platform == session.platform,
+                    UiElement.page_key == page_key,
+                    UiElement.fingerprint == fingerprint,
                 )
                 .first()
             )
-            score = max(0, min(100, int(item.get("score") or 0)))
-            if locator is None:
-                locator = UiElementLocator(
-                    element_id=element.id,
-                    strategy=strategy,
-                    locator=locator_value,
-                    score=score,
-                    source="recorder",
+            attributes = (
+                raw.get("attributes")
+                if isinstance(raw.get("attributes"), dict)
+                else {}
+            )
+            if element is None:
+                element = UiElement(
+                    project_id=session.project_id,
+                    platform=session.platform,
+                    page_key=page_key,
+                    page_name=page_name,
+                    semantic_name=str(raw.get("semantic_name") or "未命名元素")[:200],
+                    element_type=str(raw.get("element_type") or "element")[:100],
+                    fingerprint=fingerprint,
+                    attributes=attributes,
+                    first_snapshot_id=snapshot.id if snapshot else None,
+                    last_snapshot_id=snapshot.id if snapshot else None,
                 )
-                db.add(locator)
+                db.add(element)
+                db.flush()
             else:
-                locator.score = max(locator.score or 0, score)
-        db.flush()
-        locators = (
-            db.query(UiElementLocator)
-            .filter(UiElementLocator.element_id == element.id)
-            .order_by(UiElementLocator.score.desc(), UiElementLocator.id)
-            .all()
-        )
-        for index, locator in enumerate(locators):
-            locator.is_primary = index == 0
-        event.element_id = element.id
+                element.page_name = page_name
+                element.semantic_name = str(
+                    raw.get("semantic_name") or element.semantic_name,
+                )[:200]
+                element.element_type = str(
+                    raw.get("element_type") or element.element_type,
+                )[:100]
+                element.attributes = {**(element.attributes or {}), **attributes}
+                if snapshot is not None:
+                    element.first_snapshot_id = element.first_snapshot_id or snapshot.id
+                    element.last_snapshot_id = snapshot.id
+
+            locator_items = raw.get("locators") if isinstance(raw.get("locators"), list) else []
+            for item in locator_items:
+                if not isinstance(item, dict):
+                    continue
+                strategy = str(item.get("strategy") or "").strip().lower()
+                locator_value = str(item.get("locator") or "").strip()
+                if not strategy or not locator_value:
+                    continue
+                locator = (
+                    db.query(UiElementLocator)
+                    .filter(
+                        UiElementLocator.element_id == element.id,
+                        UiElementLocator.strategy == strategy,
+                        UiElementLocator.locator == locator_value,
+                    )
+                    .first()
+                )
+                score = max(0, min(100, int(item.get("score") or 0)))
+                if locator is None:
+                    locator = UiElementLocator(
+                        element_id=element.id,
+                        strategy=strategy,
+                        locator=locator_value,
+                        score=score,
+                        source="recorder",
+                    )
+                    db.add(locator)
+                else:
+                    locator.score = max(locator.score or 0, score)
+            db.flush()
+            locators = (
+                db.query(UiElementLocator)
+                .filter(UiElementLocator.element_id == element.id)
+                .order_by(UiElementLocator.score.desc(), UiElementLocator.id)
+                .all()
+            )
+            for index, locator in enumerate(locators):
+                locator.is_primary = index == 0
+            if raw is raw_element:
+                event.element_id = element.id
 
 
 def _updated_context_summary(

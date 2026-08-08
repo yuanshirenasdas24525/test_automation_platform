@@ -29,6 +29,7 @@ from .ui_recording import (
     UiRecordingMobileActionRequest,
     UiRecordingPickModeRequest,
     UiRecordingReplayRequest,
+    UiRecordingWebActionRequest,
     UiRecordingRead,
     UiRecordingEventRead,
     UiPageSnapshotRead,
@@ -49,6 +50,7 @@ __all__ = [
     # UI recording
     "UiRecordingCreate", "UiRecordingControlRequest", "UiRecordingLeaseRequest",
     "UiRecordingPickModeRequest", "UiRecordingMobileActionRequest",
+    "UiRecordingWebActionRequest",
     "UiRecordingEventCreate", "UiRecordingEventBatchCreate",
     "UiRecordingReplayRequest",
     "UiRecordingRead", "UiRecordingEventRead", "UiElementLocatorRead", "UiElementRead",

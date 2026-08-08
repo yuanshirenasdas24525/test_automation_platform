@@ -33,6 +33,7 @@ from database.schemas.ui_recording import (
     UiRecordingMobileActionRequest,
     UiRecordingPickModeRequest,
     UiRecordingReplayRequest,
+    UiRecordingWebActionRequest,
 )
 from server.api.authz import assert_project_access
 from server.api.deps import CurrentUserDep, DBDep
@@ -56,6 +57,7 @@ from server.services.ui_recorder_agent_client import (
     control_agent_session,
     mobile_preflight as get_mobile_preflight,
     perform_mobile_action as perform_mobile_agent_action,
+    perform_web_action as perform_web_agent_action,
     pull_agent_events,
     set_agent_pick_mode,
     start_web_replay,
@@ -534,6 +536,37 @@ def perform_recording_mobile_action(
         return {"status": "success", "data": serialize_session(db.session, session)}
     try:
         perform_mobile_agent_action(
+            session.id,
+            body.model_dump(exclude={"client_instance_id", "command_id"}),
+        )
+    except RecorderAgentError as exc:
+        session.error = str(exc)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _pull_agent_events(db, session, strict=True)
+    session.error = None
+    db.session.flush()
+    return {"status": "success", "data": serialize_session(db.session, session)}
+
+
+@router.post("/ui-recordings/{session_id}/web-actions")
+def perform_recording_web_action(
+    session_id: int,
+    body: UiRecordingWebActionRequest,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """在 Web 快照上执行浏览/拾取动作，并立即同步新页面状态。"""
+    session = _get_session_or_404(db, session_id, for_update=True)
+    assert_project_access(db, current_user, session.project_id)
+    if session.platform != "web":
+        raise HTTPException(status_code=422, detail="Web 动作只适用于 Web 录制")
+    if session.status not in {"recording", "paused"}:
+        raise HTTPException(status_code=409, detail="当前录制状态不能执行 Web 动作")
+    duplicated = _lease_or_409(session, body.client_instance_id, body.command_id)
+    if duplicated:
+        return {"status": "success", "data": serialize_session(db.session, session)}
+    try:
+        perform_web_agent_action(
             session.id,
             body.model_dump(exclude={"client_instance_id", "command_id"}),
         )

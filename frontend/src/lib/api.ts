@@ -2321,6 +2321,21 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
+  performWebAction(
+    sessionId: number,
+    payload: {
+      client_instance_id: string;
+      command_id: string;
+      action: "click" | "pick" | "back" | "refresh";
+      x?: number;
+      y?: number;
+    },
+  ) {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/web-actions`, {
+      method: "POST",
+      body: payload,
+    });
+  },
   startReplay(sessionId: number, browser = "chromium") {
     return request<UiOfflineReplay>(`/api/ui-recordings/${sessionId}/replay`, {
       method: "POST",
@@ -2342,7 +2357,7 @@ export const uiRecordingsApi = {
     status?: UiElement["status"];
     keyword?: string;
   }) {
-    const qs = new URLSearchParams({ project_id: String(args.projectId) });
+    const qs = new URLSearchParams({ project_id: String(args.projectId), limit: "1000" });
     if (args.platform) qs.set("platform", args.platform);
     if (args.pageKey) qs.set("page_key", args.pageKey);
     if (args.status) qs.set("status", args.status);

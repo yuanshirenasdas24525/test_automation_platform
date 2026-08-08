@@ -15,8 +15,11 @@
       button { border: 0; background: #2563eb; color: white; font-weight: 700; }
       .dashboard { width: min(900px, 90vw); }
       .dashboard h1 { font-size: 38px; }
+      .dashboard > button { width: 140px; margin: 14px 0 18px; }
       .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
       .metric { padding: 24px; border-radius: 14px; background: white; border: 1px solid #dce3ee; }
+      dialog { width: 420px; border: 0; border-radius: 16px; padding: 28px; box-shadow: 0 24px 70px rgb(15 23 42 / 30%); }
+      dialog::backdrop { background: rgb(15 23 42 / 45%); }
     </style>
   </head>
   <body>
@@ -42,12 +45,20 @@
                 <section class="dashboard" data-state="ready">
                   <h1>管理工作台</h1>
                   <p>异步数据与路由均已完成。</p>
+                  <button id="open-user" type="button">新建用户</button>
                   <div class="metrics">
                     <article class="metric">用户 128</article>
                     <article class="metric">项目 24</article>
                     <article class="metric">用例 2,048</article>
                   </div>
-                </section>`;
+                </section>
+                <dialog id="user-dialog" aria-modal="true" aria-labelledby="dialog-title">
+                  <h2 id="dialog-title">新建用户</h2>
+                  <label>用户名<input id="new-username" /></label>
+                  <button id="save-user" type="button">保存</button>
+                </dialog>`;
+              const dialog = document.querySelector("#user-dialog");
+              document.querySelector("#open-user").addEventListener("click", () => dialog.showModal());
             }, 700);
           }, 250);
         });

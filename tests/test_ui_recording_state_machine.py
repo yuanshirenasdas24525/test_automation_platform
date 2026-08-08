@@ -6,6 +6,8 @@ import pytest
 
 from database.models import UiRecordingEvent, UiRecordingSession
 from recorder_agent.main import (
+    WebActionRequest,
+    _RECORDER_SCRIPT,
     _mobile_element_from_source,
     _package_artifact_path,
     _safe_replay_headers,
@@ -13,6 +15,7 @@ from recorder_agent.main import (
 from server.services.ui_recording_service import (
     UiRecordingControlLeaseError,
     UiRecordingTransitionError,
+    _visible_element_bounds,
     apply_control_action,
     compile_recording_step_draft,
     ensure_control_lease,
@@ -86,6 +89,21 @@ def test_offline_replay_headers_and_artifact_path_are_restricted(tmp_path: Path)
     ).resolve()
     with pytest.raises(ValueError, match="逃逸"):
         _package_artifact_path(tmp_path, "../outside.bin")
+
+
+def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> None:
+    assert "__uiRecorderCollectElements" in _RECORDER_SCRIPT
+    assert "__uiRecorderPageMeta" in _RECORDER_SCRIPT
+    assert 'role="dialog"' in _RECORDER_SCRIPT
+
+    click = WebActionRequest(action="click", x=120, y=240)
+    assert click.model_dump() == {"action": "click", "x": 120, "y": 240}
+    with pytest.raises(ValueError):
+        WebActionRequest(action="input", x=10, y=20)
+    assert _visible_element_bounds([
+        {"fingerprint": "button", "attributes": {"bounds": {"x": 1, "y": 2}}},
+        {"fingerprint": "invalid", "attributes": "bad"},
+    ]) == {"button": {"x": 1, "y": 2}}
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

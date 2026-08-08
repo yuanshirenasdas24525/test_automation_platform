@@ -79,6 +79,16 @@ class UiRecordingReplayRequest(BaseModel):
     headless: bool = False
 
 
+class UiRecordingWebActionRequest(BaseModel):
+    """Web 录制预览画面的远程动作及控制身份。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    command_id: str = Field(..., min_length=8, max_length=80)
+    action: str = Field(..., pattern="^(click|pick|back|refresh)$")
+    x: int | None = Field(None, ge=0)
+    y: int | None = Field(None, ge=0)
+
+
 class UiRecordingMobileActionRequest(BaseModel):
     """移动端远程画面动作及录制控制身份。"""
 

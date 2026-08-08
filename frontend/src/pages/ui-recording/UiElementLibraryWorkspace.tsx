@@ -128,9 +128,47 @@ function isSimulatorDevice(device: Device): boolean {
 type UiPageGroup = {
   pageKey: string;
   pageName: string;
+  displayName: string;
+  route: string;
   elements: UiElement[];
   snapshots: UiPageSnapshot[];
 };
+
+const ROUTE_LABELS: Record<string, string> = {
+  "/login": "登录页",
+  "/workspace": "工作台入口",
+  "/workspace/admin": "管理工作台",
+  "/workspace/projects": "项目工作台",
+  "/projects": "项目列表",
+  "/runs": "执行记录",
+  "/devices": "设备池",
+  "/app-packages": "App 包管理",
+  "/scripts": "脚本库",
+};
+
+function pageRoute(url: string | null | undefined, pageKey: string): string {
+  if (url) {
+    try {
+      return new URL(url).pathname || "/";
+    } catch {
+      // 兼容历史快照中的非标准 URL，继续从 pageKey 推断。
+    }
+  }
+  const slash = pageKey.indexOf("/");
+  return slash >= 0 ? pageKey.slice(slash) : pageKey;
+}
+
+function routeDisplayName(route: string, fallback: string): string {
+  const exact = ROUTE_LABELS[route];
+  if (exact) return exact;
+  const segment = decodeURIComponent(route.split("/").filter(Boolean).at(-1) ?? "");
+  if (!segment) return fallback;
+  return segment
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((item) => item.charAt(0).toLocaleUpperCase() + item.slice(1))
+    .join(" ");
+}
 
 function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
   const pages = new Map<string, UiPageGroup>();
@@ -138,6 +176,8 @@ function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
     const page = pages.get(snapshot.page_key) ?? {
       pageKey: snapshot.page_key,
       pageName: snapshot.page_name,
+      displayName: snapshot.page_name,
+      route: pageRoute(snapshot.url, snapshot.page_key),
       elements: [],
       snapshots: [],
     };
@@ -148,6 +188,8 @@ function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
     const page = pages.get(element.page_key) ?? {
       pageKey: element.page_key,
       pageName: element.page_name,
+      displayName: element.page_name,
+      route: pageRoute(null, element.page_key),
       elements: [],
       snapshots: [],
     };
@@ -155,10 +197,24 @@ function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
     pages.set(element.page_key, page);
   }
   return [...pages.values()]
-    .map((page) => ({
-      ...page,
-      snapshots: page.snapshots.sort((a, b) => b.snapshot_version - a.snapshot_version),
-    }))
+    .map((page) => {
+      const orderedSnapshots = page.snapshots.sort(
+        (a, b) => b.snapshot_version - a.snapshot_version,
+      );
+      const latest = orderedSnapshots[0];
+      const route = pageRoute(latest?.url, page.pageKey);
+      const capturedName = latest?.page_name || page.pageName;
+      const displayName = capturedName === "自动化测试平台"
+        ? routeDisplayName(route, capturedName)
+        : capturedName;
+      return {
+        ...page,
+        pageName: capturedName,
+        displayName,
+        route,
+        snapshots: orderedSnapshots,
+      };
+    })
     .sort((a, b) => {
       const latestA = a.snapshots[0]?.created_at ?? "";
       const latestB = b.snapshots[0]?.created_at ?? "";
@@ -212,6 +268,7 @@ export function UiElementLibraryWorkspace({
   const [platform, setPlatform] = useState<UiPlatform>(initialPlatform);
   const [keyword, setKeyword] = useState("");
   const [pageKey, setPageKey] = useState<string | null>(null);
+  const [snapshotId, setSnapshotId] = useState<number | null>(null);
   const [selectedElementId, setSelectedElementId] = useState<number | null>(null);
   const [sessionOverride, setSessionOverride] = useState<UiRecordingSession | null>(null);
   const [startOpen, setStartOpen] = useState(false);
@@ -225,6 +282,7 @@ export function UiElementLibraryWorkspace({
   const [draftCaseName, setDraftCaseName] = useState("");
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const lastMaterializedEventRef = useRef(0);
   useEffect(() => {
     if (!open) return;
     setPlatform(initialPlatform);
@@ -237,6 +295,7 @@ export function UiElementLibraryWorkspace({
 
   useEffect(() => {
     setPageKey(null);
+    setSnapshotId(null);
     setSelectedElementId(null);
     setSessionOverride(null);
     setSelectedDeviceId("");
@@ -251,13 +310,13 @@ export function UiElementLibraryWorkspace({
     queryKey: ["ui-elements", projectId, platform],
     queryFn: () => uiRecordingsApi.listElements({ projectId, platform }),
     enabled: open && Number.isFinite(projectId),
-    refetchInterval: open ? 2000 : false,
+    refetchInterval: open ? 1200 : false,
   });
   const snapshotsQuery = useQuery({
     queryKey: ["ui-page-snapshots", projectId, platform],
     queryFn: () => uiRecordingsApi.listSnapshots({ projectId, platform }),
     enabled: open && Number.isFinite(projectId),
-    refetchInterval: open ? 2000 : false,
+    refetchInterval: open ? 1200 : false,
   });
   const recordingsQuery = useQuery({
     queryKey: ["ui-recordings", projectId, platform],
@@ -265,7 +324,7 @@ export function UiElementLibraryWorkspace({
     enabled: open && Number.isFinite(projectId),
     refetchInterval: (query) => {
       const sessions = query.state.data ?? [];
-      return sessions.some((session) => ACTIVE_STATUSES.includes(session.status)) ? 3000 : false;
+      return sessions.some((session) => ACTIVE_STATUSES.includes(session.status)) ? 1500 : false;
     },
   });
   const devicesQuery = useQuery({
@@ -340,10 +399,17 @@ export function UiElementLibraryWorkspace({
   );
   const activePageKey = pageKey ?? pages[0]?.pageKey ?? null;
   const activePage = pages.find((page) => page.pageKey === activePageKey) ?? null;
-  const activeSnapshot = activePage?.snapshots[0] ?? null;
-  const visibleElements = activePage?.elements ?? [];
+  const activeSnapshot = activePage?.snapshots.find((item) => item.id === snapshotId)
+    ?? activePage?.snapshots[0]
+    ?? null;
+  const visibleFingerprints = activeSnapshot?.resource_manifest.visible_element_fingerprints;
+  const visibleElements = Array.isArray(visibleFingerprints)
+    ? (activePage?.elements ?? []).filter((element) => visibleFingerprints.includes(element.fingerprint))
+    : activePage?.elements ?? [];
   const selectedElement =
-    elements.find((element) => element.id === selectedElementId) ?? visibleElements[0] ?? null;
+    visibleElements.find((element) => element.id === selectedElementId)
+    ?? visibleElements[0]
+    ?? null;
 
   const latestServerSession = recordingsQuery.data?.[0] ?? null;
   const activeServerSession = recordingsQuery.data?.find((session) =>
@@ -353,13 +419,38 @@ export function UiElementLibraryWorkspace({
   const session = sessionOverride && serverSession?.id === sessionOverride.id
     ? { ...sessionOverride, ...serverSession }
     : sessionOverride ?? serverSession;
+  useEffect(() => {
+    lastMaterializedEventRef.current = 0;
+  }, [session?.id]);
   const eventsQuery = useQuery({
     queryKey: ["ui-recording-events", session?.id],
     queryFn: () => uiRecordingsApi.listEvents(session!.id),
     enabled: open && session != null && ACTIVE_STATUSES.includes(session.status),
-    refetchInterval: 1000,
+    refetchInterval: 600,
   });
-  const events = eventsQuery.data ?? [];
+  const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
+
+  useEffect(() => {
+    const freshEvents = events.filter(
+      (event) => event.sequence_no > lastMaterializedEventRef.current,
+    );
+    if (freshEvents.length === 0) return;
+    lastMaterializedEventRef.current = Math.max(
+      ...freshEvents.map((event) => event.sequence_no),
+    );
+    if (freshEvents.some((event) => event.event_type === "page.snapshot")) {
+      void queryClient.invalidateQueries({
+        queryKey: ["ui-page-snapshots", projectId, platform],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["ui-elements", projectId, platform],
+      });
+    } else if (freshEvents.some((event) => event.element_id != null)) {
+      void queryClient.invalidateQueries({
+        queryKey: ["ui-elements", projectId, platform],
+      });
+    }
+  }, [events, platform, projectId, queryClient]);
   const controlLease = (session?.capabilities.control_lease ?? null) as {
     owner_id?: string;
     expires_at?: string;
@@ -513,6 +604,37 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  const webActionMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      action,
+      x,
+      y,
+    }: {
+      sessionId: number;
+      action: "click" | "pick" | "back" | "refresh";
+      x?: number;
+      y?: number;
+    }) => uiRecordingsApi.performWebAction(sessionId, {
+      client_instance_id: clientInstanceId,
+      command_id: randomId(`web-${action}`),
+      action,
+      x,
+      y,
+    }),
+    onSuccess: async (next) => {
+      setSessionOverride(next);
+      await Promise.all([
+        refresh(),
+        queryClient.invalidateQueries({ queryKey: ["ui-recording-events", next.id] }),
+        queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] }),
+        queryClient.invalidateQueries({ queryKey: ["ui-elements", projectId, platform] }),
+      ]);
+      setSnapshotId(null);
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
   const replayMutation = useMutation({
     mutationFn: (sessionId: number) => uiRecordingsApi.startReplay(sessionId, browser),
     onSuccess: (replay) => {
@@ -615,6 +737,7 @@ export function UiElementLibraryWorkspace({
     || reopenMobileMutation.isPending
     || controlMutation.isPending
     || pickModeMutation.isPending
+    || webActionMutation.isPending
     || mobileActionMutation.isPending;
   const platformRuntime = PLATFORM_META[platform];
   const statusMeta = session ? STATUS_META[session.status] : null;
@@ -763,16 +886,22 @@ export function UiElementLibraryWorkspace({
                   key={page.pageKey}
                   onClick={() => {
                     setPageKey(page.pageKey);
+                    setSnapshotId(null);
                     setSelectedElementId(page.elements[0]?.id ?? null);
                   }}
                   className={cn(
-                    "mb-1 flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left text-sm",
+                    "mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm",
                     activePageKey === page.pageKey ? "bg-primary/10 text-primary" : "hover:bg-muted",
                   )}
                 >
-                  <span className="truncate">{page.pageName}</span>
-                  <span className="rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {page.elements.length} 元素 · {page.snapshots.length} 版本
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{page.displayName}</span>
+                    <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                      {page.route}
+                    </span>
+                  </span>
+                  <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {page.elements.length} 元素 · {page.snapshots.length} 状态
                   </span>
                 </button>
               ))
@@ -833,12 +962,67 @@ export function UiElementLibraryWorkspace({
         <main className="flex min-h-0 min-w-0 flex-col bg-slate-50/70 dark:bg-slate-950/20">
           <div className="flex h-[58px] shrink-0 items-center justify-between border-b bg-background px-4">
             <div>
-              <div className="text-sm font-semibold">{activePage?.pageName ?? "等待首次页面快照"}</div>
-              <div className="text-[11px] text-muted-foreground">{platformRuntime.runtime}</div>
+              <div className="text-sm font-semibold">{activePage?.displayName ?? "等待首次页面快照"}</div>
+              <div className="text-[11px] text-muted-foreground">
+                {activePage?.route ?? platformRuntime.runtime}
+              </div>
             </div>
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="rounded-md border bg-background px-2 py-1">浏览页面</span>
-              <span className="rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-primary">拾取元素</span>
+              {activePage && activePage.snapshots.length > 1 ? (
+                <Select
+                  value={String(activeSnapshot?.id ?? "")}
+                  onValueChange={(value) => {
+                    setSnapshotId(Number(value));
+                    setSelectedElementId(null);
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-[170px] text-[11px]">
+                    <SelectValue placeholder="选择页面状态" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {activePage.snapshots.map((item) => (
+                      <SelectItem key={item.id} value={String(item.id)}>
+                        {item.state_name || `状态 #${item.snapshot_version}`}
+                        {item.id === activePage.snapshots[0]?.id ? " · 最新" : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : null}
+              {platform === "web" ? (
+                <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
+                  <button
+                    type="button"
+                    disabled={pickModeMutation.isPending || !session || !ACTIVE_STATUSES.includes(session.status)}
+                    onClick={() => {
+                      if (session && pickMode) {
+                        pickModeMutation.mutate({ sessionId: session.id, enabled: false });
+                      }
+                    }}
+                    className={cn(
+                      "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
+                      !pickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                    )}
+                  >
+                    浏览页面
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pickModeMutation.isPending || !session || !ACTIVE_STATUSES.includes(session.status)}
+                    onClick={() => {
+                      if (session && !pickMode) {
+                        pickModeMutation.mutate({ sessionId: session.id, enabled: true });
+                      }
+                    }}
+                    className={cn(
+                      "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
+                      pickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                    )}
+                  >
+                    拾取元素
+                  </button>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -860,6 +1044,22 @@ export function UiElementLibraryWorkspace({
                       elements={visibleElements}
                       selectedElementId={selectedElement?.id ?? null}
                       onSelect={setSelectedElementId}
+                      pickMode={pickMode}
+                      actionPending={webActionMutation.isPending}
+                      canInteract={
+                        session != null
+                        && ACTIVE_STATUSES.includes(session.status)
+                        && hasControl
+                      }
+                      onCanvasAction={(x, y) => {
+                        if (!session) return;
+                        webActionMutation.mutate({
+                          sessionId: session.id,
+                          action: pickMode ? "pick" : "click",
+                          x,
+                          y,
+                        });
+                      }}
                     />
                   ) : (
                     <ElementStage
@@ -1566,14 +1766,23 @@ function SnapshotStage({
   elements,
   selectedElementId,
   onSelect,
+  pickMode,
+  actionPending,
+  canInteract,
+  onCanvasAction,
 }: {
   snapshot: UiPageSnapshot;
   elements: UiElement[];
   selectedElementId: number | null;
   onSelect: (id: number) => void;
+  pickMode: boolean;
+  actionPending: boolean;
+  canInteract: boolean;
+  onCanvasAction: (x: number, y: number) => void;
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [clickPoint, setClickPoint] = useState<{ left: number; top: number } | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -1604,6 +1813,9 @@ function SnapshotStage({
   } | undefined;
   const viewportWidth = Number(viewport?.width || 1);
   const viewportHeight = Number(viewport?.height || 1);
+  const snapshotBounds = (
+    snapshot.resource_manifest.visible_element_bounds ?? {}
+  ) as Record<string, { x?: number; y?: number; width?: number; height?: number }>;
 
   if (imageError) {
     return <div className="grid flex-1 place-items-center text-xs text-red-600">{imageError}</div>;
@@ -1614,10 +1826,24 @@ function SnapshotStage({
 
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-4 dark:bg-slate-950">
-      <div className="relative inline-block max-h-full max-w-full overflow-hidden rounded-lg border bg-background shadow-sm">
+      <div
+        className={cn(
+          "relative inline-block max-h-full max-w-full overflow-hidden rounded-lg border bg-background shadow-sm",
+          canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
+        )}
+        onClick={(event) => {
+          if (!canInteract || actionPending) return;
+          const rect = event.currentTarget.getBoundingClientRect();
+          const left = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+          const top = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+          setClickPoint({ left: left * 100, top: top * 100 });
+          window.setTimeout(() => setClickPoint(null), 800);
+          onCanvasAction(Math.round(left * viewportWidth), Math.round(top * viewportHeight));
+        }}
+      >
         <img src={imageUrl} alt={snapshot.page_name} className="block max-h-[560px] max-w-full" />
         {elements.map((element) => {
-          const bounds = element.attributes.bounds as {
+          const bounds = snapshotBounds[element.fingerprint] ?? element.attributes.bounds as {
             x?: number;
             y?: number;
             width?: number;
@@ -1634,17 +1860,34 @@ function SnapshotStage({
               type="button"
               aria-label={`选择元素：${element.semantic_name}`}
               title={element.semantic_name}
-              onClick={() => onSelect(element.id)}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelect(element.id);
+              }}
               className={cn(
-                "absolute rounded border-2 bg-primary/10 transition hover:border-primary hover:bg-primary/20",
+                "absolute rounded border-2 transition",
+                pickMode ? "pointer-events-auto" : "pointer-events-none",
                 selectedElementId === element.id
-                  ? "border-primary ring-2 ring-primary/30"
-                  : "border-violet-400/80",
+                  ? "border-primary bg-primary/10 ring-2 ring-primary/30"
+                  : "border-transparent bg-transparent hover:border-primary hover:bg-primary/10",
               )}
               style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
             />
           );
         })}
+        {clickPoint ? (
+          <span
+            className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2 border-primary bg-primary/20"
+            style={{ left: `${clickPoint.left}%`, top: `${clickPoint.top}%` }}
+          />
+        ) : null}
+        {actionPending ? (
+          <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
+            <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
+              <Loader2 className="h-3 w-3 animate-spin" />正在同步新页面状态…
+            </span>
+          </div>
+        ) : null}
       </div>
     </div>
   );
