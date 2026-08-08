@@ -53,6 +53,7 @@ import {
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { CreateBugModal } from "@/pages/tasks/CreateBugModal";
+import { UiExecutionContextButton } from "@/pages/ui-recording/UiExecutionContextDialog";
 import type { AiRun, InProgressTask } from "@/types/domain";
 
 /**
@@ -679,6 +680,9 @@ function DetailBody({
             <ExternalLink className="h-3.5 w-3.5" />
             打开 Allure 报告
           </a>
+        ) : null}
+        {detail.context_session_id != null ? (
+          <UiExecutionContextButton contextSessionId={detail.context_session_id} />
         ) : null}
         <Button
           size="sm"

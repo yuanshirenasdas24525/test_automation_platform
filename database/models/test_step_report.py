@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, Text, func
+from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Float, ForeignKey, Text, func
 
 from database.base import Base, JSONType
 
@@ -39,6 +39,14 @@ class TestStepReport(Base):
     # ============ v2 新增：附件/日志链接 ============
     # 格式：[{"name":"error.png","url":"minio://.../xxx.png","type":"image"}, ...]
     attachments = Column(JSONType)
+    context_session_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    context_event_from_seq = Column(BigInteger, nullable=True)
+    context_event_to_seq = Column(BigInteger, nullable=True)
 
     # ============ 执行结果 ============
     status = Column(String(20))                           # passed | failed | broken | skipped

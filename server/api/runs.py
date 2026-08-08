@@ -24,6 +24,7 @@ from database.models import (
     RunTestRequest,
     TestCase,
     TestReport,
+    UiContextSession,
 )
 from utils.logger import LOGGER
 
@@ -157,6 +158,28 @@ async def run_test(req: RunTestRequest, db: DBDep):
     db.session.flush()
     db.session.refresh(new_report)
     report_id = new_report.id
+    context_session = UiContextSession(
+        project_id=req.project,
+        report_id=report_id,
+        kind="execution",
+        platform=cat_lower if cat_lower in {"web", "android", "ios"} else "web",
+        status="active",
+        capabilities={
+            "step_boundaries": True,
+            "environment": True,
+            "screenshots": cat_lower in {"web", "android", "ios", "mixed"},
+            "network": cat_lower in {"api", "web", "mixed"},
+            "console": cat_lower in {"web", "mixed"},
+            "device_logs": cat_lower in {"android", "ios", "mixed"},
+        },
+        limitations=[],
+        summary={"task_id": task_id, "case_count": case_number},
+        started_at=now,
+    )
+    db.session.add(context_session)
+    db.session.flush()
+    new_report.context_session_id = context_session.id
+    db.session.flush()
 
     # Celery 异步触发（这里的 commit 由 get_db 兜底，确保 report 记录对 worker 可见）
     db.commit()

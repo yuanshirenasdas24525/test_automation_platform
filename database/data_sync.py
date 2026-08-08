@@ -29,6 +29,7 @@ from database.models import (
     TestCase,
     TestReport,
     TestStepReport,
+    UiContextSession,
 )
 from utils.logger import LOGGER
 
@@ -250,6 +251,20 @@ def _finalize_impl(report_id: int, db_session, task_id: str | None) -> None:
     report.end_time = datetime.now()
     report.summary = summary
     report.allure_url = allure_url
+    if report.context_session_id is not None:
+        context_session = db_session.get(UiContextSession, report.context_session_id)
+        if context_session is not None:
+            context_session.status = "completed"
+            context_session.ended_at = report.end_time
+            context_session.summary = {
+                **(context_session.summary or {}),
+                "status": final_status,
+                "total_steps": total,
+                "passed": pass_count,
+                "failed": fail_count,
+                "errors": error_count,
+                "skipped": skip_count,
+            }
 
     db_session.commit()
     LOGGER.info(f"[finalize_report] report_id={report_id} → {final_status} ({summary})")
@@ -273,6 +288,15 @@ def _force_terminal(report_id: int, db_session, status: str, summary: str) -> No
         report.status = status
         report.summary = (summary or "")[:500]  # 避免超长堆栈塞满字段
         report.end_time = datetime.now()
+        if report.context_session_id is not None:
+            context_session = db_session.get(UiContextSession, report.context_session_id)
+            if context_session is not None:
+                context_session.status = "failed"
+                context_session.ended_at = report.end_time
+                context_session.limitations = [
+                    *list(context_session.limitations or []),
+                    (summary or "执行异常")[:500],
+                ][-100:]
         db_session.commit()
     except Exception as exc:
         LOGGER.warning(f"[_force_terminal] 兜底写入也失败了: {exc}")

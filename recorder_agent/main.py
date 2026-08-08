@@ -14,18 +14,20 @@ import platform as host_platform
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 import xml.etree.ElementTree as ET
+from collections import Counter
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 from urllib.request import urlopen
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response as FastAPIResponse
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, Request, Response
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, Field, field_validator
@@ -46,6 +48,26 @@ _SENSITIVE_HEADERS = {
     "x-api-key",
     "x-auth-token",
 }
+_SENSITIVE_KEY_PARTS = {
+    "access_token",
+    "authorization",
+    "card",
+    "client_secret",
+    "cookie",
+    "credential",
+    "cvv",
+    "password",
+    "refresh_token",
+    "secret",
+    "session",
+    "signature",
+    "token",
+}
+_SENSITIVE_SELECTOR = (
+    'input[type="password"], input[autocomplete*="password"], '
+    'input[autocomplete^="cc-"], input[name*="token" i], '
+    '[data-sensitive="true"], [data-private="true"]'
+)
 
 
 _RECORDER_SCRIPT = r"""
@@ -109,10 +131,22 @@ _RECORDER_SCRIPT = r"""
     const placeholder = (element.getAttribute("placeholder") || "").trim();
     const name = (element.getAttribute("name") || "").trim();
     const testId = (element.getAttribute("data-testid") || element.getAttribute("data-test") || "").trim();
+    const explicitRole = (element.getAttribute("role") || "").trim();
+    const implicitRole = tag === "button" ? "button"
+      : tag === "a" && element.hasAttribute("href") ? "link"
+      : tag === "select" ? "combobox"
+      : tag === "textarea" ? "textbox"
+      : tag === "input" && ["checkbox", "radio"].includes(String(element.type || "").toLowerCase())
+        ? String(element.type).toLowerCase()
+        : tag === "input" ? "textbox" : "";
+    const role = explicitRole || implicitRole;
     const semanticName = aria || text || placeholder || name || testId || `${tag} 元素`;
     const locators = [];
     if (element.id) locators.push({ strategy: "id", locator: element.id, score: 98 });
     if (testId) locators.push({ strategy: "css", locator: `[data-testid="${testId.replace(/"/g, '\\"')}"]`, score: 96 });
+    if (role && semanticName) {
+      locators.push({ strategy: "role", locator: `role=${role};name=${semanticName.slice(0, 120)}`, score: 94 });
+    }
     if (name) locators.push({ strategy: "name", locator: name, score: 90 });
     const css = cssPath(element);
     if (css && !locators.some((item) => item.strategy === "css" && item.locator === css)) {
@@ -147,9 +181,60 @@ _RECORDER_SCRIPT = r"""
     };
   };
 
+  const normalizedText = (element) => String(element?.innerText || element?.textContent || "")
+    .replace(/\s+/g, " ").trim();
+  const locatorMatchCount = (item) => {
+    try {
+      if (item.strategy === "id") return document.querySelectorAll(`#${escapeCss(item.locator)}`).length;
+      if (item.strategy === "css") return document.querySelectorAll(item.locator).length;
+      if (item.strategy === "name") return document.querySelectorAll(`[name="${String(item.locator).replace(/"/g, '\\"')}"]`).length;
+      if (item.strategy === "link") return Array.from(document.querySelectorAll("a[href]"))
+        .filter((element) => normalizedText(element) === item.locator).length;
+      if (item.strategy === "text") return Array.from(document.querySelectorAll("button,a,label,option"))
+        .filter((element) => normalizedText(element) === item.locator).length;
+      if (item.strategy === "xpath") return document.evaluate(
+        item.locator, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null,
+      ).snapshotLength;
+      if (item.strategy === "role") {
+        const match = /^role=([^;]+);name=(.*)$/.exec(item.locator);
+        if (!match) return 0;
+        const [, role, accessibleName] = match;
+        const implicit = {
+          button: "button",
+          link: "a[href]",
+          textbox: 'input:not([type="checkbox"]):not([type="radio"]),textarea',
+          combobox: "select",
+          checkbox: 'input[type="checkbox"]',
+          radio: 'input[type="radio"]',
+        }[role] || "[data-ui-recorder-no-match]";
+        return Array.from(document.querySelectorAll(`[role="${escapeCss(role)}"],${implicit}`))
+          .filter((element) => {
+            const name = (element.getAttribute("aria-label") || normalizedText(element) || element.getAttribute("placeholder") || "").trim();
+            return name === accessibleName;
+          }).length;
+      }
+    } catch (_error) {
+      return 0;
+    }
+    return 0;
+  };
+  const validateDescription = (description) => {
+    if (!description) return null;
+    description.locators = description.locators.map((item) => {
+      const matchCount = locatorMatchCount(item);
+      return {
+        ...item,
+        match_count: matchCount,
+        is_unique: matchCount === 1,
+        score: Math.max(0, item.score - (matchCount === 1 ? 0 : matchCount === 0 ? 35 : 20)),
+      };
+    });
+    return description;
+  };
+
   const emit = (eventType, target, extra = {}) => {
     if (typeof window.__uiRecorderEmit !== "function") return;
-    const element = describe(target);
+    const element = validateDescription(describe(target));
     void window.__uiRecorderEmit({
       event_type: eventType,
       page_title: document.title,
@@ -184,7 +269,11 @@ _RECORDER_SCRIPT = r"""
     const timer = setTimeout(() => {
       const inputType = String(target.getAttribute?.("type") || "").toLowerCase();
       const autocomplete = String(target.getAttribute?.("autocomplete") || "").toLowerCase();
-      const sensitive = inputType === "password" || autocomplete.includes("password") || autocomplete === "cc-number";
+      const fieldName = String(target.getAttribute?.("name") || target.getAttribute?.("id") || "").toLowerCase();
+      const sensitive = inputType === "password"
+        || autocomplete.includes("password")
+        || autocomplete.startsWith("cc-")
+        || ["cvv", "cvc", "secret", "token"].some((part) => fieldName.includes(part));
       emit("user.input", target, {
         value: sensitive ? "${password}" : String(target.value ?? "").slice(0, 2000),
         redacted: sensitive,
@@ -248,11 +337,11 @@ _RECORDER_SCRIPT = r"""
     return Array.from(root.querySelectorAll(selector))
       .filter(isVisible)
       .slice(0, 500)
-      .map(describe)
+      .map((element) => validateDescription(describe(element)))
       .filter(Boolean);
   };
 
-  window.__uiRecorderDescribeAt = (x, y) => describe(document.elementFromPoint(x, y));
+  window.__uiRecorderDescribeAt = (x, y) => validateDescription(describe(document.elementFromPoint(x, y)));
   window.__uiRecorderPageMeta = () => {
     const modal = visibleModal();
     const headingSelectors = [
@@ -283,7 +372,22 @@ def _page_key(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme in {"http", "https"}:
         path = parsed.path or "/"
-        return f"{parsed.netloc}{path}"[:255]
+        ignored_keys = {
+            "_", "cache", "cachebuster", "nonce", "password", "signature", "timestamp",
+            "token", "ts", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term",
+        }
+        query_items = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in ignored_keys
+            and not any(part in key.lower() for part in ("secret", "token", "password", "signature"))
+        ]
+        query = urlencode(sorted(query_items))
+        identity = f"{parsed.netloc}{path}{f'?{query}' if query else ''}"
+        if len(identity) <= 255:
+            return identity
+        suffix = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        return f"{identity[:238]}#{suffix}"
     return (url or "about:blank")[:255]
 
 
@@ -294,6 +398,147 @@ def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _is_sensitive_key(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    if normalized in _SENSITIVE_KEY_PARTS:
+        return True
+    return any(
+        part in normalized
+        for part in (
+            "password", "passwd", "secret", "credential", "authorization",
+            "access_token", "refresh_token", "auth_token", "session_token",
+            "signature", "card_number", "credit_card", "cvv", "cvc",
+        )
+    )
+
+
+def _redact_value(value: Any, *, key: str = "") -> Any:
+    """递归脱敏 JSON/Form 数据，保留结构供离线 Mock 和调试使用。"""
+    if key and _is_sensitive_key(key):
+        return "***"
+    if isinstance(value, dict):
+        return {str(item_key): _redact_value(item, key=str(item_key)) for item_key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value[:1000]]
+    if isinstance(value, str):
+        text = re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer ***", value)
+        text = re.sub(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b", "***", text)
+        return text
+    return value
+
+
+def _redact_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        return value[:4000]
+    query = urlencode([
+        (key, "***" if _is_sensitive_key(key) else item_value)
+        for key, item_value in parse_qsl(parsed.query, keep_blank_values=True)
+    ])
+    return parsed._replace(query=query, fragment="").geturl()[:4000]
+
+
+def _redact_text(value: str | None, content_type: str = "") -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    if "json" in content_type.lower() or stripped.startswith(("{", "[")):
+        try:
+            return json.dumps(_redact_value(json.loads(value)), ensure_ascii=False)
+        except (TypeError, ValueError):
+            pass
+    if "x-www-form-urlencoded" in content_type.lower() or "=" in value:
+        try:
+            pairs = parse_qsl(value, keep_blank_values=True)
+            if pairs:
+                return urlencode([
+                    (key, "***" if _is_sensitive_key(key) else item_value)
+                    for key, item_value in pairs
+                ])
+        except ValueError:
+            pass
+    return _redact_free_text(value)
+
+
+def _redact_free_text(value: str) -> str:
+    """脱敏任意文本，但不把含等号的 HTML/JS 误判为 Form。"""
+    redacted = re.sub(
+        r'(?i)(["\']?(?:password|passwd|secret|token|authorization|cookie|cvv|cvc)["\']?\s*[:=]\s*)["\']?[^"\'\s,&}]+',
+        r'\1***',
+        value,
+    )
+    return str(_redact_value(redacted))
+
+
+def _redact_html(value: str) -> str:
+    """移除 DOM 归档中密码/卡号控件的 value，并脱敏内联 JSON 常见字段。"""
+    def redact_input(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        if not re.search(r'(?i)(type\s*=\s*["\']?password|autocomplete\s*=\s*["\']?(?:[^"\']*password|cc-))', tag):
+            return tag
+        if re.search(r'(?i)\svalue\s*=', tag):
+            return re.sub(r'(?i)(\svalue\s*=\s*)(["\']).*?\2', r'\1"***"', tag)
+        return tag[:-1] + ' value="***">'
+
+    html = re.sub(r"(?is)<input\b[^>]*>", redact_input, value)
+    return _redact_free_text(html)
+
+
+def _normalized_replay_url(value: str) -> str:
+    """离线匹配忽略查询顺序、缓存戳和敏感值，但保留业务筛选参数。"""
+    parsed = urlparse(value)
+    ignored = {"_", "cache", "cachebuster", "nonce", "timestamp", "ts"}
+    query = urlencode(sorted(
+        (
+            key,
+            "***" if _is_sensitive_key(key) else item_value,
+        )
+        for key, item_value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key.lower() not in ignored and not key.lower().startswith("utm_")
+    ))
+    return parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        query=query,
+        fragment="",
+    ).geturl()
+
+
+def _request_body_signature(value: str | None, content_type: str = "") -> str:
+    redacted = _redact_text(value or "", content_type) or ""
+    try:
+        normalized = json.dumps(json.loads(redacted), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError):
+        normalized = redacted
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+async def _wait_replay_stable(page: Page, *, timeout_ms: int = 5_000) -> None:
+    """等待离线 SPA 从启动骨架渲染到可操作状态，并确认 DOM 连续稳定。"""
+    deadline = time.monotonic() + timeout_ms / 1000
+    previous: str | None = None
+    stable = 0
+    while time.monotonic() < deadline and not page.is_closed():
+        state = await page.evaluate(
+            r"""() => ({
+              text: (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+              nodes: document.body?.getElementsByTagName('*').length || 0,
+              ready: document.readyState,
+            })""",
+        )
+        signature = json.dumps(state, ensure_ascii=False, sort_keys=True)
+        text = str(state.get("text") or "")
+        is_loading_shell = text in {"加载中...", "加载中…", "Loading...", "Loading…"}
+        if signature == previous and not is_loading_shell and int(state.get("nodes") or 0) > 2:
+            stable += 1
+            if stable >= 2:
+                return
+        else:
+            stable = 0
+            previous = signature
+        await page.wait_for_timeout(200)
+
+
 def _limited_text(value: str | None) -> tuple[str | None, bool]:
     if value is None:
         return None, False
@@ -301,6 +546,18 @@ def _limited_text(value: str | None) -> tuple[str | None, bool]:
     if len(encoded) <= _MAX_BODY_BYTES:
         return value, False
     return encoded[:_MAX_BODY_BYTES].decode("utf-8", errors="replace"), True
+
+
+def _structure_similarity(left: list[str], right: list[str]) -> float:
+    """用带节点数量的 Jaccard 比较页面结构，避免动态文本制造快照噪声。"""
+    if not left or not right:
+        return 0.0
+    left_counts = Counter(left)
+    right_counts = Counter(right)
+    keys = set(left_counts) | set(right_counts)
+    intersection = sum(min(left_counts[key], right_counts[key]) for key in keys)
+    union = sum(max(left_counts[key], right_counts[key]) for key in keys)
+    return intersection / union if union else 1.0
 
 
 def _safe_replay_headers(headers: dict[str, str]) -> dict[str, str]:
@@ -356,14 +613,25 @@ class ReplayStartRequest(BaseModel):
     session_id: int = Field(..., gt=0)
     browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
     headless: bool = False
+    entry_url: str | None = Field(None, max_length=4000)
+    page_fingerprint: str | None = Field(None, max_length=64)
+    viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
 
 
 class WebActionRequest(BaseModel):
     """平台预览画面转发到受控 Playwright 页面的动作。"""
 
-    action: str = Field(..., pattern="^(click|pick|back|refresh)$")
+    action: str = Field(..., pattern="^(click|pick|input|scroll|back|refresh)$")
     x: int | None = Field(None, ge=0)
     y: int | None = Field(None, ge=0)
+    text: str | None = Field(None, max_length=4000)
+    delta_x: int = Field(0, ge=-10000, le=10000)
+    delta_y: int = Field(0, ge=-10000, le=10000)
+
+
+class LocatorValidationRequest(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=40)
+    locator: str = Field(..., min_length=1, max_length=4000)
 
 
 class MobileRecorderStartRequest(BaseModel):
@@ -378,6 +646,7 @@ class MobileRecorderStartRequest(BaseModel):
     app_path: str | None = Field(None, max_length=2000)
     app_identifier: str | None = Field(None, max_length=255)
     capabilities: dict[str, Any] = Field(default_factory=dict)
+    restore_scenario: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("appium_url")
     @classmethod
@@ -481,9 +750,9 @@ class RecorderRuntime:
                 "console",
                 {
                     "type": message.type,
-                    "text": message.text[:10_000],
+                    "text": (_redact_text(message.text) or "")[:10_000],
                     "location": message.location,
-                    "url": page.url,
+                    "url": _redact_url(page.url),
                 },
                 page=page,
                 severity="error" if message.type == "error" else "info",
@@ -494,7 +763,10 @@ class RecorderRuntime:
             lambda error: asyncio.create_task(self.emit(
                 "console.pageerror",
                 "console",
-                {"message": str(error)[:10_000], "url": page.url},
+                {
+                    "message": (_redact_text(str(error)) or "")[:10_000],
+                    "url": _redact_url(page.url),
+                },
                 page=page,
                 severity="error",
             )),
@@ -629,7 +901,7 @@ class RecorderRuntime:
             self.schedule_page_snapshot(page, event_type, delay_ms=300)
 
     async def perform_web_action(self, body: WebActionRequest) -> None:
-        """把平台快照上的点击转发给当前受控页面，并同步生成新状态快照。"""
+        """把平台画面动作转发给当前受控页面，并同步生成新状态快照。"""
         page = next(
             (candidate for candidate in reversed(self.context.pages) if not candidate.is_closed()),
             None,
@@ -638,6 +910,8 @@ class RecorderRuntime:
             raise ValueError("当前没有可操作的 Web 页面")
         if body.action in {"click", "pick"} and (body.x is None or body.y is None):
             raise ValueError(f"{body.action} 动作必须提供 x/y 坐标")
+        if body.action == "input" and body.text is None:
+            raise ValueError("input 动作必须提供 text")
 
         if body.action == "pick":
             element = await page.evaluate(
@@ -659,6 +933,13 @@ class RecorderRuntime:
             return
         if body.action == "click":
             await page.mouse.click(body.x or 0, body.y or 0)
+        elif body.action == "input":
+            if body.x is not None and body.y is not None:
+                await page.mouse.click(body.x, body.y)
+            await page.keyboard.press("ControlOrMeta+A")
+            await page.keyboard.insert_text(body.text or "")
+        elif body.action == "scroll":
+            await page.mouse.wheel(body.delta_x, body.delta_y)
         elif body.action == "back":
             await page.go_back(wait_until="domcontentloaded", timeout=10_000)
         elif body.action == "refresh":
@@ -698,7 +979,12 @@ class RecorderRuntime:
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.png"
         try:
-            await page.screenshot(path=str(path), full_page=False)
+            await page.screenshot(
+                path=str(path),
+                full_page=False,
+                mask=[page.locator(_SENSITIVE_SELECTOR)],
+                mask_color="#64748b",
+            )
             await self.emit(
                 "screen.capture",
                 "screen",
@@ -714,7 +1000,9 @@ class RecorderRuntime:
         request_key = uuid.uuid4().hex
         self.request_keys[request] = request_key
         self.request_started_monotonic[request] = time.monotonic()
-        body, truncated = _limited_text(request.post_data)
+        request_headers = await request.all_headers()
+        content_type = request_headers.get("content-type", "")
+        body, truncated = _limited_text(_redact_text(request.post_data, content_type))
         await self.emit(
             "network.request",
             "network",
@@ -722,8 +1010,8 @@ class RecorderRuntime:
                 "request_key": request_key,
                 "resource_type": request.resource_type,
                 "method": request.method,
-                "url": request.url,
-                "headers": _redact_headers(await request.all_headers()),
+                "url": _redact_url(request.url),
+                "headers": _redact_headers(request_headers),
                 "body": body,
                 "body_truncated": truncated,
             },
@@ -747,7 +1035,9 @@ class RecorderRuntime:
         if any(kind in content_type for kind in ("json", "text", "javascript", "xml")):
             try:
                 raw = await response.body()
-                body_text, body_truncated = _limited_text(raw.decode("utf-8", errors="replace"))
+                body_text, body_truncated = _limited_text(
+                    _redact_text(raw.decode("utf-8", errors="replace"), content_type),
+                )
             except Exception:  # noqa: BLE001
                 body_text = None
         await self.emit(
@@ -756,7 +1046,7 @@ class RecorderRuntime:
             {
                 "request_key": self.request_keys.get(request),
                 "method": request.method,
-                "url": response.url,
+                "url": _redact_url(response.url),
                 "status": response.status,
                 "status_text": response.status_text,
                 "duration_ms": (
@@ -794,16 +1084,20 @@ class RecorderRuntime:
         resource_dir.mkdir(parents=True, exist_ok=True)
         resource_name = f"{hashlib.sha256(url.encode('utf-8')).hexdigest()}.bin"
         resource_path = resource_dir / resource_name
-        resource_path.write_bytes(body)
-        self.archive_bytes += len(body)
+        content_type = headers.get("content-type", "")
+        safe_body = body
+        if response.request.resource_type == "document" and "html" in content_type:
+            safe_body = _redact_html(body.decode("utf-8", errors="replace")).encode("utf-8")
+        resource_path.write_bytes(safe_body)
+        self.archive_bytes += len(safe_body)
         self.resources[url] = {
             "url": url,
             "path": str(resource_path.relative_to(self.session_root)),
             "status": response.status,
             "headers": _safe_replay_headers(headers),
             "resource_type": response.request.resource_type,
-            "size": len(body),
-            "sha256": hashlib.sha256(body).hexdigest(),
+            "size": len(safe_body),
+            "sha256": hashlib.sha256(safe_body).hexdigest(),
         }
 
     async def capture_request_failed(self, page: Page, request: Request) -> None:
@@ -816,7 +1110,7 @@ class RecorderRuntime:
             {
                 "request_key": self.request_keys.get(request),
                 "method": request.method,
-                "url": request.url,
+                "url": _redact_url(request.url),
                 "failure": request.failure,
                 "duration_ms": (
                     round((time.monotonic() - started_at) * 1000, 2)
@@ -839,7 +1133,7 @@ class RecorderRuntime:
             return None
         url = page.url
         title = await page.title()
-        html = await page.content()
+        html = _redact_html(await page.content())
         page_meta = await page.evaluate(
             "() => window.__uiRecorderPageMeta?.() || ({ page_name: document.title, state_name: '默认页面' })",
         )
@@ -848,6 +1142,26 @@ class RecorderRuntime:
         visible_elements = await page.evaluate(
             "() => window.__uiRecorderCollectElements?.() || []",
         )
+        structure_tokens = await page.evaluate(
+            r"""() => Array.from(document.querySelectorAll('*')).slice(0, 5000).map((element) => {
+              const style = getComputedStyle(element);
+              const visible = style.display !== 'none' && style.visibility !== 'hidden';
+              const stableId = /\d{4,}/.test(element.id || '') ? '' : (element.id || '');
+              return [
+                element.tagName.toLowerCase(),
+                element.getAttribute('role') || '',
+                stableId,
+                element.getAttribute('data-testid') || element.getAttribute('data-test') || '',
+                element.getAttribute('type') || '',
+                element.hasAttribute('open') ? 'open' : '',
+                element.getAttribute('aria-expanded') || '',
+                visible ? 'visible' : 'hidden',
+              ].join('|');
+            })""",
+        )
+        if not isinstance(structure_tokens, list):
+            structure_tokens = []
+        structure_tokens = [str(item)[:300] for item in structure_tokens[:5000]]
         normalized_elements: list[dict[str, Any]] = []
         for raw_element in visible_elements if isinstance(visible_elements, list) else []:
             if not isinstance(raw_element, dict):
@@ -858,12 +1172,36 @@ class RecorderRuntime:
                 continue
             item["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
             normalized_elements.append(item)
-        fingerprint = hashlib.sha256(f"{url}\n{html}".encode("utf-8")).hexdigest()
+        page_key = _page_key(url)
+        state_name = str(page_meta.get("state_name") or "默认页面")
+        exact_fingerprint = hashlib.sha256(f"{url}\n{html}".encode("utf-8")).hexdigest()
+        fingerprint = hashlib.sha256(
+            json.dumps(
+                {"page_key": page_key, "state_name": state_name, "structure": structure_tokens},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
         if fingerprint in self.snapshot_fingerprints:
             return next(
                 (item for item in self.page_records if item["fingerprint"] == fingerprint),
                 None,
             )
+        similar = next(
+            (
+                item
+                for item in reversed(self.page_records)
+                if item.get("page_key") == page_key
+                and item.get("state_name") == state_name
+                and _structure_similarity(
+                    list(item.get("structure_tokens") or []),
+                    structure_tokens,
+                ) >= 0.95
+            ),
+            None,
+        )
+        if similar is not None:
+            return similar
         index = len(self.page_records) + 1
         document_dir = self.session_root / "documents"
         screenshot_dir = self.session_root / "screenshots"
@@ -872,16 +1210,23 @@ class RecorderRuntime:
         document_path = document_dir / f"page_{index}_{fingerprint[:12]}.html"
         screenshot_path = screenshot_dir / f"page_{index}_{fingerprint[:12]}.png"
         document_path.write_text(html, encoding="utf-8")
-        await page.screenshot(path=str(screenshot_path), full_page=False)
+        await page.screenshot(
+            path=str(screenshot_path),
+            full_page=False,
+            mask=[page.locator(_SENSITIVE_SELECTOR)],
+            mask_color="#64748b",
+        )
         screenshot_bytes = screenshot_path.read_bytes()
         page_record = {
             "url": url,
             "title": title,
             "page_name": str(page_meta.get("page_name") or title),
-            "state_name": str(page_meta.get("state_name") or "默认页面"),
+            "state_name": state_name,
             "modal_open": bool(page_meta.get("modal_open")),
-            "page_key": _page_key(url),
+            "page_key": page_key,
             "fingerprint": fingerprint,
+            "exact_fingerprint": exact_fingerprint,
+            "structure_tokens": structure_tokens,
             "document_path": str(document_path.relative_to(self.session_root)),
             "screenshot_path": str(screenshot_path.relative_to(self.session_root)),
             "document_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
@@ -894,7 +1239,12 @@ class RecorderRuntime:
         }
         self.snapshot_fingerprints.add(fingerprint)
         self.page_records.append(page_record)
-        await self.emit("page.snapshot", "browser", page_record, page=page)
+        await self.emit(
+            "page.snapshot",
+            "browser",
+            {key: value for key, value in page_record.items() if key != "structure_tokens"},
+            page=page,
+        )
         return page_record
 
     async def build_offline_package(self) -> dict[str, Any]:
@@ -914,7 +1264,10 @@ class RecorderRuntime:
                 await self.capture_page_document(page, reason="session.stop")
             except Exception as exc:  # noqa: BLE001
                 logger.warning("页面快照失败 session=%s: %s", self.session_id, exc)
-        pages = list(self.page_records)
+        pages = [
+            {key: value for key, value in item.items() if key != "structure_tokens"}
+            for item in self.page_records
+        ]
 
         requests_by_key = {
             str(event["payload"].get("request_key")): event
@@ -940,6 +1293,16 @@ class RecorderRuntime:
                 "url": request_payload.get("url") or response_payload.get("url"),
                 "request": request_payload,
                 "response": response_payload,
+                "match_rule": {
+                    "method": str(request_payload.get("method") or "GET").upper(),
+                    "normalized_url": _normalized_replay_url(
+                        str(request_payload.get("url") or response_payload.get("url") or ""),
+                    ),
+                    "body_sha256": _request_body_signature(
+                        str(request_payload.get("body") or ""),
+                        str((request_payload.get("headers") or {}).get("content-type") or ""),
+                    ),
+                },
             })
 
         limitations = [
@@ -1426,11 +1789,113 @@ class OfflineReplayRuntime:
     """一个严格断网的离线回放浏览器。"""
 
     replay_id: str
+    session_id: int
     playwright: Playwright
     browser: Browser
     context: BrowserContext
     page: Page
     stats: dict[str, int]
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    last_activity_monotonic: float = field(default_factory=time.monotonic)
+
+    async def perform_action(self, body: WebActionRequest) -> dict[str, Any]:
+        """在离线浏览器中执行远程动作，并返回更新后的页面状态。"""
+        if self.page.is_closed():
+            raise ValueError("离线回放页面已经关闭")
+        if body.action in {"click", "pick"} and (body.x is None or body.y is None):
+            raise ValueError(f"{body.action} 动作必须提供 x/y 坐标")
+        if body.action == "input" and body.text is None:
+            raise ValueError("input 动作必须提供 text")
+
+        async with self.lock:
+            element: dict[str, Any] | None = None
+            if body.action == "pick":
+                raw = await self.page.evaluate(
+                    "({x, y}) => window.__uiRecorderDescribeAt?.(x, y) || null",
+                    {"x": body.x, "y": body.y},
+                )
+                element = raw if isinstance(raw, dict) else None
+            elif body.action == "click":
+                await self.page.mouse.click(body.x or 0, body.y or 0)
+            elif body.action == "input":
+                if body.x is not None and body.y is not None:
+                    await self.page.mouse.click(body.x, body.y)
+                await self.page.keyboard.press("ControlOrMeta+A")
+                await self.page.keyboard.insert_text(body.text or "")
+            elif body.action == "scroll":
+                await self.page.mouse.wheel(body.delta_x, body.delta_y)
+            elif body.action == "back":
+                await self.page.go_back(wait_until="domcontentloaded", timeout=10_000)
+            elif body.action == "refresh":
+                await self.page.reload(wait_until="domcontentloaded", timeout=30_000)
+
+            if body.action != "pick":
+                try:
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=1_500)
+                except Exception:  # noqa: BLE001
+                    pass
+                await _wait_replay_stable(self.page, timeout_ms=5_000)
+            self.last_activity_monotonic = time.monotonic()
+            return {
+                "replay_id": self.replay_id,
+                "session_id": self.session_id,
+                "url": self.page.url,
+                "title": await self.page.title(),
+                "stats": dict(self.stats),
+                "element": element,
+            }
+
+    async def screenshot(self) -> bytes:
+        """返回当前离线页面可视区域，供元素库画布实时刷新。"""
+        async with self.lock:
+            self.last_activity_monotonic = time.monotonic()
+            return await self.page.screenshot(
+                full_page=False,
+                type="png",
+                mask=[self.page.locator(_SENSITIVE_SELECTOR)],
+                mask_color="#64748b",
+            )
+
+    async def validate_locator(self, strategy: str, locator: str) -> dict[str, Any]:
+        """在选定离线页面状态中验证定位器匹配数和可见性。"""
+        async with self.lock:
+            result = await self.page.evaluate(
+                r"""({strategy, locator}) => {
+                  const visible = (element) => {
+                    const rect = element.getBoundingClientRect();
+                    const style = getComputedStyle(element);
+                    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+                  };
+                  let nodes = [];
+                  try {
+                    if (strategy === 'css') nodes = Array.from(document.querySelectorAll(locator));
+                    else if (strategy === 'id') nodes = Array.from(document.querySelectorAll(`[id="${CSS.escape(locator)}"]`));
+                    else if (strategy === 'name') nodes = Array.from(document.querySelectorAll(`[name="${CSS.escape(locator)}"]`));
+                    else if (strategy === 'xpath') {
+                      const snapshot = document.evaluate(locator, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                      nodes = Array.from({length: snapshot.snapshotLength}, (_, index) => snapshot.snapshotItem(index)).filter(Boolean);
+                    } else if (strategy === 'link') nodes = Array.from(document.querySelectorAll('a')).filter((node) => (node.innerText || '').trim() === locator);
+                    else if (strategy === 'text') nodes = Array.from(document.querySelectorAll('button,a,label,option,[role]')).filter((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === locator);
+                    else if (strategy === 'role') {
+                      const match = locator.match(/^role=([^;]+);name=(.*)$/);
+                      if (match) nodes = Array.from(document.querySelectorAll(`[role="${CSS.escape(match[1])}"],${match[1]}`)).filter((node) => (node.getAttribute('aria-label') || node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === match[2]);
+                    }
+                    return {match_count: nodes.length, visible_count: nodes.filter(visible).length, error: null};
+                  } catch (error) {
+                    return {match_count: 0, visible_count: 0, error: String(error)};
+                  }
+                }""",
+                {"strategy": strategy.lower(), "locator": locator},
+            )
+            match_count = int(result.get("match_count") or 0)
+            return {
+                "strategy": strategy.lower(),
+                "locator": locator,
+                "match_count": match_count,
+                "visible_count": int(result.get("visible_count") or 0),
+                "is_unique": match_count == 1,
+                "error": result.get("error"),
+            }
 
     async def close(self) -> None:
         try:
@@ -1455,7 +1920,7 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"离线回放清单损坏：{exc}") from exc
-    entry_url = str(manifest.get("entry_url") or "")
+    entry_url = str(body.entry_url or manifest.get("entry_url") or "")
     if not entry_url:
         raise HTTPException(status_code=422, detail="离线回放包没有入口页面")
 
@@ -1480,12 +1945,36 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
 
     page_groups: dict[str, list[dict[str, Any]]] = {}
     for item in manifest.get("pages") or []:
-        page_groups.setdefault(str(item["url"]), []).append(item)
+        page_groups.setdefault(_normalized_replay_url(str(item["url"])), []).append(item)
     page_indexes: dict[str, int] = {}
-    resources = {str(item["url"]): item for item in manifest.get("resources") or []}
+    entry_key = _normalized_replay_url(entry_url)
+    if body.entry_url and entry_key not in page_groups:
+        raise HTTPException(status_code=422, detail="指定入口页面不属于当前离线回放包")
+    if body.page_fingerprint:
+        candidates = page_groups.get(entry_key) or []
+        selected_index = next(
+            (
+                index
+                for index, item in enumerate(candidates)
+                if item.get("fingerprint") == body.page_fingerprint
+            ),
+            None,
+        )
+        if selected_index is None:
+            raise HTTPException(status_code=422, detail="指定页面状态不属于当前离线回放包")
+        page_indexes[entry_key] = selected_index
+    resources = {
+        _normalized_replay_url(str(item["url"])): item
+        for item in manifest.get("resources") or []
+    }
     mock_groups: dict[str, list[dict[str, Any]]] = {}
     for exchange in manifest.get("mocks") or []:
-        key = f"{str(exchange.get('method') or 'GET').upper()} {exchange.get('url')}"
+        rule = dict(exchange.get("match_rule") or {})
+        normalized_url = str(
+            rule.get("normalized_url")
+            or _normalized_replay_url(str(exchange.get("url") or ""))
+        )
+        key = f"{str(exchange.get('method') or 'GET').upper()} {normalized_url}"
         mock_groups.setdefault(key, []).append(exchange)
     mock_indexes: dict[str, int] = {}
     stats = {"requests": 0, "page_hits": 0, "resource_hits": 0, "mock_hits": 0, "misses": 0}
@@ -1494,7 +1983,13 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
     browser_type = getattr(playwright, body.browser)
     try:
         browser = await browser_type.launch(headless=body.headless)
-        context = await browser.new_context(service_workers="block")
+        context = await browser.new_context(
+            service_workers="block",
+            viewport={
+                "width": max(320, min(3840, int(body.viewport.get("width") or 1440))),
+                "height": max(320, min(2160, int(body.viewport.get("height") or 900))),
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         await playwright.stop()
         raise HTTPException(status_code=503, detail=f"离线浏览器启动失败：{exc}") from exc
@@ -1504,12 +1999,28 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
         stats["requests"] += 1
         url = request.url
         method = request.method.upper()
+        normalized_url = _normalized_replay_url(url)
         if request.resource_type in {"xhr", "fetch"}:
-            key = f"{method} {url}"
+            key = f"{method} {normalized_url}"
             candidates = mock_groups.get(key) or []
             if candidates:
                 stats["mock_hits"] += 1
-                index = min(mock_indexes.get(key, 0), len(candidates) - 1)
+                request_headers = await request.all_headers()
+                incoming_body_hash = _request_body_signature(
+                    request.post_data,
+                    request_headers.get("content-type", ""),
+                )
+                matching_indexes = [
+                    index
+                    for index, candidate in enumerate(candidates)
+                    if not (candidate.get("match_rule") or {}).get("body_sha256")
+                    or (candidate.get("match_rule") or {}).get("body_sha256") == incoming_body_hash
+                ]
+                preferred = mock_indexes.get(key, 0)
+                index = next(
+                    (item for item in matching_indexes if item >= preferred),
+                    matching_indexes[-1] if matching_indexes else min(preferred, len(candidates) - 1),
+                )
                 mock_indexes[key] = index + 1
                 response = candidates[index].get("response") or {}
                 await route.fulfill(
@@ -1530,11 +2041,11 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
             )
             return
 
-        page_candidates = page_groups.get(url) or []
+        page_candidates = page_groups.get(normalized_url) or []
         if page_candidates:
             stats["page_hits"] += 1
-            index = min(page_indexes.get(url, 0), len(page_candidates) - 1)
-            page_indexes[url] = index + 1
+            index = min(page_indexes.get(normalized_url, 0), len(page_candidates) - 1)
+            page_indexes[normalized_url] = index + 1
             page_record = page_candidates[index]
             try:
                 path = _package_artifact_path(session_root, page_record["document_path"])
@@ -1547,7 +2058,7 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
                 body=path.read_bytes(),
             )
             return
-        resource = resources.get(url)
+        resource = resources.get(normalized_url)
         if resource:
             stats["resource_hits"] += 1
             try:
@@ -1570,8 +2081,10 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
 
     try:
         await context.route("**/*", route_offline)
+        await context.add_init_script(script=_RECORDER_SCRIPT)
         page = await context.new_page()
         await page.goto(entry_url, wait_until="domcontentloaded", timeout=60_000)
+        await _wait_replay_stable(page)
     except Exception as exc:  # noqa: BLE001
         await context.close()
         await browser.close()
@@ -1581,6 +2094,7 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
     replay_id = uuid.uuid4().hex
     runtime = OfflineReplayRuntime(
         replay_id=replay_id,
+        session_id=body.session_id,
         playwright=playwright,
         browser=browser,
         context=context,
@@ -1726,6 +2240,12 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
     existing = _SESSIONS.get(body.session_id)
     if existing is not None and not existing.stopped:
         raise HTTPException(status_code=409, detail="该录制会话已经在 Agent 中运行")
+    restore_result = await asyncio.to_thread(_restore_mobile_scenario_sync, body)
+    if body.restore_scenario and not restore_result.get("restored"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"模拟器场景恢复失败：{restore_result.get('reason') or '未知原因'}",
+        )
     try:
         from appium import webdriver
 
@@ -1773,6 +2293,7 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
                         "xpath",
                     ],
                     "platform": body.platform,
+                    "scenario_restore": restore_result,
                 },
             },
         )
@@ -1800,6 +2321,7 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
                     "release": host_platform.release(),
                     "machine": host_platform.machine(),
                 },
+                "scenario_restore": restore_result,
             },
         )
         await runtime.capture_snapshot("session.start")
@@ -1807,6 +2329,115 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
         await runtime.close()
         raise HTTPException(status_code=502, detail=f"采集模拟器初始画面失败：{exc}") from exc
     return runtime
+
+
+def _scenario_artifact_path(value: str) -> Path:
+    path = Path(value)
+    resolved = path.resolve() if path.is_absolute() else (_PROJECT_ROOT / path).resolve()
+    root = _ARTIFACT_ROOT.resolve()
+    if resolved != root and root not in resolved.parents:
+        raise ValueError("场景制品路径逃逸")
+    return resolved
+
+
+def _restore_mobile_scenario_sync(body: MobileRecorderStartRequest) -> dict[str, Any]:
+    scenario = dict(body.restore_scenario or {})
+    if not scenario:
+        return {"requested": False, "restored": False, "mode": "fresh"}
+    mode = str(scenario.get("restore_mode") or "")
+    if body.platform == "android" and mode == "emulator_snapshot":
+        snapshot_name = str(scenario.get("snapshot_name") or "")
+        if not snapshot_name:
+            return {"requested": True, "restored": False, "reason": "缺少 Android snapshot_name"}
+        code, output = _run_preflight_command([
+            "adb", "-s", body.udid, "emu", "avd", "snapshot", "load", snapshot_name,
+        ])
+        restored = code == 0 and "error" not in output.lower()
+        return {
+            "requested": True,
+            "restored": restored,
+            "mode": mode,
+            "snapshot_name": snapshot_name,
+            "reason": None if restored else output[:500],
+        }
+    if body.platform == "ios" and mode == "app_data_archive":
+        if not body.app_identifier:
+            return {"requested": True, "restored": False, "reason": "缺少 iOS bundle id"}
+        archive_value = str(scenario.get("archive_path") or "")
+        try:
+            archive_path = _scenario_artifact_path(archive_value)
+        except ValueError as exc:
+            return {"requested": True, "restored": False, "reason": str(exc)}
+        code, container = _run_preflight_command([
+            "xcrun", "simctl", "get_app_container", body.udid, body.app_identifier, "data",
+        ])
+        container_path = Path(container).resolve() if container else None
+        if (
+            code != 0
+            or not archive_path.is_file()
+            or container_path is None
+            or not container_path.is_dir()
+            or container_path in {Path("/"), Path.home().resolve(), _PROJECT_ROOT.resolve()}
+            or len(container_path.parts) < 5
+        ):
+            return {"requested": True, "restored": False, "reason": "iOS App 数据容器或归档不存在"}
+        try:
+            with tempfile.TemporaryDirectory(prefix="ui-recorder-ios-restore-") as staging_value:
+                staging = Path(staging_value)
+                shutil.unpack_archive(str(archive_path), staging)
+                for child in container_path.iterdir():
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+                for child in staging.iterdir():
+                    target = container_path / child.name
+                    if child.is_dir():
+                        shutil.copytree(child, target, symlinks=True)
+                    else:
+                        shutil.copy2(child, target, follow_symlinks=False)
+        except (OSError, shutil.Error, ValueError) as exc:
+            return {"requested": True, "restored": False, "reason": str(exc)}
+        return {"requested": True, "restored": True, "mode": mode, "archive_path": archive_value}
+    return {"requested": True, "restored": False, "reason": f"不支持的场景恢复模式：{mode or '<empty>'}"}
+
+
+def _save_mobile_scenario_sync(runtime: MobileRecorderRuntime) -> dict[str, Any]:
+    if runtime.platform == "android":
+        snapshot_name = f"ui-recorder-{runtime.session_id}"
+        code, output = _run_preflight_command([
+            "adb", "-s", runtime.udid, "emu", "avd", "snapshot", "save", snapshot_name,
+        ])
+        ready = code == 0 and "error" not in output.lower()
+        return {
+            "ready": ready,
+            "restore_mode": "emulator_snapshot",
+            "snapshot_name": snapshot_name,
+            "reason": None if ready else output[:500],
+        }
+    if not runtime.app_identifier:
+        return {"ready": False, "restore_mode": "app_data_archive", "reason": "缺少 iOS bundle id"}
+    code, container = _run_preflight_command([
+        "xcrun", "simctl", "get_app_container", runtime.udid, runtime.app_identifier, "data",
+    ])
+    if code != 0 or not container:
+        return {"ready": False, "restore_mode": "app_data_archive", "reason": container[:500]}
+    scenario_dir = runtime.session_root / "scenario"
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    archive_base = scenario_dir / "ios_app_data"
+    try:
+        archive = Path(shutil.make_archive(str(archive_base), "zip", container))
+    except (OSError, shutil.Error) as exc:
+        return {"ready": False, "restore_mode": "app_data_archive", "reason": str(exc)}
+    if archive.stat().st_size > _MAX_ARCHIVE_BYTES:
+        archive.unlink(missing_ok=True)
+        return {"ready": False, "restore_mode": "app_data_archive", "reason": "iOS App 数据超过 100MB 上限"}
+    return {
+        "ready": True,
+        "restore_mode": "app_data_archive",
+        "archive_path": str(archive.relative_to(_PROJECT_ROOT)),
+        "archive_bytes": archive.stat().st_size,
+    }
 
 
 def _run_preflight_command(args: list[str]) -> tuple[int, str]:
@@ -2135,16 +2766,18 @@ async def stop_session(session_id: int):
         if not runtime.stopped:
             await runtime.capture_snapshot("session.stop")
             await runtime.capture_device_logs()
+            saved_scenario = await asyncio.to_thread(_save_mobile_scenario_sync, runtime)
             await runtime.emit("agent.disconnected", "agent", {"reason": "stopped"})
             await runtime.close()
+        else:
+            saved_scenario = {"ready": False, "reason": "模拟器会话已经停止"}
         mobile_scenario = {
-            "ready": True,
+            **saved_scenario,
             "platform": runtime.platform,
             "udid": runtime.udid,
             "app_identifier": runtime.app_identifier,
             "snapshot_count": len(runtime.snapshot_fingerprints),
             "limitations": [
-                "场景重开会连接同一模拟器与应用版本，但暂不自动还原应用私有数据",
                 "Native Network 需要测试代理或 SDK；未配置时保持显式降级",
             ],
         }
@@ -2179,6 +2812,44 @@ async def start_replay(body: ReplayStartRequest):
     }
 
 
+@app.post("/replays/{replay_id}/actions", dependencies=[Depends(_authorize)])
+async def perform_replay_action(replay_id: str, body: WebActionRequest):
+    runtime = _REPLAYS.get(replay_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    try:
+        data = await runtime.perform_action(body)
+    except (ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"离线页面动作执行失败：{exc}") from exc
+    return {"status": "success", "data": data}
+
+
+@app.get("/replays/{replay_id}/screenshot", dependencies=[Depends(_authorize)])
+async def get_replay_screenshot(replay_id: str):
+    runtime = _REPLAYS.get(replay_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    try:
+        content = await runtime.screenshot()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"离线页面画面获取失败：{exc}") from exc
+    return FastAPIResponse(content=content, media_type="image/png")
+
+
+@app.post("/replays/{replay_id}/locators:validate", dependencies=[Depends(_authorize)])
+async def validate_replay_locator(replay_id: str, body: LocatorValidationRequest):
+    runtime = _REPLAYS.get(replay_id)
+    if runtime is None:
+        raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    try:
+        data = await runtime.validate_locator(body.strategy, body.locator)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"定位器验证失败：{exc}") from exc
+    return {"status": "success", "data": data}
+
+
 @app.post("/replays/{replay_id}/stop", dependencies=[Depends(_authorize)])
 async def stop_replay(replay_id: str):
     runtime = _REPLAYS.pop(replay_id, None)
@@ -2197,6 +2868,7 @@ async def get_replay(replay_id: str):
         "status": "success",
         "data": {
             "replay_id": replay_id,
+            "session_id": runtime.session_id,
             "url": runtime.page.url,
             "title": await runtime.page.title(),
             "stats": dict(runtime.stats),

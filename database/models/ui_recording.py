@@ -351,6 +351,276 @@ class UiElementLocator(Base):
     last_verified_snapshot = relationship("UiPageSnapshot")
 
 
+class UiElementOccurrence(Base):
+    """元素在某个事实快照中的历史出现证据。"""
+
+    __tablename__ = "ui_element_occurrences"
+    __table_args__ = (
+        UniqueConstraint("element_id", "snapshot_id", name="uq_ui_occurrence_element_snapshot"),
+        Index("ix_ui_occurrence_snapshot_element", "snapshot_id", "element_id"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    session_id = Column(
+        Integer,
+        ForeignKey("ui_recording_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    snapshot_id = Column(
+        BigInteger,
+        ForeignKey("ui_page_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    element_id = Column(
+        Integer,
+        ForeignKey("ui_elements.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    bounds = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    attributes = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    locators = Column(JSONType, nullable=False, default=list, server_default="[]")
+    element_screenshot_uri = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+    session = relationship("UiRecordingSession")
+    snapshot = relationship("UiPageSnapshot")
+    element = relationship("UiElement")
+
+
+class UiRecordedAction(Base):
+    """从统一事件流物化出的可编辑用户动作。"""
+
+    __tablename__ = "ui_recorded_actions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "source_event_id", name="uq_ui_action_source_event"),
+        Index("ix_ui_action_session_order", "session_id", "sequence_no"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    session_id = Column(
+        Integer,
+        ForeignKey("ui_recording_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_event_id = Column(
+        BigInteger,
+        ForeignKey("ui_recording_events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_no = Column(BigInteger, nullable=False)
+    action_type = Column(String(80), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    status = Column(String(20), nullable=False, default="captured", server_default="captured")
+    target_element_id = Column(
+        Integer,
+        ForeignKey("ui_elements.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    page_before_key = Column(String(255), nullable=True)
+    page_after_key = Column(String(255), nullable=True)
+    snapshot_before_id = Column(
+        BigInteger,
+        ForeignKey("ui_page_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    snapshot_after_id = Column(
+        BigInteger,
+        ForeignKey("ui_page_snapshots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    screenshot_before_uri = Column(Text, nullable=True)
+    screenshot_after_uri = Column(Text, nullable=True)
+    element_screenshot_uri = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    duration_ms = Column(Integer, nullable=True)
+    context_event_from_seq = Column(BigInteger, nullable=False)
+    context_event_to_seq = Column(BigInteger, nullable=True)
+    payload = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    session = relationship("UiRecordingSession")
+    source_event = relationship("UiRecordingEvent")
+    target_element = relationship("UiElement")
+    snapshot_before = relationship("UiPageSnapshot", foreign_keys=[snapshot_before_id])
+    snapshot_after = relationship("UiPageSnapshot", foreign_keys=[snapshot_after_id])
+
+
+class UiPageTransition(Base):
+    """一次页面、路由或移动场景跳转。"""
+
+    __tablename__ = "ui_page_transitions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "source_event_id", name="uq_ui_transition_source_event"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    session_id = Column(
+        Integer,
+        ForeignKey("ui_recording_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_event_id = Column(
+        BigInteger,
+        ForeignKey("ui_recording_events.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    platform = Column(String(20), nullable=False, index=True)
+    source_page_key = Column(String(255), nullable=True, index=True)
+    target_page_key = Column(String(255), nullable=False, index=True)
+    action_id = Column(
+        BigInteger,
+        ForeignKey("ui_recorded_actions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    occurred_at = Column(DateTime, nullable=False)
+    metadata_json = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class UiContextSession(Base):
+    """录制态和正式执行态共享的技术上下文会话。"""
+
+    __tablename__ = "ui_context_sessions"
+
+    id = Column(BigInteger, primary_key=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    recording_session_id = Column(
+        Integer,
+        ForeignKey("ui_recording_sessions.id", ondelete="CASCADE"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    report_id = Column(Integer, ForeignKey("test_reports.id", ondelete="CASCADE"), nullable=True, index=True)
+    kind = Column(String(20), nullable=False, index=True)
+    platform = Column(String(20), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="active", server_default="active")
+    capabilities = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    limitations = Column(JSONType, nullable=False, default=list, server_default="[]")
+    summary = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    started_at = Column(DateTime, server_default=func.now(), nullable=False)
+    ended_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class UiContextEvent(Base):
+    """录制态和执行态统一的轻量技术上下文事件。"""
+
+    __tablename__ = "ui_context_events"
+    __table_args__ = (
+        UniqueConstraint("context_session_id", "sequence_no", name="uq_ui_context_event_sequence"),
+        UniqueConstraint("context_session_id", "event_key", name="uq_ui_context_event_key"),
+        Index("ix_ui_context_event_session_source", "context_session_id", "source"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    context_session_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_key = Column(String(80), nullable=False)
+    sequence_no = Column(BigInteger, nullable=False)
+    event_type = Column(String(80), nullable=False, index=True)
+    source = Column(String(40), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, default="info", server_default="info")
+    step_id = Column(Integer, nullable=True, index=True)
+    occurred_at = Column(DateTime, nullable=False)
+    monotonic_ms = Column(BigInteger, nullable=True)
+    payload = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class UiContextArtifact(Base):
+    """上下文中的截图、视频、DOM、设备日志等制品索引。"""
+
+    __tablename__ = "ui_context_artifacts"
+    __table_args__ = (Index("ix_ui_context_artifact_session_type", "context_session_id", "artifact_type"),)
+
+    id = Column(BigInteger, primary_key=True)
+    context_session_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_id = Column(
+        BigInteger,
+        ForeignKey("ui_recording_events.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    context_event_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_events.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    artifact_type = Column(String(40), nullable=False, index=True)
+    uri = Column(Text, nullable=False)
+    mime_type = Column(String(120), nullable=True)
+    size_bytes = Column(BigInteger, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    metadata_json = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class UiStepContextLink(Base):
+    """动作或正式执行步骤与上下文时间窗的关联。"""
+
+    __tablename__ = "ui_step_context_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "context_session_id",
+            "recorded_action_id",
+            "test_step_report_id",
+            name="uq_ui_step_context_target",
+        ),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    context_session_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    recorded_action_id = Column(
+        BigInteger,
+        ForeignKey("ui_recorded_actions.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    test_step_report_id = Column(Integer, ForeignKey("test_step_reports.id", ondelete="CASCADE"), nullable=True, index=True)
+    event_from_seq = Column(BigInteger, nullable=True)
+    event_to_seq = Column(BigInteger, nullable=True)
+    screenshot_before_id = Column(BigInteger, ForeignKey("ui_context_artifacts.id", ondelete="SET NULL"), nullable=True)
+    screenshot_after_id = Column(BigInteger, ForeignKey("ui_context_artifacts.id", ondelete="SET NULL"), nullable=True)
+    summary = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class UiMockExchange(Base):
     """Web 离线业务回放使用的脱敏 XHR/Fetch 请求响应。"""
 

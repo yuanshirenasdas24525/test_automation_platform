@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Float, func, ForeignKey
+from sqlalchemy import BigInteger, Column, Integer, String, DateTime, Float, func, ForeignKey
 from database.base import Base
 
 
@@ -32,6 +32,12 @@ class TestReport(Base):
 
     # 详细数据 (可选)
     allure_url = Column(String)  # 如果集成了 Allure，存储报告链接
+    context_session_id = Column(
+        BigInteger,
+        ForeignKey("ui_context_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # 时间戳
     create_time = Column(DateTime, server_default=func.now())

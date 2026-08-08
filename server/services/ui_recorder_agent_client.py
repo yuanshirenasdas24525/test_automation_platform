@@ -55,6 +55,26 @@ def _request(
     return payload
 
 
+def _request_bytes(method: str, path: str, *, read_timeout: float = 75.0) -> bytes:
+    """读取 Agent 二进制制品，同时沿用统一鉴权和错误转换。"""
+    timeout = httpx.Timeout(connect=3.0, read=read_timeout, write=10.0, pool=3.0)
+    try:
+        with httpx.Client(base_url=_base_url(), headers=_headers(), timeout=timeout) as client:
+            response = client.request(method, path)
+    except httpx.HTTPError as exc:
+        raise RecorderAgentError(
+            "Recorder Agent 未启动或不可连接，请通过 start-dev.sh 启动宿主机录制服务"
+        ) from exc
+    if response.is_error:
+        try:
+            payload = response.json()
+            detail = payload.get("detail") or payload.get("message")
+        except ValueError:
+            detail = response.text
+        raise RecorderAgentError(str(detail or f"Recorder Agent HTTP {response.status_code}"))
+    return response.content
+
+
 def start_web_session(session: UiRecordingSession) -> dict[str, Any]:
     """启动可见 Playwright 浏览器；成功返回 Agent 能力。"""
     if not session.source_url:
@@ -120,6 +140,7 @@ def start_mobile_session(
             "app_path": app_path,
             "app_identifier": app_identifier,
             "capabilities": device.capabilities or {},
+            "restore_scenario": dict((session.capture_config or {}).get("restore_scenario") or {}),
         },
         read_timeout=180.0,
     )
@@ -167,6 +188,9 @@ def start_web_replay(
     *,
     browser: str,
     headless: bool,
+    entry_url: str | None = None,
+    page_fingerprint: str | None = None,
+    viewport: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """从 Agent 本地归档启动严格离线回放浏览器。"""
     return _request(
@@ -176,8 +200,47 @@ def start_web_replay(
             "session_id": session_id,
             "browser": browser,
             "headless": headless,
+            "entry_url": entry_url,
+            "page_fingerprint": page_fingerprint,
+            "viewport": viewport or {"width": 1440, "height": 900},
         },
     )
+
+
+def get_web_replay(replay_id: str) -> dict[str, Any]:
+    """读取离线回放当前 URL、标题和命中统计。"""
+    data = _request("GET", f"/replays/{replay_id}")
+    return data if isinstance(data, dict) else {}
+
+
+def perform_web_replay_action(replay_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """在完成态离线浏览器中执行画布动作。"""
+    data = _request("POST", f"/replays/{replay_id}/actions", body=payload)
+    return data if isinstance(data, dict) else {}
+
+
+def get_web_replay_screenshot(replay_id: str) -> bytes:
+    """读取完成态离线浏览器的当前画面。"""
+    return _request_bytes("GET", f"/replays/{replay_id}/screenshot")
+
+
+def validate_web_replay_locator(
+    replay_id: str,
+    strategy: str,
+    locator: str,
+) -> dict[str, Any]:
+    """在离线页面状态中重新验证 Web 定位器。"""
+    data = _request(
+        "POST",
+        f"/replays/{replay_id}/locators:validate",
+        body={"strategy": strategy, "locator": locator},
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def stop_web_replay(replay_id: str) -> None:
+    """关闭并回收一个离线浏览器。"""
+    _request("POST", f"/replays/{replay_id}/stop")
 
 
 def pull_web_events(session_id: int, after_sequence: int, limit: int = 500) -> list[dict[str, Any]]:

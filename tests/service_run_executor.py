@@ -46,11 +46,17 @@ def _heal_model(request) -> str | None:
         return None
 
 
-def _execution_context(record_property, *, heal_enabled: bool) -> ExecutionContext:
+def _execution_context(
+    record_property,
+    *,
+    heal_enabled: bool,
+    report_id: int | None = None,
+) -> ExecutionContext:
     ctx = ExecutionContext(record_property)
     ctx.set_var("_run_shared_vars", dict(_RUN_SHARED_VARS))
     ctx.set_var("_run_auth_cache", _RUN_AUTH_CACHE)
     ctx.set_var("_ai_heal_enabled", heal_enabled)
+    ctx.set_var("_report_id", report_id)
     return ctx
 
 
@@ -92,7 +98,11 @@ def _try_heal_and_retry(
             key: value for key, value in healed.items() if key != "fix"
         })
 
-        retry_ctx = _execution_context(record_property, heal_enabled=True)
+        retry_ctx = _execution_context(
+            record_property,
+            heal_enabled=True,
+            report_id=failed_ctx.get_var("_report_id"),
+        )
         retried = CaseExecutor().run(case, retry_ctx)
         target_passed = repaired_step_passed(retried, retry_ctx, healed)
         if not target_passed or retried.status != StepStatus.PASSED:
@@ -195,7 +205,15 @@ class TestService:
             pass
 
         heal_enabled = _heal_enabled(request)
-        ctx = _execution_context(record_property, heal_enabled=heal_enabled)
+        try:
+            report_id = int(request.config.getoption("--report_id"))
+        except (TypeError, ValueError):
+            report_id = None
+        ctx = _execution_context(
+            record_property,
+            heal_enabled=heal_enabled,
+            report_id=report_id,
+        )
         result = CaseExecutor().run(case, ctx)
 
         # ---- 逐请求即时自愈：挂了就按需求诊断，候选验证通过后才落库 ----

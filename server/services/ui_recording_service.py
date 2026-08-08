@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -18,12 +21,19 @@ from database.models import (
     UI_RECORDING_RECORDING,
     UiElement,
     UiElementLocator,
+    UiElementOccurrence,
+    UiContextArtifact,
+    UiContextSession,
     UiMockExchange,
+    UiPageTransition,
     UiPageSnapshot,
+    UiRecordedAction,
     UiRecordingEvent,
     UiRecordingSession,
+    UiStepContextLink,
 )
 from database.schemas.ui_recording import UiRecordingEventCreate
+from server.services.ui_recording_redaction import redact_context_payload, redact_context_text
 
 
 class UiRecordingTransitionError(ValueError):
@@ -241,6 +251,7 @@ def append_events(
                 )
             next_sequence = max(next_sequence, sequence_no)
         seen_sequences.add(sequence_no)
+        safe_payload = redact_context_payload(item.payload)
 
         row = UiRecordingEvent(
             session_id=session.id,
@@ -249,32 +260,32 @@ def append_events(
             event_type=item.event_type,
             source=item.source,
             severity=item.severity,
-            page_key=item.page_key,
+            page_key=(redact_context_text(item.page_key)[:255] if item.page_key else None),
             element_id=item.element_id,
             snapshot_before_id=item.snapshot_before_id,
             snapshot_after_id=item.snapshot_after_id,
             occurred_at=item.occurred_at,
             monotonic_ms=item.monotonic_ms,
-            payload=item.payload,
+            payload=safe_payload,
         )
         db.add(row)
         created.append(row)
 
         if item.event_type == "agent.connected":
-            agent_id = str(item.payload.get("agent_id") or "").strip()
+            agent_id = str(safe_payload.get("agent_id") or "").strip()
             if agent_id:
                 session.recorder_agent_id = agent_id[:128]
             capabilities = {
                 **capabilities,
                 "recorder_agent_connected": True,
-                "reported": item.payload.get("capabilities") or {},
+                "reported": safe_payload.get("capabilities") or {},
             }
         elif item.event_type == "agent.disconnected":
             capabilities = {**capabilities, "recorder_agent_connected": False}
         elif item.event_type == "offline.package":
             capabilities = {
                 **capabilities,
-                "offline_replay": dict(item.payload or {}),
+                "offline_replay": dict(safe_payload or {}),
             }
 
     if created:
@@ -290,6 +301,7 @@ def append_events(
             created,
             next_sequence,
         )
+        _materialize_occurrences_actions_context(db, session, created)
         db.flush()
     return created, skipped
 
@@ -438,8 +450,35 @@ def _materialize_snapshots(
 
 
 def _normalized_request_url(value: str) -> str:
+    """生成与 Agent 一致的离线请求键，忽略缓存参数和敏感值。"""
     parts = urlsplit(value)
-    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, parts.query, ""))
+    ignored = {"_", "cache", "cachebuster", "nonce", "timestamp", "ts"}
+    query = urlencode(sorted(
+        (
+            key,
+            "***" if re.search(
+                r"(?i)(password|passwd|secret|credential|authorization|cookie|token|signature|card|cvv|cvc)",
+                key,
+            ) else item_value,
+        )
+        for key, item_value in parse_qsl(parts.query, keep_blank_values=True)
+        if key.lower() not in ignored and not key.lower().startswith("utm_")
+    ))
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path, query, ""))
+
+
+def _request_body_hash(value: str) -> str:
+    """JSON 请求体按键排序后计算签名，避免字段顺序导致离线误判。"""
+    try:
+        normalized = json.dumps(
+            json.loads(value),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        normalized = value
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _materialize_mock_exchanges(
@@ -495,8 +534,8 @@ def _materialize_mock_exchanges(
             response=response_payload,
             match_rule={
                 "method": method,
-                "url": _normalized_request_url(url),
-                "body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                "normalized_url": _normalized_request_url(url),
+                "body_sha256": _request_body_hash(body),
             },
             timing={"duration_ms": response_payload.get("duration_ms")},
         ))
@@ -609,17 +648,29 @@ def _materialize_elements(
                     .first()
                 )
                 score = max(0, min(100, int(item.get("score") or 0)))
+                match_count = item.get("match_count")
+                match_count = int(match_count) if isinstance(match_count, (int, float)) else None
+                is_unique = item.get("is_unique")
+                is_unique = bool(is_unique) if isinstance(is_unique, bool) else None
                 if locator is None:
                     locator = UiElementLocator(
                         element_id=element.id,
                         strategy=strategy,
                         locator=locator_value,
                         score=score,
+                        is_unique=is_unique,
+                        match_count=match_count,
                         source="recorder",
                     )
                     db.add(locator)
                 else:
                     locator.score = max(locator.score or 0, score)
+                    if is_unique is not None:
+                        locator.is_unique = is_unique
+                        locator.match_count = match_count
+                if is_unique is not None:
+                    locator.last_verified_at = datetime.now()
+                    locator.last_verified_snapshot_id = snapshot.id if snapshot else None
             db.flush()
             locators = (
                 db.query(UiElementLocator)
@@ -629,8 +680,417 @@ def _materialize_elements(
             )
             for index, locator in enumerate(locators):
                 locator.is_primary = index == 0
+            if any(locator.is_unique is True for locator in locators):
+                element.status = "verified"
+                element.last_verified_at = datetime.now()
             if raw is raw_element:
                 event.element_id = element.id
+
+
+_ACTION_EVENT_TYPES = {
+    "user.click",
+    "user.input",
+    "user.change",
+    "user.submit",
+    "user.scroll",
+    "user.tap",
+    "user.swipe",
+    "user.back",
+    "user.refresh",
+}
+
+
+def _action_display_name(event: UiRecordingEvent) -> str:
+    payload = dict(event.payload or {})
+    element = payload.get("element") if isinstance(payload.get("element"), dict) else {}
+    semantic_name = str(element.get("semantic_name") or "当前页面")
+    verbs = {
+        "user.click": "点击",
+        "user.input": "输入",
+        "user.change": "切换",
+        "user.submit": "提交",
+        "user.scroll": "滚动",
+        "user.tap": "点击",
+        "user.swipe": "滑动",
+        "user.back": "返回",
+        "user.refresh": "刷新",
+    }
+    return f"{verbs.get(event.event_type, event.event_type)} {semantic_name}"[:255]
+
+
+def _ensure_authoring_context(db: Session, session: UiRecordingSession) -> UiContextSession:
+    context = (
+        db.query(UiContextSession)
+        .filter(UiContextSession.recording_session_id == session.id)
+        .first()
+    )
+    if context is None:
+        reported = dict((session.capabilities or {}).get("reported") or {})
+        context = UiContextSession(
+            project_id=session.project_id,
+            recording_session_id=session.id,
+            kind="authoring",
+            platform=session.platform,
+            status="active",
+            capabilities=reported or dict(session.capabilities or {}),
+            limitations=[],
+            summary=dict(session.context_summary or {}),
+            started_at=session.started_at or datetime.now(),
+        )
+        db.add(context)
+        db.flush()
+    return context
+
+
+def _artifact_file_metadata(uri: str | None) -> tuple[int | None, str | None]:
+    if not uri:
+        return None, None
+    path = Path(uri)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parent.parent.parent / path
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return None, None
+    return len(content), hashlib.sha256(content).hexdigest()
+
+
+def _append_context_artifact(
+    db: Session,
+    context: UiContextSession,
+    event: UiRecordingEvent,
+    artifact_type: str,
+    uri: str | None,
+    *,
+    mime_type: str | None = None,
+) -> UiContextArtifact | None:
+    if not uri:
+        return None
+    existing = (
+        db.query(UiContextArtifact)
+        .filter(
+            UiContextArtifact.context_session_id == context.id,
+            UiContextArtifact.event_id == event.id,
+            UiContextArtifact.artifact_type == artifact_type,
+            UiContextArtifact.uri == uri,
+        )
+        .first()
+    )
+    if existing is not None:
+        return existing
+    size_bytes, sha256 = _artifact_file_metadata(uri)
+    artifact = UiContextArtifact(
+        context_session_id=context.id,
+        event_id=event.id,
+        artifact_type=artifact_type,
+        uri=uri,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        sha256=sha256,
+        metadata_json={"event_type": event.event_type, "sequence_no": event.sequence_no},
+    )
+    db.add(artifact)
+    db.flush()
+    return artifact
+
+
+def _materialize_occurrences_actions_context(
+    db: Session,
+    session: UiRecordingSession,
+    events: list[UiRecordingEvent],
+) -> None:
+    """把事件流物化为元素证据、动作、跳转和可查询上下文制品。"""
+    if not events:
+        return
+    context = _ensure_authoring_context(db, session)
+    previous_action = (
+        db.query(UiRecordedAction)
+        .filter(UiRecordedAction.session_id == session.id)
+        .order_by(UiRecordedAction.sequence_no.desc())
+        .first()
+    )
+    previous_page_key = None
+    previous_page_event = (
+        db.query(UiRecordingEvent)
+        .filter(
+            UiRecordingEvent.session_id == session.id,
+            UiRecordingEvent.sequence_no < min(event.sequence_no for event in events),
+            UiRecordingEvent.page_key.isnot(None),
+        )
+        .order_by(UiRecordingEvent.sequence_no.desc())
+        .first()
+    )
+    if previous_page_event is not None:
+        previous_page_key = previous_page_event.page_key
+
+    for event in sorted(events, key=lambda item: item.sequence_no):
+        payload = dict(event.payload or {})
+        if event.event_type in _ACTION_EVENT_TYPES:
+            existing_action = (
+                db.query(UiRecordedAction)
+                .filter(
+                    UiRecordedAction.session_id == session.id,
+                    UiRecordedAction.source_event_id == event.id,
+                )
+                .first()
+            )
+            if existing_action is None:
+                if previous_action is not None and previous_action.context_event_to_seq is None:
+                    previous_action.context_event_to_seq = max(
+                        previous_action.context_event_from_seq,
+                        event.sequence_no - 1,
+                    )
+                    previous_action.ended_at = event.occurred_at
+                    if event.monotonic_ms is not None:
+                        started_ms = int((previous_action.payload or {}).get("monotonic_ms") or 0)
+                        previous_action.duration_ms = max(0, event.monotonic_ms - started_ms)
+                before_event = (
+                    db.query(UiRecordingEvent)
+                    .filter(
+                        UiRecordingEvent.session_id == session.id,
+                        UiRecordingEvent.event_type == "page.snapshot",
+                        UiRecordingEvent.sequence_no < event.sequence_no,
+                        UiRecordingEvent.snapshot_after_id.isnot(None),
+                    )
+                    .order_by(UiRecordingEvent.sequence_no.desc())
+                    .first()
+                )
+                before_snapshot = (
+                    db.get(UiPageSnapshot, before_event.snapshot_after_id)
+                    if before_event is not None
+                    else None
+                )
+                previous_action = UiRecordedAction(
+                    session_id=session.id,
+                    source_event_id=event.id,
+                    sequence_no=event.sequence_no,
+                    action_type=event.event_type,
+                    name=_action_display_name(event),
+                    target_element_id=event.element_id,
+                    page_before_key=event.page_key or previous_page_key,
+                    snapshot_before_id=before_snapshot.id if before_snapshot else None,
+                    screenshot_before_uri=before_snapshot.screenshot_uri if before_snapshot else None,
+                    started_at=event.occurred_at,
+                    context_event_from_seq=event.sequence_no,
+                    payload={**payload, "monotonic_ms": event.monotonic_ms},
+                )
+                db.add(previous_action)
+                db.flush()
+                db.add(UiStepContextLink(
+                    context_session_id=context.id,
+                    recorded_action_id=previous_action.id,
+                    event_from_seq=previous_action.context_event_from_seq,
+                    event_to_seq=previous_action.context_event_to_seq,
+                    summary={"action_type": previous_action.action_type},
+                ))
+                db.flush()
+        elif event.event_type == "page.snapshot" and event.snapshot_after_id is not None:
+            if previous_action is not None and previous_action.sequence_no < event.sequence_no:
+                previous_action.snapshot_after_id = event.snapshot_after_id
+                previous_action.page_after_key = event.page_key
+                previous_action.context_event_to_seq = event.sequence_no
+                previous_action.ended_at = event.occurred_at
+                if event.monotonic_ms is not None:
+                    started_ms = int((previous_action.payload or {}).get("monotonic_ms") or 0)
+                    previous_action.duration_ms = max(0, event.monotonic_ms - started_ms)
+            snapshot = db.get(UiPageSnapshot, event.snapshot_after_id)
+            if snapshot is not None:
+                for raw in list(payload.get("visible_elements") or [])[:500]:
+                    if not isinstance(raw, dict) or not raw.get("fingerprint"):
+                        continue
+                    element = (
+                        db.query(UiElement)
+                        .filter(
+                            UiElement.project_id == session.project_id,
+                            UiElement.platform == session.platform,
+                            UiElement.page_key == snapshot.page_key,
+                            UiElement.fingerprint == str(raw["fingerprint"]),
+                        )
+                        .first()
+                    )
+                    if element is None:
+                        continue
+                    exists = (
+                        db.query(UiElementOccurrence.id)
+                        .filter(
+                            UiElementOccurrence.element_id == element.id,
+                            UiElementOccurrence.snapshot_id == snapshot.id,
+                        )
+                        .first()
+                    )
+                    if exists is None:
+                        attributes = raw.get("attributes") if isinstance(raw.get("attributes"), dict) else {}
+                        db.add(UiElementOccurrence(
+                            session_id=session.id,
+                            snapshot_id=snapshot.id,
+                            element_id=element.id,
+                            bounds=dict(attributes.get("bounds") or {}),
+                            attributes=attributes,
+                            locators=list(raw.get("locators") or []),
+                        ))
+                screenshot = _append_context_artifact(
+                    db,
+                    context,
+                    event,
+                    "page_screenshot",
+                    snapshot.screenshot_uri,
+                    mime_type="image/png",
+                )
+                _append_context_artifact(
+                    db,
+                    context,
+                    event,
+                    "page_document" if session.platform == "web" else "ui_tree",
+                    snapshot.document_uri,
+                    mime_type="text/html" if session.platform == "web" else "application/xml",
+                )
+                if previous_action is not None and screenshot is not None:
+                    previous_action.screenshot_after_uri = screenshot.uri
+        elif event.event_type == "screen.capture":
+            artifact = _append_context_artifact(
+                db,
+                context,
+                event,
+                "screenshot",
+                _artifact_uri(session.id, payload.get("path")),
+                mime_type="image/png",
+            )
+            if previous_action is not None and artifact is not None:
+                previous_action.screenshot_after_uri = artifact.uri
+
+        if event.event_type == "page.navigation" and event.page_key:
+            existing_transition = (
+                db.query(UiPageTransition.id)
+                .filter(
+                    UiPageTransition.session_id == session.id,
+                    UiPageTransition.source_event_id == event.id,
+                )
+                .first()
+            )
+            if existing_transition is None:
+                db.add(UiPageTransition(
+                    project_id=session.project_id,
+                    session_id=session.id,
+                    source_event_id=event.id,
+                    platform=session.platform,
+                    source_page_key=previous_page_key,
+                    target_page_key=event.page_key,
+                    action_id=previous_action.id if previous_action else None,
+                    occurred_at=event.occurred_at,
+                    metadata_json=payload,
+                ))
+        if event.page_key:
+            previous_page_key = event.page_key
+
+        if previous_action is not None:
+            link = (
+                db.query(UiStepContextLink)
+                .filter(
+                    UiStepContextLink.context_session_id == context.id,
+                    UiStepContextLink.recorded_action_id == previous_action.id,
+                    UiStepContextLink.test_step_report_id.is_(None),
+                )
+                .first()
+            )
+            if link is not None:
+                link.event_from_seq = previous_action.context_event_from_seq
+                link.event_to_seq = previous_action.context_event_to_seq
+                link.summary = {
+                    "action_type": previous_action.action_type,
+                    "page_before_key": previous_action.page_before_key,
+                    "page_after_key": previous_action.page_after_key,
+                }
+
+    context.capabilities = dict((session.capabilities or {}).get("reported") or session.capabilities or {})
+    context.summary = dict(session.context_summary or {})
+    db.flush()
+
+
+def finalize_recording_context(
+    db: Session,
+    session: UiRecordingSession,
+    *,
+    cancelled: bool = False,
+) -> UiContextSession | None:
+    """关闭录制上下文，并补齐最后一个动作尚未结束的时间窗。"""
+    context = (
+        db.query(UiContextSession)
+        .filter(UiContextSession.recording_session_id == session.id)
+        .first()
+    )
+    if context is None:
+        return None
+    last_sequence = int(
+        db.query(func.coalesce(func.max(UiRecordingEvent.sequence_no), 0))
+        .filter(UiRecordingEvent.session_id == session.id)
+        .scalar()
+        or 0
+    )
+    last_action = (
+        db.query(UiRecordedAction)
+        .filter(UiRecordedAction.session_id == session.id)
+        .order_by(UiRecordedAction.sequence_no.desc())
+        .first()
+    )
+    if last_action is not None and last_action.context_event_to_seq is None:
+        last_action.context_event_to_seq = max(last_action.context_event_from_seq, last_sequence)
+        last_action.ended_at = session.ended_at or datetime.now()
+    if last_action is not None:
+        link = (
+            db.query(UiStepContextLink)
+            .filter(
+                UiStepContextLink.context_session_id == context.id,
+                UiStepContextLink.recorded_action_id == last_action.id,
+                UiStepContextLink.test_step_report_id.is_(None),
+            )
+            .first()
+        )
+        if link is not None:
+            link.event_to_seq = last_action.context_event_to_seq
+    offline = dict((session.capabilities or {}).get("offline_replay") or {})
+    context.status = "cancelled" if cancelled else "completed"
+    context.ended_at = session.ended_at or datetime.now()
+    context.capabilities = dict((session.capabilities or {}).get("reported") or session.capabilities or {})
+    context.limitations = list(offline.get("limitations") or [])
+    context.summary = {
+        **(session.context_summary or {}),
+        "last_sequence": last_sequence,
+        "offline_ready": bool(offline.get("ready")),
+    }
+    db.flush()
+    return context
+
+
+def ensure_recording_context_materialized(
+    db: Session,
+    session: UiRecordingSession,
+) -> UiContextSession:
+    """兼容历史会话：首次打开结果页时按既有事件流补建上下文索引。"""
+    context = (
+        db.query(UiContextSession)
+        .filter(UiContextSession.recording_session_id == session.id)
+        .first()
+    )
+    if context is None:
+        events = (
+            db.query(UiRecordingEvent)
+            .filter(UiRecordingEvent.session_id == session.id)
+            .order_by(UiRecordingEvent.sequence_no)
+            .all()
+        )
+        _materialize_occurrences_actions_context(db, session, events)
+        context = (
+            db.query(UiContextSession)
+            .filter(UiContextSession.recording_session_id == session.id)
+            .one()
+        )
+    if session.status in {UI_RECORDING_COMPLETED, UI_RECORDING_CANCELLED}:
+        finalize_recording_context(
+            db,
+            session,
+            cancelled=session.status == UI_RECORDING_CANCELLED,
+        )
+    return context
 
 
 def _updated_context_summary(
@@ -727,6 +1187,80 @@ def serialize_snapshot(snapshot: UiPageSnapshot) -> dict[str, Any]:
         "environment": snapshot.environment or {},
         "limitations": snapshot.limitations or [],
         "created_at": snapshot.created_at,
+    }
+
+
+def serialize_recorded_action(action: UiRecordedAction) -> dict[str, Any]:
+    """输出结果页动作摘要和动作前后证据。"""
+    return {
+        "id": action.id,
+        "session_id": action.session_id,
+        "source_event_id": action.source_event_id,
+        "sequence_no": action.sequence_no,
+        "action_type": action.action_type,
+        "name": action.name,
+        "status": action.status,
+        "target_element_id": action.target_element_id,
+        "page_before_key": action.page_before_key,
+        "page_after_key": action.page_after_key,
+        "snapshot_before_id": action.snapshot_before_id,
+        "snapshot_after_id": action.snapshot_after_id,
+        "screenshot_before_uri": action.screenshot_before_uri,
+        "screenshot_after_uri": action.screenshot_after_uri,
+        "element_screenshot_uri": action.element_screenshot_uri,
+        "started_at": action.started_at,
+        "ended_at": action.ended_at,
+        "duration_ms": action.duration_ms,
+        "context_event_from_seq": action.context_event_from_seq,
+        "context_event_to_seq": action.context_event_to_seq,
+        "payload": action.payload or {},
+        "created_at": action.created_at,
+        "updated_at": action.updated_at,
+    }
+
+
+def serialize_context_artifact(artifact: UiContextArtifact) -> dict[str, Any]:
+    return {
+        "id": artifact.id,
+        "context_session_id": artifact.context_session_id,
+        "event_id": artifact.event_id,
+        "context_event_id": artifact.context_event_id,
+        "artifact_type": artifact.artifact_type,
+        "mime_type": artifact.mime_type,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+        "metadata": artifact.metadata_json or {},
+        "created_at": artifact.created_at,
+    }
+
+
+def serialize_context_session(context: UiContextSession) -> dict[str, Any]:
+    return {
+        "id": context.id,
+        "project_id": context.project_id,
+        "recording_session_id": context.recording_session_id,
+        "report_id": context.report_id,
+        "kind": context.kind,
+        "platform": context.platform,
+        "status": context.status,
+        "capabilities": context.capabilities or {},
+        "limitations": context.limitations or [],
+        "summary": context.summary or {},
+        "started_at": context.started_at,
+        "ended_at": context.ended_at,
+        "created_at": context.created_at,
+    }
+
+
+def serialize_page_transition(transition: UiPageTransition) -> dict[str, Any]:
+    return {
+        "id": transition.id,
+        "source_event_id": transition.source_event_id,
+        "source_page_key": transition.source_page_key,
+        "target_page_key": transition.target_page_key,
+        "action_id": transition.action_id,
+        "occurred_at": transition.occurred_at,
+        "metadata": transition.metadata_json or {},
     }
 
 
@@ -915,6 +1449,32 @@ def compile_recording_step_draft(
 
 def build_recording_step_draft(db: Session, session: UiRecordingSession) -> dict[str, Any]:
     """读取会话事件并生成 TestStep 草稿。"""
+    actions = (
+        db.query(UiRecordedAction)
+        .filter(
+            UiRecordedAction.session_id == session.id,
+            UiRecordedAction.status != "ignored",
+        )
+        .order_by(UiRecordedAction.sequence_no, UiRecordedAction.id)
+        .all()
+    )
+    if actions:
+        event_ids = [item.source_event_id for item in actions]
+        events_by_id = {
+            event.id: event
+            for event in db.query(UiRecordingEvent)
+            .filter(UiRecordingEvent.id.in_(event_ids))
+            .all()
+        }
+        events = [events_by_id[item.source_event_id] for item in actions if item.source_event_id in events_by_id]
+        result = compile_recording_step_draft(session, events)
+        action_names = {item.source_event_id: item.name for item in actions}
+        for step in result["steps"]:
+            source_event_id = step.get("source_event_id")
+            if source_event_id in action_names:
+                step["step_name"] = action_names[source_event_id]
+        result["source_event_count"] = len(actions)
+        return result
     events = (
         db.query(UiRecordingEvent)
         .filter(UiRecordingEvent.session_id == session.id)

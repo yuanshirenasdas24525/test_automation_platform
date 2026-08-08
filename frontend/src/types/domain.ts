@@ -124,6 +124,111 @@ export interface UiRecordingEvent {
   created_at: string;
 }
 
+export interface UiRecordedAction {
+  id: number;
+  session_id: number;
+  source_event_id: number;
+  sequence_no: number;
+  action_type: string;
+  name: string;
+  status: "captured" | "confirmed" | "ignored";
+  target_element_id: number | null;
+  page_before_key: string | null;
+  page_after_key: string | null;
+  snapshot_before_id: number | null;
+  snapshot_after_id: number | null;
+  screenshot_before_uri: string | null;
+  screenshot_after_uri: string | null;
+  element_screenshot_uri: string | null;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  context_event_from_seq: number;
+  context_event_to_seq: number | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UiContextSession {
+  id: number;
+  project_id: number;
+  recording_session_id: number | null;
+  report_id: number | null;
+  kind: "authoring" | "execution";
+  platform: UiPlatform;
+  status: string;
+  capabilities: Record<string, unknown>;
+  limitations: string[];
+  summary: Record<string, unknown>;
+  started_at: string;
+  ended_at: string | null;
+  created_at: string;
+}
+
+export interface UiContextArtifact {
+  id: number;
+  context_session_id: number;
+  event_id: number | null;
+  artifact_type: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  sha256: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface UiPageTransition {
+  id: number;
+  source_event_id: number;
+  source_page_key: string | null;
+  target_page_key: string;
+  action_id: number | null;
+  occurred_at: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface UiRecordingContextBundle {
+  context: UiContextSession;
+  actions: UiRecordedAction[];
+  artifacts: UiContextArtifact[];
+  transitions: UiPageTransition[];
+  event_counts: Record<string, number>;
+}
+
+export interface UiExecutionContextEvent {
+  id: number;
+  sequence_no: number;
+  event_type: string;
+  source: string;
+  severity: string;
+  step_id: number | null;
+  occurred_at: string;
+  monotonic_ms: number | null;
+  payload: Record<string, unknown>;
+}
+
+export interface UiExecutionContextStep {
+  link_id: number;
+  test_step_report_id: number | null;
+  step_name: string | null;
+  step_type: string | null;
+  status: string | null;
+  error_message: string | null;
+  event_from_seq: number | null;
+  event_to_seq: number | null;
+  screenshot_before_id: number | null;
+  screenshot_after_id: number | null;
+  summary: Record<string, unknown>;
+}
+
+export interface UiExecutionContextBundle {
+  context: UiContextSession;
+  events: UiExecutionContextEvent[];
+  steps: UiExecutionContextStep[];
+  artifacts: Array<UiContextArtifact & { context_event_id?: number | null }>;
+}
+
 export interface UiOfflineReplay {
   replay_id: string;
   session_id: number;
@@ -134,6 +239,16 @@ export interface UiOfflineReplay {
   offline_enforced: boolean;
   integrity_verified: boolean;
   limitations: string[];
+  url?: string;
+  title?: string;
+  stats?: {
+    requests: number;
+    page_hits: number;
+    resource_hits: number;
+    mock_hits: number;
+    misses: number;
+  };
+  element?: Record<string, unknown> | null;
 }
 
 export interface UiPageSnapshot {

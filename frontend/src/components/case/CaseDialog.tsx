@@ -676,6 +676,7 @@ export function CaseDialog({
                     可修改、排序、跳过或删除。删除全部并保存后，本用例将不再执行任何隐藏前置请求。
                   </p>
                   <StepEditor
+                    projectId={projectId}
                     category="api"
                     databaseConnections={databaseConnections}
                     value={currentPreHooks}
@@ -752,6 +753,7 @@ export function CaseDialog({
               </div>
             ) : (
               <StepEditor
+                projectId={projectId}
                 category="api"
                 databaseConnections={databaseConnections}
                 value={currentSteps}
@@ -958,6 +960,7 @@ export function CaseDialog({
               </div>
             ) : (
               <StepEditor
+                projectId={projectId}
                 category={category}
                 databaseConnections={databaseConnections}
                 value={currentSteps}

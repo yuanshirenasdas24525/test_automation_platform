@@ -77,6 +77,20 @@ class UiRecordingReplayRequest(BaseModel):
 
     browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
     headless: bool = False
+    entry_url: str | None = Field(None, max_length=4000)
+    page_fingerprint: str | None = Field(None, max_length=64)
+    viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
+
+
+class UiRecordingReplayActionRequest(BaseModel):
+    """完成态离线画布转发到 Replay 浏览器的动作。"""
+
+    action: str = Field(..., pattern="^(click|pick|input|scroll|back|refresh)$")
+    x: int | None = Field(None, ge=0)
+    y: int | None = Field(None, ge=0)
+    text: str | None = Field(None, max_length=4000)
+    delta_x: int = Field(0, ge=-10000, le=10000)
+    delta_y: int = Field(0, ge=-10000, le=10000)
 
 
 class UiRecordingWebActionRequest(BaseModel):
@@ -84,9 +98,12 @@ class UiRecordingWebActionRequest(BaseModel):
 
     client_instance_id: str = Field(..., min_length=8, max_length=80)
     command_id: str = Field(..., min_length=8, max_length=80)
-    action: str = Field(..., pattern="^(click|pick|back|refresh)$")
+    action: str = Field(..., pattern="^(click|pick|input|scroll|back|refresh)$")
     x: int | None = Field(None, ge=0)
     y: int | None = Field(None, ge=0)
+    text: str | None = Field(None, max_length=4000)
+    delta_x: int = Field(0, ge=-10000, le=10000)
+    delta_y: int = Field(0, ge=-10000, le=10000)
 
 
 class UiRecordingMobileActionRequest(BaseModel):
@@ -101,6 +118,45 @@ class UiRecordingMobileActionRequest(BaseModel):
     end_y: int | None = Field(None, ge=0)
     duration_ms: int = Field(400, ge=100, le=5000)
     text: str | None = Field(None, max_length=4000)
+
+
+class UiElementUpdate(BaseModel):
+    """维护项目元素语义、别名和审核状态。"""
+
+    semantic_name: str | None = Field(None, min_length=1, max_length=200)
+    aliases: list[str] | None = Field(None, max_length=20)
+    status: str | None = Field(None, pattern="^(pending|verified|stale|archived)$")
+
+
+class UiElementLocatorCreate(BaseModel):
+    strategy: str = Field(..., min_length=1, max_length=40)
+    locator: str = Field(..., min_length=1, max_length=4000)
+    score: int = Field(80, ge=0, le=100)
+    is_primary: bool = False
+
+
+class UiElementLocatorUpdate(BaseModel):
+    strategy: str | None = Field(None, min_length=1, max_length=40)
+    locator: str | None = Field(None, min_length=1, max_length=4000)
+    score: int | None = Field(None, ge=0, le=100)
+    is_primary: bool | None = None
+
+
+class UiPageSnapshotUpdate(BaseModel):
+    """人工维护逻辑页面和页面状态名称。"""
+
+    page_name: str | None = Field(None, min_length=1, max_length=200)
+    state_name: str | None = Field(None, min_length=1, max_length=120)
+    apply_page_name_to_group: bool = True
+
+
+class UiRecordedActionUpdate(BaseModel):
+    """人工整理录制动作；ignored 动作不会进入用例草稿。"""
+
+    name: str | None = Field(None, min_length=1, max_length=255)
+    status: str | None = Field(None, pattern="^(captured|confirmed|ignored)$")
+    sequence_no: int | None = Field(None, ge=1)
+    payload: dict[str, Any] | None = None
 
 
 class UiRecordingRead(BaseModel):

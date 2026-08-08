@@ -20,7 +20,15 @@ from datetime import datetime
 import pytest
 
 from database.db import DB
+from database.models import (
+    TestReport,
+    UiContextArtifact,
+    UiContextEvent,
+    UiContextSession,
+    UiStepContextLink,
+)
 from database.models.test_step_report import TestStepReport
+from server.services.ui_recording_redaction import redact_context_payload
 from utils.logger import LOGGER
 
 
@@ -323,6 +331,92 @@ def pytest_runtest_makereport(item, call):
     db = DB()
     try:
         db.session.add_all(rows)
+        db.session.flush()
+        report_row = db.session.get(TestReport, report_id)
+        context_session = (
+            db.session.get(UiContextSession, report_row.context_session_id)
+            if report_row is not None and report_row.context_session_id is not None
+            else None
+        )
+        context_payloads = [
+            dict(item.get("context") or {})
+            for item in step_records
+        ] if step_records else [{}]
+        if context_session is not None:
+            next_sequence = int(
+                db.session.query(UiContextEvent.sequence_no)
+                .filter(UiContextEvent.context_session_id == context_session.id)
+                .order_by(UiContextEvent.sequence_no.desc())
+                .limit(1)
+                .scalar()
+                or 0
+            )
+            limitations = list(context_session.limitations or [])
+            for row, context_payload in zip(rows, context_payloads):
+                row.context_session_id = context_session.id
+                created_events: list[UiContextEvent] = []
+                for raw_event in list(context_payload.get("events") or [])[:1000]:
+                    if not isinstance(raw_event, dict):
+                        continue
+                    next_sequence += 1
+                    occurred_at = raw_event.get("occurred_at")
+                    try:
+                        occurred = datetime.fromisoformat(str(occurred_at))
+                    except (TypeError, ValueError):
+                        occurred = datetime.now()
+                    event = UiContextEvent(
+                        context_session_id=context_session.id,
+                        event_key=str(raw_event.get("event_key") or f"execution-{report_id}-{next_sequence}")[:80],
+                        sequence_no=next_sequence,
+                        event_type=str(raw_event.get("event_type") or "runner.event")[:80],
+                        source=str(raw_event.get("source") or "runner")[:40],
+                        severity=str(raw_event.get("severity") or "info")[:20],
+                        step_id=_coerce_int(raw_event.get("step_id") or row.step_id),
+                        occurred_at=occurred,
+                        monotonic_ms=_coerce_int(raw_event.get("monotonic_ms")),
+                        payload=redact_context_payload(dict(raw_event.get("payload") or {})),
+                    )
+                    db.session.add(event)
+                    created_events.append(event)
+                db.session.flush()
+                if created_events:
+                    row.context_event_from_seq = created_events[0].sequence_no
+                    row.context_event_to_seq = created_events[-1].sequence_no
+                before_artifact = None
+                after_artifact = None
+                for phase, artifact_type in (("before", "step_screenshot_before"), ("after", "step_screenshot_after")):
+                    uri = str(context_payload.get(f"screenshot_{phase}") or "").strip()
+                    if not uri:
+                        continue
+                    artifact = UiContextArtifact(
+                        context_session_id=context_session.id,
+                        context_event_id=created_events[-1].id if created_events else None,
+                        artifact_type=artifact_type,
+                        uri=uri,
+                        mime_type="image/png",
+                        metadata_json={"step_id": row.step_id, "step_name": row.step_name},
+                    )
+                    db.session.add(artifact)
+                    db.session.flush()
+                    if phase == "before":
+                        before_artifact = artifact
+                    else:
+                        after_artifact = artifact
+                limitations.extend(str(item) for item in context_payload.get("limitations") or [])
+                db.session.add(UiStepContextLink(
+                    context_session_id=context_session.id,
+                    test_step_report_id=row.id,
+                    event_from_seq=row.context_event_from_seq,
+                    event_to_seq=row.context_event_to_seq,
+                    screenshot_before_id=before_artifact.id if before_artifact else None,
+                    screenshot_after_id=after_artifact.id if after_artifact else None,
+                    summary={"status": row.status, "step_type": row.step_type},
+                ))
+            context_session.limitations = list(dict.fromkeys(limitations))[-100:]
+            context_session.summary = {
+                **(context_session.summary or {}),
+                "last_sequence": next_sequence,
+            }
         db.session.commit()
         print(
             f"[pytest_hook] 已写入 step_report report_id={report_id} "

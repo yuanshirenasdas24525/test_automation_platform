@@ -35,6 +35,7 @@ from runners.context.auth_cache import (
     extract_hook_values,
 )
 from runners.context.execution_context import ExecutionContext
+from runners.context.ui_context_collector import collector_for
 from runners.dispatcher import StepDispatcher
 from runners.protocol import CaseResult, StepResult, StepStatus
 
@@ -710,6 +711,7 @@ class CaseExecutor:
     def _run_steps(self, steps: list[dict], ctx: ExecutionContext) -> list[StepResult]:
         """按顺序跑所有 step，遇到 FAILED/ERROR 时按 on_failure 决定是否继续。"""
         results: list[StepResult] = []
+        collector = collector_for(ctx)
         for idx, step in enumerate(steps):
             # 给没有 step_order 的 step 补一个合理序号
             if step.get("step_order") is None:
@@ -724,7 +726,9 @@ class CaseExecutor:
             )
             for key in transient_record_keys:
                 getattr(ctx, "records", {}).pop(key, None)
+            collector.step_started(step)
             result = self.dispatcher.dispatch(step, ctx)
+            step_context = collector.step_finished(step, result)
             results.append(result)
 
             # 暴露上一条响应给后续 assert step 用
@@ -759,6 +763,7 @@ class CaseExecutor:
                 "output_data": result.output_data,
                 "extract_values": result.extracted,
                 "attachments": result.attachments,
+                "context": step_context,
             }
             for key in transient_record_keys:
                 if key in records_after:

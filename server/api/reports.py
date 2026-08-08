@@ -84,6 +84,7 @@ def _serialize_report(report: TestReport, project_name: Optional[str]) -> dict:
         "duration": report.duration,
         "summary": report.summary,
         "allure_url": report.allure_url,
+        "context_session_id": report.context_session_id,
         "start_time": report.start_time.isoformat() if report.start_time else None,
         "end_time": report.end_time.isoformat() if report.end_time else None,
         "create_time": report.create_time.isoformat() if report.create_time else None,
@@ -103,6 +104,9 @@ def _serialize_step(step: TestStepReport) -> dict:
         "status_code": step.status_code,
         "duration": step.duration,
         "error_message": step.error_message,
+        "context_session_id": step.context_session_id,
+        "context_event_from_seq": step.context_event_from_seq,
+        "context_event_to_seq": step.context_event_to_seq,
         "create_time": step.create_time.isoformat() if step.create_time else None,
     }
 

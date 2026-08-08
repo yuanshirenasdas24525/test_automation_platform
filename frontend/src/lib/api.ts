@@ -106,6 +106,9 @@ import type {
   UiPageSnapshot,
   UiPlatform,
   UiRecordingEvent,
+  UiRecordedAction,
+  UiRecordingContextBundle,
+  UiExecutionContextBundle,
   UiRecordingSession,
   UiRecordingStepDraft,
 } from "@/types/domain";
@@ -1213,6 +1216,7 @@ export interface TestReportSummary {
   duration: number | null;
   summary: string | null;
   allure_url: string | null;
+  context_session_id: number | null;
   start_time: string | null;
   end_time: string | null;
   create_time: string | null;
@@ -1230,6 +1234,9 @@ export interface TestStepReportItem {
   status_code: number | null;
   duration: number | null;
   error_message: string | null;
+  context_session_id: number | null;
+  context_event_from_seq: number | null;
+  context_event_to_seq: number | null;
   create_time: string | null;
 }
 
@@ -2326,9 +2333,12 @@ export const uiRecordingsApi = {
     payload: {
       client_instance_id: string;
       command_id: string;
-      action: "click" | "pick" | "back" | "refresh";
+      action: "click" | "pick" | "input" | "scroll" | "back" | "refresh";
       x?: number;
       y?: number;
+      text?: string;
+      delta_x?: number;
+      delta_y?: number;
     },
   ) {
     return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/web-actions`, {
@@ -2336,19 +2346,142 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
-  startReplay(sessionId: number, browser = "chromium") {
+  startReplay(
+    sessionId: number,
+    browser = "chromium",
+    options?: {
+      headless?: boolean;
+      entry_url?: string;
+      page_fingerprint?: string;
+      viewport?: { width: number; height: number };
+    },
+  ) {
     return request<UiOfflineReplay>(`/api/ui-recordings/${sessionId}/replay`, {
       method: "POST",
-      body: { browser, headless: false },
+      body: {
+        browser,
+        headless: options?.headless ?? false,
+        entry_url: options?.entry_url,
+        page_fingerprint: options?.page_fingerprint,
+        viewport: options?.viewport,
+      },
     });
+  },
+  getReplay(sessionId: number, replayId: string) {
+    return request<UiOfflineReplay>(`/api/ui-recordings/${sessionId}/replays/${replayId}`);
+  },
+  performReplayAction(
+    sessionId: number,
+    replayId: string,
+    payload: {
+      action: "click" | "pick" | "input" | "scroll" | "back" | "refresh";
+      x?: number;
+      y?: number;
+      text?: string;
+      delta_x?: number;
+      delta_y?: number;
+    },
+  ) {
+    return request<UiOfflineReplay>(
+      `/api/ui-recordings/${sessionId}/replays/${replayId}/actions`,
+      { method: "POST", body: payload },
+    );
+  },
+  stopReplay(sessionId: number, replayId: string) {
+    return request<{ status: string }>(
+      `/api/ui-recordings/${sessionId}/replays/${replayId}/stop`,
+      { method: "POST" },
+    );
+  },
+  async replayImage(sessionId: number, replayId: string): Promise<Blob> {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(
+      `/api/ui-recordings/${sessionId}/replays/${replayId}/screenshot`,
+      { headers },
+    );
+    if (!response.ok) {
+      throw new ApiError("离线页面画面加载失败", response.status);
+    }
+    return response.blob();
   },
   stepDraft(sessionId: number) {
     return request<UiRecordingStepDraft>(`/api/ui-recordings/${sessionId}/step-draft`);
   },
-  listEvents(sessionId: number, afterSequence = 0) {
+  listEvents(
+    sessionId: number,
+    afterSequence = 0,
+    filters?: {
+      toSequence?: number;
+      source?: string;
+      eventType?: string;
+      severity?: string;
+      keyword?: string;
+      limit?: number;
+    },
+  ) {
+    const qs = new URLSearchParams({
+      after_sequence: String(afterSequence),
+      limit: String(filters?.limit ?? 500),
+    });
+    if (filters?.toSequence != null) qs.set("to_sequence", String(filters.toSequence));
+    if (filters?.source) qs.set("source", filters.source);
+    if (filters?.eventType) qs.set("event_type", filters.eventType);
+    if (filters?.severity) qs.set("severity", filters.severity);
+    if (filters?.keyword?.trim()) qs.set("keyword", filters.keyword.trim());
     return request<UiRecordingEvent[]>(
-      `/api/ui-recordings/${sessionId}/events?after_sequence=${afterSequence}&limit=500`,
+      `/api/ui-recordings/${sessionId}/events?${qs.toString()}`,
     );
+  },
+  context(sessionId: number) {
+    return request<UiRecordingContextBundle>(`/api/ui-recordings/${sessionId}/context`);
+  },
+  async executionContext(contextSessionId: number) {
+    const pageSize = 1000;
+    const first = await request<UiExecutionContextBundle>(
+      `/api/ui-context-sessions/${contextSessionId}?limit=${pageSize}`,
+    );
+    const events = [...first.events];
+    const expectedLast = Number(first.context.summary?.last_sequence ?? 0);
+    let afterSequence = events.at(-1)?.sequence_no ?? 0;
+    while (events.length > 0 && afterSequence < expectedLast) {
+      const next = await request<UiExecutionContextBundle>(
+        `/api/ui-context-sessions/${contextSessionId}?after_sequence=${afterSequence}&limit=${pageSize}`,
+      );
+      if (!next.events.length) break;
+      events.push(...next.events);
+      const nextSequence = next.events.at(-1)?.sequence_no ?? afterSequence;
+      if (nextSequence <= afterSequence) break;
+      afterSequence = nextSequence;
+    }
+    return { ...first, events };
+  },
+  async contextArtifact(artifactId: number): Promise<Blob> {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`/api/ui-context-artifacts/${artifactId}/content`, { headers });
+    if (!response.ok) throw new ApiError("上下文制品加载失败", response.status);
+    return response.blob();
+  },
+  listActions(sessionId: number) {
+    return request<UiRecordedAction[]>(`/api/ui-recordings/${sessionId}/actions`);
+  },
+  updateAction(
+    sessionId: number,
+    actionId: number,
+    payload: {
+      name?: string;
+      status?: UiRecordedAction["status"];
+      sequence_no?: number;
+      payload?: Record<string, unknown>;
+    },
+  ) {
+    return request<UiRecordedAction>(`/api/ui-recordings/${sessionId}/actions/${actionId}`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
   listElements(args: {
     projectId: number;
@@ -2364,11 +2497,64 @@ export const uiRecordingsApi = {
     if (args.keyword?.trim()) qs.set("keyword", args.keyword.trim());
     return request<UiElement[]>(`/api/ui-elements?${qs.toString()}`);
   },
+  updateElement(
+    elementId: number,
+    payload: {
+      semantic_name?: string;
+      aliases?: string[];
+      status?: UiElement["status"];
+    },
+  ) {
+    return request<UiElement>(`/api/ui-elements/${elementId}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+  createLocator(
+    elementId: number,
+    payload: { strategy: string; locator: string; score?: number; is_primary?: boolean },
+  ) {
+    return request<UiElement>(`/api/ui-elements/${elementId}/locators`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  updateLocator(
+    elementId: number,
+    locatorId: number,
+    payload: { strategy?: string; locator?: string; score?: number; is_primary?: boolean },
+  ) {
+    return request<UiElement>(`/api/ui-elements/${elementId}/locators/${locatorId}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+  deleteLocator(elementId: number, locatorId: number) {
+    return request<UiElement>(`/api/ui-elements/${elementId}/locators/${locatorId}`, {
+      method: "DELETE",
+    });
+  },
+  validateLocator(elementId: number, locatorId: number, snapshotId?: number) {
+    const query = snapshotId ? `?snapshot_id=${snapshotId}` : "";
+    return request<UiElement>(
+      `/api/ui-elements/${elementId}/locators/${locatorId}/validate${query}`,
+      { method: "POST" },
+    );
+  },
   listSnapshots(args: { projectId: number; platform?: UiPlatform; pageKey?: string }) {
     const qs = new URLSearchParams({ project_id: String(args.projectId) });
     if (args.platform) qs.set("platform", args.platform);
     if (args.pageKey) qs.set("page_key", args.pageKey);
     return request<UiPageSnapshot[]>(`/api/ui-page-snapshots?${qs.toString()}`);
+  },
+  updateSnapshot(
+    snapshotId: number,
+    payload: { page_name?: string; state_name?: string; apply_page_name_to_group?: boolean },
+  ) {
+    return request<UiPageSnapshot>(`/api/ui-page-snapshots/${snapshotId}`, {
+      method: "PATCH",
+      body: payload,
+    });
   },
   async snapshotImage(snapshotId: number): Promise<Blob> {
     const headers = new Headers();

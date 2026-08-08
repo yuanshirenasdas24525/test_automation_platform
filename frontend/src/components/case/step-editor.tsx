@@ -50,6 +50,7 @@ import { useQuery } from "@tanstack/react-query";
 import { appPackagesApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import type { CaseType, TestStepDraft } from "@/types/domain";
+import { UiElementPickerDialog } from "./ui-element-picker-dialog";
 
 // ---------------------------------------------------------------------------
 // step_type 规格表 —— 加新类型时只改这里
@@ -759,6 +760,7 @@ export function validateStepsForCategory(category: CaseType, steps: TestStepDraf
 // 组件
 // ---------------------------------------------------------------------------
 export interface StepEditorProps {
+  projectId?: number;
   /** Web / App / Mixed —— 决定下拉里列哪些 step_type */
   category: CaseType;
   value: TestStepDraft[];
@@ -768,7 +770,7 @@ export interface StepEditorProps {
   databaseConnections?: Array<{ name: string; label: string }>;
 }
 
-export function StepEditor({ category, value, onChange, error, databaseConnections = [] }: StepEditorProps) {
+export function StepEditor({ projectId, category, value, onChange, error, databaseConnections = [] }: StepEditorProps) {
   // android / ios 共用同一套 app_* StepRunner；平台差异由 environment.browser_config /
   // step config 里的 caps 决定。
   const isAppFamily = category === "android" || category === "ios";
@@ -883,6 +885,7 @@ export function StepEditor({ category, value, onChange, error, databaseConnectio
               specs={availableSpecs}
               platform={platform}
               databaseConnections={databaseConnections}
+              projectId={projectId}
               onChange={(next) => setStep(i, next)}
               onRemove={() => removeStep(i)}
               onMove={(dir) => moveStep(i, dir)}
@@ -916,6 +919,7 @@ function StepRow({
   specs,
   platform,
   databaseConnections,
+  projectId,
   onChange,
   onRemove,
   onMove,
@@ -931,6 +935,7 @@ function StepRow({
   specs: StepTypeSpec[];
   platform: "android" | "ios" | null;
   databaseConnections: Array<{ name: string; label: string }>;
+  projectId?: number;
   onChange: (next: TestStepDraft) => void;
   onRemove: () => void;
   onMove: (dir: -1 | 1) => void;
@@ -943,6 +948,7 @@ function StepRow({
   onDropAtEnd: (from: number) => void;
 }) {
   const [expanded, setExpanded] = React.useState(index === 0 || !step.step_type);
+  const [elementPickerOpen, setElementPickerOpen] = React.useState(false);
   const spec = specs.find((item) => item.value === step.step_type) ?? findSpec(step.step_type);
   const visibleFields = spec ? fieldsForPlatform(spec, platform).map((field) => (
     field.key === "target_db_group"
@@ -987,6 +993,10 @@ function StepRow({
   // 让 Firefox 也开始拖动；真正的 from index 走父组件的 dragIdx state。
   const isDragging = dragIdx === index;
   const isDropTarget = dragIdx !== null && dragIdx !== index;
+  const locatorCapable = visibleFields.some((field) => field.key === "locator");
+  const elementPlatform = step.step_type.startsWith("web_")
+    ? "web"
+    : platform;
 
   const handleRowDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     if (dragIdx === null || dragIdx === index) return;
@@ -1128,6 +1138,15 @@ function StepRow({
             </p>
           ) : null}
 
+          {locatorCapable && projectId && elementPlatform ? (
+            <div className="flex items-center justify-between rounded-md border border-dashed bg-background px-3 py-2">
+              <span className="text-xs text-muted-foreground">可直接复用项目元素库中已验证的定位器</span>
+              <Button type="button" size="sm" variant="outline" onClick={() => setElementPickerOpen(true)}>
+                从元素库选择
+              </Button>
+            </div>
+          ) : null}
+
           {spec && visibleFields.length > 0 ? (
             <div className="grid grid-cols-2 gap-2">
               {visibleFields.map((field) => (
@@ -1223,7 +1242,23 @@ function StepRow({
             </label>
           </details>
         </div>
-      ) : null}
+          ) : null}
+          {projectId && elementPlatform ? (
+            <UiElementPickerDialog
+              open={elementPickerOpen}
+              projectId={projectId}
+              platform={elementPlatform}
+              onOpenChange={setElementPickerOpen}
+              onSelect={(element, by, locator) => {
+                const verb = step.step_type.includes("input") ? "输入到" : step.step_type.includes("assert") ? "断言" : "点击";
+                onChange({
+                  ...step,
+                  step_name: `${verb} ${element.semantic_name}`,
+                  config: { ...(step.config || {}), by, locator, element_id: element.id },
+                });
+              }}
+            />
+          ) : null}
     </div>
   );
 }

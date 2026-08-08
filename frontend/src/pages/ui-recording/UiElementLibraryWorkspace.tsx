@@ -13,12 +13,16 @@ import {
   MousePointer2,
   Network,
   Pause,
+  Pencil,
   Play,
+  Plus,
   Search,
   Send,
   Smartphone,
   Square,
+  Star,
   Terminal,
+  Trash2,
   Undo2,
   RefreshCw,
   X,
@@ -56,6 +60,7 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   UiElement,
+  UiOfflineReplay,
   UiPageSnapshot,
   UiPlatform,
   UiRecordingEvent,
@@ -63,6 +68,7 @@ import type {
   UiRecordingStepDraft,
   UiRecordingStatus,
 } from "@/types/domain";
+import { UiRecordingResultDialog } from "./UiRecordingResultDialog";
 
 const PLATFORM_META: Record<UiPlatform, { label: string; runtime: string }> = {
   web: { label: "Web", runtime: "离线业务包 · XHR/Fetch Mock" },
@@ -149,7 +155,8 @@ const ROUTE_LABELS: Record<string, string> = {
 function pageRoute(url: string | null | undefined, pageKey: string): string {
   if (url) {
     try {
-      return new URL(url).pathname || "/";
+      const parsed = new URL(url);
+      return `${parsed.pathname || "/"}${parsed.search}`;
     } catch {
       // 兼容历史快照中的非标准 URL，继续从 pageKey 推断。
     }
@@ -159,15 +166,37 @@ function pageRoute(url: string | null | undefined, pageKey: string): string {
 }
 
 function routeDisplayName(route: string, fallback: string): string {
-  const exact = ROUTE_LABELS[route];
-  if (exact) return exact;
-  const segment = decodeURIComponent(route.split("/").filter(Boolean).at(-1) ?? "");
+  const [pathname, search = ""] = route.split("?", 2);
+  const params = new URLSearchParams(search);
+  const identity = [...params.entries()]
+    .slice(0, 3)
+    .map(([key, value]) => `${key}=${value}`)
+    .join(" · ");
+  const exact = ROUTE_LABELS[pathname];
+  if (exact) return identity ? `${exact} · ${identity}` : exact;
+  const projectMatch = /^\/projects\/(\d+)$/.exec(pathname);
+  const versionMatch = /^\/projects\/(\d+)\/versions\/(\d+)$/.exec(pathname);
+  const boardMatch = /^\/projects\/(\d+)\/versions\/(\d+)\/board$/.exec(pathname);
+  const requirementsMatch = /^\/projects\/(\d+)\/requirements$/.exec(pathname);
+  const semantic = projectMatch
+    ? `项目 #${projectMatch[1]}`
+    : versionMatch
+      ? `项目 #${versionMatch[1]} · 版本 #${versionMatch[2]}`
+      : boardMatch
+        ? `项目 #${boardMatch[1]} · 版本 #${boardMatch[2]} 看板`
+        : requirementsMatch
+          ? `项目 #${requirementsMatch[1]} · 需求`
+          : null;
+  if (semantic) return identity ? `${semantic} · ${identity}` : semantic;
+  const segment = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
   if (!segment) return fallback;
-  return segment
+  const base = segment
     .split(/[-_]/)
     .filter(Boolean)
     .map((item) => item.charAt(0).toLocaleUpperCase() + item.slice(1))
     .join(" ");
+  if (!search) return base;
+  return identity ? `${base} · ${identity}` : base;
 }
 
 function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
@@ -277,12 +306,28 @@ export function UiElementLibraryWorkspace({
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState("none");
   const [mobileInput, setMobileInput] = useState("");
+  const [webInput, setWebInput] = useState("");
+  const [embeddedReplay, setEmbeddedReplay] = useState<UiOfflineReplay | null>(null);
+  const [replayRevision, setReplayRevision] = useState(0);
+  const [offlinePickMode, setOfflinePickMode] = useState(false);
+  const replayRef = useRef<UiOfflineReplay | null>(null);
   const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
+  const [resultOpen, setResultOpen] = useState(false);
   const [draftModuleId, setDraftModuleId] = useState("");
   const [draftCaseName, setDraftCaseName] = useState("");
+  const [elementNameDraft, setElementNameDraft] = useState("");
+  const [elementAliasesDraft, setElementAliasesDraft] = useState("");
+  const [newLocatorStrategy, setNewLocatorStrategy] = useState("css");
+  const [newLocatorValue, setNewLocatorValue] = useState("");
+  const [editingLocatorId, setEditingLocatorId] = useState<number | null>(null);
+  const [editingLocatorValue, setEditingLocatorValue] = useState("");
+  const [pageNameEditing, setPageNameEditing] = useState(false);
+  const [pageNameDraft, setPageNameDraft] = useState("");
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const lastMaterializedEventRef = useRef(0);
+  const eventCursorRef = useRef(0);
+  const [events, setEvents] = useState<UiRecordingEvent[]>([]);
   useEffect(() => {
     if (!open) return;
     setPlatform(initialPlatform);
@@ -301,6 +346,8 @@ export function UiElementLibraryWorkspace({
     setSelectedDeviceId("");
     setSelectedPackageId("none");
     setMobileInput("");
+    setWebInput("");
+    setOfflinePickMode(false);
     setStepDraft(null);
     setDraftModuleId("");
     setDraftCaseName("");
@@ -310,13 +357,13 @@ export function UiElementLibraryWorkspace({
     queryKey: ["ui-elements", projectId, platform],
     queryFn: () => uiRecordingsApi.listElements({ projectId, platform }),
     enabled: open && Number.isFinite(projectId),
-    refetchInterval: open ? 1200 : false,
+    staleTime: 30_000,
   });
   const snapshotsQuery = useQuery({
     queryKey: ["ui-page-snapshots", projectId, platform],
     queryFn: () => uiRecordingsApi.listSnapshots({ projectId, platform }),
     enabled: open && Number.isFinite(projectId),
-    refetchInterval: open ? 1200 : false,
+    staleTime: 30_000,
   });
   const recordingsQuery = useQuery({
     queryKey: ["ui-recordings", projectId, platform],
@@ -411,6 +458,17 @@ export function UiElementLibraryWorkspace({
     ?? visibleElements[0]
     ?? null;
 
+  useEffect(() => {
+    setElementNameDraft(selectedElement?.semantic_name ?? "");
+    const aliases = selectedElement?.attributes.aliases;
+    setElementAliasesDraft(Array.isArray(aliases) ? aliases.join("，") : "");
+  }, [selectedElement?.id, selectedElement?.semantic_name, selectedElement?.attributes.aliases]);
+
+  useEffect(() => {
+    setPageNameDraft(activePage?.displayName ?? "");
+    setPageNameEditing(false);
+  }, [activePage?.pageKey, activePage?.displayName]);
+
   const latestServerSession = recordingsQuery.data?.[0] ?? null;
   const activeServerSession = recordingsQuery.data?.find((session) =>
     ACTIVE_STATUSES.includes(session.status),
@@ -421,14 +479,36 @@ export function UiElementLibraryWorkspace({
     : sessionOverride ?? serverSession;
   useEffect(() => {
     lastMaterializedEventRef.current = 0;
+    eventCursorRef.current = 0;
+    setEvents([]);
   }, [session?.id]);
   const eventsQuery = useQuery({
     queryKey: ["ui-recording-events", session?.id],
-    queryFn: () => uiRecordingsApi.listEvents(session!.id),
-    enabled: open && session != null && ACTIVE_STATUSES.includes(session.status),
-    refetchInterval: 600,
+    queryFn: () => uiRecordingsApi.listEvents(session!.id, eventCursorRef.current),
+    enabled: open && session != null,
+    refetchInterval: session && ACTIVE_STATUSES.includes(session.status) ? 600 : false,
   });
-  const events = useMemo(() => eventsQuery.data ?? [], [eventsQuery.data]);
+  const eventBatch = eventsQuery.data;
+  const refetchEvents = eventsQuery.refetch;
+
+  useEffect(() => {
+    const incoming = eventBatch ?? [];
+    if (incoming.length === 0) return;
+    eventCursorRef.current = Math.max(
+      eventCursorRef.current,
+      ...incoming.map((event) => event.sequence_no),
+    );
+    setEvents((current) => {
+      const byId = new Map(current.map((event) => [event.id, event]));
+      for (const event of incoming) byId.set(event.id, event);
+      return [...byId.values()]
+        .sort((a, b) => a.sequence_no - b.sequence_no)
+        .slice(-2_000);
+    });
+    if (incoming.length >= 500) {
+      window.setTimeout(() => void refetchEvents(), 0);
+    }
+  }, [eventBatch, refetchEvents]);
 
   useEffect(() => {
     const freshEvents = events.filter(
@@ -474,6 +554,28 @@ export function UiElementLibraryWorkspace({
   } | null;
   const leaseSessionId = session?.id ?? null;
   const leaseSessionStatus = session?.status ?? null;
+  const recorderActive = session != null && ACTIVE_STATUSES.includes(session.status);
+  const effectivePickMode = recorderActive ? pickMode : offlinePickMode;
+
+  useEffect(() => {
+    replayRef.current = embeddedReplay;
+  }, [embeddedReplay]);
+
+  useEffect(() => {
+    if (open && platform === "web") return;
+    const replay = replayRef.current;
+    if (!replay) return;
+    replayRef.current = null;
+    setEmbeddedReplay(null);
+    void uiRecordingsApi.stopReplay(replay.session_id, replay.replay_id).catch(() => undefined);
+  }, [open, platform]);
+
+  useEffect(() => () => {
+    const replay = replayRef.current;
+    if (replay) {
+      void uiRecordingsApi.stopReplay(replay.session_id, replay.replay_id).catch(() => undefined);
+    }
+  }, []);
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["ui-recordings", projectId, platform] });
@@ -525,7 +627,11 @@ export function UiElementLibraryWorkspace({
         name: `${previous.name} · 场景重开`,
         device_id: previous.device_id,
         app_package_id: previous.app_package_id ?? undefined,
-        capture_config: previous.capture_config,
+        capture_config: {
+          ...previous.capture_config,
+          restore_scenario: mobileScenario,
+          source_session_id: previous.id,
+        },
       });
       return uiRecordingsApi.control(draft.id, "start", {
         client_instance_id: clientInstanceId,
@@ -608,19 +714,20 @@ export function UiElementLibraryWorkspace({
     mutationFn: ({
       sessionId,
       action,
-      x,
-      y,
+      ...payload
     }: {
       sessionId: number;
-      action: "click" | "pick" | "back" | "refresh";
+      action: "click" | "pick" | "input" | "scroll" | "back" | "refresh";
       x?: number;
       y?: number;
+      text?: string;
+      delta_x?: number;
+      delta_y?: number;
     }) => uiRecordingsApi.performWebAction(sessionId, {
       client_instance_id: clientInstanceId,
       command_id: randomId(`web-${action}`),
       action,
-      x,
-      y,
+      ...payload,
     }),
     onSuccess: async (next) => {
       setSessionOverride(next);
@@ -636,11 +743,187 @@ export function UiElementLibraryWorkspace({
   });
 
   const replayMutation = useMutation({
-    mutationFn: (sessionId: number) => uiRecordingsApi.startReplay(sessionId, browser),
+    mutationFn: async ({
+      sessionId,
+      snapshot,
+      headless = true,
+    }: {
+      sessionId: number;
+      snapshot: UiPageSnapshot | null;
+      headless?: boolean;
+    }) => {
+      const previous = replayRef.current;
+      if (previous) {
+        await uiRecordingsApi.stopReplay(previous.session_id, previous.replay_id).catch(() => undefined);
+      }
+      const viewport = snapshot?.environment.viewport as { width?: number; height?: number } | undefined;
+      return uiRecordingsApi.startReplay(sessionId, browser, {
+        headless,
+        entry_url: snapshot?.url ?? undefined,
+        page_fingerprint: snapshot?.fingerprint,
+        viewport: {
+          width: Number(viewport?.width || 1440),
+          height: Number(viewport?.height || 900),
+        },
+      });
+    },
     onSuccess: (replay) => {
+      const activeReplay = { ...replay, url: replay.entry_url };
+      replayRef.current = activeReplay;
+      setEmbeddedReplay(activeReplay);
+      setReplayRevision((value) => value + 1);
+      setOfflinePickMode(false);
       toast.success(
-        `离线回放已打开：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
+        `离线交互已启动：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
       );
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const replayActionMutation = useMutation({
+    mutationFn: ({
+      action,
+      ...payload
+    }: {
+      action: "click" | "pick" | "input" | "scroll" | "back" | "refresh";
+      x?: number;
+      y?: number;
+      text?: string;
+      delta_x?: number;
+      delta_y?: number;
+    }) => {
+      if (!embeddedReplay) throw new Error("请先启动离线交互");
+      return uiRecordingsApi.performReplayAction(
+        embeddedReplay.session_id,
+        embeddedReplay.replay_id,
+        { action, ...payload },
+      );
+    },
+    onSuccess: (next) => {
+      const merged = { ...embeddedReplay, ...next } as UiOfflineReplay;
+      replayRef.current = merged;
+      setEmbeddedReplay(merged);
+      setReplayRevision((value) => value + 1);
+      if (next.url) {
+        const matchedPage = pages.find((page) =>
+          page.snapshots.some((snapshot) => snapshot.url === next.url),
+        );
+        if (matchedPage) {
+          setPageKey(matchedPage.pageKey);
+          setSnapshotId(null);
+        }
+      }
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const stopReplayMutation = useMutation({
+    mutationFn: async () => {
+      const replay = replayRef.current;
+      if (!replay) return;
+      await uiRecordingsApi.stopReplay(replay.session_id, replay.replay_id);
+    },
+    onSettled: () => {
+      replayRef.current = null;
+      setEmbeddedReplay(null);
+      setOfflinePickMode(false);
+      setReplayRevision((value) => value + 1);
+    },
+  });
+
+  const refreshElementAssets = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["ui-elements", projectId, platform] }),
+      queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] }),
+    ]);
+  };
+
+  const elementUpdateMutation = useMutation({
+    mutationFn: ({
+      elementId,
+      semanticName,
+      aliases,
+      status,
+    }: {
+      elementId: number;
+      semanticName?: string;
+      aliases?: string[];
+      status?: UiElement["status"];
+    }) => uiRecordingsApi.updateElement(elementId, {
+      semantic_name: semanticName,
+      aliases,
+      status,
+    }),
+    onSuccess: async () => {
+      await refreshElementAssets();
+      toast.success("元素信息已更新");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const locatorCreateMutation = useMutation({
+    mutationFn: ({ elementId, strategy, locator }: { elementId: number; strategy: string; locator: string }) =>
+      uiRecordingsApi.createLocator(elementId, { strategy, locator, score: 80 }),
+    onSuccess: async () => {
+      setNewLocatorValue("");
+      await refreshElementAssets();
+      toast.success("定位器已添加");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const locatorUpdateMutation = useMutation({
+    mutationFn: ({
+      elementId,
+      locatorId,
+      isPrimary,
+      locator,
+    }: {
+      elementId: number;
+      locatorId: number;
+      isPrimary?: boolean;
+      locator?: string;
+    }) => uiRecordingsApi.updateLocator(elementId, locatorId, {
+      is_primary: isPrimary,
+      locator,
+    }),
+    onSuccess: async () => {
+      setEditingLocatorId(null);
+      await refreshElementAssets();
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const locatorDeleteMutation = useMutation({
+    mutationFn: ({ elementId, locatorId }: { elementId: number; locatorId: number }) =>
+      uiRecordingsApi.deleteLocator(elementId, locatorId),
+    onSuccess: async () => {
+      await refreshElementAssets();
+      toast.success("定位器已删除");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const locatorValidateMutation = useMutation({
+    mutationFn: ({ elementId, locatorId }: { elementId: number; locatorId: number }) =>
+      uiRecordingsApi.validateLocator(elementId, locatorId, activeSnapshot?.id),
+    onSuccess: async () => {
+      await refreshElementAssets();
+      toast.success("定位器验证完成");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const pageUpdateMutation = useMutation({
+    mutationFn: ({ snapshotId: targetSnapshotId, pageName }: { snapshotId: number; pageName: string }) =>
+      uiRecordingsApi.updateSnapshot(targetSnapshotId, {
+        page_name: pageName,
+        apply_page_name_to_group: true,
+      }),
+    onSuccess: async () => {
+      setPageNameEditing(false);
+      await refreshElementAssets();
+      toast.success("页面名称已更新");
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -731,6 +1014,17 @@ export function UiElementLibraryWorkspace({
     toast.success("定位器已复制");
   };
 
+  const performWebToolbarAction = (
+    action: "input" | "scroll" | "back" | "refresh",
+    payload: { text?: string; delta_x?: number; delta_y?: number } = {},
+  ) => {
+    if (embeddedReplay) {
+      replayActionMutation.mutate({ action, ...payload });
+    } else if (session && recorderActive) {
+      webActionMutation.mutate({ sessionId: session.id, action, ...payload });
+    }
+  };
+
   if (!open) return null;
 
   const sessionBusy = startMutation.isPending
@@ -805,11 +1099,19 @@ export function UiElementLibraryWorkspace({
             <Button
               size="sm"
               variant="outline"
-              disabled={replayMutation.isPending}
-              onClick={() => replayMutation.mutate(session.id)}
+              disabled={replayMutation.isPending || stopReplayMutation.isPending}
+              onClick={() => {
+                if (embeddedReplay) {
+                  stopReplayMutation.mutate();
+                } else {
+                  replayMutation.mutate({ sessionId: session.id, snapshot: activeSnapshot });
+                }
+              }}
             >
-              {replayMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              离线回放
+              {replayMutation.isPending || stopReplayMutation.isPending
+                ? <Loader2 className="h-4 w-4 animate-spin" />
+                : embeddedReplay ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+              {embeddedReplay ? "结束离线交互" : "离线交互"}
             </Button>
           ) : null}
           {session?.status === "completed" && platform !== "web" && mobileScenario?.ready ? (
@@ -823,6 +1125,12 @@ export function UiElementLibraryWorkspace({
                 ? <Loader2 className="h-4 w-4 animate-spin" />
                 : <RefreshCw className="h-4 w-4" />}
               重开场景
+            </Button>
+          ) : null}
+          {session?.status === "completed" ? (
+            <Button size="sm" variant="outline" onClick={() => setResultOpen(true)}>
+              <Terminal className="h-4 w-4" />
+              录制结果
             </Button>
           ) : null}
           {session?.status === "completed" ? (
@@ -888,6 +1196,12 @@ export function UiElementLibraryWorkspace({
                     setPageKey(page.pageKey);
                     setSnapshotId(null);
                     setSelectedElementId(page.elements[0]?.id ?? null);
+                    if (embeddedReplay && session) {
+                      replayMutation.mutate({
+                        sessionId: session.id,
+                        snapshot: page.snapshots[0] ?? null,
+                      });
+                    }
                   }}
                   className={cn(
                     "mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm",
@@ -962,7 +1276,37 @@ export function UiElementLibraryWorkspace({
         <main className="flex min-h-0 min-w-0 flex-col bg-slate-50/70 dark:bg-slate-950/20">
           <div className="flex h-[58px] shrink-0 items-center justify-between border-b bg-background px-4">
             <div>
-              <div className="text-sm font-semibold">{activePage?.displayName ?? "等待首次页面快照"}</div>
+              <div className="flex items-center gap-1.5">
+                {pageNameEditing ? (
+                  <>
+                    <Input
+                      value={pageNameDraft}
+                      onChange={(event) => setPageNameDraft(event.target.value)}
+                      className="h-7 w-56 text-sm"
+                      autoFocus
+                    />
+                    <Button
+                      size="sm"
+                      className="h-7 px-2 text-[10px]"
+                      disabled={!activeSnapshot || !pageNameDraft.trim() || pageUpdateMutation.isPending}
+                      onClick={() => activeSnapshot && pageUpdateMutation.mutate({
+                        snapshotId: activeSnapshot.id,
+                        pageName: pageNameDraft.trim(),
+                      })}
+                    >保存</Button>
+                    <Button size="sm" variant="ghost" className="h-7 px-2 text-[10px]" onClick={() => setPageNameEditing(false)}>取消</Button>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-semibold">{activePage?.displayName ?? "等待首次页面快照"}</div>
+                    {activeSnapshot ? (
+                      <Button size="icon" variant="ghost" className="h-6 w-6" title="修改页面名称" onClick={() => setPageNameEditing(true)}>
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                    ) : null}
+                  </>
+                )}
+              </div>
               <div className="text-[11px] text-muted-foreground">
                 {activePage?.route ?? platformRuntime.runtime}
               </div>
@@ -972,8 +1316,12 @@ export function UiElementLibraryWorkspace({
                 <Select
                   value={String(activeSnapshot?.id ?? "")}
                   onValueChange={(value) => {
+                    const nextSnapshot = activePage.snapshots.find((item) => item.id === Number(value)) ?? null;
                     setSnapshotId(Number(value));
                     setSelectedElementId(null);
+                    if (embeddedReplay && session) {
+                      replayMutation.mutate({ sessionId: session.id, snapshot: nextSnapshot });
+                    }
                   }}
                 >
                   <SelectTrigger className="h-8 w-[170px] text-[11px]">
@@ -993,30 +1341,34 @@ export function UiElementLibraryWorkspace({
                 <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
                   <button
                     type="button"
-                    disabled={pickModeMutation.isPending || !session || !ACTIVE_STATUSES.includes(session.status)}
+                    disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
                     onClick={() => {
-                      if (session && pickMode) {
+                      if (recorderActive && session && pickMode) {
                         pickModeMutation.mutate({ sessionId: session.id, enabled: false });
+                      } else if (embeddedReplay) {
+                        setOfflinePickMode(false);
                       }
                     }}
                     className={cn(
                       "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                      !pickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                      !effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
                     )}
                   >
                     浏览页面
                   </button>
                   <button
                     type="button"
-                    disabled={pickModeMutation.isPending || !session || !ACTIVE_STATUSES.includes(session.status)}
+                    disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
                     onClick={() => {
-                      if (session && !pickMode) {
+                      if (recorderActive && session && !pickMode) {
                         pickModeMutation.mutate({ sessionId: session.id, enabled: true });
+                      } else if (embeddedReplay) {
+                        setOfflinePickMode(true);
                       }
                     }}
                     className={cn(
                       "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                      pickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                      effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
                     )}
                   >
                     拾取元素
@@ -1035,30 +1387,75 @@ export function UiElementLibraryWorkspace({
                     <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
                     <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
                     <div className="ml-2 flex-1 rounded bg-background px-3 py-1 text-[11px] text-muted-foreground">
-                      {activePage ? `offline://project/${projectId}/${activePage.pageKey}` : "offline://等待页面快照"}
+                      {embeddedReplay?.url
+                        ?? (activePage ? `offline://project/${projectId}/${activePage.pageKey}` : "offline://等待页面快照")}
                     </div>
                   </div>
+                  {(recorderActive || embeddedReplay) && !effectivePickMode ? (
+                    <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background px-3">
+                      <Input
+                        value={webInput}
+                        onChange={(event) => setWebInput(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" || !webInput) return;
+                          performWebToolbarAction("input", { text: webInput });
+                          setWebInput("");
+                        }}
+                        placeholder="先点击页面输入框，再在这里输入"
+                        className="h-7 min-w-0 flex-1 text-[11px]"
+                      />
+                      <Button
+                        size="icon"
+                        className="h-7 w-7"
+                        title="发送输入"
+                        disabled={!webInput || webActionMutation.isPending || replayActionMutation.isPending}
+                        onClick={() => {
+                          performWebToolbarAction("input", { text: webInput });
+                          setWebInput("");
+                        }}
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button size="icon" variant="outline" className="h-7 w-7" title="返回" onClick={() => performWebToolbarAction("back")}>
+                        <Undo2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button size="icon" variant="outline" className="h-7 w-7" title="刷新" onClick={() => performWebToolbarAction("refresh")}>
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-[10px]" title="向下滚动" onClick={() => performWebToolbarAction("scroll", { delta_y: 560 })}>
+                        向下滚动
+                      </Button>
+                    </div>
+                  ) : null}
                   {activeSnapshot?.has_screenshot ? (
                     <SnapshotStage
                       snapshot={activeSnapshot}
                       elements={visibleElements}
                       selectedElementId={selectedElement?.id ?? null}
                       onSelect={setSelectedElementId}
-                      pickMode={pickMode}
-                      actionPending={webActionMutation.isPending}
+                      pickMode={effectivePickMode}
+                      actionPending={webActionMutation.isPending || replayActionMutation.isPending}
                       canInteract={
-                        session != null
-                        && ACTIVE_STATUSES.includes(session.status)
-                        && hasControl
+                        (recorderActive && hasControl) || embeddedReplay != null
                       }
+                      replaySessionId={embeddedReplay?.session_id ?? null}
+                      replayId={embeddedReplay?.replay_id ?? null}
+                      imageRevision={replayRevision}
                       onCanvasAction={(x, y) => {
-                        if (!session) return;
-                        webActionMutation.mutate({
-                          sessionId: session.id,
-                          action: pickMode ? "pick" : "click",
-                          x,
-                          y,
-                        });
+                        if (embeddedReplay) {
+                          replayActionMutation.mutate({
+                            action: effectivePickMode ? "pick" : "click",
+                            x,
+                            y,
+                          });
+                        } else if (session) {
+                          webActionMutation.mutate({
+                            sessionId: session.id,
+                            action: effectivePickMode ? "pick" : "click",
+                            x,
+                            y,
+                          });
+                        }
                       }}
                     />
                   ) : (
@@ -1227,24 +1624,171 @@ export function UiElementLibraryWorkspace({
                 </span>
               </div>
 
+              <div className="mt-4 space-y-2 rounded-lg border bg-muted/20 p-3">
+                <div className="text-[11px] font-medium">元素维护</div>
+                <Input
+                  value={elementNameDraft}
+                  onChange={(event) => setElementNameDraft(event.target.value)}
+                  placeholder="元素语义名称"
+                  className="h-8 text-xs"
+                />
+                <Input
+                  value={elementAliasesDraft}
+                  onChange={(event) => setElementAliasesDraft(event.target.value)}
+                  placeholder="别名，用逗号分隔"
+                  className="h-8 text-xs"
+                />
+                <div className="flex gap-2">
+                  <Select
+                    value={selectedElement.status}
+                    onValueChange={(value) => elementUpdateMutation.mutate({
+                      elementId: selectedElement.id,
+                      status: value as UiElement["status"],
+                    })}
+                  >
+                    <SelectTrigger className="h-8 flex-1 text-xs"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pending">待审核</SelectItem>
+                      <SelectItem value="verified">已验证</SelectItem>
+                      <SelectItem value="stale">可能失效</SelectItem>
+                      <SelectItem value="archived">已归档</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    className="h-8"
+                    disabled={!elementNameDraft.trim() || elementUpdateMutation.isPending}
+                    onClick={() => elementUpdateMutation.mutate({
+                      elementId: selectedElement.id,
+                      semanticName: elementNameDraft.trim(),
+                      aliases: elementAliasesDraft.split(/[，,]/).map((item) => item.trim()).filter(Boolean),
+                    })}
+                  >保存</Button>
+                </div>
+              </div>
+
               <div className="mt-5 text-xs font-medium">定位器候选</div>
               <div className="mt-2 space-y-2">
                 {selectedElement.locators.length > 0 ? selectedElement.locators.map((locator) => (
-                  <button
-                    type="button"
+                  <div
                     key={locator.id}
-                    onClick={() => copyLocator(locator.locator)}
-                    className="grid w-full grid-cols-[68px_minmax(0,1fr)_32px] items-center gap-2 rounded-lg border px-3 py-2 text-left hover:border-primary/40 hover:bg-primary/5"
+                    className={cn(
+                      "grid w-full grid-cols-[60px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg border px-2 py-2",
+                      locator.is_primary && "border-primary/40 bg-primary/5",
+                    )}
                   >
                     <span className="text-[10px] font-semibold uppercase text-muted-foreground">{locator.strategy}</span>
-                    <code className="truncate text-[11px]">{locator.locator}</code>
-                    <span className="text-right text-[11px] font-semibold text-emerald-600">{locator.score}</span>
-                  </button>
+                    <div className="min-w-0">
+                      {editingLocatorId === locator.id ? (
+                        <div className="flex gap-1">
+                          <Input value={editingLocatorValue} onChange={(event) => setEditingLocatorValue(event.target.value)} className="h-7 min-w-0 text-[10px]" />
+                          <Button size="sm" className="h-7 px-2 text-[10px]" disabled={!editingLocatorValue.trim()} onClick={() => locatorUpdateMutation.mutate({ elementId: selectedElement.id, locatorId: locator.id, locator: editingLocatorValue.trim() })}>保存</Button>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={() => copyLocator(locator.locator)} className="block w-full min-w-0 text-left" title="复制定位器">
+                          <code className="block truncate text-[11px]">{locator.locator}</code>
+                        </button>
+                      )}
+                      <span className={cn(
+                        "mt-0.5 block text-[9px]",
+                        locator.is_unique === true ? "text-emerald-600" : locator.is_unique === false ? "text-red-600" : "text-muted-foreground",
+                      )}>
+                        {locator.is_unique === true
+                          ? "唯一匹配"
+                          : locator.is_unique === false
+                            ? `${locator.match_count ?? 0} 个匹配`
+                            : "尚未验证"} · 评分 {locator.score}
+                      </span>
+                    </div>
+                    <span className="flex items-center gap-0.5">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        title="编辑定位器"
+                        onClick={() => {
+                          setEditingLocatorId(locator.id);
+                          setEditingLocatorValue(locator.locator);
+                        }}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        title="在当前页面状态验证"
+                        disabled={locatorValidateMutation.isPending}
+                        onClick={() => locatorValidateMutation.mutate({
+                          elementId: selectedElement.id,
+                          locatorId: locator.id,
+                        })}
+                      >
+                        <RefreshCw className={cn("h-3 w-3", locatorValidateMutation.isPending && "animate-spin")} />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        title="设为主定位器"
+                        disabled={locator.is_primary || locatorUpdateMutation.isPending}
+                        onClick={() => locatorUpdateMutation.mutate({
+                          elementId: selectedElement.id,
+                          locatorId: locator.id,
+                          isPrimary: true,
+                        })}
+                      >
+                        <Star className={cn("h-3 w-3", locator.is_primary && "fill-current text-amber-500")} />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6 text-red-600"
+                        title="删除定位器"
+                        disabled={locatorDeleteMutation.isPending}
+                        onClick={() => locatorDeleteMutation.mutate({ elementId: selectedElement.id, locatorId: locator.id })}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </span>
+                  </div>
                 )) : (
                   <div className="rounded-lg border border-dashed p-4 text-center text-xs text-muted-foreground">
                     暂无定位器候选
                   </div>
                 )}
+              </div>
+
+              <div className="mt-3 rounded-lg border border-dashed p-2.5">
+                <div className="mb-2 text-[10px] font-medium text-muted-foreground">添加人工定位器</div>
+                <div className="flex gap-2">
+                  <Select value={newLocatorStrategy} onValueChange={setNewLocatorStrategy}>
+                    <SelectTrigger className="h-8 w-24 text-[10px]"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {["id", "css", "name", "text", "link", "xpath", "role", "accessibility_id", "android_uiautomator", "ios_predicate", "ios_class_chain"].map((strategy) => (
+                        <SelectItem key={strategy} value={strategy}>{strategy}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    value={newLocatorValue}
+                    onChange={(event) => setNewLocatorValue(event.target.value)}
+                    placeholder="定位器内容"
+                    className="h-8 min-w-0 flex-1 text-[10px]"
+                  />
+                  <Button
+                    size="icon"
+                    className="h-8 w-8"
+                    disabled={!newLocatorValue.trim() || locatorCreateMutation.isPending}
+                    onClick={() => locatorCreateMutation.mutate({
+                      elementId: selectedElement.id,
+                      strategy: newLocatorStrategy,
+                      locator: newLocatorValue.trim(),
+                    })}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
 
               <div className="mt-6 text-xs font-medium">元素证据</div>
@@ -1254,8 +1798,21 @@ export function UiElementLibraryWorkspace({
                 <div className="flex justify-between gap-3 px-3 py-2.5"><dt className="text-muted-foreground">最近验证</dt><dd>{formatTime(selectedElement.last_verified_at)}</dd></div>
               </dl>
 
-              <Button className="mt-5 w-full" disabled={selectedElement.locators.length === 0}>
-                <MousePointer2 className="h-4 w-4" />插入用例步骤
+              <Button
+                className="mt-5 w-full"
+                disabled={selectedElement.locators.length === 0}
+                onClick={async () => {
+                  const preferred = selectedElement.locators.find((item) => item.is_primary)
+                    ?? selectedElement.locators[0];
+                  await navigator.clipboard.writeText(JSON.stringify({
+                    element_id: selectedElement.id,
+                    by: preferred.strategy,
+                    locator: preferred.locator,
+                  }, null, 2));
+                  toast.success("步骤配置已复制；用例编辑器也可直接从元素库选择");
+                }}
+              >
+                <MousePointer2 className="h-4 w-4" />复制为步骤配置
               </Button>
             </div>
           ) : (
@@ -1503,6 +2060,11 @@ export function UiElementLibraryWorkspace({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <UiRecordingResultDialog
+        open={resultOpen}
+        session={session ?? null}
+        onOpenChange={setResultOpen}
+      />
 
       <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
         <DialogContent className="sm:max-w-[430px]">
@@ -1769,6 +2331,9 @@ function SnapshotStage({
   pickMode,
   actionPending,
   canInteract,
+  replaySessionId,
+  replayId,
+  imageRevision,
   onCanvasAction,
 }: {
   snapshot: UiPageSnapshot;
@@ -1778,6 +2343,9 @@ function SnapshotStage({
   pickMode: boolean;
   actionPending: boolean;
   canInteract: boolean;
+  replaySessionId: number | null;
+  replayId: string | null;
+  imageRevision: number;
   onCanvasAction: (x: number, y: number) => void;
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -1789,7 +2357,10 @@ function SnapshotStage({
     let objectUrl: string | null = null;
     setImageUrl(null);
     setImageError(null);
-    void uiRecordingsApi.snapshotImage(snapshot.id)
+    const imageRequest = replaySessionId && replayId
+      ? uiRecordingsApi.replayImage(replaySessionId, replayId)
+      : uiRecordingsApi.snapshotImage(snapshot.id);
+    void imageRequest
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob);
         if (disposed) {
@@ -1805,7 +2376,7 @@ function SnapshotStage({
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [snapshot.id]);
+  }, [imageRevision, replayId, replaySessionId, snapshot.id]);
 
   const viewport = snapshot.environment.viewport as {
     width?: number;

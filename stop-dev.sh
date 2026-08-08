@@ -17,6 +17,7 @@ cd "$PROJECT_ROOT"
 
 API_PORT="${API_PORT:-54351}"
 WEB_PORT="${WEB_PORT:-5173}"
+RECORDER_AGENT_PORT="${RECORDER_AGENT_PORT:-54352}"
 STOP_INFRA="${STOP_INFRA:-0}"
 
 log()  { printf "\033[1;36m▶ %s\033[0m\n" "$*"; }
@@ -56,6 +57,7 @@ kill_pat() {
 }
 
 kill_port "前端 Vite" "$WEB_PORT"
+kill_port "Recorder Agent" "$RECORDER_AGENT_PORT"
 kill_port "后端 API"  "$API_PORT"
 kill_pat  "uvicorn"        "uvicorn server.main:app"
 kill_pat  "Celery worker"  "celery -A celery_app worker"

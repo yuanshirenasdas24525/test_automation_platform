@@ -4,23 +4,44 @@ from pathlib import Path
 
 import pytest
 
-from database.models import UiRecordingEvent, UiRecordingSession
+from database.models import (
+    UiElementLocator,
+    UiPageSnapshot,
+    UiRecordingEvent,
+    UiRecordingSession,
+)
 from recorder_agent.main import (
+    MobileRecorderRuntime,
+    MobileRecorderStartRequest,
     WebActionRequest,
     _RECORDER_SCRIPT,
     _mobile_element_from_source,
+    _normalized_replay_url,
+    _page_key,
     _package_artifact_path,
+    _redact_headers,
+    _redact_html,
+    _redact_text,
+    _redact_url,
+    _request_body_signature,
+    _restore_mobile_scenario_sync,
     _safe_replay_headers,
+    _save_mobile_scenario_sync,
 )
+from scripts.sanitize_ui_recording_data import _decode_legacy_html
+from server.api.ui_recordings import _mobile_locator_match_count
 from server.services.ui_recording_service import (
     UiRecordingControlLeaseError,
     UiRecordingTransitionError,
+    _normalized_request_url,
+    _request_body_hash,
     _visible_element_bounds,
     apply_control_action,
     compile_recording_step_draft,
     ensure_control_lease,
     update_control_lease,
 )
+from server.services.ui_recording_redaction import redact_context_payload
 
 
 def test_ui_recording_happy_path() -> None:
@@ -91,15 +112,174 @@ def test_offline_replay_headers_and_artifact_path_are_restricted(tmp_path: Path)
         _package_artifact_path(tmp_path, "../outside.bin")
 
 
+def test_recording_redaction_covers_headers_urls_bodies_and_html() -> None:
+    assert _redact_headers({
+        "Authorization": "Bearer live-token",
+        "Cookie": "session=secret",
+        "X-Trace": "trace-1",
+    }) == {
+        "Authorization": "***",
+        "Cookie": "***",
+        "X-Trace": "trace-1",
+    }
+    redacted_url = _redact_url(
+        "https://example.test/login?username=admin&access_token=live-token#fragment"
+    )
+    assert "live-token" not in redacted_url
+    assert "fragment" not in redacted_url
+
+    redacted_json = _redact_text(
+        '{"username":"admin","password":"s3cret","nested":{"refresh_token":"jwt"}}',
+        "application/json",
+    )
+    assert redacted_json is not None
+    assert "s3cret" not in redacted_json
+    assert "jwt" not in redacted_json
+    assert redacted_json.count("***") == 2
+
+    redacted_html = _redact_html(
+        '<form><input name="username" value="admin">'
+        '<input type="password" value="s3cret"></form>'
+    )
+    assert "s3cret" not in redacted_html
+    assert 'name="username" value="admin"' in redacted_html
+
+    server_safe = redact_context_payload({
+        "url": "https://example.test/login?token=live-token",
+        "headers": {"Authorization": "Bearer live-token", "X-Trace": "trace-1"},
+        "body": '{"username":"admin","password":"live-password"}',
+        "element": {"attributes": {"type": "password"}},
+        "value": "typed-password",
+    })
+    assert "live-token" not in str(server_safe)
+    assert "live-password" not in str(server_safe)
+    assert "typed-password" not in str(server_safe)
+    assert server_safe["value"] == "${password}"
+    assert _decode_legacy_html("%3Cmain%3E%E7%99%BB%E5%BD%95%3C%2Fmain%3E") == "<main>登录</main>"
+
+
+def test_offline_request_matching_preserves_business_query_and_ignores_secrets() -> None:
+    first = _normalized_replay_url(
+        "HTTPS://EXAMPLE.TEST/users?page=2&token=first&ts=100&status=active"
+    )
+    second = _normalized_replay_url(
+        "https://example.test/users?status=active&token=second&page=2&ts=200#ignored"
+    )
+    assert first == second
+    assert "page=2" in first
+    assert "status=active" in first
+    assert "first" not in first
+    assert "second" not in second
+
+    recorded = _request_body_signature(
+        '{"username":"admin","password":"recorded"}',
+        "application/json",
+    )
+    replayed = _request_body_signature(
+        '{"password":"typed-later","username":"admin"}',
+        "application/json",
+    )
+    assert recorded == replayed
+    assert _page_key("https://example.test/users?page=2&status=active") != _page_key(
+        "https://example.test/users?page=3&status=active"
+    )
+    assert _normalized_request_url(
+        "https://example.test/users?token=first&page=2&ts=100"
+    ) == _normalized_request_url(
+        "https://example.test/users?page=2&token=second&ts=200"
+    )
+    assert _request_body_hash('{"b":2,"a":1}') == _request_body_hash('{"a":1,"b":2}')
+
+
+def test_android_simulator_scenario_can_be_saved_and_restored(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_command(args: list[str]) -> tuple[int, str]:
+        calls.append(args)
+        return 0, "OK"
+
+    monkeypatch.setattr("recorder_agent.main._run_preflight_command", fake_command)
+    runtime = MobileRecorderRuntime(
+        session_id=19,
+        driver=object(),
+        platform="android",
+        udid="emulator-5554",
+        app_identifier="com.example.demo",
+    )
+    scenario = _save_mobile_scenario_sync(runtime)
+    assert scenario == {
+        "ready": True,
+        "restore_mode": "emulator_snapshot",
+        "snapshot_name": "ui-recorder-19",
+        "reason": None,
+    }
+
+    request = MobileRecorderStartRequest(
+        session_id=20,
+        platform="android",
+        appium_url="http://127.0.0.1:4723",
+        udid="emulator-5554",
+        restore_scenario=scenario,
+    )
+    restored = _restore_mobile_scenario_sync(request)
+    assert restored["restored"] is True
+    assert [call[-2] for call in calls] == ["save", "load"]
+
+
+def test_ios_simulator_scenario_restore_replaces_stale_app_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifact_root = tmp_path / "data" / "ui_recordings"
+    container = tmp_path / "simulators" / "ios-udid" / "app-data" / "container"
+    container.mkdir(parents=True)
+    (container / "state.json").write_text('{"screen":"home"}', encoding="utf-8")
+    monkeypatch.setattr("recorder_agent.main._PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("recorder_agent.main._ARTIFACT_ROOT", artifact_root)
+    monkeypatch.setattr(
+        "recorder_agent.main._run_preflight_command",
+        lambda _args: (0, str(container)),
+    )
+    runtime = MobileRecorderRuntime(
+        session_id=31,
+        driver=object(),
+        platform="ios",
+        udid="ios-udid",
+        app_identifier="com.example.demo",
+    )
+    scenario = _save_mobile_scenario_sync(runtime)
+    assert scenario["ready"] is True
+
+    (container / "state.json").write_text('{"screen":"changed"}', encoding="utf-8")
+    (container / "stale.tmp").write_text("stale", encoding="utf-8")
+    request = MobileRecorderStartRequest(
+        session_id=32,
+        platform="ios",
+        appium_url="http://127.0.0.1:4723",
+        udid="ios-udid",
+        app_identifier="com.example.demo",
+        restore_scenario=scenario,
+    )
+    restored = _restore_mobile_scenario_sync(request)
+
+    assert restored["restored"] is True
+    assert (container / "state.json").read_text(encoding="utf-8") == '{"screen":"home"}'
+    assert not (container / "stale.tmp").exists()
+
+
 def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> None:
     assert "__uiRecorderCollectElements" in _RECORDER_SCRIPT
     assert "__uiRecorderPageMeta" in _RECORDER_SCRIPT
     assert 'role="dialog"' in _RECORDER_SCRIPT
 
     click = WebActionRequest(action="click", x=120, y=240)
-    assert click.model_dump() == {"action": "click", "x": 120, "y": 240}
+    assert click.model_dump(exclude_defaults=True) == {"action": "click", "x": 120, "y": 240}
+    input_action = WebActionRequest(action="input", text="admin")
+    assert input_action.text == "admin"
+    scroll = WebActionRequest(action="scroll", delta_y=560)
+    assert scroll.delta_y == 560
     with pytest.raises(ValueError):
-        WebActionRequest(action="input", x=10, y=20)
+        WebActionRequest(action="select", x=10, y=20)
     assert _visible_element_bounds([
         {"fingerprint": "button", "attributes": {"bounds": {"x": 1, "y": 2}}},
         {"fingerprint": "invalid", "attributes": "bad"},
@@ -143,6 +323,27 @@ def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:
         "ios_class_chain",
         "xpath",
     }
+
+
+def test_mobile_locator_validation_supports_generated_absolute_xpath(tmp_path: Path) -> None:
+    tree = tmp_path / "android.xml"
+    tree.write_text(
+        """
+        <hierarchy>
+          <node class="android.widget.FrameLayout">
+            <node class="android.widget.Button" resource-id="com.demo:id/login" />
+          </node>
+        </hierarchy>
+        """,
+        encoding="utf-8",
+    )
+    snapshot = UiPageSnapshot(document_uri=str(tree))
+    locator = UiElementLocator(
+        strategy="xpath",
+        locator="/hierarchy[1]/node[1]/node[1]",
+    )
+
+    assert _mobile_locator_match_count(snapshot, locator) == 1
 
 
 def test_recording_events_compile_to_existing_runner_steps() -> None:
