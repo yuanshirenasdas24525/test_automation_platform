@@ -75,6 +75,19 @@ _RECORDER_SCRIPT = r"""
   if (window.__uiRecorderInstalled) return;
   window.__uiRecorderInstalled = true;
 
+  const INTERACTIVE_SELECTOR = [
+    "a[href]", "button", "input", "select", "textarea", "summary",
+    '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
+    '[role="tab"]', '[role="menuitem"]', '[contenteditable="true"]', "[data-testid]",
+  ].join(",");
+  const TEXT_SELECTOR = [
+    "h1", "h2", "h3", "h4", "h5", "h6", "p", "label", "legend", "caption",
+    "th", "td", "dt", "dd", "li", "span", "strong", "small", "code", "pre",
+    '[role="heading"]', '[role="cell"]', '[role="columnheader"]', '[role="rowheader"]',
+    '[role="status"]', '[role="alert"]',
+  ].join(",");
+  const LOCATABLE_TEXT_SELECTOR = `${INTERACTIVE_SELECTOR},${TEXT_SELECTOR}`;
+
   const escapeCss = (value) => {
     if (window.CSS && CSS.escape) return CSS.escape(String(value));
     return String(value).replace(/[^a-zA-Z0-9_-]/g, (ch) => `\\${ch}`);
@@ -122,7 +135,9 @@ _RECORDER_SCRIPT = r"""
   };
 
   const describe = (target) => {
-    const element = target && target.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+    const rawElement = target && target.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
+    const interactiveAncestor = rawElement?.closest?.(INTERACTIVE_SELECTOR);
+    const element = interactiveAncestor || rawElement;
     if (!element) return null;
     const tag = element.tagName.toLowerCase();
     const type = element.getAttribute("type") || element.getAttribute("role") || tag;
@@ -138,7 +153,8 @@ _RECORDER_SCRIPT = r"""
       : tag === "textarea" ? "textbox"
       : tag === "input" && ["checkbox", "radio"].includes(String(element.type || "").toLowerCase())
         ? String(element.type).toLowerCase()
-        : tag === "input" ? "textbox" : "";
+        : tag === "input" ? "textbox"
+        : /^h[1-6]$/.test(tag) ? "heading" : "";
     const role = explicitRole || implicitRole;
     const semanticName = aria || text || placeholder || name || testId || `${tag} 元素`;
     const locators = [];
@@ -152,7 +168,7 @@ _RECORDER_SCRIPT = r"""
     if (css && !locators.some((item) => item.strategy === "css" && item.locator === css)) {
       locators.push({ strategy: "css", locator: css, score: element.id ? 94 : 78 });
     }
-    if (text && ["button", "a", "label", "option"].includes(tag)) {
+    if (text && (element.matches(TEXT_SELECTOR) || ["button", "a", "label", "option"].includes(tag))) {
       locators.push({ strategy: tag === "a" ? "link" : "text", locator: text.slice(0, 80), score: 82 });
     }
     const xp = xpath(element);
@@ -190,7 +206,7 @@ _RECORDER_SCRIPT = r"""
       if (item.strategy === "name") return document.querySelectorAll(`[name="${String(item.locator).replace(/"/g, '\\"')}"]`).length;
       if (item.strategy === "link") return Array.from(document.querySelectorAll("a[href]"))
         .filter((element) => normalizedText(element) === item.locator).length;
-      if (item.strategy === "text") return Array.from(document.querySelectorAll("button,a,label,option"))
+      if (item.strategy === "text") return Array.from(document.querySelectorAll(LOCATABLE_TEXT_SELECTOR))
         .filter((element) => normalizedText(element) === item.locator).length;
       if (item.strategy === "xpath") return document.evaluate(
         item.locator, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null,
@@ -206,10 +222,11 @@ _RECORDER_SCRIPT = r"""
           combobox: "select",
           checkbox: 'input[type="checkbox"]',
           radio: 'input[type="radio"]',
+          heading: "h1,h2,h3,h4,h5,h6",
         }[role] || "[data-ui-recorder-no-match]";
         return Array.from(document.querySelectorAll(`[role="${escapeCss(role)}"],${implicit}`))
           .filter((element) => {
-            const name = (element.getAttribute("aria-label") || normalizedText(element) || element.getAttribute("placeholder") || "").trim();
+            const name = (element.getAttribute("aria-label") || normalizedText(element) || element.getAttribute("placeholder") || element.getAttribute("name") || element.getAttribute("data-testid") || "").trim();
             return name === accessibleName;
           }).length;
       }
@@ -307,6 +324,24 @@ _RECORDER_SCRIPT = r"""
     });
   }, true);
 
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (typeof window.__uiRecorderEmit !== "function") return;
+      void window.__uiRecorderEmit({
+        event_type: "environment.resize",
+        page_title: document.title,
+        url: location.href,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          device_pixel_ratio: window.devicePixelRatio,
+        },
+      });
+    }, 350);
+  }, true);
+
   const isVisible = (element) => {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
     const style = getComputedStyle(element);
@@ -326,17 +361,28 @@ _RECORDER_SCRIPT = r"""
     'dialog[open], [role="dialog"][aria-modal="true"], [aria-modal="true"]',
   )).find(isVisible) || null;
 
+  const isTextCandidate = (element) => {
+    if (!element.matches(TEXT_SELECTOR)) return false;
+    const interactiveAncestor = element.closest(INTERACTIVE_SELECTOR);
+    if (interactiveAncestor && interactiveAncestor !== element) return false;
+    const text = normalizedText(element);
+    if (!text || text.length > 300) return false;
+    const duplicateChild = Array.from(element.children).some(
+      (child) => child.matches(TEXT_SELECTOR) && normalizedText(child) === text,
+    );
+    if (duplicateChild) return false;
+    return Array.from(element.childNodes).some(
+      (node) => node.nodeType === Node.TEXT_NODE && String(node.textContent || "").trim(),
+    ) || element.children.length === 0;
+  };
+
   window.__uiRecorderCollectElements = () => {
     const modal = visibleModal();
     const root = modal || document;
-    const selector = [
-      "a[href]", "button", "input", "select", "textarea", "summary",
-      '[role="button"]', '[role="link"]', '[role="checkbox"]', '[role="radio"]',
-      '[role="tab"]', '[role="menuitem"]', '[contenteditable="true"]', "[data-testid]",
-    ].join(",");
-    return Array.from(root.querySelectorAll(selector))
+    return Array.from(root.querySelectorAll(LOCATABLE_TEXT_SELECTOR))
       .filter(isVisible)
-      .slice(0, 500)
+      .filter((element) => element.matches(INTERACTIVE_SELECTOR) || isTextCandidate(element))
+      .slice(0, 800)
       .map((element) => validateDescription(describe(element)))
       .filter(Boolean);
   };
@@ -645,6 +691,24 @@ class WebActionRequest(BaseModel):
     delta_y: int = Field(0, ge=-10000, le=10000)
 
 
+def _live_browser_launch_options(body: RecorderStartRequest) -> dict[str, Any]:
+    """生成可调整大小的有头浏览器启动参数。"""
+    options: dict[str, Any] = {
+        "headless": body.headless,
+        "slow_mo": body.slow_mo,
+    }
+    if not body.headless and body.browser == "chromium":
+        width = max(640, min(3840, int(body.viewport.get("width") or 1440)))
+        height = max(480, min(2160, int(body.viewport.get("height") or 900)))
+        options["args"] = [f"--window-size={width},{height}"]
+    return options
+
+
+def _live_browser_context_options(body: RecorderStartRequest) -> dict[str, Any]:
+    """有头模式关闭固定 viewport，使内容区跟随真实窗口缩放。"""
+    return {"viewport": body.viewport} if body.headless else {"no_viewport": True}
+
+
 class LocatorValidationRequest(BaseModel):
     strategy: str = Field(..., min_length=1, max_length=40)
     locator: str = Field(..., min_length=1, max_length=4000)
@@ -915,6 +979,8 @@ class RecorderRuntime:
             asyncio.create_task(self.capture_screenshot(page, event_type))
         if emitted and event_type in {"user.click", "user.input", "user.change", "user.submit"}:
             self.schedule_page_snapshot(page, event_type, delay_ms=300)
+        if emitted and event_type == "environment.resize":
+            self.schedule_page_snapshot(page, event_type, delay_ms=500)
 
     async def perform_web_action(self, body: WebActionRequest) -> None:
         """把平台画面动作转发给当前受控页面，并同步生成新状态快照。"""
@@ -1158,6 +1224,9 @@ class RecorderRuntime:
         visible_elements = await page.evaluate(
             "() => window.__uiRecorderCollectElements?.() || []",
         )
+        viewport = await page.evaluate(
+            "() => ({width: innerWidth, height: innerHeight, device_pixel_ratio: devicePixelRatio})",
+        )
         raw_storage = await page.evaluate(
             r"""() => ({
               origin: location.origin,
@@ -1223,7 +1292,12 @@ class RecorderRuntime:
         exact_fingerprint = hashlib.sha256(f"{url}\n{html}".encode("utf-8")).hexdigest()
         fingerprint = hashlib.sha256(
             json.dumps(
-                {"page_key": page_key, "state_name": state_name, "structure": structure_tokens},
+                {
+                    "page_key": page_key,
+                    "state_name": state_name,
+                    "structure": structure_tokens,
+                    "viewport": viewport,
+                },
                 ensure_ascii=False,
                 separators=(",", ":"),
             ).encode("utf-8")
@@ -1239,6 +1313,7 @@ class RecorderRuntime:
                 for item in reversed(self.page_records)
                 if item.get("page_key") == page_key
                 and item.get("state_name") == state_name
+                and item.get("viewport") == viewport
                 and _structure_similarity(
                     list(item.get("structure_tokens") or []),
                     structure_tokens,
@@ -1278,6 +1353,7 @@ class RecorderRuntime:
             "document_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
             "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest(),
             "capture_reason": reason,
+            "viewport": viewport if isinstance(viewport, dict) else {},
             "storage_state": storage_state,
             "visible_elements": normalized_elements,
             "visible_element_fingerprints": [
@@ -1901,6 +1977,10 @@ class OfflineReplayRuntime:
                     {"x": body.x, "y": body.y},
                 )
                 element = raw if isinstance(raw, dict) else None
+                if element is not None:
+                    seed = str(element.pop("fingerprint_seed", ""))
+                    if seed:
+                        element["fingerprint"] = hashlib.sha256(seed.encode("utf-8")).hexdigest()
             elif body.action == "click":
                 await self.page.mouse.click(body.x or 0, body.y or 0)
             elif body.action == "input":
@@ -1962,10 +2042,18 @@ class OfflineReplayRuntime:
                       const snapshot = document.evaluate(locator, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
                       nodes = Array.from({length: snapshot.snapshotLength}, (_, index) => snapshot.snapshotItem(index)).filter(Boolean);
                     } else if (strategy === 'link') nodes = Array.from(document.querySelectorAll('a')).filter((node) => (node.innerText || '').trim() === locator);
-                    else if (strategy === 'text') nodes = Array.from(document.querySelectorAll('button,a,label,option,[role]')).filter((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === locator);
+                    else if (strategy === 'text') nodes = Array.from(document.querySelectorAll('button,a,label,option,h1,h2,h3,h4,h5,h6,p,legend,caption,th,td,dt,dd,li,span,strong,small,code,pre,[role]')).filter((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === locator);
                     else if (strategy === 'role') {
                       const match = locator.match(/^role=([^;]+);name=(.*)$/);
-                      if (match) nodes = Array.from(document.querySelectorAll(`[role="${CSS.escape(match[1])}"],${match[1]}`)).filter((node) => (node.getAttribute('aria-label') || node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim() === match[2]);
+                      if (match) {
+                        const implicit = {
+                          button: 'button', link: 'a[href]',
+                          textbox: 'input:not([type="checkbox"]):not([type="radio"]),textarea',
+                          combobox: 'select', checkbox: 'input[type="checkbox"]',
+                          radio: 'input[type="radio"]', heading: 'h1,h2,h3,h4,h5,h6',
+                        }[match[1]] || '[data-ui-recorder-no-match]';
+                        nodes = Array.from(document.querySelectorAll(`[role="${CSS.escape(match[1])}"],${implicit}`)).filter((node) => (node.getAttribute('aria-label') || node.innerText || node.textContent || node.getAttribute('placeholder') || node.getAttribute('name') || node.getAttribute('data-testid') || '').replace(/\s+/g, ' ').trim() === match[2]);
+                      }
                     }
                     return {match_count: nodes.length, visible_count: nodes.filter(visible).length, error: null};
                   } catch (error) {
@@ -2267,11 +2355,8 @@ async def _start_runtime(body: RecorderStartRequest) -> RecorderRuntime:
     playwright = await async_playwright().start()
     browser_type = getattr(playwright, body.browser)
     try:
-        browser = await browser_type.launch(
-            headless=body.headless,
-            slow_mo=body.slow_mo,
-        )
-        context = await browser.new_context(viewport=body.viewport)
+        browser = await browser_type.launch(**_live_browser_launch_options(body))
+        context = await browser.new_context(**_live_browser_context_options(body))
     except Exception as exc:  # noqa: BLE001
         await playwright.stop()
         raise HTTPException(status_code=503, detail=f"浏览器启动失败：{exc}") from exc

@@ -11,13 +11,17 @@ from database.models import (
     UiRecordingEvent,
     UiRecordingSession,
 )
+from database.schemas.ui_recording import UiPageSnapshotPickRequest
 from recorder_agent.main import (
     MobileRecorderRuntime,
     MobileRecorderStartRequest,
+    RecorderStartRequest,
     WebActionRequest,
     _RECORDER_SCRIPT,
     _mobile_element_from_source,
     _legacy_replay_storage,
+    _live_browser_context_options,
+    _live_browser_launch_options,
     _normalized_replay_url,
     _page_key,
     _package_artifact_path,
@@ -323,6 +327,9 @@ def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> 
     assert "__uiRecorderCollectElements" in _RECORDER_SCRIPT
     assert "__uiRecorderPageMeta" in _RECORDER_SCRIPT
     assert 'role="dialog"' in _RECORDER_SCRIPT
+    assert "TEXT_SELECTOR" in _RECORDER_SCRIPT
+    assert '"h1", "h2", "h3"' in _RECORDER_SCRIPT
+    assert "environment.resize" in _RECORDER_SCRIPT
 
     click = WebActionRequest(action="click", x=120, y=240)
     assert click.model_dump(exclude_defaults=True) == {"action": "click", "x": 120, "y": 240}
@@ -332,10 +339,29 @@ def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> 
     assert scroll.delta_y == 560
     with pytest.raises(ValueError):
         WebActionRequest(action="select", x=10, y=20)
+    assert UiPageSnapshotPickRequest(x=120, y=240).model_dump() == {"x": 120, "y": 240}
     assert _visible_element_bounds([
         {"fingerprint": "button", "attributes": {"bounds": {"x": 1, "y": 2}}},
         {"fingerprint": "invalid", "attributes": "bad"},
     ]) == {"button": {"x": 1, "y": 2}}
+
+
+def test_headed_recorder_viewport_follows_resizable_window() -> None:
+    headed = RecorderStartRequest(
+        session_id=1,
+        target_url="https://example.test/login",
+        browser="chromium",
+        headless=False,
+        viewport={"width": 1440, "height": 900},
+    )
+    assert _live_browser_context_options(headed) == {"no_viewport": True}
+    assert _live_browser_launch_options(headed)["args"] == ["--window-size=1440,900"]
+
+    headless = headed.model_copy(update={"headless": True})
+    assert _live_browser_context_options(headless) == {
+        "viewport": {"width": 1440, "height": 900},
+    }
+    assert "args" not in _live_browser_launch_options(headless)
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

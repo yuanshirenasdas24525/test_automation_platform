@@ -42,6 +42,7 @@ from database.schemas.ui_recording import (
     UiElementLocatorCreate,
     UiElementLocatorUpdate,
     UiElementUpdate,
+    UiPageSnapshotPickRequest,
     UiPageSnapshotUpdate,
     UiRecordingControlRequest,
     UiRecordingCreate,
@@ -67,6 +68,7 @@ from server.services.ui_recording_service import (
     ensure_recording_context_materialized,
     finalize_recording_context,
     is_control_command_processed,
+    materialize_snapshot_element,
     serialize_context_artifact,
     serialize_context_session,
     serialize_element,
@@ -1271,6 +1273,67 @@ def get_ui_page_snapshot_screenshot(
     if not artifact_path.is_file():
         raise HTTPException(status_code=404, detail="页面截图文件不存在")
     return FileResponse(artifact_path, media_type="image/png", filename=f"snapshot-{snapshot.id}.png")
+
+
+@router.post("/ui-page-snapshots/{snapshot_id}/pick")
+def pick_ui_page_snapshot_element(
+    snapshot_id: int,
+    body: UiPageSnapshotPickRequest,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """在完成态截图上只读拾取元素，不执行页面点击。"""
+    snapshot = db.session.get(UiPageSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="页面快照不存在")
+    assert_project_access(db, current_user, snapshot.project_id)
+    if snapshot.platform != "web" or not snapshot.url:
+        raise HTTPException(status_code=409, detail="当前页面快照不支持 Web 只读拾取")
+    session = db.session.get(UiRecordingSession, snapshot.session_id)
+    if session is None or session.status != "completed":
+        raise HTTPException(status_code=409, detail="录制完成后才能在快照中只读拾取")
+
+    viewport = dict((snapshot.environment or {}).get("viewport") or {})
+    replay_id = ""
+    try:
+        replay = start_web_replay(
+            session.id,
+            browser="chromium",
+            headless=True,
+            entry_url=snapshot.url,
+            page_fingerprint=snapshot.fingerprint,
+            viewport={
+                "width": int(viewport.get("width") or 1440),
+                "height": int(viewport.get("height") or 900),
+            },
+        )
+        replay_id = str(replay.get("replay_id") or "")
+        result = perform_web_replay_action(
+            replay_id,
+            {"action": "pick", "x": body.x, "y": body.y},
+        )
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if replay_id:
+            try:
+                stop_web_replay(replay_id)
+            except RecorderAgentError:
+                pass
+
+    raw_element = result.get("element") if isinstance(result, dict) else None
+    if not isinstance(raw_element, dict):
+        raise HTTPException(status_code=422, detail="该坐标没有可拾取元素")
+    try:
+        element = materialize_snapshot_element(
+            db.session,
+            session,
+            snapshot,
+            raw_element,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "success", "data": serialize_element(element)}
 
 
 @router.patch("/ui-page-snapshots/{snapshot_id}")

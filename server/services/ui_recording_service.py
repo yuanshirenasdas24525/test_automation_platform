@@ -320,7 +320,7 @@ def _visible_element_bounds(items: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(items, list):
         return {}
     result: dict[str, dict[str, Any]] = {}
-    for item in items[:500]:
+    for item in items[:800]:
         if not isinstance(item, dict) or not item.get("fingerprint"):
             continue
         attributes = item.get("attributes")
@@ -405,13 +405,19 @@ def _materialize_snapshots(
             resource_manifest={
                 "visible_element_fingerprints": list(
                     payload.get("visible_element_fingerprints") or [],
-                )[:500],
+                )[:800],
                 "visible_element_bounds": _visible_element_bounds(
                     payload.get("visible_elements"),
                 ),
                 "modal_open": bool(payload.get("modal_open")),
             },
-            environment=environment,
+            environment={
+                **environment,
+                "viewport": (
+                    dict(payload.get("viewport") or {})
+                    or dict(environment.get("viewport") or {})
+                ),
+            },
             limitations=[],
         )
         db.add(snapshot)
@@ -556,7 +562,7 @@ def _materialize_elements(
         if event.event_type == "page.snapshot":
             raw_items.extend(
                 item
-                for item in list(payload.get("visible_elements") or [])[:500]
+                for item in list(payload.get("visible_elements") or [])[:800]
                 if isinstance(item, dict)
             )
         if not raw_items:
@@ -627,8 +633,17 @@ def _materialize_elements(
                 )[:100]
                 element.attributes = {**(element.attributes or {}), **attributes}
                 if snapshot is not None:
-                    element.first_snapshot_id = element.first_snapshot_id or snapshot.id
-                    element.last_snapshot_id = snapshot.id
+                    snapshot_ids = [
+                        item
+                        for item in (
+                            element.first_snapshot_id,
+                            element.last_snapshot_id,
+                            snapshot.id,
+                        )
+                        if item is not None
+                    ]
+                    element.first_snapshot_id = min(snapshot_ids)
+                    element.last_snapshot_id = max(snapshot_ids)
 
             locator_items = raw.get("locators") if isinstance(raw.get("locators"), list) else []
             for item in locator_items:
@@ -685,6 +700,85 @@ def _materialize_elements(
                 element.last_verified_at = datetime.now()
             if raw is raw_element:
                 event.element_id = element.id
+
+
+def materialize_snapshot_element(
+    db: Session,
+    session: UiRecordingSession,
+    snapshot: UiPageSnapshot,
+    raw_element: dict[str, Any],
+) -> UiElement:
+    """把只读快照坐标拾取到的元素补充进项目元素库。"""
+    fingerprint = str(raw_element.get("fingerprint") or "").strip()
+    if not fingerprint:
+        raise ValueError("拾取结果缺少元素指纹")
+    synthetic_event = UiRecordingEvent(
+        session_id=session.id,
+        event_key=f"snapshot-pick-{fingerprint[:32]}",
+        sequence_no=0,
+        event_type="page.snapshot",
+        source="snapshot",
+        severity="info",
+        page_key=snapshot.page_key,
+        occurred_at=datetime.now(),
+        snapshot_after_id=snapshot.id,
+        payload={
+            "page_name": snapshot.page_name,
+            "visible_elements": [raw_element],
+        },
+    )
+    _materialize_elements(db, session, [synthetic_event])
+    element = (
+        db.query(UiElement)
+        .filter(
+            UiElement.project_id == session.project_id,
+            UiElement.platform == session.platform,
+            UiElement.page_key == snapshot.page_key,
+            UiElement.fingerprint == fingerprint,
+        )
+        .first()
+    )
+    if element is None:
+        raise ValueError("拾取元素未能写入元素库")
+
+    attributes = (
+        raw_element.get("attributes")
+        if isinstance(raw_element.get("attributes"), dict)
+        else {}
+    )
+    occurrence = (
+        db.query(UiElementOccurrence)
+        .filter(
+            UiElementOccurrence.element_id == element.id,
+            UiElementOccurrence.snapshot_id == snapshot.id,
+        )
+        .first()
+    )
+    if occurrence is None:
+        db.add(UiElementOccurrence(
+            session_id=session.id,
+            snapshot_id=snapshot.id,
+            element_id=element.id,
+            bounds=dict(attributes.get("bounds") or {}),
+            attributes=attributes,
+            locators=list(raw_element.get("locators") or []),
+        ))
+
+    manifest = dict(snapshot.resource_manifest or {})
+    fingerprints = list(manifest.get("visible_element_fingerprints") or [])
+    if fingerprint not in fingerprints:
+        fingerprints.append(fingerprint)
+    bounds = dict(manifest.get("visible_element_bounds") or {})
+    if isinstance(attributes.get("bounds"), dict):
+        bounds[fingerprint] = dict(attributes["bounds"])
+    snapshot.resource_manifest = {
+        **manifest,
+        "visible_element_fingerprints": fingerprints[:800],
+        "visible_element_bounds": bounds,
+    }
+    db.flush()
+    db.expire(element, ["locators"])
+    return element
 
 
 _ACTION_EVENT_TYPES = {
@@ -895,7 +989,7 @@ def _materialize_occurrences_actions_context(
                     previous_action.duration_ms = max(0, event.monotonic_ms - started_ms)
             snapshot = db.get(UiPageSnapshot, event.snapshot_after_id)
             if snapshot is not None:
-                for raw in list(payload.get("visible_elements") or [])[:500]:
+                for raw in list(payload.get("visible_elements") or [])[:800]:
                     if not isinstance(raw, dict) or not raw.get("fingerprint"):
                         continue
                     element = (

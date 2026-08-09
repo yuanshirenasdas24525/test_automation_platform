@@ -93,6 +93,13 @@ class UiRecordingReplayActionRequest(BaseModel):
     delta_y: int = Field(0, ge=-10000, le=10000)
 
 
+class UiPageSnapshotPickRequest(BaseModel):
+    """在只读页面快照中按坐标拾取元素。"""
+
+    x: int = Field(..., ge=0, le=10000)
+    y: int = Field(..., ge=0, le=10000)
+
+
 class UiRecordingWebActionRequest(BaseModel):
     """Web 录制预览画面的远程动作及控制身份。"""
 

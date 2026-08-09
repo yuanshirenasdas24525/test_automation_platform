@@ -564,7 +564,12 @@ export function UiElementLibraryWorkspace({
   const leaseSessionId = session?.id ?? null;
   const leaseSessionStatus = session?.status ?? null;
   const recorderActive = session != null && ACTIVE_STATUSES.includes(session.status);
-  const effectivePickMode = recorderActive ? pickMode : offlinePickMode;
+  const staticInspectMode = platform === "web" && !recorderActive && embeddedReplay == null;
+  const effectivePickMode = recorderActive
+    ? pickMode
+    : embeddedReplay
+      ? offlinePickMode
+      : staticInspectMode;
 
   useEffect(() => {
     replayRef.current = embeddedReplay;
@@ -854,6 +859,19 @@ export function UiElementLibraryWorkspace({
       queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] }),
     ]);
   };
+
+  const staticPickMutation = useMutation({
+    mutationFn: ({ targetSnapshotId, x, y }: {
+      targetSnapshotId: number;
+      x: number;
+      y: number;
+    }) => uiRecordingsApi.pickSnapshot(targetSnapshotId, { x, y }),
+    onSuccess: async (element) => {
+      await refreshElementAssets();
+      setSelectedElementId(element.id);
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
 
   const elementUpdateMutation = useMutation({
     mutationFn: ({
@@ -1451,42 +1469,50 @@ export function UiElementLibraryWorkspace({
                 </Select>
               ) : null}
               {platform === "web" ? (
-                <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
-                  <button
-                    type="button"
-                    disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
-                    onClick={() => {
-                      if (recorderActive && session && pickMode) {
-                        pickModeMutation.mutate({ sessionId: session.id, enabled: false });
-                      } else if (embeddedReplay) {
-                        setOfflinePickMode(false);
-                      }
-                    }}
-                    className={cn(
-                      "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                      !effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
-                    )}
-                  >
-                    浏览页面
-                  </button>
-                  <button
-                    type="button"
-                    disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
-                    onClick={() => {
-                      if (recorderActive && session && !pickMode) {
-                        pickModeMutation.mutate({ sessionId: session.id, enabled: true });
-                      } else if (embeddedReplay) {
-                        setOfflinePickMode(true);
-                      }
-                    }}
-                    className={cn(
-                      "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                      effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
-                    )}
-                  >
-                    拾取元素
-                  </button>
-                </div>
+                staticInspectMode ? (
+                  <div className="inline-flex rounded-md border bg-muted/40 p-0.5" title="点击页面元素只读取定位信息，不会执行页面操作">
+                    <span className="rounded bg-background px-2 py-1 font-medium text-primary shadow-sm">
+                      只读拾取
+                    </span>
+                  </div>
+                ) : (
+                  <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
+                    <button
+                      type="button"
+                      disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
+                      onClick={() => {
+                        if (recorderActive && session && pickMode) {
+                          pickModeMutation.mutate({ sessionId: session.id, enabled: false });
+                        } else if (embeddedReplay) {
+                          setOfflinePickMode(false);
+                        }
+                      }}
+                      className={cn(
+                        "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
+                        !effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                      )}
+                    >
+                      浏览页面
+                    </button>
+                    <button
+                      type="button"
+                      disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
+                      onClick={() => {
+                        if (recorderActive && session && !pickMode) {
+                          pickModeMutation.mutate({ sessionId: session.id, enabled: true });
+                        } else if (embeddedReplay) {
+                          setOfflinePickMode(true);
+                        }
+                      }}
+                      className={cn(
+                        "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
+                        effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
+                      )}
+                    >
+                      拾取元素
+                    </button>
+                  </div>
+                )
               ) : null}
               {activePage ? (
                 <Button
@@ -1577,9 +1603,10 @@ export function UiElementLibraryWorkspace({
                       selectedElementId={selectedElement?.id ?? null}
                       onSelect={setSelectedElementId}
                       pickMode={effectivePickMode}
-                      actionPending={webActionMutation.isPending || replayActionMutation.isPending}
+                      inspectOnly={staticInspectMode}
+                      actionPending={webActionMutation.isPending || replayActionMutation.isPending || staticPickMutation.isPending}
                       canInteract={
-                        (recorderActive && hasControl) || embeddedReplay != null
+                        staticInspectMode || (recorderActive && hasControl) || embeddedReplay != null
                       }
                       replaySessionId={embeddedReplay?.session_id ?? null}
                       replayId={embeddedReplay?.replay_id ?? null}
@@ -1598,6 +1625,12 @@ export function UiElementLibraryWorkspace({
                             y,
                             effectivePickMode ? "pick" : "click",
                           );
+                        } else if (staticInspectMode && activeSnapshot) {
+                          staticPickMutation.mutate({
+                            targetSnapshotId: activeSnapshot.id,
+                            x,
+                            y,
+                          });
                         } else if (session) {
                           webActionMutation.mutate({
                             sessionId: session.id,
@@ -2523,6 +2556,7 @@ function SnapshotStage({
   selectedElementId,
   onSelect,
   pickMode,
+  inspectOnly,
   actionPending,
   canInteract,
   replaySessionId,
@@ -2539,6 +2573,7 @@ function SnapshotStage({
   selectedElementId: number | null;
   onSelect: (id: number) => void;
   pickMode: boolean;
+  inspectOnly: boolean;
   actionPending: boolean;
   canInteract: boolean;
   replaySessionId: number | null;
@@ -2685,6 +2720,13 @@ function SnapshotStage({
           <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
             <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
               <Loader2 className="h-3 w-3 animate-spin" />正在同步新页面状态…
+            </span>
+          </div>
+        ) : null}
+        {inspectOnly && !actionPending ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+            <span className="rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
+              只读拾取：点击按钮、输入框或文字查看定位方式
             </span>
           </div>
         ) : null}

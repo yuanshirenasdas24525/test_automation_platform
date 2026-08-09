@@ -2568,6 +2568,12 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
+  pickSnapshot(snapshotId: number, payload: { x: number; y: number }) {
+    return request<UiElement>(`/api/ui-page-snapshots/${snapshotId}/pick`, {
+      method: "POST",
+      body: payload,
+    });
+  },
   deletePageGroup(args: { projectId: number; platform: UiPlatform; pageKey: string }) {
     const qs = new URLSearchParams({
       project_id: String(args.projectId),
