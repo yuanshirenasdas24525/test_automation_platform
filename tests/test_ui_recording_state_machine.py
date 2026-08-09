@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,14 +17,17 @@ from recorder_agent.main import (
     WebActionRequest,
     _RECORDER_SCRIPT,
     _mobile_element_from_source,
+    _legacy_replay_storage,
     _normalized_replay_url,
     _page_key,
     _package_artifact_path,
     _redact_headers,
     _redact_html,
+    _redact_storage_value,
     _redact_text,
     _redact_url,
     _request_body_signature,
+    _replay_storage_script,
     _restore_mobile_scenario_sync,
     _safe_replay_headers,
     _save_mobile_scenario_sync,
@@ -156,6 +160,54 @@ def test_recording_redaction_covers_headers_urls_bodies_and_html() -> None:
     assert "typed-password" not in str(server_safe)
     assert server_safe["value"] == "${password}"
     assert _decode_legacy_html("%3Cmain%3E%E7%99%BB%E5%BD%95%3C%2Fmain%3E") == "<main>登录</main>"
+
+
+def test_offline_storage_redacts_camel_case_tokens_and_restores_legacy_login() -> None:
+    assert _redact_storage_value("pm.accessToken", "live-access-token") == "***"
+    assert _redact_storage_value("pm.refreshToken", "live-refresh-token") == "***"
+    current_user = _redact_storage_value(
+        "pm.currentUser",
+        json.dumps({
+            "user": {"id": 7, "username": "admin"},
+            "nested": {"access_token": "live-token"},
+        }),
+    )
+    assert "admin" in current_user
+    assert "live-token" not in current_user
+
+    manifest = {
+        "mocks": [{
+            "method": "POST",
+            "url": "https://example.test/api/auth/login",
+            "response": {
+                "status": 200,
+                "body": json.dumps({
+                    "status": "success",
+                    "data": {
+                        "access_token": "***",
+                        "refresh_token": "***",
+                        "user": {
+                            "id": 7,
+                            "username": "admin",
+                            "role_codes": ["admin"],
+                        },
+                    },
+                }),
+            },
+        }],
+    }
+    storage = _legacy_replay_storage(manifest, "https://example.test/projects")
+    assert storage["origin"] == "https://example.test"
+    assert storage["local_storage"]["pm.accessToken"] == "offline-replay-token"
+    persisted = json.loads(storage["local_storage"]["pm.currentUser"])
+    assert persisted["user"]["username"] == "admin"
+    assert persisted["activeRole"] == "admin"
+    assert _legacy_replay_storage(manifest, "https://example.test/login") == {}
+
+    script = _replay_storage_script(storage)
+    assert "location.origin !== state.origin" in script
+    assert "localStorage.setItem" in script
+    assert "live-token" not in script
 
 
 def test_offline_request_matching_preserves_business_query_and_ignores_secrets() -> None:

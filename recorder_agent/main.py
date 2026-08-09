@@ -399,7 +399,8 @@ def _redact_headers(headers: dict[str, str]) -> dict[str, str]:
 
 
 def _is_sensitive_key(value: str) -> bool:
-    normalized = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
+    expanded = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", value.strip())
+    normalized = re.sub(r"[^a-z0-9]+", "_", expanded.lower()).strip("_")
     if normalized in _SENSITIVE_KEY_PARTS:
         return True
     return any(
@@ -425,6 +426,21 @@ def _redact_value(value: Any, *, key: str = "") -> Any:
         text = re.sub(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}\b", "***", text)
         return text
     return value
+
+
+def _redact_storage_value(key: str, value: str) -> str:
+    """脱敏浏览器存储值，同时保留前端恢复运行所需的数据结构。"""
+    if _is_sensitive_key(key):
+        return "***"
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return str(_redact_value(value, key=key))[:20_000]
+    return json.dumps(
+        _redact_value(parsed, key=key),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )[:20_000]
 
 
 def _redact_url(value: str) -> str:
@@ -1142,6 +1158,36 @@ class RecorderRuntime:
         visible_elements = await page.evaluate(
             "() => window.__uiRecorderCollectElements?.() || []",
         )
+        raw_storage = await page.evaluate(
+            r"""() => ({
+              origin: location.origin,
+              local_storage: Object.fromEntries(
+                Array.from({length: localStorage.length}, (_, index) => {
+                  const key = localStorage.key(index);
+                  return key == null ? null : [key, localStorage.getItem(key) || ''];
+                }).filter(Boolean),
+              ),
+              session_storage: Object.fromEntries(
+                Array.from({length: sessionStorage.length}, (_, index) => {
+                  const key = sessionStorage.key(index);
+                  return key == null ? null : [key, sessionStorage.getItem(key) || ''];
+                }).filter(Boolean),
+              ),
+            })""",
+        )
+        if not isinstance(raw_storage, dict):
+            raw_storage = {}
+        storage_state = {
+            "origin": str(raw_storage.get("origin") or ""),
+            "local_storage": {
+                str(key)[:500]: _redact_storage_value(str(key), str(value))
+                for key, value in dict(raw_storage.get("local_storage") or {}).items()
+            },
+            "session_storage": {
+                str(key)[:500]: _redact_storage_value(str(key), str(value))
+                for key, value in dict(raw_storage.get("session_storage") or {}).items()
+            },
+        }
         structure_tokens = await page.evaluate(
             r"""() => Array.from(document.querySelectorAll('*')).slice(0, 5000).map((element) => {
               const style = getComputedStyle(element);
@@ -1232,6 +1278,7 @@ class RecorderRuntime:
             "document_sha256": hashlib.sha256(html.encode("utf-8")).hexdigest(),
             "screenshot_sha256": hashlib.sha256(screenshot_bytes).hexdigest(),
             "capture_reason": reason,
+            "storage_state": storage_state,
             "visible_elements": normalized_elements,
             "visible_element_fingerprints": [
                 item["fingerprint"] for item in normalized_elements
@@ -1798,6 +1845,45 @@ class OfflineReplayRuntime:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_activity_monotonic: float = field(default_factory=time.monotonic)
 
+    async def active_element(self) -> dict[str, Any] | None:
+        """返回当前真实焦点元素，供截图画布叠加可输入控件。"""
+        raw = await self.page.evaluate(
+            r"""() => {
+              const element = document.activeElement;
+              if (!element || element === document.body || element === document.documentElement) return null;
+              const tag = element.tagName.toLowerCase();
+              const inputType = tag === 'input'
+                ? String(element.getAttribute('type') || 'text').toLowerCase()
+                : tag;
+              const blockedInputTypes = new Set([
+                'button', 'checkbox', 'color', 'file', 'hidden', 'image',
+                'radio', 'range', 'reset', 'submit',
+              ]);
+              const editable = !element.disabled && !element.readOnly && (
+                tag === 'textarea'
+                || (tag === 'input' && !blockedInputTypes.has(inputType))
+                || element.isContentEditable
+              );
+              const rect = element.getBoundingClientRect();
+              return {
+                editable,
+                tag,
+                input_type: inputType,
+                id: element.id || null,
+                name: element.getAttribute('name') || null,
+                placeholder: element.getAttribute('placeholder') || null,
+                aria_label: element.getAttribute('aria-label') || null,
+                bounds: {
+                  x: Math.max(0, rect.x),
+                  y: Math.max(0, rect.y),
+                  width: Math.max(0, rect.width),
+                  height: Math.max(0, rect.height),
+                },
+              };
+            }""",
+        )
+        return raw if isinstance(raw, dict) else None
+
     async def perform_action(self, body: WebActionRequest) -> dict[str, Any]:
         """在离线浏览器中执行远程动作，并返回更新后的页面状态。"""
         if self.page.is_closed():
@@ -1843,6 +1929,7 @@ class OfflineReplayRuntime:
                 "title": await self.page.title(),
                 "stats": dict(self.stats),
                 "element": element,
+                "active_element": await self.active_element(),
             }
 
     async def screenshot(self) -> bytes:
@@ -1911,6 +1998,58 @@ _SESSIONS: dict[int, RecorderRuntime | MobileRecorderRuntime] = {}
 _REPLAYS: dict[str, OfflineReplayRuntime] = {}
 
 
+def _legacy_replay_storage(manifest: dict[str, Any], entry_url: str) -> dict[str, Any]:
+    """为没有存储快照的旧离线包，从成功登录响应恢复最小登录态。"""
+    if urlparse(entry_url).path.rstrip("/") == "/login":
+        return {}
+    for exchange in manifest.get("mocks") or []:
+        response = exchange.get("response") or {}
+        if (
+            str(exchange.get("method") or "GET").upper() != "POST"
+            or not urlparse(str(exchange.get("url") or "")).path.endswith("/auth/login")
+            or not 200 <= int(response.get("status") or 0) < 300
+        ):
+            continue
+        try:
+            payload = json.loads(str(response.get("body") or "{}"))
+        except (TypeError, ValueError):
+            continue
+        data = payload.get("data") if isinstance(payload, dict) else None
+        user = data.get("user") if isinstance(data, dict) else None
+        if not isinstance(user, dict):
+            continue
+        roles = user.get("role_codes") if isinstance(user.get("role_codes"), list) else []
+        current_user = {
+            "user": user,
+            "activeRole": roles[0] if roles else None,
+        }
+        return {
+            "origin": f"{urlparse(entry_url).scheme}://{urlparse(entry_url).netloc}",
+            "local_storage": {
+                "pm.accessToken": "offline-replay-token",
+                "pm.refreshToken": "offline-replay-refresh-token",
+                "pm.currentUser": json.dumps(current_user, ensure_ascii=False, separators=(",", ":")),
+            },
+            "session_storage": {},
+        }
+    return {}
+
+
+def _replay_storage_script(storage_state: dict[str, Any]) -> str:
+    """生成限定同源执行的浏览器存储恢复脚本。"""
+    payload = json.dumps(storage_state, ensure_ascii=False).replace("</", "<\\/")
+    return f"""(() => {{
+      const state = {payload};
+      if (!state.origin || location.origin !== state.origin) return;
+      for (const [key, value] of Object.entries(state.local_storage || {{}})) {{
+        localStorage.setItem(key, String(value));
+      }}
+      for (const [key, value] of Object.entries(state.session_storage || {{}})) {{
+        sessionStorage.setItem(key, String(value));
+      }}
+    }})();"""
+
+
 async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplayRuntime, dict[str, Any]]:
     session_root = _ARTIFACT_ROOT / f"session_{body.session_id}"
     manifest_path = session_root / "offline" / "manifest.json"
@@ -1963,6 +2102,13 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
         if selected_index is None:
             raise HTTPException(status_code=422, detail="指定页面状态不属于当前离线回放包")
         page_indexes[entry_key] = selected_index
+    entry_candidates = page_groups.get(entry_key) or []
+    entry_index = min(page_indexes.get(entry_key, 0), max(0, len(entry_candidates) - 1))
+    entry_page_record = entry_candidates[entry_index] if entry_candidates else {}
+    replay_storage = entry_page_record.get("storage_state") or _legacy_replay_storage(
+        manifest,
+        entry_url,
+    )
     resources = {
         _normalized_replay_url(str(item["url"])): item
         for item in manifest.get("resources") or []
@@ -2081,6 +2227,8 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
 
     try:
         await context.route("**/*", route_offline)
+        if replay_storage:
+            await context.add_init_script(script=_replay_storage_script(replay_storage))
         await context.add_init_script(script=_RECORDER_SCRIPT)
         page = await context.new_page()
         await page.goto(entry_url, wait_until="domcontentloaded", timeout=60_000)
@@ -2796,18 +2944,23 @@ async def stop_session(session_id: int):
 @app.post("/replays", dependencies=[Depends(_authorize)])
 async def start_replay(body: ReplayStartRequest):
     runtime, manifest = await _start_offline_replay(body)
+    active_element = await runtime.active_element()
     return {
         "status": "success",
         "data": {
             "replay_id": runtime.replay_id,
             "session_id": body.session_id,
-            "entry_url": manifest.get("entry_url"),
+            "entry_url": runtime.page.url,
             "page_count": len(manifest.get("pages") or []),
             "resource_count": len(manifest.get("resources") or []),
             "mock_count": len(manifest.get("mocks") or []),
             "offline_enforced": True,
             "integrity_verified": True,
             "limitations": manifest.get("limitations") or [],
+            "url": runtime.page.url,
+            "title": await runtime.page.title(),
+            "stats": dict(runtime.stats),
+            "active_element": active_element,
         },
     }
 
@@ -2864,6 +3017,7 @@ async def get_replay(replay_id: str):
     runtime = _REPLAYS.get(replay_id)
     if runtime is None:
         raise HTTPException(status_code=404, detail="离线回放会话不存在")
+    active_element = await runtime.active_element()
     return {
         "status": "success",
         "data": {
@@ -2872,6 +3026,7 @@ async def get_replay(replay_id: str):
             "url": runtime.page.url,
             "title": await runtime.page.title(),
             "stats": dict(runtime.stats),
+            "active_element": active_element,
         },
     }
 

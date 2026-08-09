@@ -249,6 +249,23 @@ export interface UiOfflineReplay {
     misses: number;
   };
   element?: Record<string, unknown> | null;
+  active_element?: UiReplayActiveElement | null;
+}
+
+export interface UiReplayActiveElement {
+  editable: boolean;
+  tag: string;
+  input_type: string;
+  id: string | null;
+  name: string | null;
+  placeholder: string | null;
+  aria_label: string | null;
+  bounds: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 }
 
 export interface UiPageSnapshot {

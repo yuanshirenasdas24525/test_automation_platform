@@ -63,6 +63,7 @@ import type {
   UiOfflineReplay,
   UiPageSnapshot,
   UiPlatform,
+  UiReplayActiveElement,
   UiRecordingEvent,
   UiRecordingSession,
   UiRecordingStepDraft,
@@ -312,6 +313,7 @@ export function UiElementLibraryWorkspace({
   const [selectedPackageId, setSelectedPackageId] = useState("none");
   const [mobileInput, setMobileInput] = useState("");
   const [webInput, setWebInput] = useState("");
+  const [replayInputDirty, setReplayInputDirty] = useState(false);
   const [embeddedReplay, setEmbeddedReplay] = useState<UiOfflineReplay | null>(null);
   const [replayRevision, setReplayRevision] = useState(0);
   const [offlinePickMode, setOfflinePickMode] = useState(false);
@@ -353,6 +355,7 @@ export function UiElementLibraryWorkspace({
     setSelectedPackageId("none");
     setMobileInput("");
     setWebInput("");
+    setReplayInputDirty(false);
     setOfflinePickMode(false);
     setStepDraft(null);
     setDraftModuleId("");
@@ -774,9 +777,11 @@ export function UiElementLibraryWorkspace({
       });
     },
     onSuccess: (replay) => {
-      const activeReplay = { ...replay, url: replay.entry_url };
+      const activeReplay = { ...replay, url: replay.url ?? replay.entry_url };
       replayRef.current = activeReplay;
       setEmbeddedReplay(activeReplay);
+      setWebInput("");
+      setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
       setOfflinePickMode(false);
       toast.success(
@@ -805,11 +810,15 @@ export function UiElementLibraryWorkspace({
         { action, ...payload },
       );
     },
-    onSuccess: (next) => {
+    onSuccess: (next, variables) => {
       const merged = { ...embeddedReplay, ...next } as UiOfflineReplay;
       replayRef.current = merged;
       setEmbeddedReplay(merged);
       setReplayRevision((value) => value + 1);
+      if (variables.action !== "input") {
+        setWebInput("");
+        setReplayInputDirty(false);
+      }
       if (next.url) {
         const matchedPage = pages.find((page) =>
           page.snapshots.some((snapshot) => snapshot.url === next.url),
@@ -833,6 +842,8 @@ export function UiElementLibraryWorkspace({
       replayRef.current = null;
       setEmbeddedReplay(null);
       setOfflinePickMode(false);
+      setWebInput("");
+      setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
     },
   });
@@ -1060,10 +1071,54 @@ export function UiElementLibraryWorkspace({
     payload: { text?: string; delta_x?: number; delta_y?: number } = {},
   ) => {
     if (embeddedReplay) {
-      replayActionMutation.mutate({ action, ...payload });
+      const active = embeddedReplay.active_element;
+      const inputCoordinates = action === "input" && active?.editable
+        ? {
+            x: Math.round(active.bounds.x + active.bounds.width / 2),
+            y: Math.round(active.bounds.y + active.bounds.height / 2),
+          }
+        : {};
+      replayActionMutation.mutate({ action, ...payload, ...inputCoordinates });
     } else if (session && recorderActive) {
       webActionMutation.mutate({ sessionId: session.id, action, ...payload });
     }
+  };
+
+  const performReplayCanvasAction = async (
+    x: number,
+    y: number,
+    action: "click" | "pick",
+  ) => {
+    const replay = replayRef.current;
+    const active = replay?.active_element;
+    if (replay && replayInputDirty && active?.editable) {
+      try {
+        await replayActionMutation.mutateAsync({
+          action: "input",
+          text: webInput,
+          x: Math.round(active.bounds.x + active.bounds.width / 2),
+          y: Math.round(active.bounds.y + active.bounds.height / 2),
+        });
+        setWebInput("");
+        setReplayInputDirty(false);
+      } catch {
+        return;
+      }
+    }
+    replayActionMutation.mutate({ action, x, y });
+  };
+
+  const submitReplayInput = () => {
+    const active = replayRef.current?.active_element;
+    if (!active?.editable) return;
+    replayActionMutation.mutate({
+      action: "input",
+      text: webInput,
+      x: Math.round(active.bounds.x + active.bounds.width / 2),
+      y: Math.round(active.bounds.y + active.bounds.height / 2),
+    });
+    setWebInput("");
+    setReplayInputDirty(false);
   };
 
   if (!open) return null;
@@ -1469,24 +1524,37 @@ export function UiElementLibraryWorkspace({
                   {(recorderActive || embeddedReplay) && !effectivePickMode ? (
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background px-3">
                       <Input
+                        type={embeddedReplay?.active_element?.input_type === "password" ? "password" : "text"}
+                        autoComplete="off"
                         value={webInput}
-                        onChange={(event) => setWebInput(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Enter" || !webInput) return;
-                          performWebToolbarAction("input", { text: webInput });
-                          setWebInput("");
+                        onChange={(event) => {
+                          setWebInput(event.target.value);
+                          if (embeddedReplay?.active_element?.editable) setReplayInputDirty(true);
                         }}
-                        placeholder="先点击页面输入框，再在这里输入"
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" || (!webInput && !replayInputDirty)) return;
+                          if (embeddedReplay?.active_element?.editable) submitReplayInput();
+                          else {
+                            performWebToolbarAction("input", { text: webInput });
+                            setWebInput("");
+                          }
+                        }}
+                        placeholder={embeddedReplay?.active_element?.editable
+                          ? `已选中${embeddedReplay.active_element.placeholder || embeddedReplay.active_element.aria_label || "页面输入框"}，可在画面中直接输入`
+                          : "先点击页面输入框，再输入内容"}
                         className="h-7 min-w-0 flex-1 text-[11px]"
                       />
                       <Button
                         size="icon"
                         className="h-7 w-7"
                         title="发送输入"
-                        disabled={!webInput || webActionMutation.isPending || replayActionMutation.isPending}
+                        disabled={(!webInput && !replayInputDirty) || webActionMutation.isPending || replayActionMutation.isPending}
                         onClick={() => {
-                          performWebToolbarAction("input", { text: webInput });
-                          setWebInput("");
+                          if (embeddedReplay?.active_element?.editable) submitReplayInput();
+                          else {
+                            performWebToolbarAction("input", { text: webInput });
+                            setWebInput("");
+                          }
                         }}
                       >
                         <Send className="h-3.5 w-3.5" />
@@ -1516,13 +1584,20 @@ export function UiElementLibraryWorkspace({
                       replaySessionId={embeddedReplay?.session_id ?? null}
                       replayId={embeddedReplay?.replay_id ?? null}
                       imageRevision={replayRevision}
+                      activeElement={embeddedReplay?.active_element ?? null}
+                      inputValue={webInput}
+                      onInputChange={(value) => {
+                        setWebInput(value);
+                        setReplayInputDirty(true);
+                      }}
+                      onInputSubmit={submitReplayInput}
                       onCanvasAction={(x, y) => {
                         if (embeddedReplay) {
-                          replayActionMutation.mutate({
-                            action: effectivePickMode ? "pick" : "click",
+                          void performReplayCanvasAction(
                             x,
                             y,
-                          });
+                            effectivePickMode ? "pick" : "click",
+                          );
                         } else if (session) {
                           webActionMutation.mutate({
                             sessionId: session.id,
@@ -2453,6 +2528,10 @@ function SnapshotStage({
   replaySessionId,
   replayId,
   imageRevision,
+  activeElement,
+  inputValue,
+  onInputChange,
+  onInputSubmit,
   onCanvasAction,
 }: {
   snapshot: UiPageSnapshot;
@@ -2465,6 +2544,10 @@ function SnapshotStage({
   replaySessionId: number | null;
   replayId: string | null;
   imageRevision: number;
+  activeElement: UiReplayActiveElement | null;
+  inputValue: string;
+  onInputChange: (value: string) => void;
+  onInputSubmit: () => void;
   onCanvasAction: (x: number, y: number) => void;
 }) {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -2565,6 +2648,33 @@ function SnapshotStage({
             />
           );
         })}
+        {activeElement?.editable ? (
+          <input
+            key={`${activeElement.tag}:${activeElement.id ?? activeElement.name ?? "input"}:${activeElement.bounds.x}:${activeElement.bounds.y}`}
+            autoFocus
+            type={activeElement.input_type === "password" ? "password" : "text"}
+            value={inputValue}
+            aria-label={activeElement.aria_label || activeElement.placeholder || "离线页面输入框"}
+            placeholder={activeElement.placeholder || undefined}
+            title="直接输入，按回车提交到离线页面"
+            disabled={actionPending}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            onChange={(event) => onInputChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter" || actionPending) return;
+              event.preventDefault();
+              onInputSubmit();
+            }}
+            className="absolute z-30 min-h-6 rounded border-2 border-primary bg-background/95 px-2 text-xs text-foreground shadow-md outline-none ring-2 ring-primary/20"
+            style={{
+              left: `${Math.max(0, Math.min(100, (activeElement.bounds.x / viewportWidth) * 100))}%`,
+              top: `${Math.max(0, Math.min(100, (activeElement.bounds.y / viewportHeight) * 100))}%`,
+              width: `${Math.max(2, Math.min(100, (activeElement.bounds.width / viewportWidth) * 100))}%`,
+              height: `${Math.max(2, Math.min(100, (activeElement.bounds.height / viewportHeight) * 100))}%`,
+            }}
+          />
+        ) : null}
         {clickPoint ? (
           <span
             className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2 border-primary bg-primary/20"
