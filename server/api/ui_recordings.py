@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,9 @@ from database.models import (
     Device,
     Project,
     TestEnvironment,
+    UiDeletionAudit,
     UiElement,
+    UiElementOccurrence,
     UiElementLocator,
     UiContextArtifact,
     UiContextEvent,
@@ -29,6 +32,7 @@ from database.models import (
     UiPageSnapshot,
     UiPageTransition,
     UiRecordedAction,
+    UiMockExchange,
     UiRecordingEvent,
     UiRecordingSession,
     UiStepContextLink,
@@ -140,6 +144,44 @@ def _get_locator_or_404(db: DBDep, element_id: int, locator_id: int) -> UiElemen
     if locator is None:
         raise HTTPException(status_code=404, detail="定位器不存在")
     return locator
+
+
+def _record_deletion_audit(
+    db: DBDep,
+    current_user,
+    *,
+    project_id: int,
+    object_type: str,
+    object_id: str,
+    object_name: str | None,
+    cascade_scope: dict,
+) -> UiDeletionAudit:
+    """删除事实数据前，在同一事务写入不可变审计。"""
+    audit = UiDeletionAudit(
+        project_id=project_id,
+        operator_id=current_user.id,
+        operator_name=str(current_user.username or f"user#{current_user.id}")[:128],
+        object_type=object_type,
+        object_id=object_id[:255],
+        object_name=(object_name or "")[:255] or None,
+        cascade_scope=cascade_scope,
+        deleted_at=datetime.now(),
+    )
+    db.session.add(audit)
+    return audit
+
+
+def _delete_recording_artifacts(session_id: int) -> bool:
+    """只删除已解析到 UI 录制根目录下的精确会话目录。"""
+    session_root = (_UI_ARTIFACT_ROOT / f"session_{session_id}").resolve()
+    if session_root.parent != _UI_ARTIFACT_ROOT:
+        raise RuntimeError("录制制品目录越界，拒绝删除")
+    if not session_root.exists():
+        return False
+    if not session_root.is_dir() or session_root.is_symlink():
+        raise RuntimeError("录制制品路径不是安全目录，拒绝删除")
+    shutil.rmtree(session_root)
+    return True
 
 
 def _lease_or_409(
@@ -554,6 +596,45 @@ def get_recording(
     session = _get_session_or_404(db, session_id)
     assert_project_access(db, current_user, session.project_id)
     return {"status": "success", "data": serialize_session(db.session, session)}
+
+
+@router.delete("/ui-recordings/{session_id}")
+def delete_recording(
+    session_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+    confirm: bool = Query(False),
+):
+    """手动删除终态录制、上下文与物理制品，并保留审计。"""
+    if not confirm:
+        raise HTTPException(status_code=422, detail="删除录制需要显式 confirm=true")
+    session = _get_session_or_404(db, session_id)
+    assert_project_access(db, current_user, session.project_id)
+    if session.status in {"starting", "recording", "paused", "stopping", "processing"}:
+        raise HTTPException(status_code=409, detail="录制仍在运行，请先停止或取消后再删除")
+    scope = {
+        "events": db.session.query(UiRecordingEvent).filter(UiRecordingEvent.session_id == session.id).count(),
+        "snapshots": db.session.query(UiPageSnapshot).filter(UiPageSnapshot.session_id == session.id).count(),
+        "mock_exchanges": db.session.query(UiMockExchange).filter(UiMockExchange.session_id == session.id).count(),
+        "actions": db.session.query(UiRecordedAction).filter(UiRecordedAction.session_id == session.id).count(),
+        "page_transitions": db.session.query(UiPageTransition).filter(UiPageTransition.session_id == session.id).count(),
+        "elements_retained": True,
+    }
+    audit = _record_deletion_audit(
+        db,
+        current_user,
+        project_id=session.project_id,
+        object_type="recording_session",
+        object_id=str(session.id),
+        object_name=session.name,
+        cascade_scope=scope,
+    )
+    db.session.delete(session)
+    db.session.flush()
+    scope["artifact_directory_deleted"] = _delete_recording_artifacts(session.id)
+    audit.cascade_scope = dict(scope)
+    db.session.flush()
+    return {"status": "success", "data": {"deleted_id": session_id, "cascade_scope": scope}}
 
 
 @router.post("/ui-recordings/{session_id}/start")
@@ -1233,6 +1314,63 @@ def update_ui_page_snapshot(
     return {"status": "success", "data": serialize_snapshot(snapshot)}
 
 
+@router.delete("/ui-page-groups")
+def delete_ui_page_group(
+    db: DBDep,
+    current_user: CurrentUserDep,
+    project_id: int = Query(..., gt=0),
+    platform: str = Query(...),
+    page_key: str = Query(..., min_length=1, max_length=255),
+    confirm: bool = Query(False),
+):
+    """删除一个逻辑页面的全部状态和元素事实。"""
+    if not confirm:
+        raise HTTPException(status_code=422, detail="删除页面需要显式 confirm=true")
+    assert_project_access(db, current_user, project_id)
+    if platform not in ALL_UI_PLATFORMS:
+        raise HTTPException(status_code=422, detail="platform 必须是 web/android/ios")
+    snapshots = db.session.query(UiPageSnapshot).filter(
+        UiPageSnapshot.project_id == project_id,
+        UiPageSnapshot.platform == platform,
+        UiPageSnapshot.page_key == page_key,
+    ).all()
+    elements = db.session.query(UiElement).filter(
+        UiElement.project_id == project_id,
+        UiElement.platform == platform,
+        UiElement.page_key == page_key,
+    ).all()
+    if not snapshots and not elements:
+        raise HTTPException(status_code=404, detail="页面事实不存在")
+    element_ids = [item.id for item in elements]
+    occurrence_count = (
+        db.session.query(UiElementOccurrence)
+        .filter(UiElementOccurrence.element_id.in_(element_ids))
+        .count()
+        if element_ids else 0
+    )
+    scope = {
+        "snapshots": len(snapshots),
+        "elements": len(elements),
+        "occurrences": occurrence_count,
+        "shared_session_resources_retained": True,
+    }
+    _record_deletion_audit(
+        db,
+        current_user,
+        project_id=project_id,
+        object_type="page_group",
+        object_id=f"{platform}:{page_key}",
+        object_name=(snapshots[0].page_name if snapshots else elements[0].page_name),
+        cascade_scope=scope,
+    )
+    for element in elements:
+        db.session.delete(element)
+    for snapshot in snapshots:
+        db.session.delete(snapshot)
+    db.session.flush()
+    return {"status": "success", "data": {"page_key": page_key, "cascade_scope": scope}}
+
+
 @router.get("/ui-elements/{element_id}")
 def get_ui_element(
     element_id: int,
@@ -1262,6 +1400,78 @@ def update_ui_element(
         element.status = body.status
     db.session.flush()
     return {"status": "success", "data": serialize_element(element)}
+
+
+@router.delete("/ui-elements/{element_id}")
+def delete_ui_element(
+    element_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+    confirm: bool = Query(False),
+):
+    """彻底删除元素、定位器与出现证据；录制动作保留但解除元素引用。"""
+    if not confirm:
+        raise HTTPException(status_code=422, detail="删除元素需要显式 confirm=true")
+    element = _get_element_or_404(db, element_id)
+    assert_project_access(db, current_user, element.project_id)
+    scope = {
+        "locators": len(element.locators),
+        "occurrences": db.session.query(UiElementOccurrence).filter(
+            UiElementOccurrence.element_id == element.id,
+        ).count(),
+        "recording_events_released": db.session.query(UiRecordingEvent).filter(
+            UiRecordingEvent.element_id == element.id,
+        ).count(),
+        "recorded_actions_released": db.session.query(UiRecordedAction).filter(
+            UiRecordedAction.target_element_id == element.id,
+        ).count(),
+        "copied_step_locators_retained": True,
+    }
+    _record_deletion_audit(
+        db,
+        current_user,
+        project_id=element.project_id,
+        object_type="ui_element",
+        object_id=str(element.id),
+        object_name=element.semantic_name,
+        cascade_scope=scope,
+    )
+    db.session.delete(element)
+    db.session.flush()
+    return {"status": "success", "data": {"deleted_id": element_id, "cascade_scope": scope}}
+
+
+@router.get("/ui-deletion-audits")
+def list_ui_deletion_audits(
+    db: DBDep,
+    current_user: CurrentUserDep,
+    project_id: int = Query(..., gt=0),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """查询项目 UI 录制数据删除审计。"""
+    assert_project_access(db, current_user, project_id)
+    rows = (
+        db.session.query(UiDeletionAudit)
+        .filter(UiDeletionAudit.project_id == project_id)
+        .order_by(UiDeletionAudit.deleted_at.desc(), UiDeletionAudit.id.desc())
+        .limit(limit)
+        .all()
+    )
+    return {
+        "status": "success",
+        "data": [
+            {
+                "id": row.id,
+                "operator_name": row.operator_name,
+                "object_type": row.object_type,
+                "object_id": row.object_id,
+                "object_name": row.object_name,
+                "cascade_scope": row.cascade_scope or {},
+                "deleted_at": row.deleted_at,
+            }
+            for row in rows
+        ],
+    }
 
 
 @router.post("/ui-elements/{element_id}/locators")

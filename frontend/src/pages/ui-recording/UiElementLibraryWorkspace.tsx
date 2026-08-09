@@ -280,6 +280,11 @@ function eventLabel(event: UiRecordingEvent): string {
   return labels[event.event_type] ?? event.event_type;
 }
 
+type DeleteTarget =
+  | { kind: "element"; id: number; name: string; detail: string }
+  | { kind: "page"; pageKey: string; name: string; detail: string }
+  | { kind: "recording"; id: number; name: string; detail: string };
+
 export function UiElementLibraryWorkspace({
   open,
   projectId,
@@ -325,6 +330,7 @@ export function UiElementLibraryWorkspace({
   const [pageNameDraft, setPageNameDraft] = useState("");
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const lastMaterializedEventRef = useRef(0);
   const eventCursorRef = useRef(0);
   const [events, setEvents] = useState<UiRecordingEvent[]>([]);
@@ -928,6 +934,41 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async (target: DeleteTarget) => {
+      if (target.kind === "element") return uiRecordingsApi.deleteElement(target.id);
+      if (target.kind === "page") {
+        return uiRecordingsApi.deletePageGroup({ projectId, platform, pageKey: target.pageKey });
+      }
+      const replay = replayRef.current;
+      if (replay?.session_id === target.id) {
+        await uiRecordingsApi.stopReplay(replay.session_id, replay.replay_id);
+      }
+      return uiRecordingsApi.deleteRecording(target.id);
+    },
+    onSuccess: async (_data, target) => {
+      if (target.kind === "element") setSelectedElementId(null);
+      if (target.kind === "page") {
+        setPageKey(null);
+        setSnapshotId(null);
+        setSelectedElementId(null);
+      }
+      if (target.kind === "recording") {
+        replayRef.current = null;
+        setEmbeddedReplay(null);
+        setSessionOverride(null);
+        setEvents([]);
+      }
+      setDeleteTarget(null);
+      await Promise.all([
+        refreshElementAssets(),
+        queryClient.invalidateQueries({ queryKey: ["ui-recordings", projectId, platform] }),
+      ]);
+      toast.success(target.kind === "element" ? "元素已删除" : target.kind === "page" ? "页面及其元素已删除" : "录制记录已删除");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
   const stepDraftMutation = useMutation({
     mutationFn: (sessionId: number) => uiRecordingsApi.stepDraft(sessionId),
     onSuccess: (draft) => {
@@ -1227,7 +1268,24 @@ export function UiElementLibraryWorkspace({
               <div className="text-xs text-muted-foreground">加载中…</div>
             ) : session ? (
               <div className="rounded-lg border bg-background p-3">
-                <div className="truncate text-xs font-medium">{session.name}</div>
+                <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1 truncate text-xs font-medium">{session.name}</div>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-6 w-6 shrink-0 text-red-600"
+                    title={ACTIVE_STATUSES.includes(session.status) ? "请先停止录制" : "删除录制记录"}
+                    disabled={ACTIVE_STATUSES.includes(session.status)}
+                    onClick={() => setDeleteTarget({
+                      kind: "recording",
+                      id: session.id,
+                      name: session.name,
+                      detail: `将删除 ${session.event_count} 个事件、${session.snapshot_count} 个页面状态、离线包和技术上下文；已沉淀到项目元素库的元素会保留。`,
+                    })}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
                 <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
                   <span>{session.event_count} 个事件</span>
                   <span>{formatTime(session.updated_at)}</span>
@@ -1374,6 +1432,23 @@ export function UiElementLibraryWorkspace({
                     拾取元素
                   </button>
                 </div>
+              ) : null}
+              {activePage ? (
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="h-8 w-8 text-red-600"
+                  title={recorderActive ? "请先停止录制" : "删除当前页面"}
+                  disabled={recorderActive}
+                  onClick={() => setDeleteTarget({
+                    kind: "page",
+                    pageKey: activePage.pageKey,
+                    name: activePage.displayName,
+                    detail: `将删除该页面的 ${activePage.snapshots.length} 个状态和 ${activePage.elements.length} 个元素，录制会话中的共享资源仍会保留。`,
+                  })}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
               ) : null}
             </div>
           </div>
@@ -1814,6 +1889,20 @@ export function UiElementLibraryWorkspace({
               >
                 <MousePointer2 className="h-4 w-4" />复制为步骤配置
               </Button>
+              <Button
+                variant="outline"
+                className="mt-2 w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700"
+                disabled={recorderActive}
+                title={recorderActive ? "请先停止录制" : "删除元素"}
+                onClick={() => setDeleteTarget({
+                  kind: "element",
+                  id: selectedElement.id,
+                  name: selectedElement.semantic_name,
+                  detail: `将删除该元素、${selectedElement.locators.length} 个定位器及页面出现证据。已复制到用例步骤中的定位器配置不会被删除。`,
+                })}
+              >
+                <Trash2 className="h-4 w-4" />删除元素
+              </Button>
             </div>
           ) : (
             <div className="grid h-full place-items-center p-8 text-center">
@@ -1843,6 +1932,36 @@ export function UiElementLibraryWorkspace({
           onMinimize={() => setFloatingVisible(false)}
         />
       ) : null}
+
+      <Dialog
+        open={deleteTarget != null}
+        onOpenChange={(next) => !next && !deleteMutation.isPending && setDeleteTarget(null)}
+      >
+        <DialogContent className="sm:max-w-[460px]">
+          <DialogHeader>
+            <DialogTitle>确认删除“{deleteTarget?.name}”</DialogTitle>
+            <DialogDescription>
+              删除不可恢复，系统会记录删除人、时间、对象和级联范围。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm leading-6 text-red-800">
+            {deleteTarget?.detail}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={deleteMutation.isPending} onClick={() => setDeleteTarget(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!deleteTarget || deleteMutation.isPending}
+              onClick={() => deleteTarget && deleteMutation.mutate(deleteTarget)}
+            >
+              {deleteMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={startOpen} onOpenChange={(next) => !startMutation.isPending && setStartOpen(next)}>
         <DialogContent className="sm:max-w-[520px]">

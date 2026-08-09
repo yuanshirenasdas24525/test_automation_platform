@@ -656,3 +656,32 @@ class UiMockExchange(Base):
 
     session = relationship("UiRecordingSession", back_populates="mock_exchanges")
     snapshot = relationship("UiPageSnapshot")
+
+
+class UiDeletionAudit(Base):
+    """UI 录制事实数据的不可变删除审计。"""
+
+    __tablename__ = "ui_deletion_audits"
+    __table_args__ = (
+        Index("ix_ui_deletion_audit_project_time", "project_id", "deleted_at"),
+    )
+
+    id = Column(BigInteger, primary_key=True)
+    project_id = Column(
+        Integer,
+        ForeignKey("projects.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    operator_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    operator_name = Column(String(128), nullable=False)
+    object_type = Column(String(40), nullable=False, index=True)
+    object_id = Column(String(255), nullable=False)
+    object_name = Column(String(255), nullable=True)
+    cascade_scope = Column(JSONType, nullable=False, default=dict, server_default="{}")
+    deleted_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)

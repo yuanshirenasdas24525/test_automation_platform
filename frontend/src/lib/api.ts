@@ -2457,6 +2457,12 @@ export const uiRecordingsApi = {
     }
     return { ...first, events };
   },
+  deleteRecording(sessionId: number) {
+    return request<{ deleted_id: number; cascade_scope: Record<string, unknown> }>(
+      `/api/ui-recordings/${sessionId}?confirm=true`,
+      { method: "DELETE" },
+    );
+  },
   async contextArtifact(artifactId: number): Promise<Blob> {
     const headers = new Headers();
     const token = getToken();
@@ -2510,6 +2516,12 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
+  deleteElement(elementId: number) {
+    return request<{ deleted_id: number; cascade_scope: Record<string, unknown> }>(
+      `/api/ui-elements/${elementId}?confirm=true`,
+      { method: "DELETE" },
+    );
+  },
   createLocator(
     elementId: number,
     payload: { strategy: string; locator: string; score?: number; is_primary?: boolean },
@@ -2555,6 +2567,18 @@ export const uiRecordingsApi = {
       method: "PATCH",
       body: payload,
     });
+  },
+  deletePageGroup(args: { projectId: number; platform: UiPlatform; pageKey: string }) {
+    const qs = new URLSearchParams({
+      project_id: String(args.projectId),
+      platform: args.platform,
+      page_key: args.pageKey,
+      confirm: "true",
+    });
+    return request<{ page_key: string; cascade_scope: Record<string, unknown> }>(
+      `/api/ui-page-groups?${qs.toString()}`,
+      { method: "DELETE" },
+    );
   },
   async snapshotImage(snapshotId: number): Promise<Blob> {
     const headers = new Headers();

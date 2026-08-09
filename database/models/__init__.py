@@ -156,6 +156,7 @@ from .ui_recording import (
     UiContextEvent,
     UiStepContextLink,
     UiMockExchange,
+    UiDeletionAudit,
     UI_PLATFORM_WEB,
     UI_PLATFORM_ANDROID,
     UI_PLATFORM_IOS,
