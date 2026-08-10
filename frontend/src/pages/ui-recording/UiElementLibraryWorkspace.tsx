@@ -10,6 +10,7 @@ import {
   Layers3,
   Loader2,
   Monitor,
+  MousePointerClick,
   MousePointer2,
   Network,
   Pause,
@@ -19,6 +20,7 @@ import {
   Search,
   Send,
   Smartphone,
+  Sparkles,
   Square,
   Star,
   Terminal,
@@ -60,6 +62,7 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   UiElement,
+  UiAiExplorationStatus,
   UiOfflineReplay,
   UiPageSnapshot,
   UiPlatform,
@@ -264,6 +267,7 @@ function eventLabel(event: UiRecordingEvent): string {
     "page.ready": "页面加载完成",
     "page.snapshot": "页面快照已归档",
     "offline.package": "离线业务包已生成",
+    "ai.exploration.progress": "AI 探索进度",
     "environment.snapshot": "运行环境已采集",
     "user.click": "点击元素",
     "user.pick": "拾取元素",
@@ -320,6 +324,9 @@ export function UiElementLibraryWorkspace({
   const [embeddedReplay, setEmbeddedReplay] = useState<UiOfflineReplay | null>(null);
   const [replayRevision, setReplayRevision] = useState(0);
   const [offlinePickMode, setOfflinePickMode] = useState(false);
+  const [oneShotInteractArmed, setOneShotInteractArmed] = useState(false);
+  const [aiExploration, setAiExploration] = useState<UiAiExplorationStatus | null>(null);
+  const aiTerminalToastRef = useRef<string | null>(null);
   const replayRef = useRef<UiOfflineReplay | null>(null);
   const preparedSnapshotIdsRef = useRef(new Set<number>());
   const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
@@ -362,6 +369,9 @@ export function UiElementLibraryWorkspace({
     setWebInput("");
     setReplayInputDirty(false);
     setOfflinePickMode(false);
+    setOneShotInteractArmed(false);
+    setAiExploration(null);
+    aiTerminalToastRef.current = null;
     setRecordingRole("supplement");
     setStepDraft(null);
     setDraftModuleId("");
@@ -476,8 +486,15 @@ export function UiElementLibraryWorkspace({
   );
   const activePageKey = pageKey ?? pages[0]?.pageKey ?? null;
   const activePage = pages.find((page) => page.pageKey === activePageKey) ?? null;
+  const baselineSnapshots = activePage?.snapshots.filter(
+    (item) => baselineSessionIds.has(item.session_id),
+  ) ?? [];
   const activeSnapshot = activePage?.snapshots.find((item) => item.id === snapshotId)
-    ?? activePage?.snapshots.find((item) => baselineSessionIds.has(item.session_id))
+    ?? baselineSnapshots.find((item) => (
+      item.resource_manifest.modal_open !== true
+      && !String(item.state_name ?? "").startsWith("弹窗：")
+    ))
+    ?? baselineSnapshots[0]
     ?? activePage?.snapshots[0]
     ?? null;
   const visibleFingerprints = activeSnapshot?.resource_manifest.visible_element_fingerprints;
@@ -520,6 +537,11 @@ export function UiElementLibraryWorkspace({
   const session = sessionOverride && serverSession?.id === sessionOverride.id
     ? { ...sessionOverride, ...serverSession }
     : sessionOverride ?? serverSession;
+  const persistedAiExploration = (session?.capabilities.ai_exploration ?? null) as UiAiExplorationStatus | null;
+  const effectiveAiExploration = aiExploration ?? persistedAiExploration;
+  const aiExplorationSessionId = session?.id ?? null;
+  const aiExplorationSessionStatus = session?.status ?? null;
+  const aiExplorationConfigured = session?.capture_config.ai_exploration === true;
   useEffect(() => {
     lastMaterializedEventRef.current = 0;
     eventCursorRef.current = 0;
@@ -713,6 +735,131 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  const aiExplorationMutation = useMutation({
+    mutationFn: async () => {
+      if (platform !== "web") throw new Error("AI 探索首期只支持 Web");
+      let targetSession = activeServerSession;
+      if (!targetSession) {
+        const sourceUrl = primarySession?.source_url || targetUrl.trim() || window.location.origin;
+        const draft = await uiRecordingsApi.create({
+          project_id: projectId,
+          platform: "web",
+          name: `Web AI 探索 ${new Date().toLocaleString("zh-CN")}`,
+          source_url: sourceUrl,
+          recording_role: primarySession ? "supplement" : "primary",
+          baseline_session_id: primarySession?.id ?? undefined,
+          capture_config: {
+            browser,
+            headless: false,
+            viewport: { width: 1440, height: 900 },
+            offline_level: 3,
+            ai_exploration: true,
+          },
+        });
+        targetSession = await uiRecordingsApi.control(draft.id, "start", {
+          client_instance_id: clientInstanceId,
+          command_id: randomId("ai-exploration-session"),
+          takeover: true,
+        });
+      } else if (targetSession.status === "paused") {
+        targetSession = await uiRecordingsApi.control(targetSession.id, "resume", {
+          client_instance_id: clientInstanceId,
+          command_id: randomId("ai-exploration-resume"),
+        });
+      }
+      let allowedHosts: string[] = [];
+      try {
+        allowedHosts = [new URL(targetSession.source_url || window.location.origin).host];
+      } catch {
+        allowedHosts = [window.location.host];
+      }
+      const status = await uiRecordingsApi.startExploration(targetSession.id, {
+        client_instance_id: clientInstanceId,
+        command_id: randomId("ai-exploration-start"),
+        max_pages: 40,
+        max_depth: 4,
+        max_actions_per_page: 6,
+        timeout_seconds: 600,
+        login_wait_seconds: 300,
+        allowed_hosts: allowedHosts,
+      });
+      return { session: targetSession, status };
+    },
+    onSuccess: async ({ session: next, status }) => {
+      setSessionOverride(next);
+      setAiExploration(status);
+      aiTerminalToastRef.current = null;
+      await refresh();
+      toast.success("AI 探索已启动；若出现登录页，请在受控浏览器完成登录");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const stopAiExplorationMutation = useMutation({
+    mutationFn: () => {
+      if (!session) throw new Error("当前没有 AI 探索会话");
+      return uiRecordingsApi.stopExploration(session.id, {
+        client_instance_id: clientInstanceId,
+        command_id: randomId("ai-exploration-stop"),
+      });
+    },
+    onSuccess: (status) => {
+      setAiExploration(status);
+      toast.info("正在停止 AI 探索，已发现页面仍会保存");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  useEffect(() => {
+    const aiStatusActive = effectiveAiExploration != null
+      && !["completed", "cancelled", "failed"].includes(effectiveAiExploration.status);
+    if (!open || aiExplorationSessionId == null || (!aiExplorationConfigured && !aiStatusActive)) return undefined;
+    if (
+      (aiExplorationSessionStatus == null || !ACTIVE_STATUSES.includes(aiExplorationSessionStatus))
+      && !aiStatusActive
+    ) return undefined;
+    let disposed = false;
+    const syncStatus = async () => {
+      try {
+        const next = await uiRecordingsApi.getExploration(aiExplorationSessionId);
+        if (disposed) return;
+        setAiExploration(next);
+        if (next.recording_session) setSessionOverride(next.recording_session);
+        if (["completed", "cancelled", "failed"].includes(next.status)) {
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["ui-recordings", projectId, platform] }),
+            queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] }),
+            queryClient.invalidateQueries({ queryKey: ["ui-elements", projectId, platform] }),
+            queryClient.invalidateQueries({ queryKey: ["ui-recording-events", aiExplorationSessionId] }),
+          ]);
+          if (aiTerminalToastRef.current !== `${aiExplorationSessionId}:${next.status}`) {
+            aiTerminalToastRef.current = `${aiExplorationSessionId}:${next.status}`;
+            if (next.status === "failed") toast.error(next.error || "AI 探索失败");
+            else if (next.status === "cancelled") toast.info("AI 探索已停止，结果已保存为补充录制");
+            else toast.success(`AI 探索完成：发现 ${next.visited_urls} 个页面，采集 ${next.captured_states} 个新状态`);
+          }
+        }
+      } catch {
+        // Recorder Agent 短暂重启时保留当前进度，由下一轮继续同步。
+      }
+    };
+    void syncStatus();
+    const timer = window.setInterval(() => void syncStatus(), 1200);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    aiExplorationConfigured,
+    aiExplorationSessionId,
+    aiExplorationSessionStatus,
+    effectiveAiExploration,
+    open,
+    platform,
+    projectId,
+    queryClient,
+  ]);
+
   const reopenMobileMutation = useMutation({
     mutationFn: async (previous: UiRecordingSession) => {
       if (!previous.device_id) throw new Error("原录制没有绑定模拟器，无法重开场景");
@@ -848,6 +995,7 @@ export function UiElementLibraryWorkspace({
       sessionId: number;
       snapshot: UiPageSnapshot | null;
       headless?: boolean;
+      oneShot?: boolean;
     }) => {
       const previous = replayRef.current;
       if (previous) {
@@ -866,7 +1014,7 @@ export function UiElementLibraryWorkspace({
         },
       });
     },
-    onSuccess: (replay) => {
+    onSuccess: (replay, variables) => {
       const activeReplay = { ...replay, url: replay.url ?? replay.entry_url };
       replayRef.current = activeReplay;
       setEmbeddedReplay(activeReplay);
@@ -874,6 +1022,7 @@ export function UiElementLibraryWorkspace({
       setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
       setOfflinePickMode(false);
+      setOneShotInteractArmed(variables.oneShot === true);
       toast.success(
         `离线交互已启动：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
       );
@@ -939,8 +1088,19 @@ export function UiElementLibraryWorkspace({
           setSnapshotId(null);
         }
       }
+      if (variables.action === "click" && oneShotInteractArmed) {
+        setOneShotInteractArmed(false);
+        setOfflinePickMode(true);
+        toast.success("临时点击已完成，已自动返回拾取元素");
+      }
     },
-    onError: (error) => toast.error(messageOf(error)),
+    onError: (error, variables) => {
+      if (variables.action === "click" && oneShotInteractArmed) {
+        setOneShotInteractArmed(false);
+        setOfflinePickMode(true);
+      }
+      toast.error(messageOf(error));
+    },
   });
 
   const stopReplayMutation = useMutation({
@@ -953,11 +1113,24 @@ export function UiElementLibraryWorkspace({
       replayRef.current = null;
       setEmbeddedReplay(null);
       setOfflinePickMode(false);
+      setOneShotInteractArmed(false);
       setWebInput("");
       setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
     },
   });
+
+  useEffect(() => {
+    if (!oneShotInteractArmed) return undefined;
+    const cancelOneShot = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOneShotInteractArmed(false);
+      if (replayRef.current) setOfflinePickMode(true);
+      toast.info("已取消临时点击");
+    };
+    window.addEventListener("keydown", cancelOneShot);
+    return () => window.removeEventListener("keydown", cancelOneShot);
+  }, [oneShotInteractArmed]);
 
   const refreshElementAssets = async () => {
     await Promise.all([
@@ -1344,12 +1517,16 @@ export function UiElementLibraryWorkspace({
   if (!open) return null;
 
   const sessionBusy = startMutation.isPending
+    || aiExplorationMutation.isPending
+    || stopAiExplorationMutation.isPending
     || reopenMobileMutation.isPending
     || controlMutation.isPending
     || pickModeMutation.isPending
     || webActionMutation.isPending
     || mobileActionMutation.isPending;
   const platformRuntime = PLATFORM_META[platform];
+  const aiExplorationRunning = effectiveAiExploration != null
+    && ["starting", "waiting_for_login", "running"].includes(effectiveAiExploration.status);
   const statusMeta = session ? STATUS_META[session.status] : null;
   const mobileSessionActive = session != null && ACTIVE_STATUSES.includes(session.status);
   const mobilePreflight = mobilePreflightQuery.data;
@@ -1410,6 +1587,35 @@ export function UiElementLibraryWorkspace({
               {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CircleDot className="h-4 w-4" />}
               开始录制
             </Button>
+          ) : null}
+          {platform === "web" ? (
+            aiExplorationRunning ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={stopAiExplorationMutation.isPending}
+                onClick={() => stopAiExplorationMutation.mutate()}
+                title={effectiveAiExploration?.current_url || effectiveAiExploration?.message}
+              >
+                {stopAiExplorationMutation.isPending
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Square className="h-4 w-4" />}
+                停止 AI 探索 · {effectiveAiExploration?.visited_urls ?? 0} 页
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={sessionBusy}
+                onClick={() => aiExplorationMutation.mutate()}
+                title="打开受控浏览器并安全遍历同域页面；危险操作会自动跳过"
+              >
+                {aiExplorationMutation.isPending
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Sparkles className="h-4 w-4" />}
+                AI 探索录制
+              </Button>
+            )
           ) : null}
           {replaySession?.status === "completed" && replayOfflineReplay?.ready ? (
             <Button
@@ -1481,6 +1687,22 @@ export function UiElementLibraryWorkspace({
           </Button>
         </div>
       </header>
+
+      {aiExplorationRunning ? (
+        <div className="flex h-10 shrink-0 items-center gap-3 border-b border-violet-200 bg-violet-50 px-5 text-xs text-violet-800">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <span className="font-medium">{effectiveAiExploration?.message}</span>
+          <span>已访问 {effectiveAiExploration?.visited_urls ?? 0} 页</span>
+          <span>新状态 {effectiveAiExploration?.captured_states ?? 0}</span>
+          <span>安全动作 {effectiveAiExploration?.executed_actions ?? 0}</span>
+          <span>已跳过 {effectiveAiExploration?.skipped_actions ?? 0}</span>
+          {effectiveAiExploration?.current_url ? (
+            <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-violet-600">
+              {effectiveAiExploration.current_url}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-[248px_minmax(430px,1fr)_330px]">
         <aside className="flex min-h-0 flex-col border-r bg-muted/15">
@@ -1714,10 +1936,32 @@ export function UiElementLibraryWorkspace({
               ) : null}
               {platform === "web" ? (
                 staticInspectMode ? (
-                  <div className="inline-flex rounded-md border bg-muted/40 p-0.5" title="点击页面元素只读取定位信息，不会执行页面操作">
+                  <div className="inline-flex items-center gap-0.5 rounded-md border bg-muted/40 p-0.5" title="默认只读取定位信息；可临时执行下一次点击">
                     <span className="rounded bg-background px-2 py-1 font-medium text-primary shadow-sm">
                       只读拾取
                     </span>
+                    <button
+                      type="button"
+                      disabled={
+                        replayMutation.isPending
+                        || !activeSnapshot?.has_offline_package
+                        || replaySession?.status !== "completed"
+                      }
+                      onClick={() => {
+                        if (!replaySession) return;
+                        replayMutation.mutate({
+                          sessionId: replaySession.id,
+                          snapshot: activeSnapshot,
+                          oneShot: true,
+                        });
+                      }}
+                      className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground transition hover:bg-background hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {replayMutation.isPending
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <MousePointerClick className="h-3 w-3" />}
+                      临时点击一次
+                    </button>
                   </div>
                 ) : (
                   <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
@@ -1755,6 +1999,25 @@ export function UiElementLibraryWorkspace({
                     >
                       拾取元素
                     </button>
+                    {embeddedReplay ? (
+                      <button
+                        type="button"
+                        disabled={replayActionMutation.isPending || oneShotInteractArmed}
+                        onClick={() => {
+                          setOneShotInteractArmed(true);
+                          setOfflinePickMode(false);
+                        }}
+                        className={cn(
+                          "flex items-center gap-1 rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
+                          oneShotInteractArmed
+                            ? "bg-amber-100 font-medium text-amber-800 shadow-sm"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        <MousePointerClick className="h-3 w-3" />
+                        临时点击
+                      </button>
+                    ) : null}
                   </div>
                 )
               ) : null}
@@ -1791,6 +2054,13 @@ export function UiElementLibraryWorkspace({
                         ?? (activePage ? `offline://project/${projectId}/${activePage.pageKey}` : "offline://等待页面快照")}
                     </div>
                   </div>
+                  {oneShotInteractArmed ? (
+                    <div className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-amber-200 bg-amber-50 px-3 text-[11px] font-medium text-amber-800">
+                      <MousePointerClick className="h-3.5 w-3.5" />
+                      下一次点击将执行页面操作，完成后自动返回拾取模式
+                      <span className="font-normal text-amber-700">按 Esc 取消</span>
+                    </div>
+                  ) : null}
                   {(recorderActive || embeddedReplay) && !effectivePickMode ? (
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background px-3">
                       <Input

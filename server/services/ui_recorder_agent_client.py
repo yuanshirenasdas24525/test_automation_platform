@@ -183,6 +183,28 @@ def perform_web_action(session_id: int, payload: dict[str, Any]) -> dict[str, An
     return _request("POST", f"/sessions/{session_id}/web-actions", body=payload)
 
 
+def start_web_exploration(session_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    """启动受控、同域、非破坏性的 Web AI 探索。"""
+    data = _request(
+        "POST",
+        f"/sessions/{session_id}/exploration/start",
+        body=payload,
+    )
+    return data if isinstance(data, dict) else {}
+
+
+def get_web_exploration(session_id: int) -> dict[str, Any]:
+    """读取 Web AI 探索进度。"""
+    data = _request("GET", f"/sessions/{session_id}/exploration")
+    return data if isinstance(data, dict) else {}
+
+
+def stop_web_exploration(session_id: int) -> dict[str, Any]:
+    """请求停止 Web AI 探索；Agent 会保存已发现的页面。"""
+    data = _request("POST", f"/sessions/{session_id}/exploration/stop")
+    return data if isinstance(data, dict) else {}
+
+
 def start_web_replay(
     session_id: int,
     *,

@@ -258,6 +258,23 @@ export interface UiOfflineReplay {
   active_element?: UiReplayActiveElement | null;
 }
 
+export interface UiAiExplorationStatus {
+  status: "idle" | "starting" | "waiting_for_login" | "running" | "completed" | "cancelled" | "failed";
+  message: string;
+  current_url: string;
+  discovered_urls: number;
+  visited_urls: number;
+  captured_states: number;
+  executed_actions: number;
+  skipped_actions: number;
+  failed_actions: number;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string | null;
+  config: Record<string, unknown>;
+  recording_session?: UiRecordingSession;
+}
+
 export interface UiReplayActiveElement {
   editable: boolean;
   tag: string;

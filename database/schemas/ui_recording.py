@@ -80,6 +80,19 @@ class UiRecordingPickModeRequest(BaseModel):
     enabled: bool
 
 
+class UiRecordingExplorationRequest(BaseModel):
+    """Web AI 安全探索参数与控制端身份。"""
+
+    client_instance_id: str = Field(..., min_length=8, max_length=80)
+    command_id: str = Field(..., min_length=8, max_length=80)
+    max_pages: int = Field(40, ge=1, le=200)
+    max_depth: int = Field(4, ge=0, le=10)
+    max_actions_per_page: int = Field(6, ge=0, le=20)
+    timeout_seconds: int = Field(600, ge=30, le=3600)
+    login_wait_seconds: int = Field(300, ge=0, le=1800)
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
+
+
 class UiRecordingReplayRequest(BaseModel):
     """启动严格离线的受控浏览器回放。"""
 

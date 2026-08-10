@@ -1,7 +1,7 @@
 # 元素库与 UI 录制专题文档
 
-> 整理日期：2026-08-06
-> 当前状态：主需求为 v1.5 实施基线；M0～M4 代码闭环已完成，Web/Android 已完成真实环境验收，iOS 待宿主机模拟器环境验收
+> 整理日期：2026-08-11
+> 当前状态：主需求已更新为 v1.6；M0～M4 代码闭环、Web 一次性临时交互与 AI 安全探索已实现，Web/Android 已完成真实环境验收，iOS 待宿主机模拟器环境验收
 
 本目录统一保存项目“元素库、页面快照、元素拾取、UI 录制”相关的历史方案、决策记录和样式草稿，避免资料散落在 `docs/` 根目录。
 
@@ -27,6 +27,7 @@
 - FR-17 步骤编辑器元素选择器；
 - FR-18 用例页入口、紧凑悬浮录制条和独立浏览器窗口；
 - FR-19～FR-22 屏幕、Console、XHR/Fetch、用户事件、环境信息、步骤关联及上下文结果页；
+- FR-23 一次性临时交互、离线 Portal 关闭兜底与 Web AI 安全探索补录；
 - 录制态与正式执行态共用 `UIContextCollector`；
 - `ui_elements`、`ui_element_occurrences`、`ui_element_locators` 等数据模型；
 - Recorder、快照处理、定位器生成、AI 用例衔接和分阶段实施计划。
@@ -39,7 +40,7 @@
 - 移动端通过远程画面操作；
 - 定位器必须有快照证据；
 - 正式测试仍走现有 v2 Runner；
-- ADR-11～14 已在 2026-08-08 定版：宿主机 Recorder Agent、有头 Web Recorder、上下文保留与移动端 Native Network 降级边界均有事实源；
+- ADR-11～16 已定版：宿主机 Recorder Agent、有头 Web Recorder、上下文保留、移动端 Native Network 降级、主/补充会话和 Web AI 安全探索边界均有事实源；
 - ADR-09 已由 Web XHR/Fetch 事件与离线 Mock 实现覆盖，接口断言仍复用现有步骤封装。
 
 ## 二、早期元素库来源

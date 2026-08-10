@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlparse
 from urllib.request import urlopen
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response as FastAPIResponse
@@ -358,7 +358,7 @@ _RECORDER_SCRIPT = r"""
   };
 
   const visibleModal = () => Array.from(document.querySelectorAll(
-    'dialog[open], [role="dialog"][aria-modal="true"], [aria-modal="true"]',
+    'dialog[open], [role="dialog"][aria-modal="true"], [role="dialog"][data-state="open"], [aria-modal="true"]',
   )).find(isVisible) || null;
 
   const isTextCandidate = (element) => {
@@ -647,6 +647,83 @@ _REPLAY_SCRIPT_TAG_RE = re.compile(
 )
 
 
+_REPLAY_INTERACTION_SCRIPT = r"""(() => {
+  if (window.__uiRecorderReplayBridgeInstalled) return;
+  window.__uiRecorderReplayBridgeInstalled = true;
+
+  const visible = (element) => {
+    if (!element || !element.isConnected) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== "none" && style.visibility !== "hidden"
+      && rect.width > 1 && rect.height > 1;
+  };
+  const topDialog = () => Array.from(document.querySelectorAll(
+    'dialog[open], [role="dialog"][aria-modal="true"], [role="dialog"][data-state="open"], [aria-modal="true"]',
+  )).filter(visible).at(-1) || null;
+  const appRoot = () => document.querySelector('#root, #app, [data-reactroot]');
+  const normalizedText = (element) => String(
+    element?.getAttribute?.("aria-label")
+      || element?.getAttribute?.("title")
+      || element?.innerText
+      || element?.textContent
+      || "",
+  ).replace(/\s+/g, " ").trim().toLowerCase();
+  const dismissPattern = /^(关闭|取消|返回|close|cancel|dismiss|back|×|✕|x)$/i;
+
+  const cleanupStaticDialog = (dialog) => {
+    if (!dialog?.isConnected) return false;
+    const root = appRoot();
+    // React 正常创建的 Portal 会自行响应；只在动作后仍残留时兜底清理。
+    const bodyChildren = Array.from(document.body.children);
+    const related = bodyChildren.filter((element) => {
+      if (element === root || element.contains(root)) return false;
+      if (element === dialog || element.contains(dialog)) return true;
+      if (element.getAttribute("data-state") !== "open") return false;
+      const style = getComputedStyle(element);
+      return style.position === "fixed" || Number(style.zIndex || 0) >= 40;
+    });
+    for (const element of related) element.remove();
+    if (dialog.isConnected) dialog.remove();
+    document.body.style.removeProperty("pointer-events");
+    document.body.style.removeProperty("overflow");
+    document.body.removeAttribute("data-scroll-locked");
+    for (const element of document.querySelectorAll('[aria-hidden="true"], [inert]')) {
+      if (element === root || element.contains(root)) {
+        element.removeAttribute("aria-hidden");
+        element.removeAttribute("inert");
+      }
+    }
+    return true;
+  };
+
+  const scheduleFallback = (dialog) => {
+    window.setTimeout(() => {
+      if (dialog?.isConnected && visible(dialog)) cleanupStaticDialog(dialog);
+    }, 120);
+  };
+
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const dialog = target?.closest?.(
+      'dialog[open], [role="dialog"][aria-modal="true"], [role="dialog"][data-state="open"], [aria-modal="true"]',
+    );
+    if (!dialog) return;
+    const action = target.closest('button, [role="button"], [data-radix-dialog-close]');
+    if (!action) return;
+    if (action.hasAttribute("data-radix-dialog-close") || dismissPattern.test(normalizedText(action))) {
+      scheduleFallback(dialog);
+    }
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const dialog = topDialog();
+    if (dialog) scheduleFallback(dialog);
+  }, true);
+})();"""
+
+
 def _freeze_replay_document(body: bytes) -> bytes:
     """移除快照文档脚本，防止框架重新挂载后丢失截图时的瞬时 UI 状态。"""
     html = body.decode("utf-8", errors="replace")
@@ -705,6 +782,55 @@ class WebActionRequest(BaseModel):
     text: str | None = Field(None, max_length=4000)
     delta_x: int = Field(0, ge=-10000, le=10000)
     delta_y: int = Field(0, ge=-10000, le=10000)
+
+
+class AiExplorationRequest(BaseModel):
+    """Web 安全探索的有界参数。"""
+
+    max_pages: int = Field(40, ge=1, le=200)
+    max_depth: int = Field(4, ge=0, le=10)
+    max_actions_per_page: int = Field(6, ge=0, le=20)
+    timeout_seconds: int = Field(600, ge=30, le=3600)
+    login_wait_seconds: int = Field(300, ge=0, le=1800)
+    allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
+
+
+@dataclass
+class AiExplorationState:
+    """Recorder Agent 内存中的 AI 探索进度。"""
+
+    status: str = "idle"
+    message: str = "等待启动"
+    current_url: str = ""
+    discovered_urls: int = 0
+    visited_urls: int = 0
+    captured_states: int = 0
+    executed_actions: int = 0
+    skipped_actions: int = 0
+    failed_actions: int = 0
+    started_at: str | None = None
+    finished_at: str | None = None
+    error: str | None = None
+    config: dict[str, Any] = field(default_factory=dict)
+    cancel_requested: bool = False
+    task: asyncio.Task[None] | None = None
+
+    def serialize(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "current_url": self.current_url,
+            "discovered_urls": self.discovered_urls,
+            "visited_urls": self.visited_urls,
+            "captured_states": self.captured_states,
+            "executed_actions": self.executed_actions,
+            "skipped_actions": self.skipped_actions,
+            "failed_actions": self.failed_actions,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "config": self.config,
+        }
 
 
 def _live_browser_launch_options(body: RecorderStartRequest) -> dict[str, Any]:
@@ -792,6 +918,7 @@ class RecorderRuntime:
     archive_bytes: int = 0
     archive_skipped: int = 0
     offline_package: dict[str, Any] | None = None
+    exploration: AiExplorationState = field(default_factory=AiExplorationState)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
@@ -949,6 +1076,19 @@ class RecorderRuntime:
                 reason,
                 exc,
             )
+
+    async def capture_latest_page_document(
+        self,
+        page: Page,
+        *,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        """取消同一页面的延迟快照，只归档调用方刚确认过的最新稳定状态。"""
+        pending = self.snapshot_tasks.pop(page, None)
+        if pending is not None and pending is not asyncio.current_task() and not pending.done():
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        return await self.capture_page_document(page, reason=reason)
 
     async def wait_for_page_stability(self, page: Page) -> None:
         """等待连续三个 DOM 采样一致；有界快速采集，不被长期轮询请求卡住。"""
@@ -1487,6 +1627,14 @@ class RecorderRuntime:
         if self.stopped:
             return
         self.stopped = True
+        exploration_task = self.exploration.task
+        if (
+            exploration_task is not None
+            and exploration_task is not asyncio.current_task()
+            and not exploration_task.done()
+        ):
+            self.exploration.cancel_requested = True
+            exploration_task.cancel()
         pending_tasks = list(self.snapshot_tasks.values())
         self.snapshot_tasks.clear()
         for task in pending_tasks:
@@ -1501,6 +1649,329 @@ class RecorderRuntime:
                 await self.browser.close()
             finally:
                 await self.playwright.stop()
+
+
+_EXPLORATION_DANGER_PATTERN = re.compile(
+    r"删除|移除|停用|禁用|注销|退出登录|登出|运行|执行|发布|提交|保存|新建|创建|"
+    r"编辑|修改|上传|下载|支付|购买|付款|重置|清空|确认|同意|授权|"
+    r"delete|remove|disable|logout|sign\s*out|run|execute|publish|submit|save|"
+    r"create|new|edit|upload|download|pay|purchase|reset|clear|confirm|approve",
+    re.IGNORECASE,
+)
+_EXPLORATION_SAFE_BUTTON_PATTERN = re.compile(
+    r"工作台|首页|项目|需求|用例|记录|报告|设备|脚本|管理|列表|详情|查看|"
+    r"菜单|导航|标签|展开|收起|下一页|上一页|返回|关闭|取消|"
+    r"home|workspace|project|requirement|case|record|report|device|script|"
+    r"manage|list|detail|view|menu|navigation|tab|expand|collapse|next|previous|back|close|cancel",
+    re.IGNORECASE,
+)
+_EXPLORATION_CANDIDATES_SCRIPT = r"""() => {
+  const selector = [
+    'a[href]', 'button', '[role="button"]', '[role="link"]', '[role="tab"]',
+    '[role="menuitem"]', 'summary', '[aria-expanded]'
+  ].join(',');
+  const visible = (element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && Number(style.opacity || 1) > 0 && rect.width > 2 && rect.height > 2
+      && rect.bottom >= 0 && rect.right >= 0
+      && rect.top <= innerHeight && rect.left <= innerWidth;
+  };
+  const escapeCss = (value) => window.CSS?.escape
+    ? window.CSS.escape(value)
+    : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  const cssPath = (element) => {
+    if (element.id) return `#${escapeCss(element.id)}`;
+    const testAttribute = element.hasAttribute('data-testid') ? 'data-testid' : 'data-test';
+    const testId = element.getAttribute(testAttribute);
+    if (testId) return `[${testAttribute}="${String(testId).replace(/"/g, '\\"')}"]`;
+    const parts = [];
+    let current = element;
+    while (current && current !== document.body && parts.length < 7) {
+      const tag = current.tagName.toLowerCase();
+      const siblings = Array.from(current.parentElement?.children || []).filter(
+        (item) => item.tagName === current.tagName,
+      );
+      parts.unshift(`${tag}:nth-of-type(${Math.max(1, siblings.indexOf(current) + 1)})`);
+      current = current.parentElement;
+    }
+    return `body > ${parts.join(' > ')}`;
+  };
+  return Array.from(document.querySelectorAll(selector)).filter(visible).slice(0, 300).map((element) => {
+    const text = String(
+      element.getAttribute('aria-label')
+        || element.getAttribute('title')
+        || element.innerText
+        || element.textContent
+        || '',
+    ).replace(/\s+/g, ' ').trim().slice(0, 180);
+    const form = element.closest('form');
+    return {
+      selector: cssPath(element),
+      tag: element.tagName.toLowerCase(),
+      role: element.getAttribute('role') || '',
+      text,
+      href: element.href || '',
+      target: element.getAttribute('target') || '',
+      aria_expanded: element.getAttribute('aria-expanded'),
+      disabled: Boolean(element.disabled || element.getAttribute('aria-disabled') === 'true'),
+      input_type: String(element.getAttribute('type') || '').toLowerCase(),
+      in_form: Boolean(form),
+      form_method: String(form?.method || '').toUpperCase(),
+    };
+  });
+}"""
+
+
+def _exploration_url_key(value: str) -> str:
+    """探索图的 URL 去重键，忽略片段和常见缓存参数。"""
+    return _normalized_replay_url(value)
+
+
+def _safe_exploration_candidate(
+    candidate: dict[str, Any],
+    *,
+    allowed_hosts: set[str],
+) -> tuple[bool, str]:
+    """对候选动作做确定性安全门禁，AI 语义排序不得绕过此规则。"""
+    text = str(candidate.get("text") or "").strip()
+    href = str(candidate.get("href") or "").strip()
+    if candidate.get("disabled"):
+        return False, "控件不可用"
+    if candidate.get("in_form") or candidate.get("input_type") == "submit":
+        return False, "表单提交动作"
+    if _EXPLORATION_DANGER_PATTERN.search(text):
+        return False, "危险动作关键词"
+    if href:
+        parsed = urlparse(href)
+        if parsed.scheme not in {"http", "https"}:
+            return False, "非网页链接"
+        if parsed.netloc.lower() not in allowed_hosts:
+            return False, "超出允许域名"
+        route_identity = unquote(f"{parsed.path}?{parsed.query}")
+        if _EXPLORATION_DANGER_PATTERN.search(route_identity):
+            return False, "危险链接地址"
+        return True, "同域页面链接"
+    role = str(candidate.get("role") or "").lower()
+    tag = str(candidate.get("tag") or "").lower()
+    if role in {"tab", "menuitem", "link"} or tag == "summary":
+        return True, "导航型控件"
+    if candidate.get("aria_expanded") in {"true", "false"}:
+        return True, "展开型控件"
+    if text and _EXPLORATION_SAFE_BUTTON_PATTERN.search(text):
+        return True, "安全语义控件"
+    return False, "未知按钮默认跳过"
+
+
+async def _page_waits_for_manual_login(page: Page) -> bool:
+    """判断当前是否停留在需要人工输入凭据的登录页。"""
+    return bool(await page.evaluate(
+        r"""() => Array.from(document.querySelectorAll(
+          'input[type="password"], input[autocomplete*="password"]'
+        )).some((element) => {
+          const style = getComputedStyle(element);
+          const rect = element.getBoundingClientRect();
+          return style.display !== 'none' && style.visibility !== 'hidden'
+            && rect.width > 2 && rect.height > 2;
+        })""",
+    ))
+
+
+async def _emit_exploration_progress(runtime: RecorderRuntime) -> None:
+    """把进度同时写入录制时间线，便于平台断线后恢复摘要。"""
+    page = next((item for item in reversed(list(runtime.pages)) if not item.is_closed()), None)
+    await runtime.emit(
+        "ai.exploration.progress",
+        "ai",
+        runtime.exploration.serialize(),
+        page=page,
+    )
+
+
+async def _run_ai_exploration(
+    runtime: RecorderRuntime,
+    body: AiExplorationRequest,
+) -> None:
+    """在现有已登录录制上下文中执行有界、同域、非破坏性的页面探索。"""
+    state = runtime.exploration
+    state.status = "running"
+    state.message = "正在分析当前页面"
+    state.started_at = datetime.now().isoformat()
+    state.config = body.model_dump()
+    deadline = time.monotonic() + body.timeout_seconds
+    initial_record_count = len(runtime.page_records)
+    try:
+        page = next(
+            (candidate for candidate in reversed(list(runtime.pages)) if not candidate.is_closed()),
+            None,
+        )
+        if page is None:
+            raise ValueError("当前没有可探索的 Web 页面")
+        start_host = urlparse(page.url).netloc.lower()
+        allowed_hosts = {
+            item.strip().lower()
+            for item in body.allowed_hosts
+            if item.strip()
+        } or {start_host}
+        if start_host not in allowed_hosts:
+            allowed_hosts.add(start_host)
+        state.config = {**state.config, "allowed_hosts": sorted(allowed_hosts)}
+
+        if await _page_waits_for_manual_login(page):
+            state.status = "waiting_for_login"
+            state.message = "请在受控浏览器完成登录，登录成功后会自动继续"
+            await _emit_exploration_progress(runtime)
+            login_deadline = min(deadline, time.monotonic() + body.login_wait_seconds)
+            while time.monotonic() < login_deadline and not state.cancel_requested:
+                await page.wait_for_timeout(800)
+                if not await _page_waits_for_manual_login(page):
+                    break
+            if await _page_waits_for_manual_login(page):
+                if state.cancel_requested:
+                    state.status = "cancelled"
+                    state.message = "AI 探索已取消"
+                    return
+                raise TimeoutError("等待人工登录超时")
+            state.status = "running"
+            state.message = "登录完成，开始安全探索"
+
+        queue: list[tuple[str, int]] = [(page.url, 0)]
+        queued = {_exploration_url_key(page.url)}
+        visited: set[str] = set()
+        while queue and len(visited) < body.max_pages:
+            if state.cancel_requested:
+                state.status = "cancelled"
+                state.message = "AI 探索已取消"
+                break
+            if time.monotonic() >= deadline:
+                state.status = "completed"
+                state.message = "已达到最长探索时间"
+                break
+            target_url, depth = queue.pop(0)
+            target_key = _exploration_url_key(target_url)
+            if target_key in visited or depth > body.max_depth:
+                continue
+            parsed_target = urlparse(target_url)
+            if parsed_target.netloc.lower() not in allowed_hosts:
+                state.skipped_actions += 1
+                continue
+            if _exploration_url_key(page.url) != target_key:
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30_000)
+            await runtime.wait_for_page_stability(page)
+            if await _page_waits_for_manual_login(page):
+                state.skipped_actions += 1
+                continue
+
+            state.current_url = page.url
+            state.message = f"正在探索第 {len(visited) + 1} 个页面"
+            visited.add(target_key)
+            await runtime.capture_latest_page_document(
+                page,
+                reason="ai.exploration.page",
+            )
+            state.visited_urls = len(visited)
+            state.captured_states = max(
+                0,
+                len(runtime.page_records) - initial_record_count,
+            )
+
+            raw_candidates = await page.evaluate(_EXPLORATION_CANDIDATES_SCRIPT)
+            candidates = [
+                item for item in raw_candidates
+                if isinstance(item, dict)
+            ] if isinstance(raw_candidates, list) else []
+            safe_buttons: list[dict[str, Any]] = []
+            for candidate in candidates:
+                safe, _reason = _safe_exploration_candidate(
+                    candidate,
+                    allowed_hosts=allowed_hosts,
+                )
+                if not safe:
+                    state.skipped_actions += 1
+                    continue
+                href = str(candidate.get("href") or "").strip()
+                if href:
+                    next_url = urljoin(page.url, href)
+                    next_key = _exploration_url_key(next_url)
+                    if (
+                        depth < body.max_depth
+                        and next_key not in visited
+                        and next_key not in queued
+                    ):
+                        queue.append((next_url, depth + 1))
+                        queued.add(next_key)
+                else:
+                    safe_buttons.append(candidate)
+
+            for candidate in safe_buttons[:body.max_actions_per_page]:
+                if state.cancel_requested or time.monotonic() >= deadline:
+                    break
+                parent_url = page.url
+                try:
+                    locator = page.locator(str(candidate.get("selector") or "")).first
+                    await locator.click(timeout=3_000)
+                    state.executed_actions += 1
+                    await runtime.wait_for_page_stability(page)
+                    await runtime.capture_latest_page_document(
+                        page,
+                        reason="ai.exploration.action",
+                    )
+                    state.captured_states = max(
+                        0,
+                        len(runtime.page_records) - initial_record_count,
+                    )
+                    if page.url != parent_url:
+                        next_key = _exploration_url_key(page.url)
+                        if (
+                            depth < body.max_depth
+                            and next_key not in visited
+                            and next_key not in queued
+                            and urlparse(page.url).netloc.lower() in allowed_hosts
+                        ):
+                            queue.append((page.url, depth + 1))
+                            queued.add(next_key)
+                    if not page.is_closed():
+                        await page.goto(parent_url, wait_until="domcontentloaded", timeout=30_000)
+                        await runtime.wait_for_page_stability(page)
+                except Exception as exc:  # noqa: BLE001
+                    state.failed_actions += 1
+                    logger.debug(
+                        "AI 探索动作失败 session=%s selector=%s: %s",
+                        runtime.session_id,
+                        candidate.get("selector"),
+                        exc,
+                    )
+
+            state.discovered_urls = len(queued)
+            await _emit_exploration_progress(runtime)
+
+        if state.status in {"running", "waiting_for_login"}:
+            state.status = "completed"
+            state.message = "AI 安全探索已完成"
+    except Exception as exc:  # noqa: BLE001
+        state.status = "failed"
+        state.message = "AI 探索失败"
+        state.error = str(exc)
+        logger.exception("AI 探索失败 session=%s", runtime.session_id)
+    finally:
+        state.current_url = next(
+            (item.url for item in reversed(list(runtime.pages)) if not item.is_closed()),
+            state.current_url,
+        )
+        state.captured_states = max(0, len(runtime.page_records) - initial_record_count)
+        state.finished_at = datetime.now().isoformat()
+        await _emit_exploration_progress(runtime)
+        if not runtime.stopped:
+            try:
+                await runtime.build_offline_package()
+                await runtime.emit(
+                    "agent.disconnected",
+                    "agent",
+                    {"reason": "ai_exploration_finished"},
+                )
+            finally:
+                await runtime.close()
 
 
 _ANDROID_BOUNDS_RE = re.compile(r"\[(?P<x1>-?\d+),(?P<y1>-?\d+)\]\[(?P<x2>-?\d+),(?P<y2>-?\d+)\]")
@@ -2473,6 +2944,7 @@ async def _start_offline_replay(
         await context.route("**/*", route_offline)
         if replay_storage:
             await context.add_init_script(script=_replay_storage_script(replay_storage))
+        await context.add_init_script(script=_REPLAY_INTERACTION_SCRIPT)
         await context.add_init_script(script=_RECORDER_SCRIPT)
         page = await context.new_page()
         await page.goto(entry_url, wait_until="domcontentloaded", timeout=60_000)
@@ -3044,8 +3516,47 @@ async def get_session(session_id: int):
             "session_id": session_id,
             "status": "stopped" if runtime.stopped else "paused" if runtime.paused else "recording",
             "event_count": len(runtime.events),
+            "exploration": (
+                runtime.exploration.serialize()
+                if isinstance(runtime, RecorderRuntime)
+                else None
+            ),
         },
     }
+
+
+@app.post("/sessions/{session_id}/exploration/start", dependencies=[Depends(_authorize)])
+async def start_ai_exploration(session_id: int, body: AiExplorationRequest):
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, RecorderRuntime) or runtime.stopped:
+        raise HTTPException(status_code=404, detail="Web 录制会话不存在或已停止")
+    if runtime.exploration.task is not None and not runtime.exploration.task.done():
+        raise HTTPException(status_code=409, detail="当前会话的 AI 探索已经在运行")
+    runtime.exploration = AiExplorationState(
+        status="starting",
+        message="正在准备 AI 安全探索",
+        config=body.model_dump(),
+    )
+    runtime.exploration.task = asyncio.create_task(_run_ai_exploration(runtime, body))
+    return {"status": "success", "data": runtime.exploration.serialize()}
+
+
+@app.get("/sessions/{session_id}/exploration", dependencies=[Depends(_authorize)])
+async def get_ai_exploration(session_id: int):
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, RecorderRuntime):
+        raise HTTPException(status_code=404, detail="Web 录制会话不存在")
+    return {"status": "success", "data": runtime.exploration.serialize()}
+
+
+@app.post("/sessions/{session_id}/exploration/stop", dependencies=[Depends(_authorize)])
+async def stop_ai_exploration(session_id: int):
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, RecorderRuntime):
+        raise HTTPException(status_code=404, detail="Web 录制会话不存在")
+    runtime.exploration.cancel_requested = True
+    runtime.exploration.message = "正在停止 AI 探索"
+    return {"status": "success", "data": runtime.exploration.serialize()}
 
 
 @app.get("/sessions/{session_id}/events", dependencies=[Depends(_authorize)])
@@ -3153,6 +3664,14 @@ async def stop_session(session_id: int):
     if runtime is None:
         raise HTTPException(status_code=404, detail="Agent 会话不存在")
     if isinstance(runtime, RecorderRuntime):
+        exploration_task = runtime.exploration.task
+        if exploration_task is not None and not exploration_task.done():
+            runtime.exploration.cancel_requested = True
+            try:
+                await asyncio.wait_for(asyncio.shield(exploration_task), timeout=20)
+            except TimeoutError:
+                exploration_task.cancel()
+                await asyncio.gather(exploration_task, return_exceptions=True)
         if not runtime.stopped:
             package = await runtime.build_offline_package()
             await runtime.emit("agent.disconnected", "agent", {"reason": "stopped"})

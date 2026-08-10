@@ -102,6 +102,7 @@ import type {
   VersionTestSummary,
   VersionUpdate,
   UiElement,
+  UiAiExplorationStatus,
   UiOfflineReplay,
   UiPageSnapshot,
   UiPlatform,
@@ -2316,6 +2317,38 @@ export const uiRecordingsApi = {
       method: "POST",
       body: payload,
     });
+  },
+  startExploration(
+    sessionId: number,
+    payload: {
+      client_instance_id: string;
+      command_id: string;
+      max_pages?: number;
+      max_depth?: number;
+      max_actions_per_page?: number;
+      timeout_seconds?: number;
+      login_wait_seconds?: number;
+      allowed_hosts?: string[];
+    },
+  ) {
+    return request<UiAiExplorationStatus>(
+      `/api/ui-recordings/${sessionId}/exploration/start`,
+      { method: "POST", body: payload },
+    );
+  },
+  getExploration(sessionId: number) {
+    return request<UiAiExplorationStatus>(
+      `/api/ui-recordings/${sessionId}/exploration`,
+    );
+  },
+  stopExploration(
+    sessionId: number,
+    payload: { client_instance_id: string; command_id: string },
+  ) {
+    return request<UiAiExplorationStatus>(
+      `/api/ui-recordings/${sessionId}/exploration/stop`,
+      { method: "POST", body: payload },
+    );
   },
   performMobileAction(
     sessionId: number,

@@ -13,12 +13,14 @@ from database.models import (
 )
 from database.schemas.ui_recording import UiPageSnapshotPickRequest
 from recorder_agent.main import (
+    AiExplorationRequest,
     MobileRecorderRuntime,
     MobileRecorderStartRequest,
     RecorderStartRequest,
     ReplayStartRequest,
     WebActionRequest,
     _RECORDER_SCRIPT,
+    _REPLAY_INTERACTION_SCRIPT,
     _freeze_replay_document,
     _mobile_element_from_source,
     _legacy_replay_storage,
@@ -36,6 +38,7 @@ from recorder_agent.main import (
     _replay_storage_script,
     _restore_mobile_scenario_sync,
     _safe_replay_headers,
+    _safe_exploration_candidate,
     _save_mobile_scenario_sync,
 )
 from scripts.sanitize_ui_recording_data import _decode_legacy_html
@@ -398,6 +401,79 @@ def test_frozen_replay_document_preserves_dom_and_removes_scripts() -> None:
     assert "<script" not in frozen
     assert 'id="members"' in frozen
     assert "MCP_01" in frozen
+
+
+def test_replay_bridge_recognizes_and_dismisses_radix_portals() -> None:
+    assert '[role="dialog"][data-state="open"]' in _RECORDER_SCRIPT
+    assert '[role="dialog"][data-state="open"]' in _REPLAY_INTERACTION_SCRIPT
+    assert "scheduleFallback" in _REPLAY_INTERACTION_SCRIPT
+    assert "data-scroll-locked" in _REPLAY_INTERACTION_SCRIPT
+
+
+def test_ai_exploration_applies_bounded_safe_action_policy() -> None:
+    request = AiExplorationRequest(max_pages=20, max_depth=3, timeout_seconds=120)
+    assert request.max_pages == 20
+    assert request.max_depth == 3
+
+    safe, reason = _safe_exploration_candidate(
+        {
+            "text": "查看项目详情",
+            "href": "https://example.test/projects/1",
+            "disabled": False,
+            "in_form": False,
+            "input_type": "",
+            "tag": "a",
+            "role": "link",
+        },
+        allowed_hosts={"example.test"},
+    )
+    assert safe is True
+    assert reason == "同域页面链接"
+
+    dangerous, reason = _safe_exploration_candidate(
+        {
+            "text": "删除项目",
+            "href": "",
+            "disabled": False,
+            "in_form": False,
+            "input_type": "",
+            "tag": "button",
+            "role": "button",
+        },
+        allowed_hosts={"example.test"},
+    )
+    assert dangerous is False
+    assert reason == "危险动作关键词"
+
+    dangerous_link, reason = _safe_exploration_candidate(
+        {
+            "text": "项目详情",
+            "href": "https://example.test/projects/1/delete",
+            "disabled": False,
+            "in_form": False,
+            "input_type": "",
+            "tag": "a",
+            "role": "link",
+        },
+        allowed_hosts={"example.test"},
+    )
+    assert dangerous_link is False
+    assert reason == "危险链接地址"
+
+    cross_origin, reason = _safe_exploration_candidate(
+        {
+            "text": "帮助文档",
+            "href": "https://outside.test/docs",
+            "disabled": False,
+            "in_form": False,
+            "input_type": "",
+            "tag": "a",
+            "role": "link",
+        },
+        allowed_hosts={"example.test"},
+    )
+    assert cross_origin is False
+    assert reason == "超出允许域名"
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

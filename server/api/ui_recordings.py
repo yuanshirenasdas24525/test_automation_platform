@@ -52,6 +52,7 @@ from database.schemas.ui_recording import (
     UiRecordingCreate,
     UiRecordingEventCreate,
     UiRecordingEventBatchCreate,
+    UiRecordingExplorationRequest,
     UiRecordingLeaseRequest,
     UiRecordingMobileActionRequest,
     UiRecordingPickModeRequest,
@@ -89,6 +90,7 @@ from server.services.ui_recorder_agent_client import (
     control_agent_session,
     mobile_preflight as get_mobile_preflight,
     get_web_replay,
+    get_web_exploration,
     get_web_replay_screenshot,
     perform_mobile_action as perform_mobile_agent_action,
     perform_web_action as perform_web_agent_action,
@@ -96,6 +98,8 @@ from server.services.ui_recorder_agent_client import (
     pull_agent_events,
     set_agent_pick_mode,
     start_web_replay,
+    start_web_exploration,
+    stop_web_exploration,
     stop_web_replay,
     validate_web_replay_locator,
     start_mobile_session,
@@ -105,6 +109,7 @@ from server.services.ui_recorder_agent_client import (
 router = APIRouter(tags=["ui-recordings"])
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _UI_ARTIFACT_ROOT = (_PROJECT_ROOT / "data" / "ui_recordings").resolve()
+_AI_EXPLORATION_TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 
 
 def _get_primary_recording(
@@ -927,6 +932,121 @@ def update_recording_pick_mode(
     }
     db.session.flush()
     return {"status": "success", "data": serialize_session(db.session, session)}
+
+
+@router.post("/ui-recordings/{session_id}/exploration/start")
+def start_recording_ai_exploration(
+    session_id: int,
+    body: UiRecordingExplorationRequest,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """在当前已登录的 Web 录制上下文中启动安全探索。"""
+    session = _get_session_or_404(db, session_id, for_update=True)
+    assert_project_access(db, current_user, session.project_id)
+    if session.platform != "web":
+        raise HTTPException(status_code=422, detail="AI 探索首期只支持 Web")
+    if session.status != "recording":
+        raise HTTPException(status_code=409, detail="请先启动 Web 录制，再开始 AI 探索")
+    duplicated = _lease_or_409(
+        session,
+        body.client_instance_id,
+        body.command_id,
+    )
+    if duplicated:
+        current = dict((session.capabilities or {}).get("ai_exploration") or {})
+        return {"status": "success", "data": current}
+    try:
+        status = start_web_exploration(
+            session.id,
+            body.model_dump(exclude={"client_instance_id", "command_id"}),
+        )
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session.capture_config = {
+        **(session.capture_config or {}),
+        "ai_exploration": True,
+        "ai_exploration_config": body.model_dump(
+            exclude={"client_instance_id", "command_id"},
+        ),
+    }
+    session.capabilities = {
+        **(session.capabilities or {}),
+        "ai_exploration": status,
+    }
+    db.session.flush()
+    return {"status": "success", "data": status}
+
+
+@router.get("/ui-recordings/{session_id}/exploration")
+def get_recording_ai_exploration(
+    session_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """同步 AI 探索进度；终态时自动完成录制并生成离线包。"""
+    session = _get_session_or_404(db, session_id, for_update=True)
+    assert_project_access(db, current_user, session.project_id)
+    if session.platform != "web":
+        raise HTTPException(status_code=422, detail="AI 探索首期只支持 Web")
+    try:
+        status = get_web_exploration(session.id)
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    _pull_agent_events(db, session, strict=False)
+    session.capabilities = {
+        **(session.capabilities or {}),
+        "ai_exploration": status,
+    }
+    recording_session = serialize_session(db.session, session)
+    if (
+        status.get("status") in _AI_EXPLORATION_TERMINAL_STATUSES
+        and session.status in {"recording", "paused"}
+    ):
+        stopped = _control(db, current_user, session.id, "stop")
+        recording_session = stopped["data"]
+    db.session.flush()
+    return {
+        "status": "success",
+        "data": {
+            **status,
+            "recording_session": recording_session,
+        },
+    }
+
+
+@router.post("/ui-recordings/{session_id}/exploration/stop")
+def stop_recording_ai_exploration(
+    session_id: int,
+    body: UiRecordingControlRequest,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """停止 AI 探索，已发现页面仍会进入本次补充录制。"""
+    session = _get_session_or_404(db, session_id, for_update=True)
+    assert_project_access(db, current_user, session.project_id)
+    if session.platform != "web" or session.status not in {"recording", "paused"}:
+        raise HTTPException(status_code=409, detail="当前会话没有可停止的 AI 探索")
+    duplicated = _lease_or_409(
+        session,
+        body.client_instance_id,
+        body.command_id,
+    )
+    if duplicated:
+        return {
+            "status": "success",
+            "data": dict((session.capabilities or {}).get("ai_exploration") or {}),
+        }
+    try:
+        status = stop_web_exploration(session.id)
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    session.capabilities = {
+        **(session.capabilities or {}),
+        "ai_exploration": status,
+    }
+    db.session.flush()
+    return {"status": "success", "data": status}
 
 
 @router.post("/ui-recordings/{session_id}/mobile-actions")
