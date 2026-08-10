@@ -1531,6 +1531,13 @@ def compile_recording_step_draft(
                 f"事件 #{event.sequence_no} refresh 仅用于刷新录制画面，不生成执行步骤"
             )
 
+    if not any(step.get("source_event_id") is not None for step in steps):
+        warnings.insert(
+            0,
+            "本次录制没有可转换的点击、输入或滑动动作；只读拾取只用于采集定位器，"
+            "不会生成用例步骤。请开始录制后在受控浏览器或模拟器中执行实际业务操作。",
+        )
+
     return {
         "session_id": session.id,
         "case_type": session.platform,

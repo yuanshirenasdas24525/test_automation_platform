@@ -291,11 +291,13 @@ export function UiElementLibraryWorkspace({
   projectId,
   initialPlatform,
   onClose,
+  onRequestOpen,
 }: {
   open: boolean;
   projectId: number;
   initialPlatform: UiPlatform;
   onClose: () => void;
+  onRequestOpen?: () => void;
 }) {
   const queryClient = useQueryClient();
   const [clientInstanceId] = useState(() => randomId("ui-recorder"));
@@ -334,6 +336,7 @@ export function UiElementLibraryWorkspace({
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const popoutWatchRef = useRef<number | null>(null);
   const lastMaterializedEventRef = useRef(0);
   const eventCursorRef = useRef(0);
   const [events, setEvents] = useState<UiRecordingEvent[]>([]);
@@ -464,9 +467,7 @@ export function UiElementLibraryWorkspace({
     ? (activePage?.elements ?? []).filter((element) => visibleFingerprints.includes(element.fingerprint))
     : activePage?.elements ?? [];
   const selectedElement =
-    visibleElements.find((element) => element.id === selectedElementId)
-    ?? visibleElements[0]
-    ?? null;
+    visibleElements.find((element) => element.id === selectedElementId) ?? null;
 
   useEffect(() => {
     setElementNameDraft(selectedElement?.semantic_name ?? "");
@@ -1063,6 +1064,12 @@ export function UiElementLibraryWorkspace({
       setStepDraft(draft);
       setDraftCaseName(draft.suggested_name);
       setDraftModuleId("");
+      const actionStepCount = draft.steps.filter((step) => step.source_event_id != null).length;
+      if (actionStepCount > 0) {
+        toast.success(`已生成 ${actionStepCount} 个业务操作步骤`);
+      } else {
+        toast.info("本次只有页面入口，没有录到业务操作；只读拾取不会生成用例步骤");
+      }
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -1129,13 +1136,60 @@ export function UiElementLibraryWorkspace({
     queryClient,
   ]);
 
+  useEffect(() => {
+    if (isPopout || !onRequestOpen) return undefined;
+    const handlePopoutReturn = (event: MessageEvent) => {
+      if (
+        event.origin !== window.location.origin
+        || event.data?.type !== "ui-element-library:return"
+        || event.data?.projectId !== projectId
+      ) return;
+      onRequestOpen();
+    };
+    window.addEventListener("message", handlePopoutReturn);
+    return () => window.removeEventListener("message", handlePopoutReturn);
+  }, [isPopout, onRequestOpen, projectId]);
+
+  useEffect(() => () => {
+    if (popoutWatchRef.current != null) window.clearInterval(popoutWatchRef.current);
+  }, []);
+
   const openPopout = () => {
+    if (isPopout) return;
     const url = new URL(window.location.href);
     url.searchParams.set("uiElements", platform);
     url.searchParams.set("presentation", "popout");
     if (session) url.searchParams.set("uiSession", String(session.id));
     const popup = window.open(url.toString(), `ui-elements-${projectId}`, "popup,width=1320,height=820");
-    if (!popup) toast.error("浏览器阻止了独立窗口，请允许本站打开弹窗");
+    if (!popup) {
+      toast.error("浏览器阻止了独立窗口，请允许本站打开弹窗");
+      return;
+    }
+    popup.focus();
+    onClose();
+    if (popoutWatchRef.current != null) window.clearInterval(popoutWatchRef.current);
+    popoutWatchRef.current = window.setInterval(() => {
+      if (!popup.closed) return;
+      if (popoutWatchRef.current != null) window.clearInterval(popoutWatchRef.current);
+      popoutWatchRef.current = null;
+      onRequestOpen?.();
+    }, 400);
+  };
+
+  const returnToMainWindow = () => {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage(
+        { type: "ui-element-library:return", projectId, platform },
+        window.location.origin,
+      );
+      window.opener.focus();
+      window.close();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("presentation");
+    url.searchParams.delete("uiSession");
+    window.location.assign(url.toString());
   };
 
   const copyLocator = async (locator: string) => {
@@ -1324,10 +1378,16 @@ export function UiElementLibraryWorkspace({
               显示录制条
             </Button>
           ) : null}
-          <Button size="icon" variant="ghost" title="打开独立窗口" onClick={openPopout}>
-            <ExternalLink className="h-4 w-4" />
-          </Button>
-          <Button size="icon" variant="ghost" title="关闭" onClick={isPopout ? () => window.close() : onClose}>
+          {isPopout ? (
+            <Button size="sm" variant="outline" title="返回主窗口" onClick={returnToMainWindow}>
+              <Undo2 className="h-4 w-4" />返回主窗口
+            </Button>
+          ) : (
+            <Button size="icon" variant="ghost" title="打开独立窗口" onClick={openPopout}>
+              <ExternalLink className="h-4 w-4" />
+            </Button>
+          )}
+          <Button size="icon" variant="ghost" title={isPopout ? "返回主窗口" : "关闭"} onClick={isPopout ? returnToMainWindow : onClose}>
             <X className="h-5 w-5" />
           </Button>
         </div>
@@ -1368,7 +1428,7 @@ export function UiElementLibraryWorkspace({
                   onClick={() => {
                     setPageKey(page.pageKey);
                     setSnapshotId(null);
-                    setSelectedElementId(page.elements[0]?.id ?? null);
+                    setSelectedElementId(null);
                     if (embeddedReplay && session) {
                       replayMutation.mutate({
                         sessionId: session.id,
@@ -1593,10 +1653,10 @@ export function UiElementLibraryWorkspace({
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-auto p-5">
-            <div className="mx-auto flex h-full min-h-[460px] max-w-5xl items-center justify-center">
+          <div className="min-h-0 flex-1 overflow-auto">
+            <div className="flex h-full min-h-[460px] w-full items-stretch justify-stretch">
               {platform === "web" ? (
-                <div className="flex h-[78%] min-h-[420px] w-[90%] flex-col overflow-hidden rounded-xl border bg-background shadow-sm">
+                <div className="flex h-full min-h-[420px] w-full flex-col overflow-hidden bg-background">
                   <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-muted/50 px-3">
                     <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
                     <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
@@ -1711,7 +1771,7 @@ export function UiElementLibraryWorkspace({
                   )}
                 </div>
               ) : (
-                <div className="flex items-center gap-8">
+                <div className="flex w-full items-center justify-center gap-8 p-5">
                   <div className="h-[560px] w-[300px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700">
                     <div className="mx-auto mt-2 h-5 w-24 rounded-full bg-slate-800 dark:bg-slate-700" />
                     {activeSnapshot?.has_screenshot ? (
@@ -2096,7 +2156,7 @@ export function UiElementLibraryWorkspace({
           onResume={() => controlMutation.mutate({ sessionId: session.id, action: "resume" })}
           onStop={() => setStopConfirmOpen(true)}
           onTogglePick={() => pickModeMutation.mutate({ sessionId: session.id, enabled: !pickMode })}
-          onPopout={openPopout}
+          onPopout={isPopout ? undefined : openPopout}
           onMinimize={() => setFloatingVisible(false)}
         />
       ) : null}
@@ -2270,6 +2330,12 @@ export function UiElementLibraryWorkspace({
           </DialogHeader>
           {stepDraft ? (
             <div className="min-h-0 space-y-4 overflow-y-auto py-1">
+              {stepDraft.steps.every((step) => step.source_event_id == null) ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                  当前草稿只有页面入口，没有点击、输入或滑动步骤。只读拾取只采集元素定位器；
+                  请点击“开始录制”后，在受控浏览器或模拟器中完成实际业务操作，再停止录制并生成草稿。
+                </div>
+              ) : null}
               <div className="grid grid-cols-2 gap-3">
                 <label className="space-y-1.5 text-sm">
                   <span className="font-medium">用例名称</span>
@@ -2403,7 +2469,7 @@ function RecorderFloatingBar({
   onResume: () => void;
   onStop: () => void;
   onTogglePick: () => void;
-  onPopout: () => void;
+  onPopout?: () => void;
   onMinimize: () => void;
 }) {
   const [position, setPosition] = useState(() => ({
@@ -2467,9 +2533,11 @@ function RecorderFloatingBar({
       >
         <Crosshair className="h-4 w-4" />拾取
       </Button>
-      <Button size="icon" variant="ghost" onClick={onPopout} title="弹出独立窗口">
-        <ExternalLink className="h-4 w-4" />
-      </Button>
+      {onPopout ? (
+        <Button size="icon" variant="ghost" onClick={onPopout} title="弹出独立窗口">
+          <ExternalLink className="h-4 w-4" />
+        </Button>
+      ) : null}
       <Button size="icon" variant="ghost" disabled={busy || !hasControl} onClick={onStop} title="停止录制">
         <Square className="h-3.5 w-3.5" />
       </Button>
@@ -2695,10 +2763,10 @@ function SnapshotStage({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto bg-slate-100 p-4 dark:bg-slate-950">
+    <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-slate-100 dark:bg-slate-950">
       <div
         className={cn(
-          "relative inline-block max-h-full max-w-full overflow-hidden rounded-lg border bg-background shadow-sm",
+          "relative inline-block w-full max-w-full overflow-hidden bg-background",
           canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
         )}
         onClick={(event) => {
@@ -2711,7 +2779,7 @@ function SnapshotStage({
           onCanvasAction(Math.round(left * viewportWidth), Math.round(top * viewportHeight));
         }}
       >
-        <img src={imageUrl} alt={snapshot.page_name} className="block max-h-[560px] max-w-full" />
+        <img src={imageUrl} alt={snapshot.page_name} className="block h-auto w-full" />
         {elements.map((element) => {
           const bounds = snapshotBounds[element.fingerprint] ?? element.attributes.bounds as {
             x?: number;

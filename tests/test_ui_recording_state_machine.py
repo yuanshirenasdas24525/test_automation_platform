@@ -495,6 +495,10 @@ def test_recording_events_compile_to_existing_runner_steps() -> None:
     assert any("脱敏变量" in item for item in draft["warnings"])
     assert any("user.scroll" in item for item in draft["warnings"])
 
+    pick_only_draft = compile_recording_step_draft(session, [events[2]])
+    assert [step["step_type"] for step in pick_only_draft["steps"]] == ["web_goto"]
+    assert any("只读拾取" in item for item in pick_only_draft["warnings"])
+
     mobile_session = UiRecordingSession(
         id=13,
         project_id=1,

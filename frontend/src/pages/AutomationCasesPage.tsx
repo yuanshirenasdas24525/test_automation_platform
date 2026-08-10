@@ -963,6 +963,7 @@ export function AutomationCasesPage({
           projectId={projectId}
           initialPlatform={elementLibraryPlatform}
           onClose={() => setElementLibraryOpen(false)}
+          onRequestOpen={() => setElementLibraryOpen(true)}
         />
       ) : null}
       <RecordsDialog

@@ -84,6 +84,55 @@ function SnapshotPreview({ snapshotId, label }: { snapshotId: number | null; lab
   );
 }
 
+function ContextEventsPanel({
+  tab,
+  onTabChange,
+  keyword,
+  onKeywordChange,
+  events,
+  loading,
+  emptyText,
+}: {
+  tab: ContextTab;
+  onTabChange: (tab: ContextTab) => void;
+  keyword: string;
+  onKeywordChange: (keyword: string) => void;
+  events: UiRecordingEvent[];
+  loading: boolean;
+  emptyText: string;
+}) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-1 border-b px-4 py-2">
+        {([
+          ["console", "Console", Terminal],
+          ["network", "Network", Network],
+          ["user", "用户事件", CheckCircle2],
+          ["environment", "环境/设备", RotateCcw],
+        ] as const).map(([value, label, Icon]) => (
+          <Button key={value} size="sm" variant={tab === value ? "secondary" : "ghost"} onClick={() => onTabChange(value)}>
+            <Icon className="h-3.5 w-3.5" />{label}
+          </Button>
+        ))}
+        <Input value={keyword} onChange={(event) => onKeywordChange(event.target.value)} placeholder="筛选技术上下文" className="ml-auto h-8 w-56 text-xs" />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {loading ? <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin" /> : events.map((event) => (
+          <div key={event.id} className="mb-2 rounded-lg border bg-card p-3 text-xs">
+            <div className="flex items-center gap-2">
+              <span className={cn("rounded px-1.5 py-0.5 font-mono", event.severity === "error" ? "bg-red-100 text-red-700" : "bg-muted")}>{event.event_type}</span>
+              <span className="truncate font-medium">{eventSummary(event)}</span>
+              <span className="ml-auto text-muted-foreground">#{event.sequence_no}</span>
+            </div>
+            <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 text-[10px] text-muted-foreground">{JSON.stringify(event.payload, null, 2)}</pre>
+          </div>
+        ))}
+        {!loading && !events.length ? <div className="py-10 text-center text-xs text-muted-foreground">{emptyText}</div> : null}
+      </div>
+    </div>
+  );
+}
+
 export function UiRecordingResultDialog({
   open,
   session,
@@ -111,21 +160,28 @@ export function UiRecordingResultDialog({
     if (!open) return;
     setSelectedActionId((current) => actions.some((item) => item.id === current) ? current : actions[0]?.id ?? null);
   }, [actions, open]);
+  useEffect(() => {
+    if (open && contextQuery.data && actions.length === 0) setTab("user");
+  }, [actions.length, contextQuery.data, open]);
   useEffect(() => setNameDraft(selectedAction?.name ?? ""), [selectedAction?.id, selectedAction?.name]);
 
   const eventsQuery = useQuery({
     queryKey: [
       "ui-recording-context-events",
       session?.id,
-      selectedAction?.context_event_from_seq,
-      selectedAction?.context_event_to_seq,
+      selectedAction?.id ?? "all",
     ],
     queryFn: () => uiRecordingsApi.listEvents(
       session!.id,
-      Math.max(0, (selectedAction?.context_event_from_seq ?? 1) - 1),
-      { toSequence: selectedAction?.context_event_to_seq ?? undefined, limit: 1000 },
+      selectedAction
+        ? Math.max(0, selectedAction.context_event_from_seq - 1)
+        : 0,
+      {
+        toSequence: selectedAction?.context_event_to_seq ?? undefined,
+        limit: 1000,
+      },
     ),
-    enabled: open && session != null && selectedAction != null,
+    enabled: open && session != null,
   });
   const visibleEvents = useMemo(() => (eventsQuery.data ?? []).filter((event) => {
     if (!eventMatchesTab(event, tab)) return false;
@@ -238,36 +294,33 @@ export function UiRecordingResultDialog({
                     <SnapshotPreview snapshotId={selectedAction.snapshot_before_id} label="动作前" />
                     <SnapshotPreview snapshotId={selectedAction.snapshot_after_id} label="动作后" />
                   </div>
-                  <div className="flex min-h-0 flex-1 flex-col">
-                    <div className="flex items-center gap-1 border-b px-4 py-2">
-                      {([
-                        ["console", "Console", Terminal],
-                        ["network", "Network", Network],
-                        ["user", "用户事件", CheckCircle2],
-                        ["environment", "环境/设备", RotateCcw],
-                      ] as const).map(([value, label, Icon]) => (
-                        <Button key={value} size="sm" variant={tab === value ? "secondary" : "ghost"} onClick={() => setTab(value)}>
-                          <Icon className="h-3.5 w-3.5" />{label}
-                        </Button>
-                      ))}
-                      <Input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="筛选当前时间窗" className="ml-auto h-8 w-56 text-xs" />
-                    </div>
-                    <div className="min-h-0 flex-1 overflow-y-auto p-3">
-                      {eventsQuery.isLoading ? <Loader2 className="mx-auto mt-8 h-5 w-5 animate-spin" /> : visibleEvents.map((event) => (
-                        <div key={event.id} className="mb-2 rounded-lg border bg-card p-3 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className={cn("rounded px-1.5 py-0.5 font-mono", event.severity === "error" ? "bg-red-100 text-red-700" : "bg-muted")}>{event.event_type}</span>
-                            <span className="truncate font-medium">{eventSummary(event)}</span>
-                            <span className="ml-auto text-muted-foreground">#{event.sequence_no}</span>
-                          </div>
-                          <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 text-[10px] text-muted-foreground">{JSON.stringify(event.payload, null, 2)}</pre>
-                        </div>
-                      ))}
-                      {!eventsQuery.isLoading && !visibleEvents.length ? <div className="py-10 text-center text-xs text-muted-foreground">当前动作时间窗没有此类上下文</div> : null}
-                    </div>
-                  </div>
+                  <ContextEventsPanel
+                    tab={tab}
+                    onTabChange={setTab}
+                    keyword={keyword}
+                    onKeywordChange={setKeyword}
+                    events={visibleEvents}
+                    loading={eventsQuery.isLoading}
+                    emptyText="当前动作时间窗没有此类上下文"
+                  />
                 </>
-              ) : <div className="grid flex-1 place-items-center text-sm text-muted-foreground">请选择一条动作</div>}
+              ) : (
+                <>
+                  <div className="border-b border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
+                    本次录制没有产生可执行的点击或输入动作。只读拾取不会进入动作时间线，
+                    但下方仍可查看本次采集的 Console、Network、用户事件和环境信息。
+                  </div>
+                  <ContextEventsPanel
+                    tab={tab}
+                    onTabChange={setTab}
+                    keyword={keyword}
+                    onKeywordChange={setKeyword}
+                    events={visibleEvents}
+                    loading={eventsQuery.isLoading}
+                    emptyText="本次录制没有采集到此类技术上下文"
+                  />
+                </>
+              )}
             </main>
 
             <aside className="min-h-0 overflow-y-auto border-l p-4">
