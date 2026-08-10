@@ -18,6 +18,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -50,6 +51,15 @@ ALL_UI_RECORDING_STATUSES = {
     UI_RECORDING_CANCELLED,
 }
 
+UI_RECORDING_ROLE_PRIMARY = "primary"
+UI_RECORDING_ROLE_SUPPLEMENT = "supplement"
+UI_RECORDING_ROLE_HISTORY = "history"
+ALL_UI_RECORDING_ROLES = {
+    UI_RECORDING_ROLE_PRIMARY,
+    UI_RECORDING_ROLE_SUPPLEMENT,
+    UI_RECORDING_ROLE_HISTORY,
+}
+
 UI_ELEMENT_PENDING = "pending"
 UI_ELEMENT_VERIFIED = "verified"
 UI_ELEMENT_STALE = "stale"
@@ -66,6 +76,15 @@ class UiRecordingSession(Base):
     """一次 Web 或模拟器录制会话。"""
 
     __tablename__ = "ui_recording_sessions"
+    __table_args__ = (
+        Index(
+            "uq_ui_recording_primary_project_platform",
+            "project_id",
+            "platform",
+            unique=True,
+            postgresql_where=text("recording_role = 'primary'"),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     project_id = Column(
@@ -83,6 +102,22 @@ class UiRecordingSession(Base):
         index=True,
     )
     name = Column(String(200), nullable=False)
+    recording_role = Column(
+        String(20),
+        nullable=False,
+        default=UI_RECORDING_ROLE_HISTORY,
+        server_default=UI_RECORDING_ROLE_HISTORY,
+        index=True,
+    )
+    baseline_session_id = Column(
+        Integer,
+        ForeignKey("ui_recording_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    baseline_included = Column(Boolean, nullable=False, default=False, server_default="false")
+    baseline_version = Column(Integer, nullable=False, default=1, server_default="1")
+    merged_at = Column(DateTime, nullable=True)
 
     environment_id = Column(
         Integer,

@@ -16,6 +16,9 @@ from database.models import (
     ALL_UI_ELEMENT_STATUSES,
     ALL_UI_PLATFORMS,
     ALL_UI_RECORDING_STATUSES,
+    UI_RECORDING_ROLE_HISTORY,
+    UI_RECORDING_ROLE_PRIMARY,
+    UI_RECORDING_ROLE_SUPPLEMENT,
     AppPackage,
     DEVICE_STATUS_BUSY,
     DEVICE_STATUS_IDLE,
@@ -45,6 +48,7 @@ from database.schemas.ui_recording import (
     UiPageSnapshotPickRequest,
     UiPageSnapshotUpdate,
     UiRecordingControlRequest,
+    UiRecordingBaselineUpdate,
     UiRecordingCreate,
     UiRecordingEventCreate,
     UiRecordingEventBatchCreate,
@@ -101,6 +105,72 @@ from server.services.ui_recorder_agent_client import (
 router = APIRouter(tags=["ui-recordings"])
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _UI_ARTIFACT_ROOT = (_PROJECT_ROOT / "data" / "ui_recordings").resolve()
+
+
+def _get_primary_recording(
+    db: DBDep,
+    project_id: int,
+    platform: str,
+    *,
+    for_update: bool = False,
+) -> UiRecordingSession | None:
+    """读取项目平台当前唯一的主录制基线。"""
+    query = db.session.query(UiRecordingSession).filter(
+        UiRecordingSession.project_id == project_id,
+        UiRecordingSession.platform == platform,
+        UiRecordingSession.recording_role == UI_RECORDING_ROLE_PRIMARY,
+    )
+    if for_update:
+        query = query.with_for_update()
+    return query.first()
+
+
+def _get_recording_baseline(
+    db: DBDep,
+    session: UiRecordingSession,
+    *,
+    for_update: bool = False,
+    allow_excluded: bool = False,
+) -> UiRecordingSession:
+    """把主会话或已合并补充会话解析到同一个主基线。"""
+    if session.recording_role == UI_RECORDING_ROLE_PRIMARY:
+        return session
+    if (
+        session.recording_role == UI_RECORDING_ROLE_SUPPLEMENT
+        and session.baseline_session_id
+        and (session.baseline_included or allow_excluded)
+    ):
+        query = db.session.query(UiRecordingSession).filter(
+            UiRecordingSession.id == session.baseline_session_id,
+            UiRecordingSession.recording_role == UI_RECORDING_ROLE_PRIMARY,
+        )
+        if for_update:
+            query = query.with_for_update()
+        baseline = query.first()
+        if baseline is not None:
+            return baseline
+    return session
+
+
+def _baseline_source_sessions(
+    db: DBDep,
+    baseline: UiRecordingSession,
+) -> list[UiRecordingSession]:
+    """返回主基线离线包所包含的原始录制，原始证据本身保持不可变。"""
+    if baseline.recording_role != UI_RECORDING_ROLE_PRIMARY:
+        return [baseline]
+    supplements = (
+        db.session.query(UiRecordingSession)
+        .filter(
+            UiRecordingSession.baseline_session_id == baseline.id,
+            UiRecordingSession.recording_role == UI_RECORDING_ROLE_SUPPLEMENT,
+            UiRecordingSession.baseline_included.is_(True),
+            UiRecordingSession.status == "completed",
+        )
+        .order_by(UiRecordingSession.merged_at.desc(), UiRecordingSession.id.desc())
+        .all()
+    )
+    return [baseline, *supplements]
 
 
 def _start_snapshot_pick_replay(
@@ -497,7 +567,12 @@ def create_recording(
     db: DBDep,
     current_user: CurrentUserDep,
 ):
-    project = db.session.query(Project).filter(Project.id == body.project_id).first()
+    project = (
+        db.session.query(Project)
+        .filter(Project.id == body.project_id)
+        .with_for_update()
+        .first()
+    )
     if project is None:
         raise HTTPException(status_code=404, detail="项目不存在")
     assert_project_access(db, current_user, project.id)
@@ -537,10 +612,37 @@ def create_recording(
         if app_package.platform.strip().lower() != body.platform:
             raise HTTPException(status_code=422, detail="应用包平台与录制平台不一致")
 
+    primary = _get_primary_recording(db, project.id, body.platform, for_update=True)
+    recording_role = body.recording_role
+    if recording_role == "auto":
+        recording_role = (
+            UI_RECORDING_ROLE_PRIMARY
+            if primary is None
+            else UI_RECORDING_ROLE_SUPPLEMENT
+        )
+    if recording_role == UI_RECORDING_ROLE_PRIMARY and primary is not None:
+        raise HTTPException(status_code=409, detail="当前平台已有主录制，请使用补充录制或提升历史会话")
+    baseline = None
+    if recording_role == UI_RECORDING_ROLE_SUPPLEMENT:
+        baseline = primary
+        if body.baseline_session_id is not None:
+            baseline = db.session.get(UiRecordingSession, body.baseline_session_id)
+        if (
+            baseline is None
+            or baseline.project_id != project.id
+            or baseline.platform != body.platform
+            or baseline.recording_role != UI_RECORDING_ROLE_PRIMARY
+        ):
+            raise HTTPException(status_code=422, detail="补充录制必须绑定当前项目平台的主录制")
+
     session = UiRecordingSession(
         project_id=project.id,
         platform=body.platform,
         name=body.name.strip(),
+        recording_role=recording_role,
+        baseline_session_id=baseline.id if baseline is not None else None,
+        baseline_included=recording_role == UI_RECORDING_ROLE_PRIMARY,
+        baseline_version=baseline.baseline_version if baseline is not None else 1,
         environment_id=body.environment_id,
         device_id=body.device_id,
         app_package_id=body.app_package_id,
@@ -563,6 +665,79 @@ def create_recording(
         },
     )
     db.session.add(session)
+    db.session.flush()
+    db.session.refresh(session)
+    return {"status": "success", "data": serialize_session(db.session, session)}
+
+
+@router.post("/ui-recordings/{session_id}/baseline")
+def update_recording_baseline(
+    session_id: int,
+    body: UiRecordingBaselineUpdate,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """合并、移出补充录制，或把历史录制提升为新的主基线。"""
+    session = _get_session_or_404(db, session_id, for_update=True)
+    assert_project_access(db, current_user, session.project_id)
+    if session.status != "completed":
+        raise HTTPException(status_code=409, detail="只有已完成录制才能维护主基线")
+    offline = dict((session.capabilities or {}).get("offline_replay") or {})
+    if session.platform == "web" and not offline.get("ready"):
+        raise HTTPException(status_code=409, detail="当前录制没有可用的离线包")
+
+    if body.action in {"include", "exclude"}:
+        if session.recording_role != UI_RECORDING_ROLE_SUPPLEMENT:
+            raise HTTPException(status_code=409, detail="只有补充录制才能加入或移出主基线")
+        baseline = _get_recording_baseline(
+            db,
+            session,
+            for_update=True,
+            allow_excluded=True,
+        )
+        if baseline.id == session.id:
+            raise HTTPException(status_code=409, detail="补充录制绑定的主基线不存在")
+        included = body.action == "include"
+        if session.baseline_included != included:
+            session.baseline_included = included
+            baseline.baseline_version = max(1, int(baseline.baseline_version or 1)) + 1
+            session.baseline_version = baseline.baseline_version
+            session.merged_at = datetime.now() if included else None
+    else:
+        if session.recording_role == UI_RECORDING_ROLE_PRIMARY:
+            raise HTTPException(status_code=409, detail="当前录制已经是主基线")
+        old_primary = _get_primary_recording(
+            db,
+            session.project_id,
+            session.platform,
+            for_update=True,
+        )
+        if old_primary is not None and old_primary.id != session.id:
+            children = (
+                db.session.query(UiRecordingSession)
+                .filter(
+                    UiRecordingSession.baseline_session_id == old_primary.id,
+                    UiRecordingSession.id != session.id,
+                )
+                .with_for_update()
+                .all()
+            )
+            old_primary.recording_role = UI_RECORDING_ROLE_SUPPLEMENT
+            old_primary.baseline_session_id = session.id
+            old_primary.baseline_included = True
+            old_primary.merged_at = datetime.now()
+            db.session.flush()
+            for child in children:
+                child.baseline_session_id = session.id
+        session.recording_role = UI_RECORDING_ROLE_PRIMARY
+        session.baseline_session_id = None
+        session.baseline_included = True
+        session.merged_at = None
+        session.baseline_version = max(
+            int(session.baseline_version or 1),
+            int(old_primary.baseline_version or 1) + 1 if old_primary else 1,
+        )
+
     db.session.flush()
     db.session.refresh(session)
     return {"status": "success", "data": serialize_session(db.session, session)}
@@ -635,6 +810,8 @@ def delete_recording(
     assert_project_access(db, current_user, session.project_id)
     if session.status in {"starting", "recording", "paused", "stopping", "processing"}:
         raise HTTPException(status_code=409, detail="录制仍在运行，请先停止或取消后再删除")
+    if session.recording_role == UI_RECORDING_ROLE_PRIMARY:
+        raise HTTPException(status_code=409, detail="主录制不能直接删除，请先把其他录制设为主录制")
     scope = {
         "events": db.session.query(UiRecordingEvent).filter(UiRecordingEvent.session_id == session.id).count(),
         "snapshots": db.session.query(UiPageSnapshot).filter(UiPageSnapshot.session_id == session.id).count(),
@@ -825,25 +1002,35 @@ def start_recording_offline_replay(
     assert_project_access(db, current_user, session.project_id)
     if session.platform != "web":
         raise HTTPException(status_code=422, detail="离线网页回放只适用于 Web 录制")
-    offline = dict((session.capabilities or {}).get("offline_replay") or {})
-    if session.status != "completed" or not offline.get("ready"):
+    baseline = _get_recording_baseline(db, session)
+    sources = _baseline_source_sessions(db, baseline)
+    source_ids = [item.id for item in sources]
+    offline = dict((baseline.capabilities or {}).get("offline_replay") or {})
+    if baseline.status != "completed" or not offline.get("ready"):
         raise HTTPException(status_code=409, detail="当前会话尚未生成可用的离线回放包")
     if body.entry_url or body.page_fingerprint:
         matched = any(
             (body.entry_url is None or snapshot.url == body.entry_url)
             and (body.page_fingerprint is None or snapshot.fingerprint == body.page_fingerprint)
-            for snapshot in session.snapshots
+            and (
+                body.page_source_session_id is None
+                or snapshot.session_id == body.page_source_session_id
+            )
+            for source in sources
+            for snapshot in source.snapshots
         )
         if not matched:
-            raise HTTPException(status_code=422, detail="指定页面状态不属于当前录制会话")
+            raise HTTPException(status_code=422, detail="指定页面状态不属于当前主录制基线")
     try:
         replay = start_web_replay(
-            session.id,
+            baseline.id,
             browser=body.browser,
             headless=body.headless,
             entry_url=body.entry_url,
             page_fingerprint=body.page_fingerprint,
+            page_source_session_id=body.page_source_session_id,
             viewport=body.viewport,
+            source_session_ids=source_ids,
         )
     except RecorderAgentError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

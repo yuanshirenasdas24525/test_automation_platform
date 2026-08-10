@@ -311,6 +311,7 @@ export function UiElementLibraryWorkspace({
   const [startOpen, setStartOpen] = useState(false);
   const [targetUrl, setTargetUrl] = useState(() => window.location.origin);
   const [browser, setBrowser] = useState("chromium");
+  const [recordingRole, setRecordingRole] = useState<"supplement" | "history">("supplement");
   const [selectedDeviceId, setSelectedDeviceId] = useState("");
   const [selectedPackageId, setSelectedPackageId] = useState("none");
   const [mobileInput, setMobileInput] = useState("");
@@ -361,6 +362,7 @@ export function UiElementLibraryWorkspace({
     setWebInput("");
     setReplayInputDirty(false);
     setOfflinePickMode(false);
+    setRecordingRole("supplement");
     setStepDraft(null);
     setDraftModuleId("");
     setDraftCaseName("");
@@ -453,6 +455,21 @@ export function UiElementLibraryWorkspace({
     }),
     [normalizedKeyword, snapshotsQuery.data],
   );
+  const latestServerSession = recordingsQuery.data?.[0] ?? null;
+  const recordingSessions = recordingsQuery.data ?? [];
+  const primarySession = recordingSessions.find((item) => item.recording_role === "primary") ?? null;
+  const baselineSessionIds = new Set(
+    recordingSessions
+      .filter((item) => (
+        item.id === primarySession?.id
+        || (
+          item.recording_role === "supplement"
+          && item.baseline_session_id === primarySession?.id
+          && item.baseline_included
+        )
+      ))
+      .map((item) => item.id),
+  );
   const pages = useMemo(
     () => groupPages(filteredElements, filteredSnapshots),
     [filteredElements, filteredSnapshots],
@@ -460,6 +477,7 @@ export function UiElementLibraryWorkspace({
   const activePageKey = pageKey ?? pages[0]?.pageKey ?? null;
   const activePage = pages.find((page) => page.pageKey === activePageKey) ?? null;
   const activeSnapshot = activePage?.snapshots.find((item) => item.id === snapshotId)
+    ?? activePage?.snapshots.find((item) => baselineSessionIds.has(item.session_id))
     ?? activePage?.snapshots[0]
     ?? null;
   const visibleFingerprints = activeSnapshot?.resource_manifest.visible_element_fingerprints;
@@ -480,7 +498,21 @@ export function UiElementLibraryWorkspace({
     setPageNameEditing(false);
   }, [activePage?.pageKey, activePage?.displayName]);
 
-  const latestServerSession = recordingsQuery.data?.[0] ?? null;
+  const resolveReplaySession = (snapshot: UiPageSnapshot | null) => {
+    const owner = snapshot
+      ? recordingSessions.find((item) => item.id === snapshot.session_id) ?? null
+      : null;
+    if (platform !== "web") return owner ?? primarySession ?? latestServerSession;
+    if (
+      owner?.recording_role === "supplement"
+      && owner.baseline_included
+      && owner.baseline_session_id
+    ) {
+      return recordingSessions.find((item) => item.id === owner.baseline_session_id) ?? owner;
+    }
+    return owner ?? primarySession ?? latestServerSession;
+  };
+  const replaySession = resolveReplaySession(activeSnapshot);
   const activeServerSession = recordingsQuery.data?.find((session) =>
     ACTIVE_STATUSES.includes(session.status),
   ) ?? null;
@@ -549,7 +581,7 @@ export function UiElementLibraryWorkspace({
   const hasControl = !session || !ACTIVE_STATUSES.includes(session.status)
     || controlLease?.owner_id === clientInstanceId;
   const pickMode = session?.capabilities.pick_mode === true;
-  const offlineReplay = (session?.capabilities.offline_replay ?? null) as {
+  const replayOfflineReplay = (replaySession?.capabilities.offline_replay ?? null) as {
     ready?: boolean;
     page_count?: number;
     resource_count?: number;
@@ -558,7 +590,34 @@ export function UiElementLibraryWorkspace({
     integrity_verified?: boolean;
     limitations?: string[];
   } | null;
-  const mobileScenario = (session?.capabilities.mobile_scenario ?? null) as {
+  const baselineSources = primarySession
+    ? recordingSessions.filter((item) => (
+        item.id === primarySession.id
+        || (
+          item.recording_role === "supplement"
+          && item.baseline_session_id === primarySession.id
+          && item.baseline_included
+          && item.status === "completed"
+        )
+      ))
+    : [];
+  const baselineStats = baselineSources.reduce(
+    (total, item) => {
+      const replay = (item.capabilities.offline_replay ?? {}) as {
+        page_count?: number;
+        resource_count?: number;
+        mock_count?: number;
+      };
+      return {
+        pages: total.pages + Number(replay.page_count ?? item.snapshot_count),
+        resources: total.resources + Number(replay.resource_count ?? 0),
+        mocks: total.mocks + Number(replay.mock_count ?? 0),
+      };
+    },
+    { pages: 0, resources: 0, mocks: 0 },
+  );
+  const secondarySessions = recordingSessions.filter((item) => item.id !== primarySession?.id);
+  const replayMobileScenario = (replaySession?.capabilities.mobile_scenario ?? null) as {
     ready?: boolean;
     snapshot_count?: number;
     limitations?: string[];
@@ -618,6 +677,7 @@ export function UiElementLibraryWorkspace({
       browser?: string;
       deviceId?: number;
       appPackageId?: number;
+      recordingRole: "supplement" | "history";
     }) => {
       const draft = await uiRecordingsApi.create({
         project_id: projectId,
@@ -626,6 +686,10 @@ export function UiElementLibraryWorkspace({
         source_url: platform === "web" ? input.targetUrl : undefined,
         device_id: input.deviceId,
         app_package_id: input.appPackageId,
+        recording_role: primarySession ? input.recordingRole : "primary",
+        baseline_session_id: input.recordingRole === "supplement"
+          ? primarySession?.id
+          : undefined,
         capture_config: {
           browser: input.browser ?? "chromium",
           headless: false,
@@ -652,6 +716,8 @@ export function UiElementLibraryWorkspace({
   const reopenMobileMutation = useMutation({
     mutationFn: async (previous: UiRecordingSession) => {
       if (!previous.device_id) throw new Error("原录制没有绑定模拟器，无法重开场景");
+      const scenario = previous.capabilities.mobile_scenario as Record<string, unknown> | undefined;
+      if (!scenario?.ready) throw new Error("原录制没有可恢复的模拟器场景");
       const draft = await uiRecordingsApi.create({
         project_id: projectId,
         platform: previous.platform,
@@ -660,7 +726,7 @@ export function UiElementLibraryWorkspace({
         app_package_id: previous.app_package_id ?? undefined,
         capture_config: {
           ...previous.capture_config,
-          restore_scenario: mobileScenario,
+          restore_scenario: scenario,
           source_session_id: previous.id,
         },
       });
@@ -788,10 +854,12 @@ export function UiElementLibraryWorkspace({
         await uiRecordingsApi.stopReplay(previous.session_id, previous.replay_id).catch(() => undefined);
       }
       const viewport = snapshot?.environment.viewport as { width?: number; height?: number } | undefined;
-      return uiRecordingsApi.startReplay(sessionId, browser, {
+      const targetSession = resolveReplaySession(snapshot);
+      return uiRecordingsApi.startReplay(targetSession?.id ?? sessionId, browser, {
         headless,
         entry_url: snapshot?.url ?? undefined,
         page_fingerprint: snapshot?.fingerprint,
+        page_source_session_id: snapshot?.session_id,
         viewport: {
           width: Number(viewport?.width || 1440),
           height: Number(viewport?.height || 900),
@@ -808,6 +876,27 @@ export function UiElementLibraryWorkspace({
       setOfflinePickMode(false);
       toast.success(
         `离线交互已启动：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
+      );
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const baselineMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      action,
+    }: {
+      sessionId: number;
+      action: "include" | "exclude" | "promote";
+    }) => uiRecordingsApi.updateBaseline(sessionId, action),
+    onSuccess: async (_next, variables) => {
+      await refresh();
+      toast.success(
+        variables.action === "promote"
+          ? "已发布为新的主录制基线"
+          : variables.action === "include"
+            ? "补充录制已合并到主基线"
+            : "补充录制已移出主基线",
       );
     },
     onError: (error) => toast.error(messageOf(error)),
@@ -1322,7 +1411,7 @@ export function UiElementLibraryWorkspace({
               开始录制
             </Button>
           ) : null}
-          {session?.status === "completed" && offlineReplay?.ready ? (
+          {replaySession?.status === "completed" && replayOfflineReplay?.ready ? (
             <Button
               size="sm"
               variant="outline"
@@ -1331,7 +1420,7 @@ export function UiElementLibraryWorkspace({
                 if (embeddedReplay) {
                   stopReplayMutation.mutate();
                 } else {
-                  replayMutation.mutate({ sessionId: session.id, snapshot: activeSnapshot });
+                  replayMutation.mutate({ sessionId: replaySession.id, snapshot: activeSnapshot });
                 }
               }}
             >
@@ -1341,12 +1430,12 @@ export function UiElementLibraryWorkspace({
               {embeddedReplay ? "结束离线交互" : "离线交互"}
             </Button>
           ) : null}
-          {session?.status === "completed" && platform !== "web" && mobileScenario?.ready ? (
+          {replaySession?.status === "completed" && platform !== "web" && replayMobileScenario?.ready ? (
             <Button
               size="sm"
               variant="outline"
               disabled={reopenMobileMutation.isPending}
-              onClick={() => reopenMobileMutation.mutate(session)}
+              onClick={() => reopenMobileMutation.mutate(replaySession)}
             >
               {reopenMobileMutation.isPending
                 ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -1455,71 +1544,100 @@ export function UiElementLibraryWorkspace({
             )}
           </div>
           <div className="border-t p-3">
-            <div className="mb-2 text-[11px] text-muted-foreground">最近录制</div>
+            <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
+              <span>主录制基线</span>
+              {primarySession ? <span>V{primarySession.baseline_version}</span> : null}
+            </div>
             {recordingsQuery.isLoading ? (
               <div className="text-xs text-muted-foreground">加载中…</div>
-            ) : session ? (
+            ) : primarySession ? (
               <div className="rounded-lg border bg-background p-3">
                 <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1 truncate text-xs font-medium">{session.name}</div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-6 w-6 shrink-0 text-red-600"
-                    title={ACTIVE_STATUSES.includes(session.status) ? "请先停止录制" : "删除录制记录"}
-                    disabled={ACTIVE_STATUSES.includes(session.status)}
-                    onClick={() => setDeleteTarget({
-                      kind: "recording",
-                      id: session.id,
-                      name: session.name,
-                      detail: `将删除 ${session.event_count} 个事件、${session.snapshot_count} 个页面状态、离线包和技术上下文；已沉淀到项目元素库的元素会保留。`,
-                    })}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <Star className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500" />
+                  <div className="min-w-0 flex-1 truncate text-xs font-medium">{primarySession.name}</div>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                  <span>{session.event_count} 个事件</span>
-                  <span>{formatTime(session.updated_at)}</span>
+                  <span>{baselineSources.length} 次录制已合并</span>
+                  <span>{formatTime(primarySession.updated_at)}</span>
                 </div>
-                {offlineReplay?.ready ? (
-                  <>
-                    <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
-                      离线包可用 · {offlineReplay.page_count ?? 0} 页 · {offlineReplay.resource_count ?? 0} 资源 · {offlineReplay.mock_count ?? 0} Mock
-                      {offlineReplay.integrity_verified ? " · SHA-256 已校验" : ""}
-                    </div>
-                    {offlineReplay.limitations?.length ? (
-                      <details className="mt-2 text-[10px] text-muted-foreground">
-                        <summary className="cursor-pointer">查看能力限制（{offlineReplay.limitations.length}）</summary>
-                        <ul className="mt-1 list-disc space-y-1 pl-4">
-                          {offlineReplay.limitations.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      </details>
-                    ) : null}
-                  </>
-                ) : mobileScenario?.ready ? (
-                  <>
-                    <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
-                      模拟器场景可重开 · {mobileScenario.snapshot_count ?? session.snapshot_count} 个画面版本
-                    </div>
-                    {mobileScenario.limitations?.length ? (
-                      <details className="mt-2 text-[10px] text-muted-foreground">
-                        <summary className="cursor-pointer">查看场景恢复限制</summary>
-                        <ul className="mt-1 list-disc space-y-1 pl-4">
-                          {mobileScenario.limitations.map((item) => <li key={item}>{item}</li>)}
-                        </ul>
-                      </details>
-                    ) : null}
-                  </>
-                ) : session.status === "completed" ? (
-                  <div className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-[10px] text-amber-700">
-                    {platform === "web" ? "本次录制未生成可交互离线包" : "本次录制未生成可重开场景"}
-                  </div>
-                ) : null}
+                <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
+                  {platform === "web"
+                    ? `${baselineStats.pages} 页 · ${baselineStats.resources} 资源 · ${baselineStats.mocks} Mock`
+                    : `${baselineStats.pages} 个模拟器场景状态`}
+                </div>
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground">尚无录制会话</div>
+              <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+                尚无主录制，首次录制将自动成为主基线。
+              </div>
             )}
+            {secondarySessions.length > 0 ? (
+              <div className="mt-3 max-h-[240px] space-y-1.5 overflow-y-auto pr-1">
+                <div className="text-[11px] text-muted-foreground">其他录制</div>
+                {secondarySessions.slice(0, 5).map((item) => (
+                  <div key={item.id} className="rounded-md border bg-background px-2 py-2 text-[10px]">
+                    <div className="flex items-center gap-1.5">
+                      <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+                      <span className={cn(
+                        "rounded px-1 py-0.5",
+                        item.recording_role === "supplement" && item.baseline_included
+                          ? "bg-blue-50 text-blue-700"
+                          : "bg-muted text-muted-foreground",
+                      )}>
+                        {item.recording_role === "supplement"
+                          ? item.baseline_included ? "已合并" : "未合并"
+                          : "历史"}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center justify-between text-muted-foreground">
+                      <span>{item.snapshot_count} 状态 · {item.event_count} 事件</span>
+                      <span>{formatTime(item.updated_at)}</span>
+                    </div>
+                    {item.status === "completed" ? (
+                      <div className="mt-1.5 flex justify-end gap-1">
+                        {item.recording_role === "supplement" ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-1.5 text-[10px]"
+                            disabled={baselineMutation.isPending}
+                            onClick={() => baselineMutation.mutate({
+                              sessionId: item.id,
+                              action: item.baseline_included ? "exclude" : "include",
+                            })}
+                          >
+                            {item.baseline_included ? "移出主基线" : "合并到主基线"}
+                          </Button>
+                        ) : null}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5 text-[10px]"
+                          disabled={baselineMutation.isPending}
+                          onClick={() => baselineMutation.mutate({ sessionId: item.id, action: "promote" })}
+                        >
+                          设为主录制
+                        </Button>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-6 w-6 text-red-600"
+                          title="删除录制记录"
+                          onClick={() => setDeleteTarget({
+                            kind: "recording",
+                            id: item.id,
+                            name: item.name,
+                            detail: `将删除 ${item.event_count} 个事件、${item.snapshot_count} 个页面状态、离线包和技术上下文；已沉淀到项目元素库的元素会保留。`,
+                          })}
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         </aside>
 
@@ -1574,16 +1692,23 @@ export function UiElementLibraryWorkspace({
                     }
                   }}
                 >
-                  <SelectTrigger className="h-8 w-[170px] text-[11px]">
+                  <SelectTrigger className="h-8 w-[230px] text-[11px]">
                     <SelectValue placeholder="选择页面状态" />
                   </SelectTrigger>
                   <SelectContent>
-                    {activePage.snapshots.map((item) => (
-                      <SelectItem key={item.id} value={String(item.id)}>
-                        {item.state_name || `状态 #${item.snapshot_version}`}
-                        {item.id === activePage.snapshots[0]?.id ? " · 最新" : ""}
-                      </SelectItem>
-                    ))}
+                    {activePage.snapshots.map((item) => {
+                      const owner = recordingSessions.find((candidate) => candidate.id === item.session_id);
+                      const sourceLabel = owner?.recording_role === "primary"
+                        ? `主基线 V${owner.baseline_version}`
+                        : owner?.recording_role === "supplement"
+                          ? owner.baseline_included ? "已合并补充" : "待合并补充"
+                          : "历史录制";
+                      return (
+                        <SelectItem key={item.id} value={String(item.id)}>
+                          {item.state_name || `状态 #${item.snapshot_version}`} · {sourceLabel}
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               ) : null}
@@ -2202,6 +2327,30 @@ export function UiElementLibraryWorkspace({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-2">
+            {primarySession ? (
+              <label className="block space-y-1.5 text-sm">
+                <span className="font-medium">录制用途</span>
+                <Select
+                  value={recordingRole}
+                  onValueChange={(value) => setRecordingRole(value as "supplement" | "history")}
+                >
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="supplement">补充主基线（推荐）</SelectItem>
+                    <SelectItem value="history">独立历史录制</SelectItem>
+                  </SelectContent>
+                </Select>
+                <span className="block text-xs text-muted-foreground">
+                  {recordingRole === "supplement"
+                    ? `完成后生成主基线 V${primarySession.baseline_version} 的补充内容，确认后再合并页面、元素和接口 Mock。`
+                    : "仅保留本次录制用于历史回顾，不影响当前离线交互基线。"}
+                </span>
+              </label>
+            ) : (
+              <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 text-xs text-blue-700">
+                当前平台还没有主录制，本次完成后将自动成为主基线 V1。
+              </div>
+            )}
             {platform === "web" ? (
               <>
                 <label className="block space-y-1.5 text-sm">
@@ -2299,10 +2448,11 @@ export function UiElementLibraryWorkspace({
               }
               onClick={() => startMutation.mutate(
                 platform === "web"
-                  ? { targetUrl: targetUrl.trim(), browser }
+                  ? { targetUrl: targetUrl.trim(), browser, recordingRole }
                   : {
                       deviceId: Number(selectedDeviceId),
                       appPackageId: selectedPackageId === "none" ? undefined : Number(selectedPackageId),
+                      recordingRole,
                     },
               )}
             >

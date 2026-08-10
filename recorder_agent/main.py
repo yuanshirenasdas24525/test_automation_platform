@@ -685,10 +685,12 @@ class PickModeRequest(BaseModel):
 
 class ReplayStartRequest(BaseModel):
     session_id: int = Field(..., gt=0)
+    source_session_ids: list[int] = Field(default_factory=list, max_length=50)
     browser: str = Field("chromium", pattern="^(chromium|firefox|webkit)$")
     headless: bool = False
     entry_url: str | None = Field(None, max_length=4000)
     page_fingerprint: str | None = Field(None, max_length=64)
+    page_source_session_id: int | None = Field(None, gt=0)
     viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
     reuse_key: str | None = Field(None, min_length=1, max_length=200)
     freeze_dom: bool = False
@@ -1934,6 +1936,7 @@ class OfflineReplayRuntime:
     stats: dict[str, int]
     reuse_key: str | None = None
     freeze_dom: bool = False
+    source_session_ids: tuple[int, ...] = ()
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_activity_monotonic: float = field(default_factory=time.monotonic)
 
@@ -2194,15 +2197,72 @@ def _replay_storage_script(storage_state: dict[str, Any]) -> str:
 async def _start_offline_replay(
     body: ReplayStartRequest,
 ) -> tuple[OfflineReplayRuntime, dict[str, Any], bool]:
-    session_root = _ARTIFACT_ROOT / f"session_{body.session_id}"
-    manifest_path = session_root / "offline" / "manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(status_code=404, detail="离线回放包不存在，请先完成一次 Web 录制")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=f"离线回放清单损坏：{exc}") from exc
-    entry_url = str(body.entry_url or manifest.get("entry_url") or "")
+    source_session_ids = tuple(dict.fromkeys([
+        body.session_id,
+        *(item for item in body.source_session_ids if item > 0),
+    ]))
+    packages: list[tuple[int, Path, dict[str, Any]]] = []
+    for source_session_id in source_session_ids:
+        source_root = _ARTIFACT_ROOT / f"session_{source_session_id}"
+        manifest_path = source_root / "offline" / "manifest.json"
+        if not manifest_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"录制会话 #{source_session_id} 的离线回放包不存在",
+            )
+        try:
+            source_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"录制会话 #{source_session_id} 的离线回放清单损坏：{exc}",
+            ) from exc
+        packages.append((source_session_id, source_root, source_manifest))
+
+    primary_manifest = packages[0][2]
+    # 当前所选页面的原始会话优先提供页面、资源和同名 Mock，其余已合并会话补缺。
+    preferred_source_session_id = body.page_source_session_id or body.session_id
+    replay_packages = sorted(
+        packages,
+        key=lambda item: 0 if item[0] == preferred_source_session_id else 1,
+    )
+    pages: list[dict[str, Any]] = []
+    resources: list[dict[str, Any]] = []
+    mocks: list[dict[str, Any]] = []
+    limitations: list[str] = []
+    for source_session_id, source_root, source_manifest in replay_packages:
+        pages.extend([
+            {
+                **item,
+                "_source_session_id": source_session_id,
+                "_source_root": source_root,
+            }
+            for item in source_manifest.get("pages") or []
+        ])
+        resources.extend([
+            {
+                **item,
+                "_source_session_id": source_session_id,
+                "_source_root": source_root,
+            }
+            for item in source_manifest.get("resources") or []
+        ])
+        mocks.extend([
+            {**item, "_source_session_id": source_session_id}
+            for item in source_manifest.get("mocks") or []
+        ])
+        for limitation in source_manifest.get("limitations") or []:
+            if limitation not in limitations:
+                limitations.append(limitation)
+    manifest = {
+        **primary_manifest,
+        "pages": pages,
+        "resources": resources,
+        "mocks": mocks,
+        "limitations": limitations,
+        "source_session_ids": list(source_session_ids),
+    }
+    entry_url = str(body.entry_url or primary_manifest.get("entry_url") or "")
     if not entry_url:
         raise HTTPException(status_code=422, detail="离线回放包没有入口页面")
 
@@ -2215,6 +2275,7 @@ async def _start_offline_replay(
                 if runtime.session_id == body.session_id
                 and runtime.reuse_key == body.reuse_key
                 and runtime.freeze_dom == body.freeze_dom
+                and runtime.source_session_ids == source_session_ids
                 and not runtime.page.is_closed()
             ),
             None,
@@ -2224,21 +2285,24 @@ async def _start_offline_replay(
             return reusable, manifest, True
 
     try:
-        integrity_items = [
-            (item["document_path"], item["document_sha256"])
-            for item in manifest.get("pages") or []
-        ] + [
-            (item["screenshot_path"], item["screenshot_sha256"])
-            for item in manifest.get("pages") or []
-        ] + [
-            (item["path"], item["sha256"])
-            for item in manifest.get("resources") or []
-        ]
-        for relative_path, expected_hash in integrity_items:
-            artifact = _package_artifact_path(session_root, relative_path)
-            actual_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
-            if actual_hash != expected_hash:
-                raise ValueError(f"制品哈希不匹配：{relative_path}")
+        for source_session_id, source_root, source_manifest in packages:
+            integrity_items = [
+                (item["document_path"], item["document_sha256"])
+                for item in source_manifest.get("pages") or []
+            ] + [
+                (item["screenshot_path"], item["screenshot_sha256"])
+                for item in source_manifest.get("pages") or []
+            ] + [
+                (item["path"], item["sha256"])
+                for item in source_manifest.get("resources") or []
+            ]
+            for relative_path, expected_hash in integrity_items:
+                artifact = _package_artifact_path(source_root, relative_path)
+                actual_hash = hashlib.sha256(artifact.read_bytes()).hexdigest()
+                if actual_hash != expected_hash:
+                    raise ValueError(
+                        f"会话 #{source_session_id} 制品哈希不匹配：{relative_path}"
+                    )
     except (KeyError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=f"离线回放包完整性校验失败：{exc}") from exc
 
@@ -2256,6 +2320,10 @@ async def _start_offline_replay(
                 index
                 for index, item in enumerate(candidates)
                 if item.get("fingerprint") == body.page_fingerprint
+                and (
+                    body.page_source_session_id is None
+                    or item.get("_source_session_id") == body.page_source_session_id
+                )
             ),
             None,
         )
@@ -2269,10 +2337,9 @@ async def _start_offline_replay(
         manifest,
         entry_url,
     )
-    resources = {
-        _normalized_replay_url(str(item["url"])): item
-        for item in manifest.get("resources") or []
-    }
+    resources_by_url: dict[str, dict[str, Any]] = {}
+    for item in manifest.get("resources") or []:
+        resources_by_url.setdefault(_normalized_replay_url(str(item["url"])), item)
     mock_groups: dict[str, list[dict[str, Any]]] = {}
     for exchange in manifest.get("mocks") or []:
         rule = dict(exchange.get("match_rule") or {})
@@ -2362,7 +2429,10 @@ async def _start_offline_replay(
             page_indexes[normalized_url] = index + 1
             page_record = page_candidates[index]
             try:
-                path = _package_artifact_path(session_root, page_record["document_path"])
+                path = _package_artifact_path(
+                    Path(page_record["_source_root"]),
+                    page_record["document_path"],
+                )
             except ValueError as exc:
                 await route.fulfill(status=599, body=str(exc))
                 return
@@ -2375,11 +2445,14 @@ async def _start_offline_replay(
                 body=document_body,
             )
             return
-        resource = resources.get(normalized_url)
+        resource = resources_by_url.get(normalized_url)
         if resource:
             stats["resource_hits"] += 1
             try:
-                path = _package_artifact_path(session_root, resource["path"])
+                path = _package_artifact_path(
+                    Path(resource["_source_root"]),
+                    resource["path"],
+                )
             except ValueError as exc:
                 await route.fulfill(status=599, body=str(exc))
                 return
@@ -2421,6 +2494,7 @@ async def _start_offline_replay(
         stats=stats,
         reuse_key=body.reuse_key,
         freeze_dom=body.freeze_dom,
+        source_session_ids=source_session_ids,
     )
     _REPLAYS[replay_id] = runtime
     return runtime, manifest, False
@@ -3131,6 +3205,7 @@ async def start_replay(body: ReplayStartRequest):
         "data": {
             "replay_id": runtime.replay_id,
             "session_id": body.session_id,
+            "source_session_ids": list(runtime.source_session_ids),
             "entry_url": runtime.page.url,
             "page_count": len(manifest.get("pages") or []),
             "resource_count": len(manifest.get("resources") or []),

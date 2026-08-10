@@ -370,11 +370,15 @@ def test_headed_recorder_viewport_follows_resizable_window() -> None:
         session_id=1,
         entry_url="https://example.test/login",
         page_fingerprint="a" * 64,
+        page_source_session_id=2,
         reuse_key=f"snapshot-pick:frozen:1:{'a' * 64}",
         freeze_dom=True,
+        source_session_ids=[1, 2],
     )
     assert replay.reuse_key.startswith("snapshot-pick:frozen:1:")
     assert replay.freeze_dom is True
+    assert replay.source_session_ids == [1, 2]
+    assert replay.page_source_session_id == 2
 
 
 def test_frozen_replay_document_preserves_dom_and_removes_scripts() -> None:

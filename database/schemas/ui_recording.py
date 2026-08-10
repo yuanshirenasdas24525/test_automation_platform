@@ -18,6 +18,8 @@ class UiRecordingCreate(BaseModel):
     app_package_id: int | None = Field(None, gt=0)
     source_url: str | None = Field(None, max_length=4000)
     capture_config: dict[str, Any] = Field(default_factory=dict)
+    recording_role: str = Field("auto", pattern="^(auto|primary|supplement|history)$")
+    baseline_session_id: int | None = Field(None, gt=0)
 
     @field_validator("platform")
     @classmethod
@@ -26,6 +28,12 @@ class UiRecordingCreate(BaseModel):
         if normalized not in ALL_UI_PLATFORMS:
             raise ValueError("platform 必须是 web/android/ios")
         return normalized
+
+
+class UiRecordingBaselineUpdate(BaseModel):
+    """维护补充会话是否进入主基线，或提升历史会话为新主基线。"""
+
+    action: str = Field(..., pattern="^(include|exclude|promote)$")
 
 
 class UiRecordingEventCreate(BaseModel):
@@ -79,6 +87,7 @@ class UiRecordingReplayRequest(BaseModel):
     headless: bool = False
     entry_url: str | None = Field(None, max_length=4000)
     page_fingerprint: str | None = Field(None, max_length=64)
+    page_source_session_id: int | None = Field(None, gt=0)
     viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
 
 
@@ -172,6 +181,11 @@ class UiRecordingRead(BaseModel):
     platform: str
     status: str
     name: str
+    recording_role: str
+    baseline_session_id: int | None
+    baseline_included: bool
+    baseline_version: int
+    merged_at: datetime | None
     environment_id: int | None
     device_id: int | None
     app_package_id: int | None

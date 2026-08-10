@@ -86,6 +86,11 @@ export interface UiRecordingSession {
   platform: UiPlatform;
   status: UiRecordingStatus;
   name: string;
+  recording_role: "primary" | "supplement" | "history";
+  baseline_session_id: number | null;
+  baseline_included: boolean;
+  baseline_version: number;
+  merged_at: string | null;
   environment_id: number | null;
   device_id: number | null;
   app_package_id: number | null;
@@ -232,6 +237,7 @@ export interface UiExecutionContextBundle {
 export interface UiOfflineReplay {
   replay_id: string;
   session_id: number;
+  source_session_ids?: number[];
   entry_url: string;
   page_count: number;
   resource_count: number;

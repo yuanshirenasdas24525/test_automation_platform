@@ -2268,10 +2268,18 @@ export const uiRecordingsApi = {
     device_id?: number;
     app_package_id?: number;
     capture_config?: Record<string, unknown>;
+    recording_role?: "auto" | "primary" | "supplement" | "history";
+    baseline_session_id?: number;
   }) {
     return request<UiRecordingSession>("/api/ui-recordings", {
       method: "POST",
       body: payload,
+    });
+  },
+  updateBaseline(sessionId: number, action: "include" | "exclude" | "promote") {
+    return request<UiRecordingSession>(`/api/ui-recordings/${sessionId}/baseline`, {
+      method: "POST",
+      body: { action },
     });
   },
   control(
@@ -2353,6 +2361,7 @@ export const uiRecordingsApi = {
       headless?: boolean;
       entry_url?: string;
       page_fingerprint?: string;
+      page_source_session_id?: number;
       viewport?: { width: number; height: number };
     },
   ) {
@@ -2363,6 +2372,7 @@ export const uiRecordingsApi = {
         headless: options?.headless ?? false,
         entry_url: options?.entry_url,
         page_fingerprint: options?.page_fingerprint,
+        page_source_session_id: options?.page_source_session_id,
         viewport: options?.viewport,
       },
     });
