@@ -119,7 +119,8 @@ def _start_snapshot_pick_replay(
             "width": int(viewport.get("width") or 1440),
             "height": int(viewport.get("height") or 900),
         },
-        reuse_key=f"snapshot-pick:{snapshot.id}:{snapshot.fingerprint}",
+        reuse_key=f"snapshot-pick:frozen:{snapshot.id}:{snapshot.fingerprint}",
+        freeze_dom=True,
     )
 
 
@@ -1693,13 +1694,18 @@ def validate_ui_element_locator(
             raise HTTPException(status_code=404, detail="页面快照所属录制会话不存在")
         replay_id: str | None = None
         try:
+            viewport = dict((snapshot.environment or {}).get("viewport") or {})
             replay = start_web_replay(
                 recording.id,
                 browser="chromium",
                 headless=True,
                 entry_url=snapshot.url,
                 page_fingerprint=snapshot.fingerprint,
-                viewport={"width": 1440, "height": 900},
+                viewport={
+                    "width": int(viewport.get("width") or 1440),
+                    "height": int(viewport.get("height") or 900),
+                },
+                freeze_dom=True,
             )
             replay_id = str(replay.get("replay_id") or "")
             result = validate_web_replay_locator(replay_id, locator.strategy, locator.locator)

@@ -82,7 +82,7 @@ _RECORDER_SCRIPT = r"""
   ].join(",");
   const TEXT_SELECTOR = [
     "h1", "h2", "h3", "h4", "h5", "h6", "p", "label", "legend", "caption",
-    "th", "td", "dt", "dd", "li", "span", "strong", "small", "code", "pre",
+    "th", "td", "dt", "dd", "li", "div", "span", "strong", "small", "code", "pre",
     '[role="heading"]', '[role="cell"]', '[role="columnheader"]', '[role="rowheader"]',
     '[role="status"]', '[role="alert"]',
   ].join(",");
@@ -641,6 +641,18 @@ def _safe_replay_headers(headers: dict[str, str]) -> dict[str, str]:
     }
 
 
+_REPLAY_SCRIPT_TAG_RE = re.compile(
+    r"<script\b[^>]*>.*?</script\s*>",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def _freeze_replay_document(body: bytes) -> bytes:
+    """移除快照文档脚本，防止框架重新挂载后丢失截图时的瞬时 UI 状态。"""
+    html = body.decode("utf-8", errors="replace")
+    return _REPLAY_SCRIPT_TAG_RE.sub("", html).encode("utf-8")
+
+
 def _package_artifact_path(session_root: Path, value: Any) -> Path:
     """解析离线制品相对路径，并禁止逃逸当前 Session 目录。"""
     root = session_root.resolve()
@@ -679,6 +691,7 @@ class ReplayStartRequest(BaseModel):
     page_fingerprint: str | None = Field(None, max_length=64)
     viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
     reuse_key: str | None = Field(None, min_length=1, max_length=200)
+    freeze_dom: bool = False
 
 
 class WebActionRequest(BaseModel):
@@ -1920,6 +1933,7 @@ class OfflineReplayRuntime:
     page: Page
     stats: dict[str, int]
     reuse_key: str | None = None
+    freeze_dom: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_activity_monotonic: float = field(default_factory=time.monotonic)
 
@@ -1966,6 +1980,8 @@ class OfflineReplayRuntime:
         """在离线浏览器中执行远程动作，并返回更新后的页面状态。"""
         if self.page.is_closed():
             raise ValueError("离线回放页面已经关闭")
+        if self.freeze_dom and body.action != "pick":
+            raise ValueError("冻结快照只允许只读拾取")
         if body.action in {"click", "pick"} and (body.x is None or body.y is None):
             raise ValueError(f"{body.action} 动作必须提供 x/y 坐标")
         if body.action == "input" and body.text is None:
@@ -2198,6 +2214,7 @@ async def _start_offline_replay(
                 for runtime in _REPLAYS.values()
                 if runtime.session_id == body.session_id
                 and runtime.reuse_key == body.reuse_key
+                and runtime.freeze_dom == body.freeze_dom
                 and not runtime.page.is_closed()
             ),
             None,
@@ -2289,6 +2306,14 @@ async def _start_offline_replay(
         url = request.url
         method = request.method.upper()
         normalized_url = _normalized_replay_url(url)
+        if body.freeze_dom and request.resource_type == "script":
+            stats["resource_hits"] += 1
+            await route.fulfill(
+                status=200,
+                content_type="application/javascript; charset=utf-8",
+                body="",
+            )
+            return
         if request.resource_type in {"xhr", "fetch"}:
             key = f"{method} {normalized_url}"
             candidates = mock_groups.get(key) or []
@@ -2341,10 +2366,13 @@ async def _start_offline_replay(
             except ValueError as exc:
                 await route.fulfill(status=599, body=str(exc))
                 return
+            document_body = path.read_bytes()
+            if body.freeze_dom:
+                document_body = _freeze_replay_document(document_body)
             await route.fulfill(
                 status=200,
                 content_type="text/html; charset=utf-8",
-                body=path.read_bytes(),
+                body=document_body,
             )
             return
         resource = resources.get(normalized_url)
@@ -2392,6 +2420,7 @@ async def _start_offline_replay(
         page=page,
         stats=stats,
         reuse_key=body.reuse_key,
+        freeze_dom=body.freeze_dom,
     )
     _REPLAYS[replay_id] = runtime
     return runtime, manifest, False
@@ -3109,6 +3138,7 @@ async def start_replay(body: ReplayStartRequest):
             "offline_enforced": True,
             "integrity_verified": True,
             "reused": reused,
+            "freeze_dom": body.freeze_dom,
             "limitations": manifest.get("limitations") or [],
             "url": runtime.page.url,
             "title": await runtime.page.title(),

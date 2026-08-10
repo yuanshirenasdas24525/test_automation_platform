@@ -19,6 +19,7 @@ from recorder_agent.main import (
     ReplayStartRequest,
     WebActionRequest,
     _RECORDER_SCRIPT,
+    _freeze_replay_document,
     _mobile_element_from_source,
     _legacy_replay_storage,
     _live_browser_context_options,
@@ -330,6 +331,7 @@ def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> 
     assert 'role="dialog"' in _RECORDER_SCRIPT
     assert "TEXT_SELECTOR" in _RECORDER_SCRIPT
     assert '"h1", "h2", "h3"' in _RECORDER_SCRIPT
+    assert '"li", "div", "span"' in _RECORDER_SCRIPT
     assert "environment.resize" in _RECORDER_SCRIPT
 
     click = WebActionRequest(action="click", x=120, y=240)
@@ -368,9 +370,30 @@ def test_headed_recorder_viewport_follows_resizable_window() -> None:
         session_id=1,
         entry_url="https://example.test/login",
         page_fingerprint="a" * 64,
-        reuse_key=f"snapshot-pick:1:{'a' * 64}",
+        reuse_key=f"snapshot-pick:frozen:1:{'a' * 64}",
+        freeze_dom=True,
     )
-    assert replay.reuse_key.startswith("snapshot-pick:1:")
+    assert replay.reuse_key.startswith("snapshot-pick:frozen:1:")
+    assert replay.freeze_dom is True
+
+
+def test_frozen_replay_document_preserves_dom_and_removes_scripts() -> None:
+    source = b"""
+    <!doctype html>
+    <html>
+      <head><script src="/assets/app.js"></script></head>
+      <body>
+        <div id="members" data-expanded="true">MCP_01</div>
+        <script>document.querySelector('#members').remove()</script>
+      </body>
+    </html>
+    """
+
+    frozen = _freeze_replay_document(source).decode("utf-8")
+
+    assert "<script" not in frozen
+    assert 'id="members"' in frozen
+    assert "MCP_01" in frozen
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:
