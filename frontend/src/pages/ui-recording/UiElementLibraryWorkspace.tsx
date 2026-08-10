@@ -2718,8 +2718,20 @@ function SnapshotStage({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [clickPoint, setClickPoint] = useState<{ left: number; top: number } | null>(null);
+  const [overlapPickHint, setOverlapPickHint] = useState<{
+    name: string;
+    index: number;
+    total: number;
+  } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const lastPickRef = useRef<{
+    x: number;
+    y: number;
+    signature: string;
+    index: number;
+  } | null>(null);
+  const overlapHintTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     const stage = stageRef.current;
@@ -2745,6 +2757,8 @@ function SnapshotStage({
   useEffect(() => {
     let disposed = false;
     let objectUrl: string | null = null;
+    lastPickRef.current = null;
+    setOverlapPickHint(null);
     setImageUrl(null);
     setImageError(null);
     const imageRequest = replaySessionId && replayId
@@ -2768,6 +2782,14 @@ function SnapshotStage({
     };
   }, [imageRevision, replayId, replaySessionId, snapshot.id]);
 
+  useEffect(() => {
+    return () => {
+      if (overlapHintTimerRef.current != null) {
+        window.clearTimeout(overlapHintTimerRef.current);
+      }
+    };
+  }, []);
+
   const viewport = snapshot.environment.viewport as {
     width?: number;
     height?: number;
@@ -2788,6 +2810,28 @@ function SnapshotStage({
   const snapshotBounds = (
     snapshot.resource_manifest.visible_element_bounds ?? {}
   ) as Record<string, { x?: number; y?: number; width?: number; height?: number }>;
+  const positionedElements = elements.flatMap((element) => {
+    const bounds = snapshotBounds[element.fingerprint]
+      ?? (element.attributes.bounds as {
+        x?: number;
+        y?: number;
+        width?: number;
+        height?: number;
+      } | undefined);
+    const x = Number(bounds?.x);
+    const y = Number(bounds?.y);
+    const width = Number(bounds?.width);
+    const height = Number(bounds?.height);
+    if (
+      !Number.isFinite(x)
+      || !Number.isFinite(y)
+      || !Number.isFinite(width)
+      || !Number.isFinite(height)
+      || width <= 0
+      || height <= 0
+    ) return [];
+    return [{ element, x, y, width, height, area: width * height }];
+  });
 
   return (
     <div
@@ -2802,55 +2846,96 @@ function SnapshotStage({
         </div>
       ) : (
         <div
-        className={cn(
-          "relative shrink-0 overflow-hidden bg-background",
-          canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
-        )}
-        style={{ width: fittedWidth, height: fittedHeight }}
-        onClick={(event) => {
-          if (!canInteract || actionPending || inspectPending) return;
-          const rect = event.currentTarget.getBoundingClientRect();
-          const left = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-          const top = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
-          setClickPoint({ left: left * 100, top: top * 100 });
-          window.setTimeout(() => setClickPoint(null), 800);
-          onCanvasAction(Math.round(left * viewportWidth), Math.round(top * viewportHeight));
-        }}
-      >
-        <img src={imageUrl} alt={snapshot.page_name} className="block h-full w-full" />
-        {elements.map((element) => {
-          const bounds = snapshotBounds[element.fingerprint] ?? element.attributes.bounds as {
-            x?: number;
-            y?: number;
-            width?: number;
-            height?: number;
-          } | undefined;
-          if (!bounds || bounds.width == null || bounds.height == null) return null;
-          const left = Math.max(0, Math.min(100, (Number(bounds.x || 0) / viewportWidth) * 100));
-          const top = Math.max(0, Math.min(100, (Number(bounds.y || 0) / viewportHeight) * 100));
-          const width = Math.max(1, Math.min(100 - left, (Number(bounds.width) / viewportWidth) * 100));
-          const height = Math.max(1, Math.min(100 - top, (Number(bounds.height) / viewportHeight) * 100));
-          return (
-            <button
-              key={element.id}
-              type="button"
-              aria-label={`选择元素：${element.semantic_name}`}
-              title={element.semantic_name}
-              onClick={(event) => {
-                event.stopPropagation();
-                onSelect(element.id);
-              }}
-              className={cn(
-                "absolute rounded border-2 transition",
-                pickMode ? "pointer-events-auto" : "pointer-events-none",
-                selectedElementId === element.id
-                  ? "border-primary bg-primary/10 ring-2 ring-primary/30"
-                  : "border-transparent bg-transparent hover:border-primary hover:bg-primary/10",
-              )}
-              style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
-            />
-          );
-        })}
+          className={cn(
+            "relative shrink-0 overflow-hidden bg-background",
+            canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
+          )}
+          style={{ width: fittedWidth, height: fittedHeight }}
+          onClick={(event) => {
+            if (!canInteract || actionPending || inspectPending) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const left = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+            const top = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+            const x = left * viewportWidth;
+            const y = top * viewportHeight;
+            setClickPoint({ left: left * 100, top: top * 100 });
+            window.setTimeout(() => setClickPoint(null), 800);
+
+            if (pickMode) {
+              const candidates = positionedElements
+                .filter((candidate) => (
+                  x >= candidate.x
+                  && x <= candidate.x + candidate.width
+                  && y >= candidate.y
+                  && y <= candidate.y + candidate.height
+                ))
+                .sort((leftCandidate, rightCandidate) => (
+                  leftCandidate.area - rightCandidate.area
+                  || leftCandidate.element.id - rightCandidate.element.id
+                ));
+              const smallestCandidate = candidates[0];
+              const smallestAreaRatio = smallestCandidate
+                ? smallestCandidate.area / (viewportWidth * viewportHeight)
+                : 1;
+
+              // 已采集的小元素直接本地命中；只有宽泛容器时交给回放页做精确 DOM 拾取。
+              if (smallestCandidate && smallestAreaRatio <= 0.08) {
+                const signature = candidates.map((candidate) => candidate.element.id).join(":");
+                const previousPick = lastPickRef.current;
+                const sameLocation = previousPick?.signature === signature
+                  && Math.hypot(previousPick.x - x, previousPick.y - y) <= 18;
+                const candidateIndex = sameLocation
+                  ? ((previousPick?.index ?? 0) + 1) % candidates.length
+                  : 0;
+                const selectedCandidate = candidates[candidateIndex];
+                lastPickRef.current = { x, y, signature, index: candidateIndex };
+                onSelect(selectedCandidate.element.id);
+
+                if (overlapHintTimerRef.current != null) {
+                  window.clearTimeout(overlapHintTimerRef.current);
+                }
+                if (candidates.length > 1) {
+                  setOverlapPickHint({
+                    name: selectedCandidate.element.semantic_name,
+                    index: candidateIndex,
+                    total: candidates.length,
+                  });
+                  overlapHintTimerRef.current = window.setTimeout(
+                    () => setOverlapPickHint(null),
+                    2200,
+                  );
+                } else {
+                  setOverlapPickHint(null);
+                }
+                return;
+              }
+              lastPickRef.current = null;
+              setOverlapPickHint(null);
+            }
+
+            onCanvasAction(Math.round(x), Math.round(y));
+          }}
+        >
+          <img src={imageUrl} alt={snapshot.page_name} className="block h-full w-full" />
+          {positionedElements.map(({ element, x, y, width: rawWidth, height: rawHeight }) => {
+            const left = Math.max(0, Math.min(100, (x / viewportWidth) * 100));
+            const top = Math.max(0, Math.min(100, (y / viewportHeight) * 100));
+            const width = Math.max(1, Math.min(100 - left, (rawWidth / viewportWidth) * 100));
+            const height = Math.max(1, Math.min(100 - top, (rawHeight / viewportHeight) * 100));
+            return (
+              <span
+                key={element.id}
+                title={element.semantic_name}
+                className={cn(
+                  "pointer-events-none absolute rounded border-2 transition",
+                  selectedElementId === element.id
+                    ? "z-10 border-primary bg-primary/10 ring-2 ring-primary/30"
+                    : "border-transparent bg-transparent",
+                )}
+                style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
+              />
+            );
+          })}
         {activeElement?.editable ? (
           <input
             key={`${activeElement.tag}:${activeElement.id ?? activeElement.name ?? "input"}:${activeElement.bounds.x}:${activeElement.bounds.y}`}
@@ -2883,6 +2968,13 @@ function SnapshotStage({
             className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2 border-primary bg-primary/20"
             style={{ left: `${clickPoint.left}%`, top: `${clickPoint.top}%` }}
           />
+        ) : null}
+        {overlapPickHint && pickMode ? (
+          <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center" aria-live="polite">
+            <span className="max-w-[85%] truncate rounded-full bg-primary px-3 py-1 text-[10px] text-primary-foreground shadow">
+              已选中 {overlapPickHint.name} · 重叠候选 {overlapPickHint.index + 1}/{overlapPickHint.total}，再次点击切换
+            </span>
+          </div>
         ) : null}
         {actionPending ? (
           <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
