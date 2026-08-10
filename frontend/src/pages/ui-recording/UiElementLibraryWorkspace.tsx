@@ -1654,9 +1654,9 @@ export function UiElementLibraryWorkspace({
           </div>
 
           <div className="min-h-0 flex-1 overflow-auto">
-            <div className="flex h-full min-h-[460px] w-full items-stretch justify-stretch">
+            <div className="flex h-full min-h-0 w-full items-stretch justify-stretch">
               {platform === "web" ? (
-                <div className="flex h-full min-h-[420px] w-full flex-col overflow-hidden bg-background">
+                <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background">
                   <div className="flex h-10 shrink-0 items-center gap-2 border-b bg-muted/50 px-3">
                     <span className="h-2.5 w-2.5 rounded-full bg-red-400" />
                     <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
@@ -2718,6 +2718,29 @@ function SnapshotStage({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [clickPoint, setClickPoint] = useState<{ left: number; top: number } | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const stageRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+
+    const updateStageSize = () => {
+      const rect = stage.getBoundingClientRect();
+      const width = Math.max(0, Math.floor(rect.width));
+      const height = Math.max(0, Math.floor(rect.height));
+      setStageSize((current) => (
+        current.width === width && current.height === height
+          ? current
+          : { width, height }
+      ));
+    };
+
+    updateStageSize();
+    const resizeObserver = new ResizeObserver(updateStageSize);
+    resizeObserver.observe(stage);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -2749,26 +2772,41 @@ function SnapshotStage({
     width?: number;
     height?: number;
   } | undefined;
-  const viewportWidth = Number(viewport?.width || 1);
-  const viewportHeight = Number(viewport?.height || 1);
+  const rawViewportWidth = Number(viewport?.width);
+  const rawViewportHeight = Number(viewport?.height);
+  const viewportWidth = Number.isFinite(rawViewportWidth) && rawViewportWidth > 0
+    ? rawViewportWidth
+    : 1;
+  const viewportHeight = Number.isFinite(rawViewportHeight) && rawViewportHeight > 0
+    ? rawViewportHeight
+    : 1;
+  const fittedScale = stageSize.width > 0 && stageSize.height > 0
+    ? Math.min(stageSize.width / viewportWidth, stageSize.height / viewportHeight, 1)
+    : 0;
+  const fittedWidth = Math.max(1, Math.floor(viewportWidth * fittedScale));
+  const fittedHeight = Math.max(1, Math.floor(viewportHeight * fittedScale));
   const snapshotBounds = (
     snapshot.resource_manifest.visible_element_bounds ?? {}
   ) as Record<string, { x?: number; y?: number; width?: number; height?: number }>;
 
-  if (imageError) {
-    return <div className="grid flex-1 place-items-center text-xs text-red-600">{imageError}</div>;
-  }
-  if (!imageUrl) {
-    return <div className="grid flex-1 place-items-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>;
-  }
-
   return (
-    <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto bg-slate-100 dark:bg-slate-950">
-      <div
+    <div
+      ref={stageRef}
+      className="relative flex min-h-0 flex-1 items-start justify-center overflow-hidden bg-slate-100 dark:bg-slate-950"
+    >
+      {imageError ? (
+        <div className="grid h-full w-full place-items-center text-xs text-red-600">{imageError}</div>
+      ) : !imageUrl || fittedScale <= 0 ? (
+        <div className="grid h-full w-full place-items-center">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : (
+        <div
         className={cn(
-          "relative inline-block w-full max-w-full overflow-hidden bg-background",
+          "relative shrink-0 overflow-hidden bg-background",
           canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
         )}
+        style={{ width: fittedWidth, height: fittedHeight }}
         onClick={(event) => {
           if (!canInteract || actionPending || inspectPending) return;
           const rect = event.currentTarget.getBoundingClientRect();
@@ -2779,7 +2817,7 @@ function SnapshotStage({
           onCanvasAction(Math.round(left * viewportWidth), Math.round(top * viewportHeight));
         }}
       >
-        <img src={imageUrl} alt={snapshot.page_name} className="block h-auto w-full" />
+        <img src={imageUrl} alt={snapshot.page_name} className="block h-full w-full" />
         {elements.map((element) => {
           const bounds = snapshotBounds[element.fingerprint] ?? element.attributes.bounds as {
             x?: number;
@@ -2863,7 +2901,8 @@ function SnapshotStage({
             </span>
           </div>
         ) : null}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
