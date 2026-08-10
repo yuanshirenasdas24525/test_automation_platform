@@ -678,6 +678,7 @@ class ReplayStartRequest(BaseModel):
     entry_url: str | None = Field(None, max_length=4000)
     page_fingerprint: str | None = Field(None, max_length=64)
     viewport: dict[str, int] = Field(default_factory=lambda: {"width": 1440, "height": 900})
+    reuse_key: str | None = Field(None, min_length=1, max_length=200)
 
 
 class WebActionRequest(BaseModel):
@@ -1918,6 +1919,7 @@ class OfflineReplayRuntime:
     context: BrowserContext
     page: Page
     stats: dict[str, int]
+    reuse_key: str | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_activity_monotonic: float = field(default_factory=time.monotonic)
 
@@ -2073,17 +2075,52 @@ class OfflineReplayRuntime:
             }
 
     async def close(self) -> None:
-        try:
-            await self.context.close()
-        finally:
+        async with self.lock:
             try:
-                await self.browser.close()
+                await self.context.close()
             finally:
-                await self.playwright.stop()
+                try:
+                    await self.browser.close()
+                finally:
+                    await self.playwright.stop()
 
 
 _SESSIONS: dict[int, RecorderRuntime | MobileRecorderRuntime] = {}
 _REPLAYS: dict[str, OfflineReplayRuntime] = {}
+_REPLAY_REUSE_LOCKS: dict[str, asyncio.Lock] = {}
+_CACHED_REPLAY_IDLE_SECONDS = 120
+_MAX_CACHED_REPLAYS = 6
+
+
+async def _cleanup_cached_replays() -> None:
+    """回收只读拾取使用的空闲回放，避免长期占用浏览器进程。"""
+    now = time.monotonic()
+    cached = sorted(
+        (
+            runtime
+            for runtime in _REPLAYS.values()
+            if runtime.reuse_key is not None
+        ),
+        key=lambda runtime: runtime.last_activity_monotonic,
+        reverse=True,
+    )
+    stale_ids = {
+        runtime.replay_id
+        for index, runtime in enumerate(cached)
+        if index >= _MAX_CACHED_REPLAYS
+        or now - runtime.last_activity_monotonic >= _CACHED_REPLAY_IDLE_SECONDS
+    }
+    for replay_id in stale_ids:
+        runtime = _REPLAYS.pop(replay_id, None)
+        if runtime is not None:
+            await runtime.close()
+
+
+async def _cached_replay_janitor() -> None:
+    """定时清理完成态只读拾取产生的临时回放。"""
+    while True:
+        await asyncio.sleep(30)
+        await _cleanup_cached_replays()
 
 
 def _legacy_replay_storage(manifest: dict[str, Any], entry_url: str) -> dict[str, Any]:
@@ -2138,7 +2175,9 @@ def _replay_storage_script(storage_state: dict[str, Any]) -> str:
     }})();"""
 
 
-async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplayRuntime, dict[str, Any]]:
+async def _start_offline_replay(
+    body: ReplayStartRequest,
+) -> tuple[OfflineReplayRuntime, dict[str, Any], bool]:
     session_root = _ARTIFACT_ROOT / f"session_{body.session_id}"
     manifest_path = session_root / "offline" / "manifest.json"
     if not manifest_path.exists():
@@ -2150,6 +2189,22 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
     entry_url = str(body.entry_url or manifest.get("entry_url") or "")
     if not entry_url:
         raise HTTPException(status_code=422, detail="离线回放包没有入口页面")
+
+    if body.reuse_key:
+        await _cleanup_cached_replays()
+        reusable = next(
+            (
+                runtime
+                for runtime in _REPLAYS.values()
+                if runtime.session_id == body.session_id
+                and runtime.reuse_key == body.reuse_key
+                and not runtime.page.is_closed()
+            ),
+            None,
+        )
+        if reusable is not None:
+            reusable.last_activity_monotonic = time.monotonic()
+            return reusable, manifest, True
 
     try:
         integrity_items = [
@@ -2336,9 +2391,10 @@ async def _start_offline_replay(body: ReplayStartRequest) -> tuple[OfflineReplay
         context=context,
         page=page,
         stats=stats,
+        reuse_key=body.reuse_key,
     )
     _REPLAYS[replay_id] = runtime
-    return runtime, manifest
+    return runtime, manifest, False
 
 
 async def _authorize(x_recorder_secret: str | None = Header(None)) -> None:
@@ -2795,7 +2851,13 @@ def _mobile_preflight_sync() -> dict[str, Any]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+    replay_janitor = asyncio.create_task(_cached_replay_janitor())
     yield
+    replay_janitor.cancel()
+    try:
+        await replay_janitor
+    except asyncio.CancelledError:
+        pass
     await asyncio.gather(
         *(runtime.close() for runtime in list(_SESSIONS.values())),
         return_exceptions=True,
@@ -3028,7 +3090,12 @@ async def stop_session(session_id: int):
 
 @app.post("/replays", dependencies=[Depends(_authorize)])
 async def start_replay(body: ReplayStartRequest):
-    runtime, manifest = await _start_offline_replay(body)
+    if body.reuse_key:
+        reuse_lock = _REPLAY_REUSE_LOCKS.setdefault(body.reuse_key, asyncio.Lock())
+        async with reuse_lock:
+            runtime, manifest, reused = await _start_offline_replay(body)
+    else:
+        runtime, manifest, reused = await _start_offline_replay(body)
     active_element = await runtime.active_element()
     return {
         "status": "success",
@@ -3041,6 +3108,7 @@ async def start_replay(body: ReplayStartRequest):
             "mock_count": len(manifest.get("mocks") or []),
             "offline_enforced": True,
             "integrity_verified": True,
+            "reused": reused,
             "limitations": manifest.get("limitations") or [],
             "url": runtime.page.url,
             "title": await runtime.page.title(),

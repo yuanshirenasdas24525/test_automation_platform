@@ -191,6 +191,7 @@ def start_web_replay(
     entry_url: str | None = None,
     page_fingerprint: str | None = None,
     viewport: dict[str, int] | None = None,
+    reuse_key: str | None = None,
 ) -> dict[str, Any]:
     """从 Agent 本地归档启动严格离线回放浏览器。"""
     return _request(
@@ -203,6 +204,7 @@ def start_web_replay(
             "entry_url": entry_url,
             "page_fingerprint": page_fingerprint,
             "viewport": viewport or {"width": 1440, "height": 900},
+            "reuse_key": reuse_key,
         },
     )
 

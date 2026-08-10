@@ -318,6 +318,7 @@ export function UiElementLibraryWorkspace({
   const [replayRevision, setReplayRevision] = useState(0);
   const [offlinePickMode, setOfflinePickMode] = useState(false);
   const replayRef = useRef<UiOfflineReplay | null>(null);
+  const preparedSnapshotIdsRef = useRef(new Set<number>());
   const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
   const [draftModuleId, setDraftModuleId] = useState("");
@@ -570,6 +571,21 @@ export function UiElementLibraryWorkspace({
     : embeddedReplay
       ? offlinePickMode
       : staticInspectMode;
+
+  useEffect(() => {
+    if (
+      !open
+      || !staticInspectMode
+      || !activeSnapshot?.url
+      || !activeSnapshot.has_offline_package
+      || preparedSnapshotIdsRef.current.has(activeSnapshot.id)
+    ) return;
+    const targetSnapshotId = activeSnapshot.id;
+    preparedSnapshotIdsRef.current.add(targetSnapshotId);
+    void uiRecordingsApi.prepareSnapshot(targetSnapshotId).catch(() => {
+      preparedSnapshotIdsRef.current.delete(targetSnapshotId);
+    });
+  }, [activeSnapshot, open, staticInspectMode]);
 
   useEffect(() => {
     replayRef.current = embeddedReplay;
@@ -866,9 +882,52 @@ export function UiElementLibraryWorkspace({
       x: number;
       y: number;
     }) => uiRecordingsApi.pickSnapshot(targetSnapshotId, { x, y }),
-    onSuccess: async (element) => {
-      await refreshElementAssets();
+    onSuccess: (element, variables) => {
+      queryClient.setQueryData<UiElement[]>(
+        ["ui-elements", projectId, platform],
+        (current = []) => {
+          const exists = current.some((item) => item.id === element.id);
+          return exists
+            ? current.map((item) => item.id === element.id ? element : item)
+            : [...current, element];
+        },
+      );
+      queryClient.setQueryData<UiPageSnapshot[]>(
+        ["ui-page-snapshots", projectId, platform],
+        (current = []) => current.map((snapshot) => {
+          if (snapshot.id !== variables.targetSnapshotId) return snapshot;
+          const manifest = snapshot.resource_manifest;
+          const currentFingerprints = Array.isArray(manifest.visible_element_fingerprints)
+            ? manifest.visible_element_fingerprints.filter(
+                (fingerprint): fingerprint is string => typeof fingerprint === "string",
+              )
+            : [];
+          const currentBounds = manifest.visible_element_bounds
+            && typeof manifest.visible_element_bounds === "object"
+            ? manifest.visible_element_bounds as Record<string, Record<string, number>>
+            : {};
+          const fingerprints = Array.from(new Set([
+            ...currentFingerprints,
+            element.fingerprint,
+          ]));
+          const elementBounds = element.attributes.bounds as Record<string, number> | undefined;
+          return {
+            ...snapshot,
+            resource_manifest: {
+              ...manifest,
+              visible_element_fingerprints: fingerprints,
+              visible_element_bounds: elementBounds
+                ? {
+                    ...currentBounds,
+                    [element.fingerprint]: elementBounds,
+                  }
+                : manifest.visible_element_bounds,
+            },
+          };
+        }),
+      );
       setSelectedElementId(element.id);
+      void refreshElementAssets();
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -1604,7 +1663,8 @@ export function UiElementLibraryWorkspace({
                       onSelect={setSelectedElementId}
                       pickMode={effectivePickMode}
                       inspectOnly={staticInspectMode}
-                      actionPending={webActionMutation.isPending || replayActionMutation.isPending || staticPickMutation.isPending}
+                      inspectPending={staticPickMutation.isPending}
+                      actionPending={webActionMutation.isPending || replayActionMutation.isPending}
                       canInteract={
                         staticInspectMode || (recorderActive && hasControl) || embeddedReplay != null
                       }
@@ -2557,6 +2617,7 @@ function SnapshotStage({
   onSelect,
   pickMode,
   inspectOnly,
+  inspectPending,
   actionPending,
   canInteract,
   replaySessionId,
@@ -2574,6 +2635,7 @@ function SnapshotStage({
   onSelect: (id: number) => void;
   pickMode: boolean;
   inspectOnly: boolean;
+  inspectPending: boolean;
   actionPending: boolean;
   canInteract: boolean;
   replaySessionId: number | null;
@@ -2640,7 +2702,7 @@ function SnapshotStage({
           canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
         )}
         onClick={(event) => {
-          if (!canInteract || actionPending) return;
+          if (!canInteract || actionPending || inspectPending) return;
           const rect = event.currentTarget.getBoundingClientRect();
           const left = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
           const top = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
@@ -2725,8 +2787,11 @@ function SnapshotStage({
         ) : null}
         {inspectOnly && !actionPending ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
-            <span className="rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
-              只读拾取：点击按钮、输入框或文字查看定位方式
+            <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow" aria-live="polite">
+              {inspectPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+              {inspectPending
+                ? "正在识别元素定位…"
+                : "只读拾取：点击按钮、输入框或文字查看定位方式"}
             </span>
           </div>
         ) : null}

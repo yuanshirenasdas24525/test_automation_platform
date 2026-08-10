@@ -16,6 +16,7 @@ from recorder_agent.main import (
     MobileRecorderRuntime,
     MobileRecorderStartRequest,
     RecorderStartRequest,
+    ReplayStartRequest,
     WebActionRequest,
     _RECORDER_SCRIPT,
     _mobile_element_from_source,
@@ -362,6 +363,14 @@ def test_headed_recorder_viewport_follows_resizable_window() -> None:
         "viewport": {"width": 1440, "height": 900},
     }
     assert "args" not in _live_browser_launch_options(headless)
+
+    replay = ReplayStartRequest(
+        session_id=1,
+        entry_url="https://example.test/login",
+        page_fingerprint="a" * 64,
+        reuse_key=f"snapshot-pick:1:{'a' * 64}",
+    )
+    assert replay.reuse_key.startswith("snapshot-pick:1:")
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

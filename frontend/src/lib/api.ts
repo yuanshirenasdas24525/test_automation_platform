@@ -2574,6 +2574,12 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
+  prepareSnapshot(snapshotId: number) {
+    return request<{ ready: boolean; reused: boolean }>(
+      `/api/ui-page-snapshots/${snapshotId}/prepare`,
+      { method: "POST" },
+    );
+  },
   deletePageGroup(args: { projectId: number; platform: UiPlatform; pageKey: string }) {
     const qs = new URLSearchParams({
       project_id: String(args.projectId),

@@ -103,6 +103,26 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _UI_ARTIFACT_ROOT = (_PROJECT_ROOT / "data" / "ui_recordings").resolve()
 
 
+def _start_snapshot_pick_replay(
+    snapshot: UiPageSnapshot,
+    session: UiRecordingSession,
+) -> dict:
+    """启动或复用完成态页面的只读分析回放。"""
+    viewport = dict((snapshot.environment or {}).get("viewport") or {})
+    return start_web_replay(
+        session.id,
+        browser="chromium",
+        headless=True,
+        entry_url=snapshot.url,
+        page_fingerprint=snapshot.fingerprint,
+        viewport={
+            "width": int(viewport.get("width") or 1440),
+            "height": int(viewport.get("height") or 900),
+        },
+        reuse_key=f"snapshot-pick:{snapshot.id}:{snapshot.fingerprint}",
+    )
+
+
 def _get_session_or_404(
     db: DBDep,
     session_id: int,
@@ -1275,6 +1295,35 @@ def get_ui_page_snapshot_screenshot(
     return FileResponse(artifact_path, media_type="image/png", filename=f"snapshot-{snapshot.id}.png")
 
 
+@router.post("/ui-page-snapshots/{snapshot_id}/prepare")
+def prepare_ui_page_snapshot_pick(
+    snapshot_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """后台预热完成态页面的只读分析环境，避免首次点击等待。"""
+    snapshot = db.session.get(UiPageSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="页面快照不存在")
+    assert_project_access(db, current_user, snapshot.project_id)
+    if snapshot.platform != "web" or not snapshot.url:
+        raise HTTPException(status_code=409, detail="当前页面快照不支持 Web 只读拾取")
+    session = db.session.get(UiRecordingSession, snapshot.session_id)
+    if session is None or session.status != "completed":
+        raise HTTPException(status_code=409, detail="录制完成后才能预热只读拾取")
+    try:
+        replay = _start_snapshot_pick_replay(snapshot, session)
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "status": "success",
+        "data": {
+            "ready": True,
+            "reused": bool(replay.get("reused")),
+        },
+    }
+
+
 @router.post("/ui-page-snapshots/{snapshot_id}/pick")
 def pick_ui_page_snapshot_element(
     snapshot_id: int,
@@ -1293,33 +1342,35 @@ def pick_ui_page_snapshot_element(
     if session is None or session.status != "completed":
         raise HTTPException(status_code=409, detail="录制完成后才能在快照中只读拾取")
 
-    viewport = dict((snapshot.environment or {}).get("viewport") or {})
     replay_id = ""
-    try:
-        replay = start_web_replay(
-            session.id,
-            browser="chromium",
-            headless=True,
-            entry_url=snapshot.url,
-            page_fingerprint=snapshot.fingerprint,
-            viewport={
-                "width": int(viewport.get("width") or 1440),
-                "height": int(viewport.get("height") or 900),
-            },
-        )
-        replay_id = str(replay.get("replay_id") or "")
-        result = perform_web_replay_action(
-            replay_id,
-            {"action": "pick", "x": body.x, "y": body.y},
-        )
-    except RecorderAgentError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    finally:
+    result: dict = {}
+    for attempt in range(2):
+        try:
+            replay = _start_snapshot_pick_replay(snapshot, session)
+            replay_id = str(replay.get("replay_id") or "")
+            result = perform_web_replay_action(
+                replay_id,
+                {"action": "pick", "x": body.x, "y": body.y},
+            )
+            break
+        except RecorderAgentError as exc:
+            # Agent 重启或缓存页异常时丢弃旧实例并自动重建一次。
+            if replay_id:
+                try:
+                    stop_web_replay(replay_id)
+                except RecorderAgentError:
+                    pass
+                replay_id = ""
+            if attempt == 1:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not result:
         if replay_id:
             try:
                 stop_web_replay(replay_id)
             except RecorderAgentError:
                 pass
+        raise HTTPException(status_code=503, detail="页面只读分析没有返回结果")
 
     raw_element = result.get("element") if isinstance(result, dict) else None
     if not isinstance(raw_element, dict):
