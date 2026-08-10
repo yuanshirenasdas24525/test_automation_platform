@@ -2678,6 +2678,44 @@ function MobileSnapshotStage({
   );
 }
 
+const PICK_CONTROL_TAGS = new Set([
+  "a",
+  "button",
+  "input",
+  "option",
+  "select",
+  "summary",
+  "textarea",
+]);
+const PICK_CONTROL_ROLES = new Set([
+  "button",
+  "checkbox",
+  "combobox",
+  "link",
+  "menuitem",
+  "radio",
+  "switch",
+  "tab",
+  "textbox",
+]);
+
+function isPickControl(element: UiElement) {
+  const attributes = element.attributes;
+  const tag = String(attributes.tag ?? "").toLowerCase();
+  const role = String(attributes.role ?? "").toLowerCase();
+  const elementType = element.element_type.toLowerCase();
+  return PICK_CONTROL_TAGS.has(tag)
+    || PICK_CONTROL_ROLES.has(role)
+    || PICK_CONTROL_ROLES.has(elementType)
+    || attributes.test_id != null
+    || element.locators.some((locator) => (
+      locator.strategy === "role"
+      && Array.from(PICK_CONTROL_ROLES).some((controlRole) => (
+        locator.locator.startsWith(`role=${controlRole};`)
+      ))
+    ));
+}
+
 function SnapshotStage({
   snapshot,
   elements,
@@ -2830,7 +2868,15 @@ function SnapshotStage({
       || width <= 0
       || height <= 0
     ) return [];
-    return [{ element, x, y, width, height, area: width * height }];
+    return [{
+      element,
+      x,
+      y,
+      width,
+      height,
+      area: width * height,
+      isControl: isPickControl(element),
+    }];
   });
 
   return (
@@ -2862,28 +2908,65 @@ function SnapshotStage({
             window.setTimeout(() => setClickPoint(null), 800);
 
             if (pickMode) {
-              const candidates = positionedElements
+              const viewportArea = viewportWidth * viewportHeight;
+              // 画面缩小时保留约 9px 的可点击容差，避免小按钮只能点中间几像素。
+              const pickTolerance = Math.min(
+                28,
+                Math.max(8, 9 / Math.max(fittedScale, 0.2)),
+              );
+              const rankedCandidates = positionedElements
+                .map((candidate) => {
+                  const distanceX = x < candidate.x
+                    ? candidate.x - x
+                    : x > candidate.x + candidate.width
+                      ? x - candidate.x - candidate.width
+                      : 0;
+                  const distanceY = y < candidate.y
+                    ? candidate.y - y
+                    : y > candidate.y + candidate.height
+                      ? y - candidate.y - candidate.height
+                      : 0;
+                  const distance = Math.hypot(distanceX, distanceY);
+                  return {
+                    ...candidate,
+                    distance,
+                    exact: distance === 0,
+                    areaRatio: candidate.area / viewportArea,
+                  };
+                })
                 .filter((candidate) => (
-                  x >= candidate.x
-                  && x <= candidate.x + candidate.width
-                  && y >= candidate.y
-                  && y <= candidate.y + candidate.height
-                ))
+                  candidate.exact
+                  || (candidate.distance <= pickTolerance && candidate.areaRatio <= 0.08)
+                ));
+              const localCandidates = rankedCandidates
+                .filter((candidate) => candidate.areaRatio <= 0.08)
+                .sort((leftCandidate, rightCandidate) => {
+                  const leftGroup = leftCandidate.exact
+                    ? (leftCandidate.isControl ? 0 : 1)
+                    : (leftCandidate.isControl ? 2 : 3);
+                  const rightGroup = rightCandidate.exact
+                    ? (rightCandidate.isControl ? 0 : 1)
+                    : (rightCandidate.isControl ? 2 : 3);
+                  return leftGroup - rightGroup
+                    || leftCandidate.distance - rightCandidate.distance
+                    || leftCandidate.area - rightCandidate.area
+                    || leftCandidate.element.id - rightCandidate.element.id;
+                });
+              const broadCandidates = rankedCandidates
+                .filter((candidate) => candidate.exact && candidate.areaRatio > 0.08)
                 .sort((leftCandidate, rightCandidate) => (
                   leftCandidate.area - rightCandidate.area
                   || leftCandidate.element.id - rightCandidate.element.id
                 ));
-              const smallestCandidate = candidates[0];
-              const smallestAreaRatio = smallestCandidate
-                ? smallestCandidate.area / (viewportWidth * viewportHeight)
-                : 1;
+              const candidates = [...localCandidates, ...broadCandidates];
+              const primaryCandidate = localCandidates[0];
 
-              // 已采集的小元素直接本地命中；只有宽泛容器时交给回放页做精确 DOM 拾取。
-              if (smallestCandidate && smallestAreaRatio <= 0.08) {
+              // 已采集的控件或文字直接本地命中；只有宽泛容器时交给回放页精确拾取。
+              if (primaryCandidate) {
                 const signature = candidates.map((candidate) => candidate.element.id).join(":");
                 const previousPick = lastPickRef.current;
                 const sameLocation = previousPick?.signature === signature
-                  && Math.hypot(previousPick.x - x, previousPick.y - y) <= 18;
+                  && Math.hypot(previousPick.x - x, previousPick.y - y) <= pickTolerance;
                 const candidateIndex = sameLocation
                   ? ((previousPick?.index ?? 0) + 1) % candidates.length
                   : 0;
@@ -2936,7 +3019,7 @@ function SnapshotStage({
               />
             );
           })}
-        {activeElement?.editable ? (
+        {activeElement?.editable && !pickMode ? (
           <input
             key={`${activeElement.tag}:${activeElement.id ?? activeElement.name ?? "input"}:${activeElement.bounds.x}:${activeElement.bounds.y}`}
             autoFocus
