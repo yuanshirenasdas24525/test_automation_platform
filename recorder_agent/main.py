@@ -134,10 +134,44 @@ _RECORDER_SCRIPT = r"""
     return `/${parts.join("/")}`;
   };
 
+  const normalizedText = (element) => String(element?.innerText || element?.textContent || "")
+    .replace(/\s+/g, " ").trim();
+
+  const hasOwnText = (element) => Array.from(element?.childNodes || []).some(
+    (node) => node.nodeType === Node.TEXT_NODE && String(node.textContent || "").trim(),
+  ) || Boolean(element && element.children.length === 0 && normalizedText(element));
+
+  const shouldPreferNestedText = (rawElement, interactiveAncestor) => {
+    if (
+      !rawElement
+      || !interactiveAncestor
+      || rawElement === interactiveAncestor
+      || !rawElement.matches(TEXT_SELECTOR)
+      || !hasOwnText(rawElement)
+      || interactiveAncestor.matches("input,select,textarea,summary")
+    ) return false;
+    const text = normalizedText(rawElement);
+    const ancestorText = normalizedText(interactiveAncestor);
+    if (!text || text.length > 300 || !ancestorText || ancestorText === text) return false;
+    const rawRect = rawElement.getBoundingClientRect();
+    const ancestorRect = interactiveAncestor.getBoundingClientRect();
+    const rawArea = Math.max(1, rawRect.width * rawRect.height);
+    const ancestorArea = Math.max(1, ancestorRect.width * ancestorRect.height);
+    return rawRect.width > 2
+      && rawRect.height > 2
+      && ancestorArea >= Math.max(6000, rawArea * 4)
+      && (
+        ancestorRect.width >= rawRect.width + 32
+        || ancestorRect.height >= rawRect.height + 32
+      );
+  };
+
   const describe = (target) => {
     const rawElement = target && target.nodeType === Node.ELEMENT_NODE ? target : target?.parentElement;
     const interactiveAncestor = rawElement?.closest?.(INTERACTIVE_SELECTOR);
-    const element = interactiveAncestor || rawElement;
+    const element = shouldPreferNestedText(rawElement, interactiveAncestor)
+      ? rawElement
+      : (interactiveAncestor || rawElement);
     if (!element) return null;
     const tag = element.tagName.toLowerCase();
     const type = element.getAttribute("type") || element.getAttribute("role") || tag;
@@ -197,8 +231,6 @@ _RECORDER_SCRIPT = r"""
     };
   };
 
-  const normalizedText = (element) => String(element?.innerText || element?.textContent || "")
-    .replace(/\s+/g, " ").trim();
   const locatorMatchCount = (item) => {
     try {
       if (item.strategy === "id") return document.querySelectorAll(`#${escapeCss(item.locator)}`).length;
@@ -364,16 +396,18 @@ _RECORDER_SCRIPT = r"""
   const isTextCandidate = (element) => {
     if (!element.matches(TEXT_SELECTOR)) return false;
     const interactiveAncestor = element.closest(INTERACTIVE_SELECTOR);
-    if (interactiveAncestor && interactiveAncestor !== element) return false;
+    if (
+      interactiveAncestor
+      && interactiveAncestor !== element
+      && !shouldPreferNestedText(element, interactiveAncestor)
+    ) return false;
     const text = normalizedText(element);
     if (!text || text.length > 300) return false;
     const duplicateChild = Array.from(element.children).some(
       (child) => child.matches(TEXT_SELECTOR) && normalizedText(child) === text,
     );
     if (duplicateChild) return false;
-    return Array.from(element.childNodes).some(
-      (node) => node.nodeType === Node.TEXT_NODE && String(node.textContent || "").trim(),
-    ) || element.children.length === 0;
+    return hasOwnText(element);
   };
 
   window.__uiRecorderCollectElements = () => {
@@ -1659,6 +1693,12 @@ _EXPLORATION_DANGER_PATTERN = re.compile(
     r"create|new|edit|upload|download|pay|purchase|reset|clear|confirm|approve",
     re.IGNORECASE,
 )
+_EXPLORATION_DANGER_ROUTE_PATTERN = re.compile(
+    r"(?:^|[/_.?&=-])(?:delete|remove|disable|logout|signout|run_test|execute|publish|"
+    r"submit|save|upload|pay|purchase|reset|clear|confirm|approve)(?:$|[/_.?&=-])|"
+    r"删除|移除|停用|禁用|注销|登出|发布|提交|保存|上传|支付|重置|清空|确认|授权",
+    re.IGNORECASE,
+)
 _EXPLORATION_SAFE_BUTTON_PATTERN = re.compile(
     r"工作台|首页|项目|需求|用例|记录|报告|设备|脚本|管理|列表|详情|查看|"
     r"菜单|导航|标签|展开|收起|下一页|上一页|返回|关闭|取消|"
@@ -1730,6 +1770,23 @@ def _exploration_url_key(value: str) -> str:
     return _normalized_replay_url(value)
 
 
+def _safe_exploration_target_url(
+    value: str,
+    *,
+    allowed_hosts: set[str],
+) -> tuple[bool, str]:
+    """种子和 DOM 发现地址共用同一套同域、危险路由门禁。"""
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        return False, "非网页链接"
+    if parsed.netloc.lower() not in allowed_hosts:
+        return False, "超出允许域名"
+    route_identity = unquote(f"{parsed.path}?{parsed.query}")
+    if _EXPLORATION_DANGER_ROUTE_PATTERN.search(route_identity):
+        return False, "危险链接地址"
+    return True, "同域页面链接"
+
+
 def _safe_exploration_candidate(
     candidate: dict[str, Any],
     *,
@@ -1745,15 +1802,7 @@ def _safe_exploration_candidate(
     if _EXPLORATION_DANGER_PATTERN.search(text):
         return False, "危险动作关键词"
     if href:
-        parsed = urlparse(href)
-        if parsed.scheme not in {"http", "https"}:
-            return False, "非网页链接"
-        if parsed.netloc.lower() not in allowed_hosts:
-            return False, "超出允许域名"
-        route_identity = unquote(f"{parsed.path}?{parsed.query}")
-        if _EXPLORATION_DANGER_PATTERN.search(route_identity):
-            return False, "危险链接地址"
-        return True, "同域页面链接"
+        return _safe_exploration_target_url(href, allowed_hosts=allowed_hosts)
     role = str(candidate.get("role") or "").lower()
     tag = str(candidate.get("tag") or "").lower()
     if role in {"tab", "menuitem", "link"} or tag == "summary":
@@ -1846,6 +1895,7 @@ async def _run_ai_exploration(
                 continue
             queue.append((seed_url, 0))
             queued.add(seed_key)
+        initial_seed_keys = set(queued)
         state.discovered_urls = len(queued)
         visited: set[str] = set()
         while queue and len(visited) < body.max_pages:
@@ -1861,8 +1911,11 @@ async def _run_ai_exploration(
             target_key = _exploration_url_key(target_url)
             if target_key in visited or depth > body.max_depth:
                 continue
-            parsed_target = urlparse(target_url)
-            if parsed_target.netloc.lower() not in allowed_hosts:
+            safe_target, _reason = _safe_exploration_target_url(
+                target_url,
+                allowed_hosts=allowed_hosts,
+            )
+            if not safe_target:
                 state.skipped_actions += 1
                 continue
             if _exploration_url_key(page.url) != target_key:
@@ -1875,6 +1928,12 @@ async def _run_ai_exploration(
             state.current_url = page.url
             state.message = f"正在探索第 {len(visited) + 1} 个页面"
             visited.add(target_key)
+            await runtime.emit(
+                "ai.exploration.visit",
+                "ai",
+                {"url": page.url, "depth": depth, "seeded": target_key in initial_seed_keys},
+                page=page,
+            )
             await runtime.capture_latest_page_document(
                 page,
                 reason="ai.exploration.page",
@@ -1919,6 +1978,18 @@ async def _run_ai_exploration(
                 parent_url = page.url
                 try:
                     locator = page.locator(str(candidate.get("selector") or "")).first
+                    await runtime.emit(
+                        "ai.exploration.action",
+                        "ai",
+                        {
+                            "url": page.url,
+                            "selector": candidate.get("selector"),
+                            "text": candidate.get("text"),
+                            "role": candidate.get("role"),
+                            "tag": candidate.get("tag"),
+                        },
+                        page=page,
+                    )
                     await locator.click(timeout=3_000)
                     state.executed_actions += 1
                     await runtime.wait_for_page_stability(page)

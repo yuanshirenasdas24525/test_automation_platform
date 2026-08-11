@@ -539,6 +539,9 @@ export function UiElementLibraryWorkspace({
     : sessionOverride ?? serverSession;
   const persistedAiExploration = (session?.capabilities.ai_exploration ?? null) as UiAiExplorationStatus | null;
   const effectiveAiExploration = aiExploration ?? persistedAiExploration;
+  const aiExplorationSeedCount = Array.isArray(effectiveAiExploration?.config.seed_urls)
+    ? effectiveAiExploration.config.seed_urls.length
+    : 0;
   const aiExplorationSessionId = session?.id ?? null;
   const aiExplorationSessionStatus = session?.status ?? null;
   const aiExplorationConfigured = session?.capture_config.ai_exploration === true;
@@ -776,10 +779,10 @@ export function UiElementLibraryWorkspace({
       const status = await uiRecordingsApi.startExploration(targetSession.id, {
         client_instance_id: clientInstanceId,
         command_id: randomId("ai-exploration-start"),
-        max_pages: 40,
-        max_depth: 4,
-        max_actions_per_page: 6,
-        timeout_seconds: 600,
+        max_pages: 200,
+        max_depth: 6,
+        max_actions_per_page: 8,
+        timeout_seconds: 1800,
         login_wait_seconds: 300,
         allowed_hosts: allowedHosts,
       });
@@ -790,7 +793,7 @@ export function UiElementLibraryWorkspace({
       setAiExploration(status);
       aiTerminalToastRef.current = null;
       await refresh();
-      toast.success("AI 探索已启动；若出现登录页，请在受控浏览器完成登录");
+      toast.success("AI 探索已启动；将继承项目已知页面并采集完整技术上下文");
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -1608,7 +1611,7 @@ export function UiElementLibraryWorkspace({
                 variant="outline"
                 disabled={sessionBusy}
                 onClick={() => aiExplorationMutation.mutate()}
-                title="打开受控浏览器并安全遍历同域页面；危险操作会自动跳过"
+                title="继承项目已知页面并安全遍历同域页面；同时采集画面、Console、Network、元素和用户事件"
               >
                 {aiExplorationMutation.isPending
                   ? <Loader2 className="h-4 w-4 animate-spin" />
@@ -1693,6 +1696,7 @@ export function UiElementLibraryWorkspace({
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
           <span className="font-medium">{effectiveAiExploration?.message}</span>
           <span>已访问 {effectiveAiExploration?.visited_urls ?? 0} 页</span>
+          {aiExplorationSeedCount > 0 ? <span>已知页面 {aiExplorationSeedCount}</span> : null}
           <span>新状态 {effectiveAiExploration?.captured_states ?? 0}</span>
           <span>安全动作 {effectiveAiExploration?.executed_actions ?? 0}</span>
           <span>已跳过 {effectiveAiExploration?.skipped_actions ?? 0}</span>

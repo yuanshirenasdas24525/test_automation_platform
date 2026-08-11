@@ -43,10 +43,12 @@ from recorder_agent.main import (
     _restore_mobile_scenario_sync,
     _safe_replay_headers,
     _safe_exploration_candidate,
+    _safe_exploration_target_url,
     _save_mobile_scenario_sync,
 )
 from scripts.sanitize_ui_recording_data import _decode_legacy_html
 from server.api.ui_recordings import (
+    _merge_ai_exploration_seed_urls,
     _mobile_locator_match_count,
     _pull_agent_events,
     router as ui_recordings_router,
@@ -343,6 +345,8 @@ def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> 
     assert "TEXT_SELECTOR" in _RECORDER_SCRIPT
     assert '"h1", "h2", "h3"' in _RECORDER_SCRIPT
     assert '"li", "div", "span"' in _RECORDER_SCRIPT
+    assert "shouldPreferNestedText" in _RECORDER_SCRIPT
+    assert "ancestorArea >= Math.max(6000, rawArea * 4)" in _RECORDER_SCRIPT
     assert "environment.resize" in _RECORDER_SCRIPT
 
     click = WebActionRequest(action="click", x=120, y=240)
@@ -488,6 +492,41 @@ def test_ai_exploration_applies_bounded_safe_action_policy() -> None:
     )
     assert cross_origin is False
     assert reason == "超出允许域名"
+
+    dangerous_seed, reason = _safe_exploration_target_url(
+        "https://example.test/projects/1/delete",
+        allowed_hosts={"example.test"},
+    )
+    assert dangerous_seed is False
+    assert reason == "危险链接地址"
+
+    runs_page, reason = _safe_exploration_target_url(
+        "https://example.test/runs",
+        allowed_hosts={"example.test"},
+    )
+    assert runs_page is True
+    assert reason == "同域页面链接"
+
+
+def test_ai_exploration_inherits_sanitized_known_page_seeds() -> None:
+    """AI 探索应继承已录页面，但不能携带敏感参数或外域地址。"""
+    seeds = _merge_ai_exploration_seed_urls(
+        base_url="https://example.test/login",
+        requested_urls=["/manual", "/projects?stack=web"],
+        known_urls=[
+            "https://example.test/manual",
+            "https://example.test/projects?stack=web&token=secret&ts=123",
+            "https://example.test/runs?page=2&utm_source=test",
+            "https://outside.test/admin",
+        ],
+        allowed_hosts=["example.test"],
+    )
+
+    assert seeds == [
+        "/manual",
+        "/projects?stack=web",
+        "/runs?page=2",
+    ]
 
 
 def test_agent_event_pull_drains_all_batches(monkeypatch: pytest.MonkeyPatch) -> None:

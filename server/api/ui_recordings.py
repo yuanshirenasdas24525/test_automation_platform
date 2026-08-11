@@ -6,6 +6,7 @@ import shutil
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunsplit
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from fastapi.responses import FileResponse
@@ -16,6 +17,7 @@ from database.models import (
     ALL_UI_ELEMENT_STATUSES,
     ALL_UI_PLATFORMS,
     ALL_UI_RECORDING_STATUSES,
+    UI_RECORDING_COMPLETED,
     UI_RECORDING_ROLE_HISTORY,
     UI_RECORDING_ROLE_PRIMARY,
     UI_RECORDING_ROLE_SUPPLEMENT,
@@ -112,6 +114,93 @@ _UI_ARTIFACT_ROOT = (_PROJECT_ROOT / "data" / "ui_recordings").resolve()
 _AI_EXPLORATION_TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
 _AGENT_EVENT_PULL_BATCH_SIZE = 500
 _AGENT_EVENT_PULL_MAX_BATCHES = 200
+_AI_EXPLORATION_SEED_LIMIT = 200
+_AI_EXPLORATION_IGNORED_QUERY_KEYS = {
+    "_", "cache", "cachebuster", "nonce", "timestamp", "ts",
+}
+_AI_EXPLORATION_SENSITIVE_QUERY_KEY = re.compile(
+    r"password|passwd|secret|credential|authorization|cookie|token|signature|card|cvv|cvc",
+    re.IGNORECASE,
+)
+
+
+def _merge_ai_exploration_seed_urls(
+    *,
+    base_url: str,
+    requested_urls: list[str],
+    known_urls: list[str],
+    allowed_hosts: list[str],
+) -> list[str]:
+    """合并人工种子与项目已知路由，并移除历史 URL 中的敏感查询参数。"""
+    parsed_base = urlparse(base_url)
+    allowed = {
+        item.strip().lower()
+        for item in allowed_hosts
+        if item.strip()
+    }
+    if parsed_base.netloc:
+        allowed.add(parsed_base.netloc.lower())
+
+    merged: list[str] = []
+    seen: set[str] = set()
+
+    def append(value: str) -> None:
+        seed = value.strip()
+        if not seed:
+            return
+        absolute = urljoin(base_url, seed)
+        key = absolute.split("#", 1)[0]
+        if key in seen or len(merged) >= _AI_EXPLORATION_SEED_LIMIT:
+            return
+        seen.add(key)
+        merged.append(seed)
+
+    for value in requested_urls:
+        append(str(value))
+
+    for value in known_urls:
+        parsed = urlparse(str(value).strip())
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in allowed:
+            continue
+        query = urlencode([
+            (key, item_value)
+            for key, item_value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in _AI_EXPLORATION_IGNORED_QUERY_KEYS
+            and not key.lower().startswith("utm_")
+            and not _AI_EXPLORATION_SENSITIVE_QUERY_KEY.search(key)
+        ])
+        append(urlunsplit(("", "", parsed.path or "/", query, "")))
+    return merged
+
+
+def _project_ai_exploration_seed_urls(
+    db: DBDep,
+    session: UiRecordingSession,
+    *,
+    requested_urls: list[str],
+    allowed_hosts: list[str],
+) -> list[str]:
+    """读取项目已完成录制中的页面清单，作为 AI 探索的自动路由种子。"""
+    rows = (
+        db.session.query(UiPageSnapshot.url)
+        .join(UiRecordingSession, UiRecordingSession.id == UiPageSnapshot.session_id)
+        .filter(
+            UiPageSnapshot.project_id == session.project_id,
+            UiPageSnapshot.platform == "web",
+            UiPageSnapshot.url.isnot(None),
+            UiRecordingSession.status == UI_RECORDING_COMPLETED,
+        )
+        .order_by(UiPageSnapshot.created_at.desc(), UiPageSnapshot.id.desc())
+        .limit(2000)
+        .all()
+    )
+    known_urls = [str(row[0]) for row in rows if row and row[0]]
+    return _merge_ai_exploration_seed_urls(
+        base_url=str(session.source_url or ""),
+        requested_urls=requested_urls,
+        known_urls=known_urls,
+        allowed_hosts=allowed_hosts,
+    )
 
 
 def _get_primary_recording(
@@ -989,19 +1078,35 @@ def start_recording_ai_exploration(
     if duplicated:
         current = dict((session.capabilities or {}).get("ai_exploration") or {})
         return {"status": "success", "data": current}
+    exploration_config = body.model_dump(
+        exclude={"client_instance_id", "command_id"},
+    )
+    exploration_config["seed_urls"] = _project_ai_exploration_seed_urls(
+        db,
+        session,
+        requested_urls=list(body.seed_urls),
+        allowed_hosts=list(body.allowed_hosts),
+    )
     try:
         status = start_web_exploration(
             session.id,
-            body.model_dump(exclude={"client_instance_id", "command_id"}),
+            exploration_config,
         )
     except RecorderAgentError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     session.capture_config = {
         **(session.capture_config or {}),
         "ai_exploration": True,
-        "ai_exploration_config": body.model_dump(
-            exclude={"client_instance_id", "command_id"},
-        ),
+        "ai_exploration_config": exploration_config,
+        "ai_exploration_context": {
+            "screen": bool((session.capture_config or {}).get("screen", True)),
+            "console": bool((session.capture_config or {}).get("console", True)),
+            "network": bool((session.capture_config or {}).get("network", True)),
+            "user_events": bool((session.capture_config or {}).get("user_events", True)),
+            "environment": bool((session.capture_config or {}).get("environment", True)),
+            "elements": True,
+            "offline_business_replay": True,
+        },
     }
     session.capabilities = {
         **(session.capabilities or {}),
