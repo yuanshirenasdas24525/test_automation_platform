@@ -3,14 +3,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
   CircleDot,
-  Crosshair,
   Database,
   ExternalLink,
   GripVertical,
   Layers3,
   Loader2,
   Monitor,
-  MousePointerClick,
   MousePointer2,
   Network,
   Pause,
@@ -22,6 +20,7 @@ import {
   Smartphone,
   Sparkles,
   Square,
+  SquareDashedMousePointer,
   Star,
   Terminal,
   Trash2,
@@ -324,10 +323,10 @@ export function UiElementLibraryWorkspace({
   const [embeddedReplay, setEmbeddedReplay] = useState<UiOfflineReplay | null>(null);
   const [replayRevision, setReplayRevision] = useState(0);
   const [offlinePickMode, setOfflinePickMode] = useState(false);
-  const [oneShotInteractArmed, setOneShotInteractArmed] = useState(false);
   const [aiExploration, setAiExploration] = useState<UiAiExplorationStatus | null>(null);
   const aiTerminalToastRef = useRef<string | null>(null);
   const replayRef = useRef<UiOfflineReplay | null>(null);
+  const autoReplayAttemptRef = useRef<string | null>(null);
   const preparedSnapshotIdsRef = useRef(new Set<number>());
   const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
@@ -369,7 +368,7 @@ export function UiElementLibraryWorkspace({
     setWebInput("");
     setReplayInputDirty(false);
     setOfflinePickMode(false);
-    setOneShotInteractArmed(false);
+    autoReplayAttemptRef.current = null;
     setAiExploration(null);
     aiTerminalToastRef.current = null;
     setRecordingRole("supplement");
@@ -606,15 +605,6 @@ export function UiElementLibraryWorkspace({
   const hasControl = !session || !ACTIVE_STATUSES.includes(session.status)
     || controlLease?.owner_id === clientInstanceId;
   const pickMode = session?.capabilities.pick_mode === true;
-  const replayOfflineReplay = (replaySession?.capabilities.offline_replay ?? null) as {
-    ready?: boolean;
-    page_count?: number;
-    resource_count?: number;
-    mock_count?: number;
-    archive_bytes?: number;
-    integrity_verified?: boolean;
-    limitations?: string[];
-  } | null;
   const baselineSources = primarySession
     ? recordingSessions.filter((item) => (
         item.id === primarySession.id
@@ -650,12 +640,13 @@ export function UiElementLibraryWorkspace({
   const leaseSessionId = session?.id ?? null;
   const leaseSessionStatus = session?.status ?? null;
   const recorderActive = session != null && ACTIVE_STATUSES.includes(session.status);
-  const staticInspectMode = platform === "web" && !recorderActive && embeddedReplay == null;
+  const staticInspectMode = platform === "web"
+    && !recorderActive
+    && embeddedReplay == null
+    && offlinePickMode;
   const effectivePickMode = recorderActive
     ? pickMode
-    : embeddedReplay
-      ? offlinePickMode
-      : staticInspectMode;
+    : offlinePickMode;
 
   useEffect(() => {
     if (
@@ -678,6 +669,7 @@ export function UiElementLibraryWorkspace({
 
   useEffect(() => {
     if (open && platform === "web") return;
+    autoReplayAttemptRef.current = null;
     const replay = replayRef.current;
     if (!replay) return;
     replayRef.current = null;
@@ -998,7 +990,6 @@ export function UiElementLibraryWorkspace({
       sessionId: number;
       snapshot: UiPageSnapshot | null;
       headless?: boolean;
-      oneShot?: boolean;
     }) => {
       const previous = replayRef.current;
       if (previous) {
@@ -1017,7 +1008,7 @@ export function UiElementLibraryWorkspace({
         },
       });
     },
-    onSuccess: (replay, variables) => {
+    onSuccess: (replay) => {
       const activeReplay = { ...replay, url: replay.url ?? replay.entry_url };
       replayRef.current = activeReplay;
       setEmbeddedReplay(activeReplay);
@@ -1025,13 +1016,39 @@ export function UiElementLibraryWorkspace({
       setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
       setOfflinePickMode(false);
-      setOneShotInteractArmed(variables.oneShot === true);
       toast.success(
         `离线交互已启动：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
       );
     },
     onError: (error) => toast.error(messageOf(error)),
   });
+
+  useEffect(() => {
+    if (
+      !open
+      || platform !== "web"
+      || recorderActive
+      || embeddedReplay != null
+      || replayMutation.isPending
+      || !activeSnapshot?.has_offline_package
+      || replaySession?.status !== "completed"
+    ) return;
+    const replayKey = `${replaySession.id}:${activeSnapshot.id}`;
+    if (autoReplayAttemptRef.current === replayKey) return;
+    autoReplayAttemptRef.current = replayKey;
+    replayMutation.mutate({
+      sessionId: replaySession.id,
+      snapshot: activeSnapshot,
+    });
+  }, [
+    activeSnapshot,
+    embeddedReplay,
+    open,
+    platform,
+    recorderActive,
+    replayMutation,
+    replaySession,
+  ]);
 
   const baselineMutation = useMutation({
     mutationFn: ({
@@ -1091,49 +1108,9 @@ export function UiElementLibraryWorkspace({
           setSnapshotId(null);
         }
       }
-      if (variables.action === "click" && oneShotInteractArmed) {
-        setOneShotInteractArmed(false);
-        setOfflinePickMode(true);
-        toast.success("临时点击已完成，已自动返回拾取元素");
-      }
     },
-    onError: (error, variables) => {
-      if (variables.action === "click" && oneShotInteractArmed) {
-        setOneShotInteractArmed(false);
-        setOfflinePickMode(true);
-      }
-      toast.error(messageOf(error));
-    },
+    onError: (error) => toast.error(messageOf(error)),
   });
-
-  const stopReplayMutation = useMutation({
-    mutationFn: async () => {
-      const replay = replayRef.current;
-      if (!replay) return;
-      await uiRecordingsApi.stopReplay(replay.session_id, replay.replay_id);
-    },
-    onSettled: () => {
-      replayRef.current = null;
-      setEmbeddedReplay(null);
-      setOfflinePickMode(false);
-      setOneShotInteractArmed(false);
-      setWebInput("");
-      setReplayInputDirty(false);
-      setReplayRevision((value) => value + 1);
-    },
-  });
-
-  useEffect(() => {
-    if (!oneShotInteractArmed) return undefined;
-    const cancelOneShot = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      setOneShotInteractArmed(false);
-      if (replayRef.current) setOfflinePickMode(true);
-      toast.info("已取消临时点击");
-    };
-    window.addEventListener("keydown", cancelOneShot);
-    return () => window.removeEventListener("keydown", cancelOneShot);
-  }, [oneShotInteractArmed]);
 
   const refreshElementAssets = async () => {
     await Promise.all([
@@ -1333,7 +1310,7 @@ export function UiElementLibraryWorkspace({
       if (actionStepCount > 0) {
         toast.success(`已生成 ${actionStepCount} 个业务操作步骤`);
       } else {
-        toast.info("本次只有页面入口，没有录到业务操作；只读拾取不会生成用例步骤");
+        toast.info("本次只有页面入口，没有录到业务操作；元素定位不会生成用例步骤");
       }
     },
     onError: (error) => toast.error(messageOf(error)),
@@ -1619,25 +1596,6 @@ export function UiElementLibraryWorkspace({
                 AI 探索录制
               </Button>
             )
-          ) : null}
-          {replaySession?.status === "completed" && replayOfflineReplay?.ready ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={replayMutation.isPending || stopReplayMutation.isPending}
-              onClick={() => {
-                if (embeddedReplay) {
-                  stopReplayMutation.mutate();
-                } else {
-                  replayMutation.mutate({ sessionId: replaySession.id, snapshot: activeSnapshot });
-                }
-              }}
-            >
-              {replayMutation.isPending || stopReplayMutation.isPending
-                ? <Loader2 className="h-4 w-4 animate-spin" />
-                : embeddedReplay ? <Square className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-              {embeddedReplay ? "结束离线交互" : "离线交互"}
-            </Button>
           ) : null}
           {replaySession?.status === "completed" && platform !== "web" && replayMobileScenario?.ready ? (
             <Button
@@ -1939,91 +1897,40 @@ export function UiElementLibraryWorkspace({
                 </Select>
               ) : null}
               {platform === "web" ? (
-                staticInspectMode ? (
-                  <div className="inline-flex items-center gap-0.5 rounded-md border bg-muted/40 p-0.5" title="默认只读取定位信息；可临时执行下一次点击">
-                    <span className="rounded bg-background px-2 py-1 font-medium text-primary shadow-sm">
-                      只读拾取
-                    </span>
-                    <button
-                      type="button"
-                      disabled={
-                        replayMutation.isPending
-                        || !activeSnapshot?.has_offline_package
-                        || replaySession?.status !== "completed"
+                <div className="inline-flex items-center gap-1 rounded-md border bg-muted/40 p-0.5 pr-2">
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant={effectivePickMode ? "default" : "ghost"}
+                    className="h-7 w-7"
+                    disabled={
+                      pickModeMutation.isPending
+                      || replayMutation.isPending
+                      || (recorderActive && !hasControl)
+                      || (!recorderActive && !activeSnapshot?.has_screenshot)
+                    }
+                    onClick={() => {
+                      const enabled = !effectivePickMode;
+                      if (recorderActive && session) {
+                        pickModeMutation.mutate({ sessionId: session.id, enabled });
+                      } else {
+                        setOfflinePickMode(enabled);
                       }
-                      onClick={() => {
-                        if (!replaySession) return;
-                        replayMutation.mutate({
-                          sessionId: replaySession.id,
-                          snapshot: activeSnapshot,
-                          oneShot: true,
-                        });
-                      }}
-                      className="flex items-center gap-1 rounded px-2 py-1 text-muted-foreground transition hover:bg-background hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {replayMutation.isPending
-                        ? <Loader2 className="h-3 w-3 animate-spin" />
-                        : <MousePointerClick className="h-3 w-3" />}
-                      临时点击一次
-                    </button>
-                  </div>
-                ) : (
-                  <div className="inline-flex rounded-md border bg-muted/40 p-0.5">
-                    <button
-                      type="button"
-                      disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
-                      onClick={() => {
-                        if (recorderActive && session && pickMode) {
-                          pickModeMutation.mutate({ sessionId: session.id, enabled: false });
-                        } else if (embeddedReplay) {
-                          setOfflinePickMode(false);
-                        }
-                      }}
-                      className={cn(
-                        "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                        !effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
-                      )}
-                    >
-                      浏览页面
-                    </button>
-                    <button
-                      type="button"
-                      disabled={pickModeMutation.isPending || (!recorderActive && !embeddedReplay)}
-                      onClick={() => {
-                        if (recorderActive && session && !pickMode) {
-                          pickModeMutation.mutate({ sessionId: session.id, enabled: true });
-                        } else if (embeddedReplay) {
-                          setOfflinePickMode(true);
-                        }
-                      }}
-                      className={cn(
-                        "rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                        effectivePickMode ? "bg-background text-primary shadow-sm" : "text-muted-foreground",
-                      )}
-                    >
-                      拾取元素
-                    </button>
-                    {embeddedReplay ? (
-                      <button
-                        type="button"
-                        disabled={replayActionMutation.isPending || oneShotInteractArmed}
-                        onClick={() => {
-                          setOneShotInteractArmed(true);
-                          setOfflinePickMode(false);
-                        }}
-                        className={cn(
-                          "flex items-center gap-1 rounded px-2 py-1 transition disabled:cursor-not-allowed disabled:opacity-50",
-                          oneShotInteractArmed
-                            ? "bg-amber-100 font-medium text-amber-800 shadow-sm"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        <MousePointerClick className="h-3 w-3" />
-                        临时点击
-                      </button>
-                    ) : null}
-                  </div>
-                )
+                    }}
+                    title={effectivePickMode
+                      ? "退出元素定位，恢复离线交互"
+                      : "选择页面中的元素（类似浏览器开发者工具）"}
+                    aria-pressed={effectivePickMode}
+                  >
+                    <SquareDashedMousePointer className="h-4 w-4" />
+                  </Button>
+                  <span className={cn(
+                    "text-[10px]",
+                    effectivePickMode ? "font-medium text-primary" : "text-muted-foreground",
+                  )}>
+                    {effectivePickMode ? "元素定位" : "离线交互"}
+                  </span>
+                </div>
               ) : null}
               {activePage ? (
                 <Button
@@ -2058,13 +1965,6 @@ export function UiElementLibraryWorkspace({
                         ?? (activePage ? `offline://project/${projectId}/${activePage.pageKey}` : "offline://等待页面快照")}
                     </div>
                   </div>
-                  {oneShotInteractArmed ? (
-                    <div className="flex h-9 shrink-0 items-center justify-center gap-2 border-b border-amber-200 bg-amber-50 px-3 text-[11px] font-medium text-amber-800">
-                      <MousePointerClick className="h-3.5 w-3.5" />
-                      下一次点击将执行页面操作，完成后自动返回拾取模式
-                      <span className="font-normal text-amber-700">按 Esc 取消</span>
-                    </div>
-                  ) : null}
                   {(recorderActive || embeddedReplay) && !effectivePickMode ? (
                     <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background px-3">
                       <Input
@@ -2121,7 +2021,6 @@ export function UiElementLibraryWorkspace({
                       selectedElementId={selectedElement?.id ?? null}
                       onSelect={setSelectedElementId}
                       pickMode={effectivePickMode}
-                      inspectOnly={staticInspectMode}
                       inspectPending={staticPickMutation.isPending}
                       actionPending={webActionMutation.isPending || replayActionMutation.isPending}
                       canInteract={
@@ -2756,7 +2655,7 @@ export function UiElementLibraryWorkspace({
             <div className="min-h-0 space-y-4 overflow-y-auto py-1">
               {stepDraft.steps.every((step) => step.source_event_id == null) ? (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                  当前草稿只有页面入口，没有点击、输入或滑动步骤。只读拾取只采集元素定位器；
+                  当前草稿只有页面入口，没有点击、输入或滑动步骤。元素定位模式只采集元素定位器；
                   请点击“开始录制”后，在受控浏览器或模拟器中完成实际业务操作，再停止录制并生成草稿。
                 </div>
               ) : null}
@@ -2953,9 +2852,9 @@ function RecorderFloatingBar({
         variant={pickMode ? "default" : "ghost"}
         disabled={busy || !hasControl}
         onClick={onTogglePick}
-        title="拾取时点击只选择元素，不触发业务动作"
+        title={pickMode ? "退出元素定位，恢复页面交互" : "启动元素定位（类似浏览器开发者工具）"}
       >
-        <Crosshair className="h-4 w-4" />拾取
+        <SquareDashedMousePointer className="h-4 w-4" />定位
       </Button>
       {onPopout ? (
         <Button size="icon" variant="ghost" onClick={onPopout} title="弹出独立窗口">
@@ -3146,7 +3045,6 @@ function SnapshotStage({
   selectedElementId,
   onSelect,
   pickMode,
-  inspectOnly,
   inspectPending,
   actionPending,
   canInteract,
@@ -3164,7 +3062,6 @@ function SnapshotStage({
   selectedElementId: number | null;
   onSelect: (id: number) => void;
   pickMode: boolean;
-  inspectOnly: boolean;
   inspectPending: boolean;
   actionPending: boolean;
   canInteract: boolean;
@@ -3185,6 +3082,7 @@ function SnapshotStage({
     index: number;
     total: number;
   } | null>(null);
+  const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
   const lastPickRef = useRef<{
@@ -3252,6 +3150,10 @@ function SnapshotStage({
     };
   }, []);
 
+  useEffect(() => {
+    if (!pickMode) setHoveredElementId(null);
+  }, [pickMode]);
+
   const viewport = snapshot.environment.viewport as {
     width?: number;
     height?: number;
@@ -3302,6 +3204,66 @@ function SnapshotStage({
       isControl: isPickControl(element),
     }];
   });
+  const rankPickCandidates = (x: number, y: number) => {
+    const viewportArea = viewportWidth * viewportHeight;
+    // 画面缩小时保留约 9px 的命中容差，兼顾小图标和紧凑文字。
+    const pickTolerance = Math.min(
+      28,
+      Math.max(8, 9 / Math.max(fittedScale, 0.2)),
+    );
+    const rankedCandidates = positionedElements
+      .map((candidate) => {
+        const distanceX = x < candidate.x
+          ? candidate.x - x
+          : x > candidate.x + candidate.width
+            ? x - candidate.x - candidate.width
+            : 0;
+        const distanceY = y < candidate.y
+          ? candidate.y - y
+          : y > candidate.y + candidate.height
+            ? y - candidate.y - candidate.height
+            : 0;
+        const distance = Math.hypot(distanceX, distanceY);
+        return {
+          ...candidate,
+          distance,
+          exact: distance === 0,
+          areaRatio: candidate.area / viewportArea,
+        };
+      })
+      .filter((candidate) => (
+        candidate.exact
+        || (candidate.distance <= pickTolerance && candidate.areaRatio <= 0.08)
+      ));
+    const localCandidates = rankedCandidates
+      .filter((candidate) => candidate.areaRatio <= 0.08)
+      .sort((leftCandidate, rightCandidate) => {
+        const leftGroup = leftCandidate.exact
+          ? (leftCandidate.isControl ? 0 : 1)
+          : (leftCandidate.isControl ? 2 : 3);
+        const rightGroup = rightCandidate.exact
+          ? (rightCandidate.isControl ? 0 : 1)
+          : (rightCandidate.isControl ? 2 : 3);
+        return leftGroup - rightGroup
+          || leftCandidate.distance - rightCandidate.distance
+          || leftCandidate.area - rightCandidate.area
+          || leftCandidate.element.id - rightCandidate.element.id;
+      });
+    const broadCandidates = rankedCandidates
+      .filter((candidate) => candidate.exact && candidate.areaRatio > 0.08)
+      .sort((leftCandidate, rightCandidate) => (
+        leftCandidate.area - rightCandidate.area
+        || leftCandidate.element.id - rightCandidate.element.id
+      ));
+    return {
+      candidates: [...localCandidates, ...broadCandidates],
+      primaryCandidate: localCandidates[0],
+      pickTolerance,
+    };
+  };
+  const hoveredPosition = positionedElements.find(
+    (candidate) => candidate.element.id === hoveredElementId,
+  ) ?? null;
 
   return (
     <div
@@ -3321,6 +3283,23 @@ function SnapshotStage({
             canInteract && (pickMode ? "cursor-crosshair" : "cursor-pointer"),
           )}
           style={{ width: fittedWidth, height: fittedHeight }}
+          onPointerMove={(event) => {
+            if (!pickMode || !canInteract || actionPending || inspectPending) {
+              if (hoveredElementId != null) setHoveredElementId(null);
+              return;
+            }
+            const rect = event.currentTarget.getBoundingClientRect();
+            const x = ((event.clientX - rect.left) / rect.width) * viewportWidth;
+            const y = ((event.clientY - rect.top) / rect.height) * viewportHeight;
+            const ranked = rankPickCandidates(x, y);
+            const hovered = ranked.primaryCandidate ?? ranked.candidates[0];
+            setHoveredElementId((current) => (
+              current === (hovered?.element.id ?? null)
+                ? current
+                : (hovered?.element.id ?? null)
+            ));
+          }}
+          onPointerLeave={() => setHoveredElementId(null)}
           onClick={(event) => {
             if (!canInteract || actionPending || inspectPending) return;
             const rect = event.currentTarget.getBoundingClientRect();
@@ -3332,58 +3311,7 @@ function SnapshotStage({
             window.setTimeout(() => setClickPoint(null), 800);
 
             if (pickMode) {
-              const viewportArea = viewportWidth * viewportHeight;
-              // 画面缩小时保留约 9px 的可点击容差，避免小按钮只能点中间几像素。
-              const pickTolerance = Math.min(
-                28,
-                Math.max(8, 9 / Math.max(fittedScale, 0.2)),
-              );
-              const rankedCandidates = positionedElements
-                .map((candidate) => {
-                  const distanceX = x < candidate.x
-                    ? candidate.x - x
-                    : x > candidate.x + candidate.width
-                      ? x - candidate.x - candidate.width
-                      : 0;
-                  const distanceY = y < candidate.y
-                    ? candidate.y - y
-                    : y > candidate.y + candidate.height
-                      ? y - candidate.y - candidate.height
-                      : 0;
-                  const distance = Math.hypot(distanceX, distanceY);
-                  return {
-                    ...candidate,
-                    distance,
-                    exact: distance === 0,
-                    areaRatio: candidate.area / viewportArea,
-                  };
-                })
-                .filter((candidate) => (
-                  candidate.exact
-                  || (candidate.distance <= pickTolerance && candidate.areaRatio <= 0.08)
-                ));
-              const localCandidates = rankedCandidates
-                .filter((candidate) => candidate.areaRatio <= 0.08)
-                .sort((leftCandidate, rightCandidate) => {
-                  const leftGroup = leftCandidate.exact
-                    ? (leftCandidate.isControl ? 0 : 1)
-                    : (leftCandidate.isControl ? 2 : 3);
-                  const rightGroup = rightCandidate.exact
-                    ? (rightCandidate.isControl ? 0 : 1)
-                    : (rightCandidate.isControl ? 2 : 3);
-                  return leftGroup - rightGroup
-                    || leftCandidate.distance - rightCandidate.distance
-                    || leftCandidate.area - rightCandidate.area
-                    || leftCandidate.element.id - rightCandidate.element.id;
-                });
-              const broadCandidates = rankedCandidates
-                .filter((candidate) => candidate.exact && candidate.areaRatio > 0.08)
-                .sort((leftCandidate, rightCandidate) => (
-                  leftCandidate.area - rightCandidate.area
-                  || leftCandidate.element.id - rightCandidate.element.id
-                ));
-              const candidates = [...localCandidates, ...broadCandidates];
-              const primaryCandidate = localCandidates[0];
+              const { candidates, primaryCandidate, pickTolerance } = rankPickCandidates(x, y);
 
               // 已采集的控件或文字直接本地命中；只有宽泛容器时交给回放页精确拾取。
               if (primaryCandidate) {
@@ -3437,69 +3365,90 @@ function SnapshotStage({
                   "pointer-events-none absolute rounded border-2 transition",
                   selectedElementId === element.id
                     ? "z-10 border-primary bg-primary/10 ring-2 ring-primary/30"
-                    : "border-transparent bg-transparent",
+                    : hoveredElementId === element.id && pickMode
+                      ? "z-20 border-sky-500 bg-sky-400/15 ring-1 ring-sky-500/30"
+                      : "border-transparent bg-transparent",
                 )}
                 style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
               />
             );
           })}
-        {activeElement?.editable && !pickMode ? (
-          <input
-            key={`${activeElement.tag}:${activeElement.id ?? activeElement.name ?? "input"}:${activeElement.bounds.x}:${activeElement.bounds.y}`}
-            autoFocus
-            type={activeElement.input_type === "password" ? "password" : "text"}
-            value={inputValue}
-            aria-label={activeElement.aria_label || activeElement.placeholder || "离线页面输入框"}
-            placeholder={activeElement.placeholder || undefined}
-            title="直接输入，按回车提交到离线页面"
-            disabled={actionPending}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
-            onChange={(event) => onInputChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter" || actionPending) return;
-              event.preventDefault();
-              onInputSubmit();
-            }}
-            className="absolute z-30 min-h-6 rounded border-2 border-primary bg-background/95 px-2 text-xs text-foreground shadow-md outline-none ring-2 ring-primary/20"
-            style={{
-              left: `${Math.max(0, Math.min(100, (activeElement.bounds.x / viewportWidth) * 100))}%`,
-              top: `${Math.max(0, Math.min(100, (activeElement.bounds.y / viewportHeight) * 100))}%`,
-              width: `${Math.max(2, Math.min(100, (activeElement.bounds.width / viewportWidth) * 100))}%`,
-              height: `${Math.max(2, Math.min(100, (activeElement.bounds.height / viewportHeight) * 100))}%`,
-            }}
-          />
-        ) : null}
-        {clickPoint ? (
-          <span
-            className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2 border-primary bg-primary/20"
-            style={{ left: `${clickPoint.left}%`, top: `${clickPoint.top}%` }}
-          />
-        ) : null}
-        {overlapPickHint && pickMode ? (
-          <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center" aria-live="polite">
-            <span className="max-w-[85%] truncate rounded-full bg-primary px-3 py-1 text-[10px] text-primary-foreground shadow">
-              已选中 {overlapPickHint.name} · 重叠候选 {overlapPickHint.index + 1}/{overlapPickHint.total}，再次点击切换
-            </span>
-          </div>
-        ) : null}
-        {actionPending ? (
-          <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
-            <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
-              <Loader2 className="h-3 w-3 animate-spin" />正在同步新页面状态…
-            </span>
-          </div>
-        ) : null}
-        {inspectOnly && !actionPending ? (
-          <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
-            <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow" aria-live="polite">
-              {inspectPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-              {inspectPending
-                ? "正在识别元素定位…"
-                : "只读拾取：点击按钮、输入框或文字查看定位方式"}
-            </span>
-          </div>
-        ) : null}
+          {pickMode && hoveredPosition ? (
+            <div
+              className="pointer-events-none absolute z-30 max-w-[70%] truncate rounded bg-sky-600 px-2 py-1 font-mono text-[10px] text-white shadow-lg"
+              style={{
+                left: `${Math.max(0, Math.min(96, (hoveredPosition.x / viewportWidth) * 100))}%`,
+                top: `${Math.max(0, Math.min(
+                  100,
+                  ((hoveredPosition.y > 28
+                    ? hoveredPosition.y
+                    : hoveredPosition.y + hoveredPosition.height) / viewportHeight) * 100,
+                ))}%`,
+                transform: hoveredPosition.y > 28 ? "translateY(-100%)" : undefined,
+              }}
+            >
+              &lt;{String(hoveredPosition.element.attributes.tag || hoveredPosition.element.element_type)}&gt;
+              {" · "}{hoveredPosition.element.semantic_name}
+              {" · "}{Math.round(hoveredPosition.width)}×{Math.round(hoveredPosition.height)}
+            </div>
+          ) : null}
+          {activeElement?.editable && !pickMode ? (
+            <input
+              key={`${activeElement.tag}:${activeElement.id ?? activeElement.name ?? "input"}:${activeElement.bounds.x}:${activeElement.bounds.y}`}
+              autoFocus
+              type={activeElement.input_type === "password" ? "password" : "text"}
+              value={inputValue}
+              aria-label={activeElement.aria_label || activeElement.placeholder || "离线页面输入框"}
+              placeholder={activeElement.placeholder || undefined}
+              title="直接输入，按回车提交到离线页面"
+              disabled={actionPending}
+              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => onInputChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter" || actionPending) return;
+                event.preventDefault();
+                onInputSubmit();
+              }}
+              className="absolute z-30 min-h-6 rounded border-2 border-primary bg-background/95 px-2 text-xs text-foreground shadow-md outline-none ring-2 ring-primary/20"
+              style={{
+                left: `${Math.max(0, Math.min(100, (activeElement.bounds.x / viewportWidth) * 100))}%`,
+                top: `${Math.max(0, Math.min(100, (activeElement.bounds.y / viewportHeight) * 100))}%`,
+                width: `${Math.max(2, Math.min(100, (activeElement.bounds.width / viewportWidth) * 100))}%`,
+                height: `${Math.max(2, Math.min(100, (activeElement.bounds.height / viewportHeight) * 100))}%`,
+              }}
+            />
+          ) : null}
+          {clickPoint ? (
+            <span
+              className="pointer-events-none absolute h-7 w-7 -translate-x-1/2 -translate-y-1/2 animate-ping rounded-full border-2 border-primary bg-primary/20"
+              style={{ left: `${clickPoint.left}%`, top: `${clickPoint.top}%` }}
+            />
+          ) : null}
+          {overlapPickHint && pickMode ? (
+            <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center" aria-live="polite">
+              <span className="max-w-[85%] truncate rounded-full bg-primary px-3 py-1 text-[10px] text-primary-foreground shadow">
+                已选中 {overlapPickHint.name} · 重叠候选 {overlapPickHint.index + 1}/{overlapPickHint.total}，再次点击切换
+              </span>
+            </div>
+          ) : null}
+          {actionPending ? (
+            <div className="pointer-events-none absolute inset-x-0 top-2 flex justify-center">
+              <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow">
+                <Loader2 className="h-3 w-3 animate-spin" />正在同步新页面状态…
+              </span>
+            </div>
+          ) : null}
+          {pickMode && !actionPending ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-2 flex justify-center">
+              <span className="flex items-center gap-1.5 rounded-full bg-slate-950/75 px-3 py-1 text-[10px] text-white shadow" aria-live="polite">
+                {inspectPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                {inspectPending
+                  ? "正在识别元素定位…"
+                  : "元素定位：悬停查看范围，点击锁定；再次点击工具栏图标退出"}
+              </span>
+            </div>
+          ) : null}
         </div>
       )}
     </div>
