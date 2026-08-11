@@ -2329,6 +2329,7 @@ export const uiRecordingsApi = {
       timeout_seconds?: number;
       login_wait_seconds?: number;
       allowed_hosts?: string[];
+      seed_urls?: string[];
     },
   ) {
     return request<UiAiExplorationStatus>(

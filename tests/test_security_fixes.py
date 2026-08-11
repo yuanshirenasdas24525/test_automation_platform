@@ -20,6 +20,8 @@
 from __future__ import annotations
 
 import importlib
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -178,6 +180,65 @@ class TestLoginThrottle:
         for _ in range(auth.LOGIN_MAX_FAILURES * 2):
             auth._register_login_failure(user, ip)
         assert auth._check_login_locked(user, ip) == 0
+
+
+class TestLoginSessionIsolation:
+    """普通浏览器登录不能挤掉另一台浏览器中的长时间录制。"""
+
+    def _auth(self):
+        pytest.importorskip("fastapi")
+        return importlib.import_module("server.api.auth")
+
+    def test_web_login_only_revokes_same_device(self):
+        auth = self._auth()
+        same_device = SimpleNamespace(
+            device_id="browser-a",
+            revoked_at=None,
+            revoked_reason=None,
+        )
+        recording_browser = SimpleNamespace(
+            device_id="recorder-browser",
+            revoked_at=None,
+            revoked_reason=None,
+        )
+        db = SimpleNamespace(session=MagicMock())
+        db.session.query.return_value.filter.return_value.all.return_value = [
+            same_device,
+            recording_browser,
+        ]
+
+        revoked = auth._revoke_same_client_type_sessions(
+            db,
+            user_id=1,
+            client_type="web",
+            device_id="browser-a",
+            reason="replaced_by_new_login",
+        )
+
+        assert revoked == 1
+        assert same_device.revoked_at is not None
+        assert same_device.revoked_reason == "replaced_by_new_login"
+        assert recording_browser.revoked_at is None
+
+    def test_legacy_web_login_without_device_keeps_single_session_policy(self):
+        auth = self._auth()
+        sessions = [
+            SimpleNamespace(device_id="browser-a", revoked_at=None, revoked_reason=None),
+            SimpleNamespace(device_id="browser-b", revoked_at=None, revoked_reason=None),
+        ]
+        db = SimpleNamespace(session=MagicMock())
+        db.session.query.return_value.filter.return_value.all.return_value = sessions
+
+        revoked = auth._revoke_same_client_type_sessions(
+            db,
+            user_id=1,
+            client_type="web",
+            device_id=None,
+            reason="replaced_by_new_login",
+        )
+
+        assert revoked == 2
+        assert all(item.revoked_at is not None for item in sessions)
 
 
 # ===========================================================================

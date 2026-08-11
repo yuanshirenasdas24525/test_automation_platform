@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -42,7 +45,7 @@ from recorder_agent.main import (
     _save_mobile_scenario_sync,
 )
 from scripts.sanitize_ui_recording_data import _decode_legacy_html
-from server.api.ui_recordings import _mobile_locator_match_count
+from server.api.ui_recordings import _mobile_locator_match_count, _pull_agent_events
 from server.services.ui_recording_service import (
     UiRecordingControlLeaseError,
     UiRecordingTransitionError,
@@ -411,9 +414,15 @@ def test_replay_bridge_recognizes_and_dismisses_radix_portals() -> None:
 
 
 def test_ai_exploration_applies_bounded_safe_action_policy() -> None:
-    request = AiExplorationRequest(max_pages=20, max_depth=3, timeout_seconds=120)
+    request = AiExplorationRequest(
+        max_pages=20,
+        max_depth=3,
+        timeout_seconds=120,
+        seed_urls=["/projects", "/runs"],
+    )
     assert request.max_pages == 20
     assert request.max_depth == 3
+    assert request.seed_urls == ["/projects", "/runs"]
 
     safe, reason = _safe_exploration_candidate(
         {
@@ -474,6 +483,65 @@ def test_ai_exploration_applies_bounded_safe_action_policy() -> None:
     )
     assert cross_origin is False
     assert reason == "超出允许域名"
+
+
+def test_agent_event_pull_drains_all_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """停止录制前必须排空 Agent 事件，不能只同步首个 500 条批次。"""
+    db = SimpleNamespace(session=MagicMock())
+    db.session.query.return_value.filter.return_value.scalar.return_value = 0
+    session = SimpleNamespace(
+        id=99,
+        status="recording",
+        capabilities={},
+        error=None,
+    )
+    occurred_at = datetime.now().isoformat()
+
+    def event(sequence_no: int) -> dict[str, object]:
+        return {
+            "event_key": f"event-{sequence_no}",
+            "sequence_no": sequence_no,
+            "event_type": "network.request",
+            "source": "network",
+            "occurred_at": occurred_at,
+            "payload": {},
+        }
+
+    requested_after: list[int] = []
+
+    def pull_events(
+        session_id: int,
+        after_sequence: int,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        assert session_id == 99
+        assert limit == 500
+        requested_after.append(after_sequence)
+        if after_sequence == 0:
+            return [event(index) for index in range(1, 501)]
+        if after_sequence == 500:
+            return [event(501), event(502)]
+        return []
+
+    def append_batch(
+        _db_session: object,
+        _session: object,
+        items: list[object],
+    ) -> tuple[list[SimpleNamespace], int]:
+        return [
+            SimpleNamespace(sequence_no=item.sequence_no)
+            for item in items
+        ], 0
+
+    monkeypatch.setattr("server.api.ui_recordings.pull_agent_events", pull_events)
+    monkeypatch.setattr("server.api.ui_recordings.append_events", append_batch)
+
+    created = _pull_agent_events(db, session, strict=True)
+
+    assert created == 502
+    assert requested_after == [0, 500]
+    assert session.error is None
+    assert session.capabilities["recorder_agent_connected"] is True
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

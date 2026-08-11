@@ -793,6 +793,7 @@ class AiExplorationRequest(BaseModel):
     timeout_seconds: int = Field(600, ge=30, le=3600)
     login_wait_seconds: int = Field(300, ge=0, le=1800)
     allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
+    seed_urls: list[str] = Field(default_factory=list, max_length=200)
 
 
 @dataclass
@@ -1836,8 +1837,16 @@ async def _run_ai_exploration(
             state.status = "running"
             state.message = "登录完成，开始安全探索"
 
-        queue: list[tuple[str, int]] = [(page.url, 0)]
-        queued = {_exploration_url_key(page.url)}
+        queue: list[tuple[str, int]] = []
+        queued: set[str] = set()
+        for raw_seed in [page.url, *body.seed_urls]:
+            seed_url = urljoin(page.url, str(raw_seed).strip())
+            seed_key = _exploration_url_key(seed_url)
+            if not seed_key or seed_key in queued:
+                continue
+            queue.append((seed_url, 0))
+            queued.add(seed_key)
+        state.discovered_urls = len(queued)
         visited: set[str] = set()
         while queue and len(visited) < body.max_pages:
             if state.cancel_requested:

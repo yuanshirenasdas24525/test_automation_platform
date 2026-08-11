@@ -91,6 +91,7 @@ class UiRecordingExplorationRequest(BaseModel):
     timeout_seconds: int = Field(600, ge=30, le=3600)
     login_wait_seconds: int = Field(300, ge=0, le=1800)
     allowed_hosts: list[str] = Field(default_factory=list, max_length=20)
+    seed_urls: list[str] = Field(default_factory=list, max_length=200)
 
 
 class UiRecordingReplayRequest(BaseModel):

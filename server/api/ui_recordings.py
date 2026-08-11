@@ -110,6 +110,8 @@ router = APIRouter(tags=["ui-recordings"])
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _UI_ARTIFACT_ROOT = (_PROJECT_ROOT / "data" / "ui_recordings").resolve()
 _AI_EXPLORATION_TERMINAL_STATUSES = {"completed", "cancelled", "failed"}
+_AGENT_EVENT_PULL_BATCH_SIZE = 500
+_AGENT_EVENT_PULL_MAX_BATCHES = 200
 
 
 def _get_primary_recording(
@@ -530,40 +532,71 @@ def _pull_agent_events(
     *,
     strict: bool,
 ) -> int:
-    """从宿主机 Agent 拉取增量事件并落库。"""
+    """分批排空宿主机 Agent 的增量事件并落库。"""
     after_sequence = int(
         db.session.query(func.coalesce(func.max(UiRecordingEvent.sequence_no), 0))
         .filter(UiRecordingEvent.session_id == session.id)
         .scalar()
         or 0
     )
-    try:
-        payloads = pull_agent_events(session.id, after_sequence)
-    except RecorderAgentError as exc:
-        session.capabilities = {
-            **(session.capabilities or {}),
-            "recorder_agent_connected": False,
-        }
-        session.error = str(exc)
+    total_created = 0
+    for _batch_index in range(_AGENT_EVENT_PULL_MAX_BATCHES):
+        try:
+            payloads = pull_agent_events(
+                session.id,
+                after_sequence,
+                limit=_AGENT_EVENT_PULL_BATCH_SIZE,
+            )
+        except RecorderAgentError as exc:
+            session.capabilities = {
+                **(session.capabilities or {}),
+                "recorder_agent_connected": False,
+            }
+            session.error = str(exc)
+            if strict:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            return total_created
+        if not payloads:
+            break
+        try:
+            items = [UiRecordingEventCreate.model_validate(item) for item in payloads]
+            created, _skipped = append_events(db.session, session, items)
+        except (ValueError, UiRecordingTransitionError) as exc:
+            if strict:
+                raise HTTPException(status_code=422, detail=f"Agent 事件格式错误：{exc}") from exc
+            session.error = f"Agent 事件格式错误：{exc}"
+            return total_created
+        total_created += len(created)
+        batch_max_sequence = max(
+            (
+                int(item.sequence_no)
+                for item in items
+                if item.sequence_no is not None
+            ),
+            default=max(
+                (int(item.sequence_no) for item in created),
+                default=after_sequence,
+            ),
+        )
+        if batch_max_sequence <= after_sequence:
+            session.error = "Recorder Agent 返回了无法推进的事件批次"
+            if strict:
+                raise HTTPException(status_code=422, detail=session.error)
+            return total_created
+        after_sequence = batch_max_sequence
+        if len(payloads) < _AGENT_EVENT_PULL_BATCH_SIZE:
+            break
+    else:
+        session.error = "Recorder Agent 待同步事件过多，请稍后重试"
         if strict:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        return 0
-    if not payloads:
-        return 0
-    try:
-        items = [UiRecordingEventCreate.model_validate(item) for item in payloads]
-        created, _skipped = append_events(db.session, session, items)
-    except (ValueError, UiRecordingTransitionError) as exc:
-        if strict:
-            raise HTTPException(status_code=422, detail=f"Agent 事件格式错误：{exc}") from exc
-        session.error = f"Agent 事件格式错误：{exc}"
-        return 0
+            raise HTTPException(status_code=503, detail=session.error)
+        return total_created
     session.capabilities = {
         **(session.capabilities or {}),
         "recorder_agent_connected": True,
     }
     session.error = None
-    return len(created)
+    return total_created
 
 
 @router.post("/ui-recordings")

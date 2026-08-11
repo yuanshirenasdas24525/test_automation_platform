@@ -273,8 +273,14 @@ def revoke_user_sessions(db: DBDep, user_id: int, reason: str) -> int:
     return len(rows)
 
 
-def _revoke_same_client_type_sessions(db: DBDep, user_id: int, client_type: str, reason: str) -> int:
-    """同一账号同一客户端类型只保留最新会话，api 这类脚本端允许多会话。"""
+def _revoke_same_client_type_sessions(
+    db: DBDep,
+    user_id: int,
+    client_type: str,
+    device_id: str | None,
+    reason: str,
+) -> int:
+    """同一账号、客户端类型和浏览器设备只保留最新会话。"""
     if client_type in MULTI_SESSION_CLIENT_TYPES:
         return 0
     now = _now_naive()
@@ -287,10 +293,14 @@ def _revoke_same_client_type_sessions(db: DBDep, user_id: int, client_type: str,
         )
         .all()
     )
+    revoked = 0
     for row in rows:
+        if device_id is not None and row.device_id != device_id:
+            continue
         row.revoked_at = now
         row.revoked_reason = reason
-    return len(rows)
+        revoked += 1
+    return revoked
 
 
 def _get_session_or_401(db: DBDep, session_id: int, token_hash: str | None = None) -> UserSession:
@@ -519,6 +529,7 @@ def login(payload: LoginRequest, request: Request, db: DBDep):
         db,
         user.id,
         client["client_type"] or "web",
+        client["device_id"],
         "replaced_by_new_login",
     )
     refresh_jti = uuid.uuid4().hex
