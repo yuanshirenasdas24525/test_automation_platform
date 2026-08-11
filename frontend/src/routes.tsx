@@ -1,7 +1,13 @@
 import { Suspense, lazy, type ReactNode } from "react";
-import { Navigate, createBrowserRouter } from "react-router-dom";
+import {
+  Navigate,
+  createBrowserRouter,
+  isRouteErrorResponse,
+  useRouteError,
+} from "react-router-dom";
 
 import { AppLayout } from "@/components/AppLayout";
+import { isChunkLoadError } from "@/lib/chunk-recovery";
 
 const AppPackagesPage = lazy(() => import("@/pages/AppPackagesPage").then((m) => ({ default: m.AppPackagesPage })));
 const ChangePasswordPage = lazy(() => import("@/pages/ChangePasswordPage").then((m) => ({ default: m.ChangePasswordPage })));
@@ -47,10 +53,15 @@ function lazyPage(element: ReactNode) {
 export const router = createBrowserRouter([
   // /login 不挂在 AppLayout 下：登录页是无侧栏 / 无 header 的全屏页。
   // AppLayout 内部会做"未登录 → /login"重定向，这里就不需要再包守卫。
-  { path: "/login", element: lazyPage(<LoginPage />) },
+  {
+    path: "/login",
+    element: lazyPage(<LoginPage />),
+    errorElement: <RouteErrorPage />,
+  },
   {
     path: "/",
     element: <AppLayout />,
+    errorElement: <RouteErrorPage />,
     children: [
       { index: true, element: <Navigate to="/workspace" replace /> },
       { path: "dashboard", element: lazyPage(<HomePage />) },
@@ -84,6 +95,51 @@ function NotFound() {
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
       <h1 className="text-2xl font-semibold">404</h1>
       <p className="text-sm text-muted-foreground">没找到这个页面。</p>
+    </div>
+  );
+}
+
+function RouteErrorPage() {
+  const error = useRouteError();
+  const chunkError = isChunkLoadError(error);
+  const detail = isRouteErrorResponse(error)
+    ? `${error.status} ${error.statusText || error.data || "路由加载失败"}`
+    : error instanceof Error
+      ? error.message
+      : String(error || "未知错误");
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-muted/20 p-6">
+      <div className="w-full max-w-lg rounded-2xl border bg-background p-8 text-center shadow-sm">
+        <h1 className="text-xl font-semibold">
+          {chunkError ? "页面版本已经更新" : "页面暂时无法加载"}
+        </h1>
+        <p className="mt-3 text-sm leading-6 text-muted-foreground">
+          {chunkError
+            ? "当前页面仍在使用旧版本资源。重新加载后会自动切换到最新版本，已填写的数据可能需要重新确认。"
+            : "页面加载时遇到了异常，你可以重新加载或返回上一页。"}
+        </p>
+        <div className="mt-6 flex justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground"
+          >
+            重新加载
+          </button>
+          <button
+            type="button"
+            onClick={() => window.history.back()}
+            className="rounded-md border px-4 py-2 text-sm font-medium"
+          >
+            返回上一页
+          </button>
+        </div>
+        <details className="mt-6 text-left text-xs text-muted-foreground">
+          <summary className="cursor-pointer">查看错误详情</summary>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3">{detail}</pre>
+        </details>
+      </div>
     </div>
   );
 }

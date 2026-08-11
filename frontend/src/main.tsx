@@ -6,9 +6,12 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "react-router-dom";
 import { Toaster } from "sonner";
 
+import { installChunkLoadRecovery } from "@/lib/chunk-recovery";
 import { CurrentUserProvider } from "@/lib/current-user";
 import { queryClient } from "@/lib/query";
 import { router } from "@/routes";
+
+installChunkLoadRecovery();
 
 const container = document.getElementById("root");
 if (!container) {

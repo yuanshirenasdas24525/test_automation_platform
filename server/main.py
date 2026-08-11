@@ -61,6 +61,16 @@ class _DownloadStaticFiles(StaticFiles):
         resp.headers["Content-Security-Policy"] = "sandbox; default-src 'none'"
         return resp
 
+
+class _FrontendAssetStaticFiles(StaticFiles):
+    """为带内容哈希的前端静态资源设置长期缓存。"""
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
 from server.api import (
     ai_router,
     ai_case_generation_router,
@@ -240,8 +250,20 @@ app.mount(
 if (FRONTEND_DIST / "assets").is_dir():
     app.mount(
         "/assets",
-        StaticFiles(directory=str(FRONTEND_DIST / "assets")),
+        _FrontendAssetStaticFiles(directory=str(FRONTEND_DIST / "assets")),
         name="frontend-assets",
+    )
+
+
+def _frontend_index_response() -> FileResponse:
+    """入口 HTML 禁止缓存，确保刷新时拿到与当前哈希资源一致的版本。"""
+    return FileResponse(
+        FRONTEND_DIST / "index.html",
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 
@@ -274,9 +296,11 @@ def spa_fallback(full_path: str = ""):
         # 防目录穿越：resolve() 后必须仍落在 FRONTEND_DIST 内，
         # 否则 ../ 或 ..%2f 之类可读到 dist 外的任意文件。
         if candidate.is_file() and (candidate == dist_root or dist_root in candidate.parents):
+            if candidate == FRONTEND_DIST / "index.html":
+                return _frontend_index_response()
             return FileResponse(candidate)
 
-    return FileResponse(FRONTEND_DIST / "index.html")
+    return _frontend_index_response()
 
 
 if __name__ == "__main__":
