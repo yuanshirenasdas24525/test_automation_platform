@@ -100,6 +100,9 @@ import type {
   VersionPickerItem,
   VersionTestSummary,
   VersionUpdate,
+  KnowledgeDoc,
+  KnowledgeDocCreate,
+  KnowledgeDocUpdate,
 } from "@/types/domain";
 
 export class ApiError extends Error {
@@ -2164,5 +2167,28 @@ export const tasksOverviewApi = {
       `/api/tasks-overview/${encodeURIComponent(typeKey)}/${id}/cancel`,
       { method: "POST" },
     );
+  },
+};
+
+// ---------------------------------------------------------------------------
+// 知识库（项目管理 → 知识库 tab）
+// ---------------------------------------------------------------------------
+export const knowledgeApi = {
+  list(projectId: number, opts: { module_id?: number | null } = {}) {
+    const qs = new URLSearchParams({ project_id: String(projectId) });
+    if (opts.module_id != null) qs.set("module_id", String(opts.module_id));
+    return request<KnowledgeDoc[]>(`/api/knowledge?${qs.toString()}`);
+  },
+  get(id: number) {
+    return request<KnowledgeDoc>(`/api/knowledge/${id}`);
+  },
+  create(body: KnowledgeDocCreate) {
+    return request<KnowledgeDoc>("/api/knowledge", { method: "POST", body });
+  },
+  update(id: number, body: KnowledgeDocUpdate) {
+    return request<KnowledgeDoc>(`/api/knowledge/${id}`, { method: "PUT", body });
+  },
+  remove(id: number) {
+    return request<{ id: number }>(`/api/knowledge/${id}`, { method: "DELETE" });
   },
 };

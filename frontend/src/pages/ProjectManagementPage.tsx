@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   ArrowDown,
   ArrowUp,
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -43,6 +44,7 @@ import type { ProjectVersion, Requirement, RequirementSystemStatus, VersionStatu
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { ProjectConfigTab } from "./config/ProjectConfigTab";
 import { ScriptLibraryPanel } from "./ScriptLibraryPage";
+import { KnowledgeBasePanel } from "./knowledge/KnowledgeBasePanel";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -385,6 +387,7 @@ export function ProjectManagementPage() {
           <div className="flex items-center justify-between px-6 pt-4 pb-2 border-b">
             <TabsList>
               <TabsTrigger value="pool"><Inbox className="h-4 w-4 mr-1" />需求池</TabsTrigger>
+              <TabsTrigger value="knowledge"><BookOpen className="h-4 w-4 mr-1" />知识库</TabsTrigger>
               <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
               <TabsTrigger value="overview"><Sparkles className="h-4 w-4 mr-1" />项目概览</TabsTrigger>
               <TabsTrigger value="config"><Settings className="h-4 w-4 mr-1" />项目配置</TabsTrigger>
@@ -466,6 +469,18 @@ export function ProjectManagementPage() {
                   </table>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ---- 知识库 ---- */}
+          {activeTab === "knowledge" && (
+            <div className="flex-1 overflow-y-auto p-6">
+              <KnowledgeBasePanel
+                projectId={projectId}
+                selectedModuleId={selectedModuleId}
+                modules={modules}
+                moduleNames={moduleNames}
+              />
             </div>
           )}
 
