@@ -1555,6 +1555,7 @@ def list_ui_elements(
     status: str | None = Query(None),
     keyword: str | None = Query(None, max_length=200),
     limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
 ):
     assert_project_access(db, current_user, project_id)
     if platform is not None and platform not in ALL_UI_PLATFORMS:
@@ -1579,7 +1580,10 @@ def list_ui_elements(
             UiElement.semantic_name.ilike(token) | UiElement.page_name.ilike(token)
         )
     elements = (
-        query.order_by(UiElement.page_name, UiElement.semantic_name).limit(limit).all()
+        query.order_by(UiElement.page_name, UiElement.semantic_name, UiElement.id)
+        .offset(offset)
+        .limit(limit)
+        .all()
     )
     return {
         "status": "success",

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from fastapi import FastAPI
 
 from database.models import (
     UiElementLocator,
@@ -45,7 +46,11 @@ from recorder_agent.main import (
     _save_mobile_scenario_sync,
 )
 from scripts.sanitize_ui_recording_data import _decode_legacy_html
-from server.api.ui_recordings import _mobile_locator_match_count, _pull_agent_events
+from server.api.ui_recordings import (
+    _mobile_locator_match_count,
+    _pull_agent_events,
+    router as ui_recordings_router,
+)
 from server.services.ui_recording_service import (
     UiRecordingControlLeaseError,
     UiRecordingTransitionError,
@@ -542,6 +547,17 @@ def test_agent_event_pull_drains_all_batches(monkeypatch: pytest.MonkeyPatch) ->
     assert requested_after == [0, 500]
     assert session.error is None
     assert session.capabilities["recorder_agent_connected"] is True
+
+
+def test_ui_element_list_exposes_stable_offset_pagination() -> None:
+    """元素超过单页上限后，前端仍能继续拉取而不会丢失刚拾取的元素。"""
+    app = FastAPI()
+    app.include_router(ui_recordings_router, prefix="/api")
+    operation = app.openapi()["paths"]["/api/ui-elements"]["get"]
+    parameters = {item["name"]: item for item in operation["parameters"]}
+
+    assert parameters["offset"]["schema"]["default"] == 0
+    assert parameters["offset"]["schema"]["minimum"] == 0
 
 
 def test_mobile_ui_tree_coordinate_generates_platform_locators() -> None:

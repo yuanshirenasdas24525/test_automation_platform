@@ -2533,19 +2533,31 @@ export const uiRecordingsApi = {
       body: payload,
     });
   },
-  listElements(args: {
+  async listElements(args: {
     projectId: number;
     platform?: UiPlatform;
     pageKey?: string;
     status?: UiElement["status"];
     keyword?: string;
   }) {
-    const qs = new URLSearchParams({ project_id: String(args.projectId), limit: "1000" });
-    if (args.platform) qs.set("platform", args.platform);
-    if (args.pageKey) qs.set("page_key", args.pageKey);
-    if (args.status) qs.set("status", args.status);
-    if (args.keyword?.trim()) qs.set("keyword", args.keyword.trim());
-    return request<UiElement[]>(`/api/ui-elements?${qs.toString()}`);
+    const pageSize = 1000;
+    const elements = new Map<number, UiElement>();
+    for (let offset = 0; ; offset += pageSize) {
+      const qs = new URLSearchParams({
+        project_id: String(args.projectId),
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      if (args.platform) qs.set("platform", args.platform);
+      if (args.pageKey) qs.set("page_key", args.pageKey);
+      if (args.status) qs.set("status", args.status);
+      if (args.keyword?.trim()) qs.set("keyword", args.keyword.trim());
+      const batch = await request<UiElement[]>(`/api/ui-elements?${qs.toString()}`);
+      const previousSize = elements.size;
+      for (const element of batch) elements.set(element.id, element);
+      if (batch.length < pageSize || elements.size === previousSize) break;
+    }
+    return [...elements.values()];
   },
   updateElement(
     elementId: number,
