@@ -11,6 +11,7 @@ import { ApiError, knowledgeApi, type ModulePickerNode } from "@/lib/api";
 import { stripHtml } from "@/lib/utils";
 import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDoc } from "@/types/domain";
 import { KnowledgeDocDialog } from "./KnowledgeDocDialog";
+import { KnowledgeDocViewDialog } from "./KnowledgeDocViewDialog";
 
 const TYPE_LABELS = new Map<string, string>(
   KNOWLEDGE_CONTEXT_TYPES.map((t) => [t.value, t.label]),
@@ -30,6 +31,7 @@ export function KnowledgeBasePanel({
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [viewingId, setViewingId] = useState<number | null>(null);
 
   const docsQuery = useQuery({
     queryKey: ["knowledge", projectId, selectedModuleId],
@@ -49,7 +51,8 @@ export function KnowledgeBasePanel({
   const docs = docsQuery.data ?? [];
 
   const openCreate = () => { setEditingId(null); setDialogOpen(true); };
-  const openEdit = (doc: KnowledgeDoc) => { setEditingId(doc.id); setDialogOpen(true); };
+  const openEdit = (id: number) => { setViewingId(null); setEditingId(id); setDialogOpen(true); };
+  const openView = (doc: KnowledgeDoc) => setViewingId(doc.id);
 
   return (
     <div>
@@ -88,7 +91,7 @@ export function KnowledgeBasePanel({
             </thead>
             <tbody>
               {docs.map((d) => (
-                <tr key={d.id} className="border-t hover:bg-accent/30 cursor-pointer" onClick={() => openEdit(d)}>
+                <tr key={d.id} className="border-t hover:bg-accent/30 cursor-pointer" onClick={() => openView(d)}>
                   <td className="px-3 py-2">
                     <div className="font-medium">{d.title}</div>
                     {stripHtml(d.summary) ? (
@@ -114,7 +117,7 @@ export function KnowledgeBasePanel({
                     )}
                   </td>
                   <td className="px-3 py-2 text-right" onClick={(e) => e.stopPropagation()}>
-                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(d)}>
+                    <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(d.id)}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive"
@@ -128,6 +131,14 @@ export function KnowledgeBasePanel({
           </table>
         </div>
       )}
+
+      <KnowledgeDocViewDialog
+        open={viewingId != null}
+        docId={viewingId}
+        moduleNames={moduleNames}
+        onClose={() => setViewingId(null)}
+        onEdit={(id) => openEdit(id)}
+      />
 
       <KnowledgeDocDialog
         open={dialogOpen}
