@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
-import { X, Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon, RotateCcw } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon, RotateCcw } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { SideDrawer } from "@/components/ui/side-drawer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AttachmentList } from "@/components/attachments/AttachmentList";
 import { PriorityBadge } from "@/components/badges/PriorityBadge";
@@ -25,17 +26,6 @@ interface Props {
 export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequirement, moduleNames, versionNames }: Props) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const queryClient = useQueryClient();
-
-  useEffect(() => {
-    if (open) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
-    }
-    return () => {
-      document.body.style.overflow = "";
-    };
-  }, [open]);
 
   const historyQuery = useQuery({
     queryKey: ["requirementHistory", req?.id],
@@ -69,41 +59,35 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
     return m;
   }, [usersQuery.data]);
 
-  if (!req || !open) return null;
+  if (!req) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex">
-      <div
-        className="flex-1 bg-black/30 transition-opacity"
-        onClick={onClose}
-        aria-hidden
-      />
-      <div className="relative w-full max-w-[1000px] bg-background shadow-2xl animate-slide-in-right overflow-y-auto">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-background px-6 py-4">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-xs font-mono text-muted-foreground shrink-0">
-              REQ-{req.id}
-            </span>
-            <h2 className="truncate text-base font-semibold">{req.title}</h2>
-          </div>
-          <Button variant="ghost" size="icon" onClick={onClose} className="shrink-0">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
-
-        <div className="space-y-6 px-6 py-5">
-          {/* 操作按钮 */}
+    <>
+      <SideDrawer
+        open={open}
+        onClose={onClose}
+        storageKey="requirement-detail-drawer-width"
+        defaultWidth={720}
+        minWidth={560}
+        closeOnOutside={false}
+        title={
+          <>
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">REQ-{req.id}</span>
+            <span className="truncate">{req.title}</span>
+          </>
+        }
+        footer={
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => onEdit(req)}>
-              <Pencil className="h-3.5 w-3.5 mr-1" />
-              编辑
+              <Pencil className="h-3.5 w-3.5 mr-1" />编辑
             </Button>
             <Button size="sm" variant="outline" onClick={() => setHistoryOpen(true)}>
-              <HistoryIcon className="h-3.5 w-3.5 mr-1" />
-              编辑历史
+              <HistoryIcon className="h-3.5 w-3.5 mr-1" />编辑历史
             </Button>
           </div>
-
+        }
+      >
+        <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
           {/* 基本信息 */}
           <Section icon={<InfoIcon />} title="基本信息">
             <InfoGrid>
@@ -275,7 +259,7 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
             <AttachmentList requirementId={req.id} />
           </Section>
         </div>
-      </div>
+      </SideDrawer>
 
       {/* 编辑历史弹窗 */}
       <Dialog open={historyOpen} onOpenChange={setHistoryOpen}>
@@ -297,7 +281,7 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
           />
         </DialogContent>
       </Dialog>
-    </div>
+    </>
   );
 }
 
