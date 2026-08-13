@@ -112,6 +112,9 @@ import type {
   UiExecutionContextBundle,
   UiRecordingSession,
   UiRecordingStepDraft,
+  WebUiCaseDraft,
+  WebUiCaseGenerationPayload,
+  WebUiCaseGenerationResponse,
   KnowledgeDoc,
   KnowledgeDocCreate,
   KnowledgeDocUpdate,
@@ -1618,6 +1621,43 @@ export const aiApi = {
     return request<{ message?: string }>(`/api/ai/runs/${id}/cancel`, {
       method: "POST",
     });
+  },
+};
+
+/** Web UI 自动化用例生成：AI 只规划 element_id，后端以元素库事实编译定位器。 */
+export const webUiCasesApi = {
+  generate(payload: WebUiCaseGenerationPayload) {
+    return request<WebUiCaseGenerationResponse>("/api/ai/web-ui-cases/generate", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  listDrafts(filters: { projectId: number; batchId?: string; status?: string }) {
+    const qs = new URLSearchParams({ project_id: String(filters.projectId) });
+    if (filters.batchId) qs.set("batch_id", filters.batchId);
+    if (filters.status) qs.set("status", filters.status);
+    return request<WebUiCaseDraft[]>(`/api/ai/web-ui-cases/drafts?${qs.toString()}`);
+  },
+  updateDraft(id: number, payload: Partial<Pick<
+    WebUiCaseDraft,
+    "title" | "description" | "priority" | "tags" | "variables" | "steps"
+  >>) {
+    return request<WebUiCaseDraft>(`/api/ai/web-ui-cases/drafts/${id}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+  rejectDraft(id: number, reason?: string) {
+    return request<WebUiCaseDraft>(`/api/ai/web-ui-cases/drafts/${id}/reject`, {
+      method: "POST",
+      body: { reason: reason || null },
+    });
+  },
+  commitDrafts(payload: { draft_ids: number[]; module_id: number }) {
+    return request<{ created_case_ids: number[]; skipped: Array<{ draft_id: number; reason: string }> }>(
+      "/api/ai/web-ui-cases/drafts/commit",
+      { method: "POST", body: payload },
+    );
   },
 };
 

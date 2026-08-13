@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from runners.context.execution_context import ExecutionContext
 from runners.case_executor import CaseExecutor
@@ -259,6 +260,61 @@ def test_web_screenshot_saves_file_and_attaches(tmp_path):
 
 
 # =============================================================================
+# 7. web_assert_visual：固定视口下比较已确认基线
+# =============================================================================
+def test_web_assert_visual_passes_with_matching_baseline(tmp_path, monkeypatch):
+    ctx = ExecutionContext()
+    _, adapter = _bind_fake_session(ctx)
+    baseline = tmp_path / "baseline.png"
+    Image.new("RGB", (24, 16), "white").save(baseline)
+    monkeypatch.setattr("runners.steps.web_actions._PROJECT_ROOT", tmp_path)
+
+    def save_matching(path):
+        adapter._record("screenshot", (path,), {})
+        Image.new("RGB", (24, 16), "white").save(path)
+
+    monkeypatch.setattr(adapter, "screenshot", save_matching)
+    result = _dispatch_web_step(ctx, {
+        "id": 70,
+        "step_order": 0,
+        "step_name": "visual",
+        "step_type": "web_assert_visual",
+        "config": {"baseline_path": "baseline.png", "threshold": 0.01},
+    })
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert result.output_data["difference_ratio"] == 0
+    assert len(result.attachments) == 2
+
+
+def test_web_assert_visual_fails_when_difference_exceeds_threshold(tmp_path, monkeypatch):
+    ctx = ExecutionContext()
+    _, adapter = _bind_fake_session(ctx)
+    baseline = tmp_path / "baseline.png"
+    Image.new("RGB", (24, 16), "white").save(baseline)
+    monkeypatch.setattr("runners.steps.web_actions._PROJECT_ROOT", tmp_path)
+
+    def save_changed(path):
+        adapter._record("screenshot", (path,), {})
+        Image.new("RGB", (24, 16), "black").save(path)
+
+    monkeypatch.setattr(adapter, "screenshot", save_changed)
+    result = _dispatch_web_step(ctx, {
+        "id": 71,
+        "step_order": 0,
+        "step_name": "visual",
+        "step_type": "web_assert_visual",
+        "config": {"baseline_path": "baseline.png", "threshold": 0.01},
+    })
+    assert result.status == StepStatus.FAILED
+    assert "视觉差异" in (result.error_message or "")
+    assert {item["name"] for item in result.attachments}.issuperset({
+        "visual-baseline.png",
+        "visual-actual.png",
+        "visual-diff.png",
+    })
+
+
+# =============================================================================
 # 7a. web_assert_text：equals 通过
 # =============================================================================
 def test_web_assert_text_equals_pass():
@@ -352,7 +408,8 @@ def test_case_executor_manages_web_session_lifecycle():
     assert len(built_sessions) == 1
     assert adapter.closed is True
     # 两条 step 都打到了 adapter 上
-    ops = [c[0] for c in adapter.calls]
+    # 执行器可能按项目配置自动补充证据截图；这里只验证业务动作顺序。
+    ops = [c[0] for c in adapter.calls if c[0] in {"goto", "click"}]
     assert ops == ["goto", "click"]
 
 

@@ -27,7 +27,7 @@ kill_port() {
   local label="$1" port="$2" pids
   pids="$(lsof -ti "tcp:$port" 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
-    log "停止 $label（:$port）→ PID $pids"
+    log "停止 ${label}（:${port}）→ PID ${pids}"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
     sleep 1
@@ -35,7 +35,7 @@ kill_port() {
     # shellcheck disable=SC2086
     [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null || true
   else
-    log "$label（:$port）未在运行"
+    log "${label}（:${port}）未在运行"
   fi
 }
 
@@ -44,7 +44,7 @@ kill_pat() {
   local label="$1" pat="$2" pids
   pids="$(pgrep -f "$pat" 2>/dev/null || true)"
   if [[ -n "$pids" ]]; then
-    log "停止 $label → PID $pids"
+    log "停止 ${label} → PID ${pids}"
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
     sleep 1
@@ -52,7 +52,7 @@ kill_pat() {
     # shellcheck disable=SC2086
     [[ -n "$pids" ]] && kill -9 $pids 2>/dev/null || true
   else
-    log "$label 未在运行"
+    log "${label} 未在运行"
   fi
 }
 

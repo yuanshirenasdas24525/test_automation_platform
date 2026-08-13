@@ -526,6 +526,7 @@ def _serialize_case(c: TestCase, *, include_steps: bool = False, db=None) -> dic
         "repeat_count": getattr(c, "repeat_count", 1) or 1,
         "source": getattr(c, "source", "manual") or "manual",
         "generation_metadata": getattr(c, "generation_metadata", None),
+        "variables": getattr(c, "variables", None) or {},
         "sort_order": c.sort_order,
         # 前/后置步骤属于真实执行定义，必须在编辑详情中公开，不能成为隐藏逻辑。
         "pre_hook": c.pre_hook or [],

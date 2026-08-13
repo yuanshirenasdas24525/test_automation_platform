@@ -450,6 +450,7 @@ export interface ContentNode {
   /** AI 生成来源与生成期校验/人工调整信息。 */
   source?: string | null;
   generation_metadata?: Record<string, unknown> | null;
+  variables?: Record<string, unknown> | null;
   tags?: string[] | null;
   /** 步骤数；>1 视为多步骤用例（前端换图标） */
   step_count?: number | null;
@@ -479,6 +480,8 @@ export interface TestCaseCreate {
   /** AI 接口生成来源与契约/编译/探测追踪信息。 */
   source?: string | null;
   generation_metadata?: Record<string, unknown> | null;
+  /** 用例级动态测试数据；步骤通过 ${name} 引用。 */
+  variables?: Record<string, unknown> | null;
 
   /** 历史 HTTP 字段：数据库列暂留，执行定义以 steps 为准。 */
   method?: string | null;
@@ -959,6 +962,7 @@ export type AiFeature =
   | "report_summary"
   | "test_result_analysis"
   | "functional_to_auto"
+  | "web_ui_case_gen"
   | "load_plan_gen";
 
 /** AI 任务记录。前端轮询这个 endpoint 拿状态 / 拿结果。 */
@@ -982,6 +986,58 @@ export interface AiRun {
   created_at?: string | null;
   started_at?: string | null;
   ended_at?: string | null;
+}
+
+export type WebUiCaseSourceMode = "functional_and_elements" | "elements_only";
+export type WebUiCaseDraftStatus = "pending" | "accepted" | "rejected";
+
+export interface WebUiCaseGenerationPayload {
+  project_id: number;
+  model_name: string;
+  source_mode: WebUiCaseSourceMode;
+  functional_case_ids: number[];
+  page_keys: string[];
+  count: number;
+  include_structure_assertions: boolean;
+  include_visual_assertions: boolean;
+  visual_threshold: number;
+  user_prompt?: string;
+}
+
+export interface WebUiCaseGenerationResponse {
+  ai_run_id: number;
+  batch_id: string;
+  celery_task_id: string;
+}
+
+export interface WebUiCaseDraft {
+  id: number;
+  project_id: number;
+  module_id?: number | null;
+  functional_case_id?: number | null;
+  ai_run_id?: number | null;
+  batch_id: string;
+  model_label?: string | null;
+  title: string;
+  description?: string | null;
+  priority: number;
+  tags: string[];
+  variables: Record<string, unknown>;
+  steps: TestStepDraft[];
+  evidence: {
+    element_ids?: number[];
+    page_keys?: string[];
+    snapshot_ids?: number[];
+  };
+  warnings: string[];
+  manual_reasons: string[];
+  confidence: number;
+  visual_assertion: boolean;
+  status: WebUiCaseDraftStatus;
+  committed_case_id?: number | null;
+  reject_reason?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 /** 模块下某一次 AI 用例生成的持久化历史摘要。 */

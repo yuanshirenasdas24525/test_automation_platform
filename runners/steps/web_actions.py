@@ -51,7 +51,10 @@ import logging
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageChops, ImageDraw
 
 from runners.context.execution_context import ExecutionContext
 from runners.protocol import BaseStepRunner, StepResult
@@ -59,6 +62,7 @@ from runners.web.session import WebSession
 from utils.value_resolver import resolve_value
 
 logger = logging.getLogger(__name__)
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ============================================================
@@ -278,7 +282,95 @@ class WebAssertTextStepRunner(BaseStepRunner):
 
 
 # ============================================================
-# 8. web_evaluate —— 执行一段 JS 脚本（抓值 / 触发副作用）
+# 8. web_assert_visual —— 与人工确认过的页面快照基线做像素差异比较
+# ============================================================
+class WebAssertVisualStepRunner(BaseStepRunner):
+    step_types = ("web_assert_visual",)
+
+    @staticmethod
+    def _artifact_path(raw: Any) -> Path:
+        if not raw:
+            raise ValueError("web_assert_visual 缺少 baseline_path")
+        candidate = Path(str(raw))
+        path = candidate.resolve() if candidate.is_absolute() else (_PROJECT_ROOT / candidate).resolve()
+        try:
+            path.relative_to(_PROJECT_ROOT)
+        except ValueError as exc:
+            raise ValueError("视觉基线必须位于项目工作区内") from exc
+        return path
+
+    @staticmethod
+    def _mask(image: Image.Image, masks: list[Any]) -> None:
+        draw = ImageDraw.Draw(image)
+        for raw in masks:
+            if not isinstance(raw, dict):
+                continue
+            x = max(0, int(raw.get("x") or 0))
+            y = max(0, int(raw.get("y") or 0))
+            width = max(0, int(raw.get("width") or 0))
+            height = max(0, int(raw.get("height") or 0))
+            draw.rectangle((x, y, x + width, y + height), fill=(0, 0, 0))
+
+    def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
+        session = WebSession.require(ctx)
+        config = _cfg(step)
+        baseline_path = self._artifact_path(config.get("baseline_path"))
+        if not baseline_path.is_file():
+            raise ValueError(f"视觉基线不存在：{baseline_path}")
+
+        output_dir = _PROJECT_ROOT / "data" / "screenshots" / "visual"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = int(time.time() * 1000)
+        actual_path = output_dir / f"{stamp}_actual.png"
+        diff_path = output_dir / f"{stamp}_diff.png"
+        session.adapter.screenshot(str(actual_path))
+
+        with Image.open(baseline_path) as baseline_raw, Image.open(actual_path) as actual_raw:
+            baseline = baseline_raw.convert("RGB")
+            actual = actual_raw.convert("RGB")
+            if baseline.size != actual.size:
+                result.attachments.extend([
+                    {"name": "visual-baseline.png", "path": str(baseline_path), "type": "image/png"},
+                    {"name": "visual-actual.png", "path": str(actual_path), "type": "image/png"},
+                ])
+                raise AssertionError(
+                    f"视觉断言尺寸不一致：baseline={baseline.size} actual={actual.size}；"
+                    "请固定浏览器视口后重新确认基线"
+                )
+
+            masks = list(config.get("masks") or [])
+            self._mask(baseline, masks)
+            self._mask(actual, masks)
+            difference = ImageChops.difference(baseline, actual)
+            tolerance = max(0, min(255, int(config.get("pixel_tolerance") or 24)))
+            luminance = difference.convert("L")
+            changed = sum(count for value, count in enumerate(luminance.histogram()) if value > tolerance)
+            total = max(1, baseline.width * baseline.height)
+            ratio = changed / total
+            threshold = max(0.0, min(1.0, float(config.get("threshold") or 0.02)))
+            if ratio > 0:
+                difference.save(diff_path)
+
+        result.action = f"visual diff ratio={ratio:.6f} threshold={threshold:.6f}"
+        result.target = str(baseline_path)
+        result.output_data = {
+            "difference_ratio": ratio,
+            "threshold": threshold,
+            "changed_pixels": changed,
+            "total_pixels": total,
+        }
+        result.attachments.extend([
+            {"name": "visual-baseline.png", "path": str(baseline_path), "type": "image/png"},
+            {"name": "visual-actual.png", "path": str(actual_path), "type": "image/png"},
+        ])
+        if diff_path.exists():
+            result.attachments.append({"name": "visual-diff.png", "path": str(diff_path), "type": "image/png"})
+        if ratio > threshold:
+            raise AssertionError(f"视觉差异 {ratio:.2%} 超过允许阈值 {threshold:.2%}")
+
+
+# ============================================================
+# 9. web_evaluate —— 执行一段 JS 脚本（抓值 / 触发副作用）
 # ============================================================
 class WebEvaluateStepRunner(BaseStepRunner):
     step_types = ("web_evaluate",)
@@ -319,6 +411,7 @@ def build_web_runners() -> list[BaseStepRunner]:
         WebWaitStepRunner(),
         WebScreenshotStepRunner(),
         WebAssertTextStepRunner(),
+        WebAssertVisualStepRunner(),
         WebEvaluateStepRunner(),
     ]
 
@@ -331,6 +424,7 @@ __all__ = [
     "WebWaitStepRunner",
     "WebScreenshotStepRunner",
     "WebAssertTextStepRunner",
+    "WebAssertVisualStepRunner",
     "WebEvaluateStepRunner",
     "build_web_runners",
 ]

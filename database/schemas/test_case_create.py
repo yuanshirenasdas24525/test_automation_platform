@@ -50,6 +50,7 @@ class TestCaseCreate(pydantic.BaseModel):
     # AI 生成来源与编译门禁；人工编辑默认 manual/None。
     source: Optional[str] = None
     generation_metadata: Optional[Dict[str, Any]] = None
+    variables: Optional[Dict[str, Any]] = None
 
     # ------- 历史 HTTP 字段：暂留到后续删列迁移 -------
     method: Optional[str] = None

@@ -259,6 +259,19 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     ],
   },
   {
+    value: "web_assert_visual",
+    group: "web",
+    label: "视觉回归 (web_assert_visual)",
+    desc: "固定视口下与人工确认的页面截图基线比较；动态区域可配置 masks。",
+    defaultConfig: { baseline_path: "", threshold: 0.02, pixel_tolerance: 24, masks: [] },
+    defaultName: "视觉回归断言",
+    fields: [
+      { key: "baseline_path", label: "基线图片路径", kind: "text", required: true, placeholder: "data/ui_recordings/...png" },
+      { key: "threshold", label: "允许差异比例", kind: "number", placeholder: "0.02" },
+      { key: "pixel_tolerance", label: "单像素容差", kind: "number", placeholder: "24" },
+    ],
+  },
+  {
     value: "web_assert_text",
     group: "web",
     label: "断言文本 (web_assert_text)",

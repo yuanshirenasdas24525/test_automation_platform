@@ -3,10 +3,12 @@
 > commit 前缀：`feat(ai-m8):`
 > 前置里程碑：M7（AI 生成功能用例 + `ai_case_drafts` + `test_cases.business_steps`）
 > 宏观蓝图来源：`docs/ai_case_generation_m7_plan.md` §9「M8 衔接预留」、`docs/ai_features_requirements.md` 功能 6/7
-> 状态：**设计稿，selector 来源方案待 owner 拍板（见 §3）**
+> 状态：**历史设计稿；2026-08-14 已按“现有 UI 元素事实库 + 人工评审草稿”路线完成首期，实际实现见 [`AI生成Web-UI自动化用例-实施说明-v1.0.md`](./AI生成Web-UI自动化用例-实施说明-v1.0.md)**
 > 专题目录索引：[`README.md`](./README.md)
 
 ## Context
+
+> 实施说明：本文后续保留最初 M8 推演，部分“当前代码现状”和 `page_objects` 设想已过时。正式实现复用 `ui_elements / ui_element_locators / ui_page_snapshots`，输入兼容现有 functional `functional_spec`，不新增另一套 Page Object 表，也不允许 AI 直接生成 selector。
 
 M7 把"需求 → AI 生成 functional 用例 → PM review → 入库"的闭环跑通了。落地后每条 functional `test_cases` 行带了一个关键钩子列 `business_steps`：
 

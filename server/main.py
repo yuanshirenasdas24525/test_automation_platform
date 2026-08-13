@@ -74,6 +74,7 @@ class _FrontendAssetStaticFiles(StaticFiles):
 from server.api import (
     ai_router,
     ai_case_generation_router,
+    web_ui_case_generation_router,
     ai_dialogue_router,
     ai_models_router,
     ai_requirements_router,
@@ -220,6 +221,7 @@ for router in (
     ui_recordings_router,
     ai_router,
     ai_case_generation_router,
+    web_ui_case_generation_router,
     ai_dialogue_router,
     ai_models_router,
     ai_requirements_router,

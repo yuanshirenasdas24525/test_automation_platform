@@ -1101,6 +1101,162 @@ def _handle_test_result_analysis(run: "AiRun", session) -> dict:
     }
 
 
+def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
+    """功能用例/元素库生成 Web UI 自动化用例草稿。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+    from database.models import Module, TestCase, UiAutomationCaseDraft, UI_AUTO_DRAFT_PENDING
+    from server.services.ai_model_service import get_ai_model
+    from server.services.web_ui_case_generation_service import (
+        build_generation_context,
+        compile_ai_case,
+    )
+
+    payload = run.input_payload or {}
+    project_id = int(payload.get("project_id") or run.project_id or 0)
+    model_name = str(payload.get("model_name") or "").strip()
+    batch_id = str(payload.get("batch_id") or "").strip()
+    if project_id <= 0:
+        raise ValueError("project_id 必填")
+    if not model_name:
+        raise ValueError("model_name 必填")
+    if not batch_id:
+        raise ValueError("batch_id 必填")
+
+    cfg = get_ai_model(session, model_name, project_id=project_id)
+    if cfg is None or not cfg.enabled:
+        raise ValueError(f"AI 模型 {model_name!r} 不存在或未启用")
+
+    functional_case_ids = [int(item) for item in (payload.get("functional_case_ids") or [])]
+    if payload.get("source_mode") == "elements_only":
+        functional_case_ids = []
+    context, element_map, snapshot_map = build_generation_context(
+        session,
+        project_id=project_id,
+        functional_case_ids=functional_case_ids,
+        page_keys=[str(item) for item in (payload.get("page_keys") or [])],
+    )
+    placeholders = {
+        "COUNT": int(payload.get("count") or 8),
+        "SOURCE_MODE": payload.get("source_mode") or "functional_and_elements",
+        "INCLUDE_STRUCTURE_ASSERTIONS": bool(payload.get("include_structure_assertions", True)),
+        "INCLUDE_VISUAL_ASSERTIONS": bool(payload.get("include_visual_assertions", False)),
+        "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
+        "EVIDENCE_CONTEXT": context,
+    }
+    prompt = _render_prompt(_load_prompt("web_ui_case_gen"), placeholders)
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    options = model_task_options(cfg, "web_ui_case_gen")
+    raw_text, tokens_in, tokens_out = chat_markdown(
+        prompt,
+        cfg,
+        timeout=options["timeout"],
+        system_prompt=(
+            "你是 Web UI 自动化测试架构师。只输出满足用户指定结构的 JSON，"
+            "不得虚构元素 ID、页面或定位器。"
+        ),
+        enable_thinking=options["enable_thinking"],
+        json_mode=True,
+        max_tokens=options["max_tokens"],
+        temperature=options["temperature"],
+        reasoning_effort=options["reasoning_effort"],
+    )
+    text_value = raw_text.strip()
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text_value, re.IGNORECASE)
+    if fenced:
+        text_value = fenced.group(1).strip()
+    try:
+        parsed = json.loads(text_value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"AI 输出不是合法 JSON：{exc}") from exc
+    raw_cases = parsed.get("cases") if isinstance(parsed, dict) else parsed
+    if not isinstance(raw_cases, list):
+        raise ValueError("AI 输出缺少 cases 数组")
+
+    selected_functional = set(functional_case_ids)
+    existing_titles = {
+        str(item[0]).strip().lower()
+        for item in session.query(TestCase.name)
+        .join(Module, TestCase.module_id == Module.id)
+        .filter(
+            Module.project_id == project_id,
+            TestCase.case_type == "web",
+        )
+        .all()
+    }
+    compiled_items: list[dict[str, Any]] = []
+    dropped = 0
+    for raw_case in raw_cases[: int(payload.get("count") or 8)]:
+        if not isinstance(raw_case, dict):
+            dropped += 1
+            continue
+        compiled = compile_ai_case(
+            raw_case,
+            element_map=element_map,
+            snapshot_map=snapshot_map,
+            include_structure_assertions=bool(payload.get("include_structure_assertions", True)),
+            include_visual_assertions=bool(payload.get("include_visual_assertions", False)),
+            visual_threshold=float(payload.get("visual_threshold") or 0.02),
+        )
+        if compiled is None or compiled["title"].strip().lower() in existing_titles:
+            dropped += 1
+            continue
+        if compiled["functional_case_id"] not in selected_functional:
+            compiled["functional_case_id"] = None
+        existing_titles.add(compiled["title"].strip().lower())
+        compiled_items.append(compiled)
+
+    if not compiled_items:
+        raise ValueError("AI 没有生成可编译草稿；请补录元素或缩小页面范围后重试")
+
+    model_label = f"{cfg.provider} / {cfg.model}"
+    draft_ids: list[int] = []
+    for item in compiled_items:
+        draft = UiAutomationCaseDraft(
+            project_id=project_id,
+            functional_case_id=item["functional_case_id"],
+            ai_run_id=run.id,
+            batch_id=batch_id,
+            model_label=model_label,
+            title=item["title"],
+            description=item["description"],
+            priority=item["priority"],
+            tags=item["tags"],
+            variables=item["variables"],
+            steps=item["steps"],
+            evidence=item["evidence"],
+            warnings=item["warnings"],
+            manual_reasons=item["manual_reasons"],
+            confidence=item["confidence"],
+            visual_assertion=item["visual_assertion"],
+            status=UI_AUTO_DRAFT_PENDING,
+        )
+        session.add(draft)
+        session.flush()
+        draft_ids.append(draft.id)
+
+    return {
+        "output": {
+            "batch_id": batch_id,
+            "draft_ids": draft_ids,
+            "draft_count": len(draft_ids),
+            "dropped_count": dropped,
+            "source_mode": payload.get("source_mode"),
+            "evidence_summary": {
+                "functional_cases": len(context["functional_cases"]),
+                "pages": len(context["pages"]),
+                "elements": sum(len(item["elements"]) for item in context["pages"]),
+                "recorded_actions": len(context["recorded_actions"]),
+            },
+        },
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "provider": cfg.provider,
+        "model": cfg.model,
+        "prompt_hash": prompt_hash,
+        "prompt_version": "web-ui-v1",
+    }
+
+
 # Feature → handler 注册表。新增 feature 时在这里加一行。
 _HANDLERS = {
     "requirement_parse": _handle_requirement_parse,
@@ -1109,6 +1265,7 @@ _HANDLERS = {
     "functional_case_gen": _handle_functional_case_gen,    # M7
     "test_result_analysis": _handle_test_result_analysis,
     "api_report_fix": _handle_api_report_fix,              # 报告级 AI 诊断 + 参数修复
+    "web_ui_case_gen": _handle_web_ui_case_gen,
     # ... 后续 feature 在这里挂
 }
 
@@ -1180,6 +1337,8 @@ def _ai_run_detail_url(
         return f"/runs?report_id={payload['report_id']}"
     if feature == "functional_case_gen" and project_id:
         return f"/projects/{project_id}/functional"
+    if feature == "web_ui_case_gen" and project_id:
+        return f"/projects/{project_id}?stack=web&uiElements=web"
     if project_id:
         return f"/projects/{project_id}/requirements"
     return "/runs"
@@ -1195,6 +1354,7 @@ _AI_FEATURE_LABELS: dict[str, str] = {
     "api_case_gen": "AI 生成 API 用例",
     "test_result_analysis": "AI 执行结果体检",
     "functional_to_auto": "AI 功能转自动化用例",
+    "web_ui_case_gen": "AI 生成 Web UI 用例",
     "report_summary": "AI 报告摘要",
     "load_plan_gen": "AI 压测脚本生成",
     "bug_fix": "AI 一键修复 Bug",
@@ -1213,6 +1373,7 @@ _AI_FEATURE_ICONS: dict[str, str] = {
     "api_case_gen": "Globe",
     "test_result_analysis": "SearchCheck",
     "functional_to_auto": "Workflow",
+    "web_ui_case_gen": "MousePointerClick",
     "report_summary": "FileBarChart",
     "load_plan_gen": "Gauge",
     "bug_fix": "Bug",

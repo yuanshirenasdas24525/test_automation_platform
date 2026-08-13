@@ -40,6 +40,7 @@ AI_FEATURE_API_CASE_GEN = "api_case_gen"             # OpenAPI → API 用例
 AI_FEATURE_REPORT_SUMMARY = "report_summary"         # 报告 → 自然语言摘要
 AI_FEATURE_TEST_RESULT_ANALYSIS = "test_result_analysis"  # 执行结果 → 用例体检建议
 AI_FEATURE_FUNCTIONAL_TO_AUTO = "functional_to_auto"  # functional → web/app step
+AI_FEATURE_WEB_UI_CASE_GEN = "web_ui_case_gen"        # 功能用例/元素库 → Web UI 用例草稿
 AI_FEATURE_LOAD_PLAN_GEN = "load_plan_gen"           # OpenAPI → locust 压测脚本
 AI_FEATURE_BUG_FIX = "bug_fix"                         # AI 一键修复 Bug
 AI_FEATURE_API_REPORT_FIX = "api_report_fix"          # 报告级 AI 全面诊断 + 参数修复（异步）

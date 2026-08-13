@@ -72,6 +72,7 @@ import type {
   UiRecordingStatus,
 } from "@/types/domain";
 import { UiRecordingResultDialog } from "./UiRecordingResultDialog";
+import { WebUiCaseGenerationDialog } from "./WebUiCaseGenerationDialog";
 
 const PLATFORM_META: Record<UiPlatform, { label: string; runtime: string }> = {
   web: { label: "Web", runtime: "离线业务包 · XHR/Fetch Mock" },
@@ -330,6 +331,7 @@ export function UiElementLibraryWorkspace({
   const preparedSnapshotIdsRef = useRef(new Set<number>());
   const [stepDraft, setStepDraft] = useState<UiRecordingStepDraft | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
+  const [aiCaseGeneratorOpen, setAiCaseGeneratorOpen] = useState(false);
   const [draftModuleId, setDraftModuleId] = useState("");
   const [draftCaseName, setDraftCaseName] = useState("");
   const [elementNameDraft, setElementNameDraft] = useState("");
@@ -447,6 +449,7 @@ export function UiElementLibraryWorkspace({
   }, [platform, selectedDeviceId, simulatorDevices]);
 
   const elements = useMemo(() => elementsQuery.data ?? [], [elementsQuery.data]);
+  const snapshots = useMemo(() => snapshotsQuery.data ?? [], [snapshotsQuery.data]);
   const normalizedKeyword = keyword.trim().toLocaleLowerCase();
   const filteredElements = useMemo(
     () => elements.filter((element) => {
@@ -457,12 +460,12 @@ export function UiElementLibraryWorkspace({
     [elements, normalizedKeyword],
   );
   const filteredSnapshots = useMemo(
-    () => (snapshotsQuery.data ?? []).filter((snapshot) => {
+    () => snapshots.filter((snapshot) => {
       if (!normalizedKeyword) return true;
       return [snapshot.page_name, snapshot.page_key, snapshot.url ?? ""]
         .some((value) => value.toLocaleLowerCase().includes(normalizedKeyword));
     }),
-    [normalizedKeyword, snapshotsQuery.data],
+    [normalizedKeyword, snapshots],
   );
   const latestServerSession = recordingsQuery.data?.[0] ?? null;
   const recordingSessions = recordingsQuery.data ?? [];
@@ -482,6 +485,10 @@ export function UiElementLibraryWorkspace({
   const pages = useMemo(
     () => groupPages(filteredElements, filteredSnapshots),
     [filteredElements, filteredSnapshots],
+  );
+  const generationPages = useMemo(
+    () => groupPages(elements, snapshots),
+    [elements, snapshots],
   );
   const activePageKey = pageKey ?? pages[0]?.pageKey ?? null;
   const activePage = pages.find((page) => page.pageKey === activePageKey) ?? null;
@@ -1648,6 +1655,17 @@ export function UiElementLibraryWorkspace({
               生成用例草稿
             </Button>
           ) : null}
+          {platform === "web" && generationPages.length > 0 ? (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setAiCaseGeneratorOpen(true)}
+              title="根据功能用例和元素库生成可评审的 Web UI 自动化草稿"
+            >
+              <Sparkles className="h-4 w-4 text-violet-600" />
+              AI 生成 UI 用例
+            </Button>
+          ) : null}
           {session && ACTIVE_STATUSES.includes(session.status) && !floatingVisible ? (
             <Button size="sm" variant="outline" onClick={() => setFloatingVisible(true)}>
               显示录制条
@@ -2764,6 +2782,18 @@ export function UiElementLibraryWorkspace({
         open={resultOpen}
         session={session ?? null}
         onOpenChange={setResultOpen}
+      />
+      <WebUiCaseGenerationDialog
+        open={aiCaseGeneratorOpen}
+        projectId={projectId}
+        initialPageKey={activePageKey}
+        pages={generationPages.map((page) => ({
+          pageKey: page.pageKey,
+          pageName: page.displayName,
+          route: page.route,
+          elementCount: page.elements.length,
+        }))}
+        onOpenChange={setAiCaseGeneratorOpen}
       />
 
       <Dialog open={stopConfirmOpen} onOpenChange={setStopConfirmOpen}>
