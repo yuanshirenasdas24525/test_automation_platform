@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import {
   ArrowDown,
   ArrowUp,
+  BookOpen,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -37,12 +38,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PriorityBadge } from "@/components/badges/PriorityBadge";
 import { RequirementStatusBadge } from "@/components/badges/RequirementStatusBadge";
 import { ProjectAiOverviewView } from "@/components/ProjectAiOverviewView";
-import { cn } from "@/lib/utils";
+import { cn, stripHtml } from "@/lib/utils";
 import { ApiError, type ModulePickerNode, modulesApi, versionsApi, requirementsApi } from "@/lib/api";
-import type { ProjectVersion, Requirement, VersionStatus } from "@/types/domain";
+import type { ProjectVersion, Requirement, RequirementSystemStatus, VersionStatus } from "@/types/domain";
 import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer";
 import { ProjectConfigTab } from "./config/ProjectConfigTab";
 import { ScriptLibraryPanel } from "./ScriptLibraryPage";
+import { KnowledgeBasePanel } from "./knowledge/KnowledgeBasePanel";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -313,7 +315,10 @@ export function ProjectManagementPage() {
     ? globallyFiltered.filter((v) => (v.associated_module_ids ?? []).includes(selectedModuleId))
     : globallyFiltered;
 
-  const reqs = requirementsQuery.data ?? [];
+  const reqs = useMemo(
+    () => sortPoolRequirements(requirementsQuery.data ?? []),
+    [requirementsQuery.data],
+  );
   // ---- 需求池树形展开 ----
   const [reqExpanded, setReqExpanded] = useState<Set<number>>(new Set());
   const toggleReqExpand = (rid: number) => {
@@ -382,6 +387,7 @@ export function ProjectManagementPage() {
           <div className="flex items-center justify-between px-6 pt-4 pb-2 border-b">
             <TabsList>
               <TabsTrigger value="pool"><Inbox className="h-4 w-4 mr-1" />需求池</TabsTrigger>
+              <TabsTrigger value="knowledge"><BookOpen className="h-4 w-4 mr-1" />知识库</TabsTrigger>
               <TabsTrigger value="versions"><GanttChart className="h-4 w-4 mr-1" />版本迭代</TabsTrigger>
               <TabsTrigger value="overview"><Sparkles className="h-4 w-4 mr-1" />项目概览</TabsTrigger>
               <TabsTrigger value="config"><Settings className="h-4 w-4 mr-1" />项目配置</TabsTrigger>
@@ -466,6 +472,18 @@ export function ProjectManagementPage() {
             </div>
           )}
 
+          {/* ---- 知识库 ---- */}
+          {activeTab === "knowledge" && (
+            <div className="flex-1 overflow-y-auto p-6">
+              <KnowledgeBasePanel
+                projectId={projectId}
+                selectedModuleId={selectedModuleId}
+                modules={modules}
+                moduleNames={moduleNames}
+              />
+            </div>
+          )}
+
           {/* ---- 版本迭代 ---- */}
           {activeTab === "versions" && (
             <div className="flex-1 overflow-y-auto p-6">
@@ -546,6 +564,39 @@ export function ProjectManagementPage() {
 }
 
 // ---------------------------------------------------------------------------
+// 需求池排序：先按状态优先级，状态相同再按创建时间倒序
+// 顺序：产品体验 / 待发版 / 测试中 / 开发中 / 已立项 / 未指定 / 已完成
+// ---------------------------------------------------------------------------
+const POOL_STATUS_ORDER: Record<RequirementSystemStatus, number> = {
+  pm_review: 0, // 产品体验
+  ready_to_release: 1, // 待发版
+  testing: 2, // 测试中
+  developing: 3, // 开发中
+  approved: 4, // 已立项
+  done: 6, // 已完成
+};
+const POOL_STATUS_UNSPECIFIED = 5; // 未指定（system_status 为空）
+
+function poolStatusRank(status: RequirementSystemStatus | null | undefined): number {
+  if (!status) return POOL_STATUS_UNSPECIFIED;
+  return POOL_STATUS_ORDER[status] ?? POOL_STATUS_UNSPECIFIED;
+}
+
+function sortPoolRequirements(list: Requirement[]): Requirement[] {
+  return [...list]
+    .sort((a, b) => {
+      const rank = poolStatusRank(a.system_status) - poolStatusRank(b.system_status);
+      if (rank !== 0) return rank;
+      // 时间倒序：创建时间新的在前，缺失时间回退到 id（大者更新）
+      const ta = a.created_at ? Date.parse(a.created_at) : NaN;
+      const tb = b.created_at ? Date.parse(b.created_at) : NaN;
+      if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+      return b.id - a.id;
+    })
+    .map((r) => (r.children?.length ? { ...r, children: sortPoolRequirements(r.children) } : r));
+}
+
+// ---------------------------------------------------------------------------
 // 需求池树形行
 // ---------------------------------------------------------------------------
 function PoolRequirementRows({
@@ -594,8 +645,8 @@ function PoolRequirementRows({
                   </span>
                 )}
               </div>
-              {req.description ? (
-                <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{req.description}</div>
+              {stripHtml(req.description) ? (
+                <div className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">{stripHtml(req.description)}</div>
               ) : null}
             </div>
           </div>

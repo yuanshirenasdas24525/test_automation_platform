@@ -1922,3 +1922,52 @@ export interface ApplySummary {
   added: number; modified: number; deleted: number;
   errors: { op_id: number; error: string }[];
 }
+
+// ---------------------------------------------------------------------------
+// 知识库（Knowledge Base）—— 项目管理「知识库」tab
+// 与 AI 上下文共用 project_contexts 表（source_type='knowledge'），见后端 knowledge_service。
+// ---------------------------------------------------------------------------
+
+/** 知识文档分类：落到既有 project_contexts 的 context_type 枚举里（保证被检索摘要正确归类）。 */
+export const KNOWLEDGE_CONTEXT_TYPES = [
+  { value: "term_definition", label: "术语/说明" },
+  { value: "api_contract", label: "接口契约" },
+  { value: "business_rule", label: "业务规则" },
+  { value: "data_model", label: "数据模型" },
+  { value: "architecture", label: "架构信息" },
+  { value: "constraint", label: "约束条件" },
+  { value: "process_flow", label: "业务流程" },
+  { value: "user_scenario", label: "用户场景" },
+] as const;
+
+export interface KnowledgeDoc {
+  id: number;
+  project_id: number;
+  module_id: number | null;
+  title: string;
+  context_type: string;
+  summary?: string | null;
+  /** true=纳入 AI 知识库（进 RAG，被用例生成召回）；false=仅人读 */
+  include_in_rag: boolean;
+  /** 仅详情接口返回 */
+  content_html?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface KnowledgeDocCreate {
+  project_id: number;
+  title: string;
+  content_html: string;
+  module_id?: number | null;
+  context_type?: string;
+  include_in_rag: boolean;
+}
+
+export interface KnowledgeDocUpdate {
+  title: string;
+  content_html: string;
+  module_id?: number | null;
+  context_type?: string;
+  include_in_rag: boolean;
+}

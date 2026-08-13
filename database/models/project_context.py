@@ -54,6 +54,10 @@ CONTEXT_SOURCE_MANUAL = "manual"
 CONTEXT_SOURCE_API = "api_spec"
 CONTEXT_SOURCE_ANALYSIS = "analysis"
 CONTEXT_SOURCE_PLATFORM = "platform"
+# 知识库：项目管理 → 知识库 tab 里人工维护的富文本文档。
+# 与 AI 抽取的上下文共表，靠 source_type 区分；content_html 存富文本原文供人读，
+# content 存去标签纯文本供关键词检索。importance=0 表示「不纳入 AI 检索」。
+CONTEXT_SOURCE_KNOWLEDGE = "knowledge"
 
 
 class ProjectContext(Base):
@@ -78,7 +82,8 @@ class ProjectContext(Base):
         String(50), nullable=False, index=True
     )
     title = Column(String(255), nullable=False)
-    content = Column(Text, nullable=False)          # 原文或提取后的内容
+    content = Column(Text, nullable=False)          # 原文或提取后的内容（知识库=去标签纯文本）
+    content_html = Column(Text, nullable=True)       # 知识库文档的富文本原文，供人阅读/编辑
     summary = Column(Text, nullable=True)            # AI 摘要
     tags = Column(JSONType, default=list)
     keywords = Column(JSONType, default=list)
@@ -108,6 +113,7 @@ class ProjectContext(Base):
             "context_type": self.context_type,
             "title": self.title,
             "content": self.content,
+            "content_html": self.content_html,
             "summary": self.summary,
             "tags": self.tags or [],
             "keywords": self.keywords or [],

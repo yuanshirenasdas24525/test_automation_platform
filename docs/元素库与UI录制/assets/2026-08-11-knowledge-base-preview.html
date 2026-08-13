@@ -1,0 +1,432 @@
+<title>知识库 · 页面预览</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #ffffff;
+    --muted-bg: #f8fafc;
+    --tree-bg: #fbfcfe;
+    --border: #e6e8ee;
+    --border-strong: #d6dae4;
+    --text: #0f172a;
+    --text-muted: #64748b;
+    --text-faint: #94a3b8;
+    --accent: #2563eb;
+    --accent-weak: #eff4ff;
+    --accent-ring: #c7d7fe;
+    --ok: #059669;
+    --ok-bg: #ecfdf5;
+    --ok-ring: #a7f3d0;
+    --off: #64748b;
+    --off-bg: #f1f5f9;
+    --violet: #7c3aed;
+    --violet-bg: #f5f3ff;
+    --shadow: 0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.06);
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0f17;
+      --panel: #111725;
+      --muted-bg: #0e1420;
+      --tree-bg: #0e1421;
+      --border: #1f2937;
+      --border-strong: #2b3646;
+      --text: #e7ecf3;
+      --text-muted: #97a3b6;
+      --text-faint: #6b7688;
+      --accent: #6ea0ff;
+      --accent-weak: #16223b;
+      --accent-ring: #274168;
+      --ok: #34d399;
+      --ok-bg: #0f2a20;
+      --ok-ring: #1f5a45;
+      --off: #8b96a8;
+      --off-bg: #1a2333;
+      --violet: #b794f6;
+      --violet-bg: #211a3a;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.4);
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#ffffff; --panel:#ffffff; --muted-bg:#f8fafc; --tree-bg:#fbfcfe;
+    --border:#e6e8ee; --border-strong:#d6dae4; --text:#0f172a; --text-muted:#64748b;
+    --text-faint:#94a3b8; --accent:#2563eb; --accent-weak:#eff4ff; --accent-ring:#c7d7fe;
+    --ok:#059669; --ok-bg:#ecfdf5; --ok-ring:#a7f3d0; --off:#64748b; --off-bg:#f1f5f9;
+    --violet:#7c3aed; --violet-bg:#f5f3ff;
+    --shadow:0 1px 2px rgba(15,23,42,.04), 0 8px 24px rgba(15,23,42,.06);
+  }
+  :root[data-theme="dark"] {
+    --bg:#0b0f17; --panel:#111725; --muted-bg:#0e1420; --tree-bg:#0e1421;
+    --border:#1f2937; --border-strong:#2b3646; --text:#e7ecf3; --text-muted:#97a3b6;
+    --text-faint:#6b7688; --accent:#6ea0ff; --accent-weak:#16223b; --accent-ring:#274168;
+    --ok:#34d399; --ok-bg:#0f2a20; --ok-ring:#1f5a45; --off:#8b96a8; --off-bg:#1a2333;
+    --violet:#b794f6; --violet-bg:#211a3a;
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 30px rgba(0,0,0,.4);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  .wrap {
+    font-family: var(--sans);
+    color: var(--text);
+    background: var(--bg);
+    min-height: 100vh;
+    padding: 22px clamp(12px, 4vw, 40px) 40px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .caption { color: var(--text-faint); font-size: 12px; margin: 0 0 14px; letter-spacing:.02em; }
+  .caption b { color: var(--text-muted); font-weight: 600; }
+
+  /* ---- app frame ---- */
+  .app {
+    max-width: 1120px; margin: 0 auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .topbar {
+    display:flex; align-items:center; gap:10px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .topbar .back { color: var(--text-muted); font-size: 14px; }
+  .topbar .brand { font-weight: 700; font-size: 14px; letter-spacing:.01em; }
+  .topbar .spacer { flex: 1; }
+  .theme-toggle {
+    font-family: var(--sans); font-size:12px; color: var(--text-muted);
+    background: var(--muted-bg); border:1px solid var(--border);
+    border-radius: 999px; padding: 5px 11px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--border-strong); color: var(--text); }
+
+  /* ---- sub tabs row ---- */
+  .tabsrow {
+    display:flex; align-items:center; gap: 4px;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    background: var(--muted-bg);
+    overflow-x: auto;
+  }
+  .tab {
+    display:inline-flex; align-items:center; gap:6px; white-space:nowrap;
+    font-size: 13px; color: var(--text-muted);
+    padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .tab:hover { color: var(--text); background: var(--panel); }
+  .tab .ic { width:15px; height:15px; display:inline-block; }
+  .tab.active {
+    color: var(--accent); background: var(--panel);
+    border-color: var(--accent-ring); font-weight: 600;
+    box-shadow: 0 1px 0 var(--accent-weak);
+  }
+  .tab.isnew::after {
+    content:"新"; font-size:9px; line-height:1; color:#fff; background: var(--accent);
+    padding: 2px 4px; border-radius: 5px; margin-left: 2px; font-weight:700;
+  }
+  .tabsrow .grow { flex: 1; }
+  .btn-primary {
+    font-size: 12.5px; color:#fff; background: var(--accent);
+    border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-weight:600;
+    white-space: nowrap;
+  }
+
+  /* ---- body: tree + main ---- */
+  .layout { display: grid; grid-template-columns: 224px 1fr; min-height: 520px; }
+  @media (max-width: 760px) { .layout { grid-template-columns: 1fr; } .tree { display:none; } }
+
+  .tree {
+    border-right: 1px solid var(--border);
+    background: var(--tree-bg);
+    padding: 14px 12px;
+  }
+  .tree h4 {
+    margin: 0 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing:.08em;
+    color: var(--text-faint); font-weight: 700;
+  }
+  .tree .hint { font-size: 11px; color: var(--text-faint); margin: 0 0 12px; }
+  .node {
+    display:flex; align-items:center; gap:7px;
+    padding: 7px 9px; border-radius: 7px; font-size: 13px; color: var(--text);
+    cursor: pointer;
+  }
+  .node:hover { background: var(--panel); }
+  .node.sel { background: var(--accent-weak); color: var(--accent); font-weight: 600; }
+  .node .fi { width:15px; height:15px; opacity:.85; }
+  .node .count { margin-left:auto; font-size:11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .node.child { margin-left: 16px; }
+
+  .main { padding: 18px 20px; min-width: 0; }
+  .main .crumb { font-size:12px; color: var(--text-muted); margin: 0 0 14px; }
+  .main .crumb b { color: var(--accent); font-weight:600; }
+
+  /* ---- doc list ---- */
+  .tablewrap { border:1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align:left; font-weight:600; color: var(--text-muted);
+    font-size: 11.5px; text-transform: uppercase; letter-spacing:.04em;
+    padding: 9px 14px; background: var(--muted-bg); border-bottom:1px solid var(--border);
+  }
+  tbody td { padding: 12px 14px; border-top: 1px solid var(--border); vertical-align: top; }
+  tbody tr:hover { background: var(--accent-weak); cursor: pointer; }
+  .doc-title { font-weight: 600; color: var(--text); margin-bottom: 3px; }
+  .doc-preview {
+    color: var(--text-muted); font-size: 12px; line-height:1.5;
+    display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; max-width: 520px;
+  }
+  .col-mod { color: var(--text-muted); white-space:nowrap; }
+  .col-time { color: var(--text-faint); white-space:nowrap; font-variant-numeric: tabular-nums; }
+  .badge {
+    display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600;
+    padding: 3px 8px; border-radius: 999px; border:1px solid transparent; white-space:nowrap;
+  }
+  .badge .dot { width:6px; height:6px; border-radius:50%; }
+  .badge.on { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-ring); }
+  .badge.on .dot { background: var(--ok); }
+  .badge.off { color: var(--off); background: var(--off-bg); border-color: var(--border); }
+  .badge.off .dot { background: var(--off); }
+  .tag-ai { display:inline-flex; align-items:center; gap:4px; font-size:10px; font-weight:700;
+    color: var(--violet); background: var(--violet-bg); padding:1px 6px; border-radius:5px; margin-left:6px; }
+
+  /* ---- editor drawer ---- */
+  .stage { position: relative; }
+  .drawer {
+    position:absolute; inset: 0 0 0 auto; width: min(560px, 92%);
+    background: var(--panel); border-left: 1px solid var(--border-strong);
+    box-shadow: -18px 0 40px rgba(15,23,42,.12);
+    transform: translateX(102%); transition: transform .28s cubic-bezier(.22,.61,.36,1);
+    display:flex; flex-direction: column;
+  }
+  .drawer.open { transform: translateX(0); }
+  @media (prefers-reduced-motion: reduce) { .drawer { transition: none; } }
+  .drawer .dhead {
+    display:flex; align-items:center; gap:10px; padding: 15px 18px; border-bottom:1px solid var(--border);
+  }
+  .drawer .dhead .t { font-weight:700; font-size: 14px; }
+  .drawer .dhead .x { margin-left:auto; cursor:pointer; color: var(--text-faint); border:none; background:none; font-size:18px; }
+  .dbody { padding: 16px 18px; overflow-y:auto; display:flex; flex-direction:column; gap: 14px; }
+  .field label { display:block; font-size:12px; font-weight:600; color: var(--text-muted); margin-bottom:6px; }
+  .field input[type=text], .field select {
+    width:100%; font-family:var(--sans); font-size:13px; color:var(--text);
+    background: var(--bg); border:1px solid var(--border-strong); border-radius:8px; padding: 9px 11px;
+  }
+  .field input:focus, .field select:focus { outline: 2px solid var(--accent-ring); outline-offset:1px; border-color: var(--accent); }
+  .two { display:grid; grid-template-columns: 1fr auto; gap: 12px; align-items:end; }
+
+  .editor { border:1px solid var(--border-strong); border-radius: 8px; overflow:hidden; }
+  .toolbar { display:flex; gap:2px; padding:6px 8px; border-bottom:1px solid var(--border); background: var(--muted-bg); flex-wrap:wrap; }
+  .tb { width:28px; height:26px; border-radius:6px; border:none; background:none; color: var(--text-muted); cursor:pointer; font-size:13px; }
+  .tb:hover { background: var(--panel); color: var(--text); }
+  .tb.b { font-weight:800; } .tb.i { font-style:italic; } .tb.u { text-decoration:underline; }
+  .rte { padding: 14px 16px; min-height: 150px; font-size: 13px; line-height: 1.65; color: var(--text); background: var(--bg); }
+  .rte h3 { margin: 0 0 8px; font-size: 15px; }
+  .rte p { margin: 0 0 10px; color: var(--text); }
+  .rte ul { margin: 0 0 6px; padding-left: 18px; color: var(--text-muted); }
+  .rte code { font-family: var(--mono); font-size: 12px; background: var(--muted-bg); padding: 1px 5px; border-radius:4px; }
+
+  .switchrow { display:flex; align-items:center; gap:12px; padding: 12px 14px; border:1px solid var(--border); border-radius:8px; background: var(--muted-bg); }
+  .switchrow .txt { font-size:12.5px; }
+  .switchrow .txt b { display:block; color: var(--text); }
+  .switchrow .txt span { color: var(--text-faint); }
+  .switch { margin-left:auto; width:40px; height:23px; border-radius:999px; background: var(--ok); position:relative; cursor:pointer; flex:none; }
+  .switch::after { content:""; position:absolute; top:2px; left:19px; width:19px; height:19px; border-radius:50%; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.3); transition: left .18s; }
+  .dfoot { margin-top:auto; display:flex; gap:10px; padding: 14px 18px; border-top:1px solid var(--border); }
+  .dfoot .del { color:#dc2626; background:none; border:1px solid var(--border-strong); border-radius:8px; padding:8px 12px; font-size:12.5px; cursor:pointer; }
+  .dfoot .save { margin-left:auto; }
+  .scrim { position:absolute; inset:0; background: rgba(15,23,42,.28); opacity:0; pointer-events:none; transition: opacity .28s; }
+  .scrim.open { opacity:1; pointer-events:auto; }
+
+  .controls { max-width:1120px; margin: 0 auto 12px; display:flex; gap:10px; align-items:center; }
+  .controls .lbl { font-size:12px; color: var(--text-faint); }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { font-family:var(--sans); font-size:12px; padding:6px 12px; border:none; background: var(--panel); color: var(--text-muted); cursor:pointer; }
+  .seg button.on { background: var(--accent); color:#fff; font-weight:600; }
+</style>
+
+<div class="wrap">
+  <p class="caption">页面预览 · <b>项目管理 › 知识库</b>（v1 mockup，非最终样式）— 左模块树复用 · 文档列表 · 富文本编辑抽屉</p>
+
+  <div class="controls">
+    <span class="lbl">查看：</span>
+    <div class="seg">
+      <button id="v-list" class="on" onclick="setView('list')">文档列表</button>
+      <button id="v-edit" onclick="setView('edit')">编辑抽屉</button>
+    </div>
+    <span class="spacer" style="flex:1"></span>
+    <button class="theme-toggle" onclick="toggleTheme()">◐ 切换主题</button>
+  </div>
+
+  <div class="app">
+    <div class="topbar">
+      <span class="back">←</span>
+      <span class="brand">AI自动化测试平台</span>
+      <span class="spacer"></span>
+    </div>
+
+    <div class="tabsrow">
+      <span class="tab">📥 需求池</span>
+      <span class="tab active isnew">📖 知识库</span>
+      <span class="tab">📊 版本迭代</span>
+      <span class="tab">✦ 项目概览</span>
+      <span class="tab">⚙ 项目配置</span>
+      <span class="tab">&lt;/&gt; 脚本库</span>
+      <span class="grow"></span>
+      <button class="btn-primary" onclick="setView('edit')">＋ 新建文档</button>
+    </div>
+
+    <div class="stage">
+      <div class="layout">
+        <aside class="tree">
+          <h4>模块树</h4>
+          <p class="hint">点模块过滤该模块下的知识文档</p>
+          <div class="node sel">📂 全部 <span class="count">7</span></div>
+          <div class="node child">📁 登录 <span class="count">3</span></div>
+          <div class="node child">📁 角色 <span class="count">2</span></div>
+          <div class="node child">📁 项目 <span class="count">2</span></div>
+        </aside>
+
+        <main class="main">
+          <p class="crumb">当前：<b>全部模块</b> · 共 7 篇知识文档</p>
+          <div class="tablewrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>标题</th>
+                  <th>所属模块</th>
+                  <th>更新时间</th>
+                  <th>AI 知识库</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <div class="doc-title">登录模块接口约定<span class="tag-ai">✦ 常用</span></div>
+                    <div class="doc-preview">统一走 /api/auth/login，成功返回 access_token + refresh_token；401 表示凭证错误，需前端跳登录页……</div>
+                  </td>
+                  <td class="col-mod">登录</td>
+                  <td class="col-time">2026-08-11 14:20</td>
+                  <td><span class="badge on"><span class="dot"></span>已入库</span></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="doc-title">短信验证码规则</div>
+                    <div class="doc-preview">60 秒内不可重发；验证码 6 位数字，有效期 5 分钟；同一手机号每日上限 10 条……</div>
+                  </td>
+                  <td class="col-mod">登录</td>
+                  <td class="col-time">2026-08-11 11:02</td>
+                  <td><span class="badge on"><span class="dot"></span>已入库</span></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="doc-title">角色权限矩阵（RBAC）</div>
+                    <div class="doc-preview">dev / test / pm / ui 四角色；测试环境登录账号见环境说明；越权访问统一 403……</div>
+                  </td>
+                  <td class="col-mod">角色</td>
+                  <td class="col-time">2026-08-10 18:45</td>
+                  <td><span class="badge on"><span class="dot"></span>已入库</span></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="doc-title">测试环境与账号说明</div>
+                    <div class="doc-preview">staging 域名、数据库连接、默认测试账号与口令轮换周期；CI 跑用例前需确认服务已起……</div>
+                  </td>
+                  <td class="col-mod">项目</td>
+                  <td class="col-time">2026-08-09 09:30</td>
+                  <td><span class="badge off"><span class="dot"></span>仅人读</span></td>
+                </tr>
+                <tr>
+                  <td>
+                    <div class="doc-title">业务术语表</div>
+                    <div class="doc-preview">「立项 / 待发版 / 产品体验」等需求状态释义；与外部需求文档口径对齐……</div>
+                  </td>
+                  <td class="col-mod">项目</td>
+                  <td class="col-time">2026-08-08 16:12</td>
+                  <td><span class="badge on"><span class="dot"></span>已入库</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+
+      <!-- edit drawer -->
+      <div class="scrim" id="scrim" onclick="setView('list')"></div>
+      <aside class="drawer" id="drawer">
+        <div class="dhead">
+          <span class="t">编辑知识文档</span>
+          <button class="x" onclick="setView('list')" aria-label="关闭">✕</button>
+        </div>
+        <div class="dbody">
+          <div class="two">
+            <div class="field">
+              <label for="k-title">标题</label>
+              <input id="k-title" type="text" value="登录模块接口约定" />
+            </div>
+            <div class="field">
+              <label for="k-mod">所属模块</label>
+              <select id="k-mod"><option>登录</option><option>角色</option><option>项目</option><option>（根级）</option></select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>正文</label>
+            <div class="editor">
+              <div class="toolbar">
+                <button class="tb b" title="加粗">B</button>
+                <button class="tb i" title="斜体">I</button>
+                <button class="tb u" title="下划线">U</button>
+                <button class="tb" title="标题">H</button>
+                <button class="tb" title="列表">≡</button>
+                <button class="tb" title="代码">&lt;/&gt;</button>
+                <button class="tb" title="链接">🔗</button>
+              </div>
+              <div class="rte" contenteditable="false">
+                <h3>登录模块接口约定</h3>
+                <p>统一走 <code>/api/auth/login</code>，成功返回 <code>access_token</code> + <code>refresh_token</code>。</p>
+                <ul>
+                  <li>401：凭证错误，前端跳登录页</li>
+                  <li>验证码登录复用短信验证码规则</li>
+                  <li>refresh 走 <code>/api/auth/refresh</code></li>
+                </ul>
+                <p>字段命名遵循 response_convention，字段级契约见项目配置。</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="switchrow">
+            <div class="txt">
+              <b>纳入 AI 知识库</b>
+              <span>开启后本文自动进 RAG，供 AI 生成用例/需求时检索召回</span>
+            </div>
+            <div class="switch" role="switch" aria-checked="true" title="已开启"></div>
+          </div>
+        </div>
+        <div class="dfoot">
+          <button class="del">删除</button>
+          <button class="btn-primary save">保存</button>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<script>
+  function setView(v) {
+    const editing = v === 'edit';
+    document.getElementById('drawer').classList.toggle('open', editing);
+    document.getElementById('scrim').classList.toggle('open', editing);
+    document.getElementById('v-list').classList.toggle('on', !editing);
+    document.getElementById('v-edit').classList.toggle('on', editing);
+  }
+  function toggleTheme() {
+    const el = document.documentElement;
+    const cur = el.getAttribute('data-theme')
+      || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    el.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  }
+</script>

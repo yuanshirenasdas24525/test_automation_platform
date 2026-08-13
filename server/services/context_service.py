@@ -66,6 +66,9 @@ def retrieve_context(
         q = (
             db.session.query(ProjectContext)
             .filter(ProjectContext.project_id == project_id)
+            # importance=0 约定为「不参与 AI 检索」（知识库关闭「纳入 AI 知识库」的文档）。
+            # 既有上下文默认 importance=3，不受影响。
+            .filter(ProjectContext.importance > 0)
         )
         if target_types:
             q = q.filter(ProjectContext.context_type.in_(target_types))
