@@ -9,7 +9,6 @@ Revises: device_busy_since_001
 from __future__ import annotations
 
 from alembic import op
-import sqlalchemy as sa
 
 
 revision = "knowledge_content_html_001"
@@ -19,11 +18,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "project_contexts",
-        sa.Column("content_html", sa.Text(), nullable=True),
+    # 部分历史开发库曾通过手工同步模型提前创建该字段，使用 PostgreSQL
+    # 的幂等 DDL，避免迁移版本表落后于实际表结构时启动失败。
+    op.execute(
+        "ALTER TABLE project_contexts "
+        "ADD COLUMN IF NOT EXISTS content_html TEXT"
     )
 
 
 def downgrade() -> None:
-    op.drop_column("project_contexts", "content_html")
+    op.execute(
+        "ALTER TABLE project_contexts "
+        "DROP COLUMN IF EXISTS content_html"
+    )
