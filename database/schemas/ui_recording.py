@@ -114,6 +114,7 @@ class UiRecordingReplayActionRequest(BaseModel):
     text: str | None = Field(None, max_length=4000)
     delta_x: int = Field(0, ge=-10000, le=10000)
     delta_y: int = Field(0, ge=-10000, le=10000)
+    snapshot_id: int | None = Field(None, gt=0)
 
 
 class UiPageSnapshotPickRequest(BaseModel):

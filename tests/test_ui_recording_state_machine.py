@@ -15,7 +15,10 @@ from database.models import (
     UiRecordingEvent,
     UiRecordingSession,
 )
-from database.schemas.ui_recording import UiPageSnapshotPickRequest
+from database.schemas.ui_recording import (
+    UiPageSnapshotPickRequest,
+    UiRecordingReplayActionRequest,
+)
 from recorder_agent.main import (
     AiExplorationRequest,
     MobileRecorderRuntime,
@@ -346,6 +349,8 @@ def test_web_snapshot_collects_state_elements_and_validates_remote_actions() -> 
     assert '"h1", "h2", "h3"' in _RECORDER_SCRIPT
     assert '"li", "div", "span"' in _RECORDER_SCRIPT
     assert "shouldPreferNestedText" in _RECORDER_SCRIPT
+    assert "deepestTextElementAt" in _RECORDER_SCRIPT
+    assert "document.elementsFromPoint" in _RECORDER_SCRIPT
     assert "ancestorArea >= Math.max(6000, rawArea * 4)" in _RECORDER_SCRIPT
     assert "environment.resize" in _RECORDER_SCRIPT
 
@@ -420,6 +425,26 @@ def test_replay_bridge_recognizes_and_dismisses_radix_portals() -> None:
     assert '[role="dialog"][data-state="open"]' in _REPLAY_INTERACTION_SCRIPT
     assert "scheduleFallback" in _REPLAY_INTERACTION_SCRIPT
     assert "data-scroll-locked" in _REPLAY_INTERACTION_SCRIPT
+    assert 'setAttribute("data-ui-recorder-dismissed", "true")' in _REPLAY_INTERACTION_SCRIPT
+    assert "element.remove()" not in _REPLAY_INTERACTION_SCRIPT
+
+
+def test_replay_pick_accepts_snapshot_context_without_forwarding_it_to_agent() -> None:
+    request = UiRecordingReplayActionRequest(
+        action="pick",
+        x=120,
+        y=240,
+        snapshot_id=99,
+    )
+
+    assert request.model_dump(exclude={"snapshot_id"}) == {
+        "action": "pick",
+        "x": 120,
+        "y": 240,
+        "text": None,
+        "delta_x": 0,
+        "delta_y": 0,
+    }
 
 
 def test_ai_exploration_applies_bounded_safe_action_policy() -> None:

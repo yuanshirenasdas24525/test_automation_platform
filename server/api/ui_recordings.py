@@ -1319,11 +1319,61 @@ def perform_recording_offline_replay_action(
     assert_project_access(db, current_user, session.project_id)
     if session.platform != "web" or session.status != "completed":
         raise HTTPException(status_code=409, detail="当前会话不能执行离线画布动作")
-    _assert_replay_session(replay_id, session.id)
+    replay_state = _assert_replay_session(replay_id, session.id)
     try:
-        data = perform_web_replay_action(replay_id, body.model_dump())
+        data = perform_web_replay_action(
+            replay_id,
+            body.model_dump(exclude={"snapshot_id"}),
+        )
     except RecorderAgentError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if body.action == "pick" and body.snapshot_id is not None:
+        allowed_source_ids = {
+            int(item)
+            for item in (
+                replay_state.get("source_session_ids")
+                or [replay_state.get("session_id")]
+            )
+            if item is not None
+        }
+        snapshot = db.session.get(UiPageSnapshot, body.snapshot_id)
+        if (
+            snapshot is None
+            or snapshot.project_id != session.project_id
+            or snapshot.platform != "web"
+            or snapshot.session_id not in allowed_source_ids
+        ):
+            raise HTTPException(status_code=422, detail="元素定位对应的页面状态无效")
+        current_url = str(data.get("url") or "") if isinstance(data, dict) else ""
+        if current_url and snapshot.url != current_url:
+            matched_snapshot = (
+                db.session.query(UiPageSnapshot)
+                .filter(
+                    UiPageSnapshot.project_id == session.project_id,
+                    UiPageSnapshot.platform == "web",
+                    UiPageSnapshot.session_id.in_(allowed_source_ids),
+                    UiPageSnapshot.url == current_url,
+                )
+                .order_by(UiPageSnapshot.created_at.desc(), UiPageSnapshot.id.desc())
+                .first()
+            )
+            if matched_snapshot is not None:
+                snapshot = matched_snapshot
+        source_session = db.session.get(UiRecordingSession, snapshot.session_id)
+        raw_element = data.get("element") if isinstance(data, dict) else None
+        if source_session is None or not isinstance(raw_element, dict):
+            raise HTTPException(status_code=422, detail="该坐标没有可定位元素")
+        try:
+            element = materialize_snapshot_element(
+                db.session,
+                source_session,
+                snapshot,
+                raw_element,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        data["element"] = serialize_element(element)
+        data["element_snapshot_id"] = snapshot.id
     return {"status": "success", "data": data}
 
 

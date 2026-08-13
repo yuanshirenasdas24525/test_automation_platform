@@ -254,7 +254,8 @@ export interface UiOfflineReplay {
     mock_hits: number;
     misses: number;
   };
-  element?: Record<string, unknown> | null;
+  element?: UiElement | null;
+  element_snapshot_id?: number | null;
   active_element?: UiReplayActiveElement | null;
 }
 

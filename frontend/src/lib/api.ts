@@ -635,7 +635,7 @@ export const casesApi = {
     a.download = fileName;
     document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+    a.remove();
     URL.revokeObjectURL(objectUrl);
   },
 };
@@ -2424,6 +2424,7 @@ export const uiRecordingsApi = {
       text?: string;
       delta_x?: number;
       delta_y?: number;
+      snapshot_id?: number;
     },
   ) {
     return request<UiOfflineReplay>(

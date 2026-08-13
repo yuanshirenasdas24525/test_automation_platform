@@ -248,7 +248,7 @@ export function PerformanceConcurrencyPage() {
     anchor.download = `performance-plan-${projectId}.json`;
     document.body.appendChild(anchor);
     anchor.click();
-    document.body.removeChild(anchor);
+    anchor.remove();
     URL.revokeObjectURL(url);
     toast.success("压测配置已导出，可交给脚本生成器");
   };

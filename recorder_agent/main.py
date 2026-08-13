@@ -141,6 +141,26 @@ _RECORDER_SCRIPT = r"""
     (node) => node.nodeType === Node.TEXT_NODE && String(node.textContent || "").trim(),
   ) || Boolean(element && element.children.length === 0 && normalizedText(element));
 
+  const deepestTextElementAt = (x, y) => {
+    const stack = typeof document.elementsFromPoint === "function"
+      ? document.elementsFromPoint(x, y)
+      : [document.elementFromPoint(x, y)];
+    for (const root of stack) {
+      if (!(root instanceof Element)) continue;
+      const descendants = Array.from(root.querySelectorAll(TEXT_SELECTOR)).reverse();
+      const candidate = descendants.find((element) => {
+        const rect = element.getBoundingClientRect();
+        return x >= rect.left && x <= rect.right
+          && y >= rect.top && y <= rect.bottom
+          && hasOwnText(element)
+          && normalizedText(element).length <= 300;
+      });
+      if (candidate) return candidate;
+      if (root.matches(TEXT_SELECTOR) && hasOwnText(root)) return root;
+    }
+    return document.elementFromPoint(x, y);
+  };
+
   const shouldPreferNestedText = (rawElement, interactiveAncestor) => {
     if (
       !rawElement
@@ -421,7 +441,7 @@ _RECORDER_SCRIPT = r"""
       .filter(Boolean);
   };
 
-  window.__uiRecorderDescribeAt = (x, y) => validateDescription(describe(document.elementFromPoint(x, y)));
+  window.__uiRecorderDescribeAt = (x, y) => validateDescription(describe(deepestTextElementAt(x, y)));
   window.__uiRecorderPageMeta = () => {
     const modal = visibleModal();
     const headingSelectors = [
@@ -708,7 +728,8 @@ _REPLAY_INTERACTION_SCRIPT = r"""(() => {
   const cleanupStaticDialog = (dialog) => {
     if (!dialog?.isConnected) return false;
     const root = appRoot();
-    // React 正常创建的 Portal 会自行响应；只在动作后仍残留时兜底清理。
+    // React 正常创建的 Portal 会自行响应；只在动作后仍残留时兜底隐藏。
+    // 不能直接 remove()：React 稍后提交卸载时会再次 removeChild，导致整页崩溃。
     const bodyChildren = Array.from(document.body.children);
     const related = bodyChildren.filter((element) => {
       if (element === root || element.contains(root)) return false;
@@ -717,8 +738,16 @@ _REPLAY_INTERACTION_SCRIPT = r"""(() => {
       const style = getComputedStyle(element);
       return style.position === "fixed" || Number(style.zIndex || 0) >= 40;
     });
-    for (const element of related) element.remove();
-    if (dialog.isConnected) dialog.remove();
+    const hide = (element) => {
+      if (!element?.isConnected) return;
+      element.setAttribute("data-ui-recorder-dismissed", "true");
+      element.setAttribute("aria-hidden", "true");
+      element.setAttribute("inert", "");
+      element.style.setProperty("display", "none", "important");
+      element.style.setProperty("pointer-events", "none", "important");
+    };
+    for (const element of related) hide(element);
+    if (dialog.isConnected && !related.some((element) => element.contains(dialog))) hide(dialog);
     document.body.style.removeProperty("pointer-events");
     document.body.style.removeProperty("overflow");
     document.body.removeAttribute("data-scroll-locked");
@@ -3880,6 +3909,7 @@ async def get_replay(replay_id: str):
         "data": {
             "replay_id": replay_id,
             "session_id": runtime.session_id,
+            "source_session_ids": list(runtime.source_session_ids),
             "url": runtime.page.url,
             "title": await runtime.page.title(),
             "stats": dict(runtime.stats),

@@ -1015,7 +1015,6 @@ export function UiElementLibraryWorkspace({
       setWebInput("");
       setReplayInputDirty(false);
       setReplayRevision((value) => value + 1);
-      setOfflinePickMode(false);
       toast.success(
         `离线交互已启动：${replay.page_count} 个页面、${replay.mock_count} 组接口 Mock`,
       );
@@ -1071,6 +1070,54 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  const applyPickedElement = (element: UiElement, targetSnapshotId: number | null) => {
+    queryClient.setQueryData<UiElement[]>(
+      ["ui-elements", projectId, platform],
+      (current = []) => {
+        const exists = current.some((item) => item.id === element.id);
+        return exists
+          ? current.map((item) => item.id === element.id ? element : item)
+          : [...current, element];
+      },
+    );
+    if (targetSnapshotId != null) {
+      queryClient.setQueryData<UiPageSnapshot[]>(
+        ["ui-page-snapshots", projectId, platform],
+        (current = []) => current.map((snapshot) => {
+          if (snapshot.id !== targetSnapshotId) return snapshot;
+          const manifest = snapshot.resource_manifest;
+          const currentFingerprints = Array.isArray(manifest.visible_element_fingerprints)
+            ? manifest.visible_element_fingerprints.filter(
+                (fingerprint): fingerprint is string => typeof fingerprint === "string",
+              )
+            : [];
+          const currentBounds = manifest.visible_element_bounds
+            && typeof manifest.visible_element_bounds === "object"
+            ? manifest.visible_element_bounds as Record<string, Record<string, number>>
+            : {};
+          const elementBounds = element.attributes.bounds as Record<string, number> | undefined;
+          return {
+            ...snapshot,
+            resource_manifest: {
+              ...manifest,
+              visible_element_fingerprints: Array.from(new Set([
+                ...currentFingerprints,
+                element.fingerprint,
+              ])),
+              visible_element_bounds: elementBounds
+                ? {
+                    ...currentBounds,
+                    [element.fingerprint]: elementBounds,
+                  }
+                : manifest.visible_element_bounds,
+            },
+          };
+        }),
+      );
+    }
+    setSelectedElementId(element.id);
+  };
+
   const replayActionMutation = useMutation({
     mutationFn: ({
       action,
@@ -1082,6 +1129,7 @@ export function UiElementLibraryWorkspace({
       text?: string;
       delta_x?: number;
       delta_y?: number;
+      snapshot_id?: number;
     }) => {
       if (!embeddedReplay) throw new Error("请先启动离线交互");
       return uiRecordingsApi.performReplayAction(
@@ -1098,6 +1146,15 @@ export function UiElementLibraryWorkspace({
       if (variables.action !== "input") {
         setWebInput("");
         setReplayInputDirty(false);
+      }
+      if (variables.action === "pick" && next.element?.id != null) {
+        applyPickedElement(
+          next.element,
+          next.element_snapshot_id
+            ?? variables.snapshot_id
+            ?? activeSnapshot?.id
+            ?? null,
+        );
       }
       if (next.url) {
         const matchedPage = pages.find((page) =>
@@ -1126,50 +1183,7 @@ export function UiElementLibraryWorkspace({
       y: number;
     }) => uiRecordingsApi.pickSnapshot(targetSnapshotId, { x, y }),
     onSuccess: (element, variables) => {
-      queryClient.setQueryData<UiElement[]>(
-        ["ui-elements", projectId, platform],
-        (current = []) => {
-          const exists = current.some((item) => item.id === element.id);
-          return exists
-            ? current.map((item) => item.id === element.id ? element : item)
-            : [...current, element];
-        },
-      );
-      queryClient.setQueryData<UiPageSnapshot[]>(
-        ["ui-page-snapshots", projectId, platform],
-        (current = []) => current.map((snapshot) => {
-          if (snapshot.id !== variables.targetSnapshotId) return snapshot;
-          const manifest = snapshot.resource_manifest;
-          const currentFingerprints = Array.isArray(manifest.visible_element_fingerprints)
-            ? manifest.visible_element_fingerprints.filter(
-                (fingerprint): fingerprint is string => typeof fingerprint === "string",
-              )
-            : [];
-          const currentBounds = manifest.visible_element_bounds
-            && typeof manifest.visible_element_bounds === "object"
-            ? manifest.visible_element_bounds as Record<string, Record<string, number>>
-            : {};
-          const fingerprints = Array.from(new Set([
-            ...currentFingerprints,
-            element.fingerprint,
-          ]));
-          const elementBounds = element.attributes.bounds as Record<string, number> | undefined;
-          return {
-            ...snapshot,
-            resource_manifest: {
-              ...manifest,
-              visible_element_fingerprints: fingerprints,
-              visible_element_bounds: elementBounds
-                ? {
-                    ...currentBounds,
-                    [element.fingerprint]: elementBounds,
-                  }
-                : manifest.visible_element_bounds,
-            },
-          };
-        }),
-      );
-      setSelectedElementId(element.id);
+      applyPickedElement(element, variables.targetSnapshotId);
       void refreshElementAssets();
     },
     onError: (error) => toast.error(messageOf(error)),
@@ -1478,7 +1492,12 @@ export function UiElementLibraryWorkspace({
         return;
       }
     }
-    replayActionMutation.mutate({ action, x, y });
+    replayActionMutation.mutate({
+      action,
+      x,
+      y,
+      snapshot_id: action === "pick" ? activeSnapshot?.id : undefined,
+    });
   };
 
   const submitReplayInput = () => {
@@ -2022,7 +2041,12 @@ export function UiElementLibraryWorkspace({
                       onSelect={setSelectedElementId}
                       pickMode={effectivePickMode}
                       inspectPending={staticPickMutation.isPending}
-                      actionPending={webActionMutation.isPending || replayActionMutation.isPending}
+                      actionPending={
+                        replayMutation.isPending
+                        || webActionMutation.isPending
+                        || replayActionMutation.isPending
+                      }
+                      imagePaused={replayMutation.isPending}
                       canInteract={
                         staticInspectMode || (recorderActive && hasControl) || embeddedReplay != null
                       }
@@ -3047,6 +3071,7 @@ function SnapshotStage({
   pickMode,
   inspectPending,
   actionPending,
+  imagePaused,
   canInteract,
   replaySessionId,
   replayId,
@@ -3064,6 +3089,7 @@ function SnapshotStage({
   pickMode: boolean;
   inspectPending: boolean;
   actionPending: boolean;
+  imagePaused: boolean;
   canInteract: boolean;
   replaySessionId: number | null;
   replayId: string | null;
@@ -3085,6 +3111,8 @@ function SnapshotStage({
   const [hoveredElementId, setHoveredElementId] = useState<number | null>(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const stageRef = useRef<HTMLDivElement | null>(null);
+  const imageUrlRef = useRef<string | null>(null);
+  const retiredImageUrlsRef = useRef<string[]>([]);
   const lastPickRef = useRef<{
     x: number;
     y: number;
@@ -3115,11 +3143,11 @@ function SnapshotStage({
   }, []);
 
   useEffect(() => {
+    if (imagePaused) return undefined;
     let disposed = false;
     let objectUrl: string | null = null;
     lastPickRef.current = null;
     setOverlapPickHint(null);
-    setImageUrl(null);
     setImageError(null);
     const imageRequest = replaySessionId && replayId
       ? uiRecordingsApi.replayImage(replaySessionId, replayId)
@@ -3131,6 +3159,9 @@ function SnapshotStage({
           URL.revokeObjectURL(objectUrl);
           return;
         }
+        const previousUrl = imageUrlRef.current;
+        imageUrlRef.current = objectUrl;
+        if (previousUrl) retiredImageUrlsRef.current.push(previousUrl);
         setImageUrl(objectUrl);
       })
       .catch((error: unknown) => {
@@ -3138,9 +3169,16 @@ function SnapshotStage({
       });
     return () => {
       disposed = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      // 已展示的 URL 由下一张图片成功替换时释放，避免切页或点击同步期间闪白。
+      if (objectUrl && objectUrl !== imageUrlRef.current) URL.revokeObjectURL(objectUrl);
     };
-  }, [imageRevision, replayId, replaySessionId, snapshot.id]);
+  }, [imagePaused, imageRevision, replayId, replaySessionId, snapshot.id]);
+
+  useEffect(() => () => {
+    if (imageUrlRef.current) URL.revokeObjectURL(imageUrlRef.current);
+    for (const url of retiredImageUrlsRef.current) URL.revokeObjectURL(url);
+    retiredImageUrlsRef.current = [];
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -3311,6 +3349,14 @@ function SnapshotStage({
             window.setTimeout(() => setClickPoint(null), 800);
 
             if (pickMode) {
+              // 活跃 Replay 必须以当前 DOM 为准；旧快照里可能尚未采集文字节点。
+              // 服务端会把新识别结果写回元素库，不能让本地的大容器候选截断请求。
+              if (replayId) {
+                lastPickRef.current = null;
+                setOverlapPickHint(null);
+                onCanvasAction(Math.round(x), Math.round(y));
+                return;
+              }
               const { candidates, primaryCandidate, pickTolerance } = rankPickCandidates(x, y);
 
               // 已采集的控件或文字直接本地命中；只有宽泛容器时交给回放页精确拾取。
@@ -3351,7 +3397,15 @@ function SnapshotStage({
             onCanvasAction(Math.round(x), Math.round(y));
           }}
         >
-          <img src={imageUrl} alt={snapshot.page_name} className="block h-full w-full" />
+          <img
+            src={imageUrl}
+            alt={snapshot.page_name}
+            className="block h-full w-full"
+            onLoad={() => {
+              for (const url of retiredImageUrlsRef.current) URL.revokeObjectURL(url);
+              retiredImageUrlsRef.current = [];
+            }}
+          />
           {positionedElements.map(({ element, x, y, width: rawWidth, height: rawHeight }) => {
             const left = Math.max(0, Math.min(100, (x / viewportWidth) * 100));
             const top = Math.max(0, Math.min(100, (y / viewportHeight) * 100));

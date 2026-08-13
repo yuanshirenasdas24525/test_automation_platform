@@ -2,6 +2,7 @@ const CHUNK_RELOAD_KEY = "ui_chunk_reload_attempted_at";
 const RELOAD_GUARD_MS = 15_000;
 
 const CHUNK_ERROR_PATTERN = /failed to fetch dynamically imported module|importing a module script failed|error loading dynamically imported module|unable to preload css|loading chunk .* failed|chunkloaderror/i;
+const DOM_RECONCILIATION_ERROR_PATTERN = /failed to execute ['"]?(removechild|insertbefore)['"]? on ['"]?node['"]?|node to be removed is not a child|not a child of this node/i;
 
 let memoryReloadAttemptedAt = 0;
 
@@ -16,6 +17,10 @@ function errorMessage(value: unknown): string {
 
 export function isChunkLoadError(value: unknown): boolean {
   return CHUNK_ERROR_PATTERN.test(errorMessage(value));
+}
+
+export function isDomReconciliationError(value: unknown): boolean {
+  return DOM_RECONCILIATION_ERROR_PATTERN.test(errorMessage(value));
 }
 
 function storedReloadAttempt(): number {
@@ -52,6 +57,11 @@ function reloadLatestFrontend(): boolean {
   return true;
 }
 
+export function recoverFrontendError(value: unknown): boolean {
+  if (!isChunkLoadError(value) && !isDomReconciliationError(value)) return false;
+  return reloadLatestFrontend();
+}
+
 /**
  * Vite 构建更新后，旧页面可能继续引用已经删除的哈希 Chunk。
  * 首次失败自动刷新获取新 index；短时间再次失败则交给路由错误页，避免死循环。
@@ -62,12 +72,13 @@ export function installChunkLoadRecovery(): void {
     reloadLatestFrontend();
   });
   window.addEventListener("unhandledrejection", (event) => {
-    if (!isChunkLoadError(event.reason)) return;
+    if (!isChunkLoadError(event.reason) && !isDomReconciliationError(event.reason)) return;
     event.preventDefault();
     reloadLatestFrontend();
   });
   window.addEventListener("error", (event) => {
-    if (!isChunkLoadError(event.error || event.message)) return;
+    const error = event.error || event.message;
+    if (!isChunkLoadError(error) && !isDomReconciliationError(error)) return;
     event.preventDefault();
     reloadLatestFrontend();
   });

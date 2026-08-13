@@ -1,4 +1,4 @@
-import { Suspense, lazy, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, type ReactNode } from "react";
 import {
   Navigate,
   createBrowserRouter,
@@ -7,7 +7,11 @@ import {
 } from "react-router-dom";
 
 import { AppLayout } from "@/components/AppLayout";
-import { isChunkLoadError } from "@/lib/chunk-recovery";
+import {
+  isChunkLoadError,
+  isDomReconciliationError,
+  recoverFrontendError,
+} from "@/lib/chunk-recovery";
 
 const AppPackagesPage = lazy(() => import("@/pages/AppPackagesPage").then((m) => ({ default: m.AppPackagesPage })));
 const ChangePasswordPage = lazy(() => import("@/pages/ChangePasswordPage").then((m) => ({ default: m.ChangePasswordPage })));
@@ -102,6 +106,10 @@ function NotFound() {
 function RouteErrorPage() {
   const error = useRouteError();
   const chunkError = isChunkLoadError(error);
+  const domReconciliationError = isDomReconciliationError(error);
+  useEffect(() => {
+    recoverFrontendError(error);
+  }, [error]);
   const detail = isRouteErrorResponse(error)
     ? `${error.status} ${error.statusText || error.data || "路由加载失败"}`
     : error instanceof Error
@@ -112,12 +120,18 @@ function RouteErrorPage() {
     <div className="flex min-h-screen items-center justify-center bg-muted/20 p-6">
       <div className="w-full max-w-lg rounded-2xl border bg-background p-8 text-center shadow-sm">
         <h1 className="text-xl font-semibold">
-          {chunkError ? "页面版本已经更新" : "页面暂时无法加载"}
+          {chunkError
+            ? "页面版本已经更新"
+            : domReconciliationError
+              ? "页面结构需要重新同步"
+              : "页面暂时无法加载"}
         </h1>
         <p className="mt-3 text-sm leading-6 text-muted-foreground">
           {chunkError
             ? "当前页面仍在使用旧版本资源。重新加载后会自动切换到最新版本，已填写的数据可能需要重新确认。"
-            : "页面加载时遇到了异常，你可以重新加载或返回上一页。"}
+            : domReconciliationError
+              ? "浏览器扩展或离线页面兜底改动了 React 管理的节点，系统正在自动重新加载恢复。"
+              : "页面加载时遇到了异常，你可以重新加载或返回上一页。"}
         </p>
         <div className="mt-6 flex justify-center gap-3">
           <button
