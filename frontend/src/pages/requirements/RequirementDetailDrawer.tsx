@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pencil, Calendar, Users, Paperclip, CheckSquare, Link2, History as HistoryIcon, RotateCcw } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -23,9 +23,17 @@ interface Props {
   versionNames: Map<number, string>;
 }
 
-export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequirement, moduleNames, versionNames }: Props) {
+export function RequirementDetailDrawer({ req: reqProp, open, onClose, onEdit, onViewRequirement, moduleNames, versionNames }: Props) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const queryClient = useQueryClient();
+
+  // 关闭时父级会把 req 置空；若直接 return null 组件立即卸载，看不到 SideDrawer 的滑出动画。
+  // 缓存最后一次的 req，关闭中仍用缓存内容渲染，让 translate 动画播完再隐藏。
+  const [cachedReq, setCachedReq] = useState<Requirement | null>(reqProp);
+  useEffect(() => {
+    if (reqProp) setCachedReq(reqProp);
+  }, [reqProp]);
+  const req = reqProp ?? cachedReq;
 
   const historyQuery = useQuery({
     queryKey: ["requirementHistory", req?.id],
