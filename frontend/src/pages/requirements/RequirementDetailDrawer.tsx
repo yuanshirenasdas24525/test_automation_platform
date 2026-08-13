@@ -69,7 +69,9 @@ export function RequirementDetailDrawer({ req, open, onClose, onEdit, onViewRequ
         storageKey="requirement-detail-drawer-width"
         defaultWidth={720}
         minWidth={560}
-        closeOnOutside={false}
+        // 平时点空白即关；仅当「编辑历史」弹窗打开时禁用，避免点弹窗误关抽屉
+        // （字段回滚 field-picker 也嵌在历史弹窗内，故 !historyOpen 一并覆盖）
+        closeOnOutside={!historyOpen}
         title={
           <>
             <span className="shrink-0 font-mono text-xs text-muted-foreground">REQ-{req.id}</span>
