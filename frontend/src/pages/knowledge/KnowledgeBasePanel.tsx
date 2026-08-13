@@ -11,7 +11,7 @@ import { ApiError, knowledgeApi, type ModulePickerNode } from "@/lib/api";
 import { stripHtml } from "@/lib/utils";
 import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDoc } from "@/types/domain";
 import { KnowledgeDocDialog } from "./KnowledgeDocDialog";
-import { KnowledgeDocViewDialog } from "./KnowledgeDocViewDialog";
+import { KnowledgeDocViewDrawer } from "./KnowledgeDocViewDrawer";
 
 const TYPE_LABELS = new Map<string, string>(
   KNOWLEDGE_CONTEXT_TYPES.map((t) => [t.value, t.label]),
@@ -132,7 +132,7 @@ export function KnowledgeBasePanel({
         </div>
       )}
 
-      <KnowledgeDocViewDialog
+      <KnowledgeDocViewDrawer
         open={viewingId != null}
         docId={viewingId}
         moduleNames={moduleNames}
