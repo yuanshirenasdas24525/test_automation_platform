@@ -988,16 +988,17 @@ export interface AiRun {
   ended_at?: string | null;
 }
 
-export type WebUiCaseSourceMode = "functional_and_elements" | "elements_only";
+export type WebUiCaseSourceMode = "auto" | "functional_and_elements" | "elements_only";
 export type WebUiCaseDraftStatus = "pending" | "accepted" | "rejected";
 
 export interface WebUiCaseGenerationPayload {
   project_id: number;
+  target_module_id: number;
   model_name: string;
   source_mode: WebUiCaseSourceMode;
   functional_case_ids: number[];
   page_keys: string[];
-  count: number;
+  executable_only: boolean;
   include_structure_assertions: boolean;
   include_visual_assertions: boolean;
   visual_threshold: number;

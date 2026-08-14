@@ -88,6 +88,7 @@ import type {
 import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
+import { WebUiCaseGenerationDialog } from "./ui-recording/WebUiCaseGenerationDialog";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 
 type DiagnoseResult = {
@@ -385,6 +386,7 @@ export function AutomationCasesPage({
   const [elementLibraryOpen, setElementLibraryOpen] = useState(
     () => isUiPlatform(requestedUiPlatform) && caseType !== "api",
   );
+  const [uiAiOpen, setUiAiOpen] = useState(false);
   const elementLibraryPlatform: UiPlatform | null = isUiPlatform(requestedUiPlatform)
     ? requestedUiPlatform
     : caseType === "api"
@@ -754,6 +756,17 @@ export function AutomationCasesPage({
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" disabled={moduleId == null} onClick={() => setEditor("new")}><Plus className="h-4 w-4" />新建 {caseLabel} 用例</Button>
         {!isApiWorkbench ? (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={moduleId == null}
+            className="border-violet-300 text-violet-700 hover:bg-violet-50 hover:text-violet-800"
+            onClick={() => setUiAiOpen(true)}
+          >
+            <Sparkles className="h-4 w-4" />AI 生成 UI 用例
+          </Button>
+        ) : null}
+        {!isApiWorkbench ? (
           <Button variant="outline" size="sm" onClick={() => setElementLibraryOpen(true)}>
             <LibraryBig className="h-4 w-4" />元素库
           </Button>
@@ -965,6 +978,41 @@ export function AutomationCasesPage({
           onClose={() => setElementLibraryOpen(false)}
           onRequestOpen={() => setElementLibraryOpen(true)}
         />
+      ) : null}
+      {caseType === "web" ? (
+        <WebUiCaseGenerationDialog
+          open={uiAiOpen}
+          projectId={projectId}
+          initialModuleId={moduleId}
+          onOpenChange={setUiAiOpen}
+        />
+      ) : caseType === "android" || caseType === "ios" ? (
+        <Dialog open={uiAiOpen} onOpenChange={setUiAiOpen}>
+          <DialogContent className="sm:max-w-[520px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-violet-600" />
+                AI 生成 {caseLabel} UI 用例
+              </DialogTitle>
+              <DialogDescription>
+                入口已按 Web、Android、iOS 统一放在“新建用例”后面；移动端自动生成能力将在模拟器证据链完成后开放。
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border bg-muted/30 p-3">
+                Android/iOS 不能直接复用 Web 的 CSS/XPath，需要基于模拟器页面树、Accessibility ID、资源 ID、坐标稳定性和 App 版本重新建立事实门禁。
+              </div>
+              <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                <li>首期仅支持模拟器，不连接真实设备。</li>
+                <li>需要先确认 App 包、启动 Activity/Bundle、登录状态和测试数据。</li>
+                <li>系统权限弹窗、WebView、手势和软键盘需要独立 Runner 支持。</li>
+              </ul>
+            </div>
+            <DialogFooter>
+              <Button onClick={() => setUiAiOpen(false)}>知道了</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       ) : null}
       <RecordsDialog
         open={recordsOpen}

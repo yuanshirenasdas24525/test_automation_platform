@@ -50,6 +50,16 @@ def generate_web_ui_cases(
     cfg = get_ai_model(db.session, payload.model_name, project_id=project.id)
     if cfg is None or not cfg.enabled:
         raise HTTPException(status_code=400, detail=f"AI 模型 {payload.model_name!r} 不存在或未启用")
+    target_module = (
+        db.session.query(Module)
+        .filter(
+            Module.id == payload.target_module_id,
+            Module.project_id == project.id,
+        )
+        .one_or_none()
+    )
+    if target_module is None:
+        raise HTTPException(status_code=404, detail="当前用例模块不存在或不属于该项目")
 
     batch_id = uuid.uuid4().hex
     run = AiRun(

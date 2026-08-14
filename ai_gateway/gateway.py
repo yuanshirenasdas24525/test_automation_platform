@@ -45,6 +45,7 @@ _TASK_DEFAULT_OPTIONS: dict[str, dict[str, Any]] = {
     # 即时自愈每个失败请求都会调用，输出只需一个紧凑决策对象。
     "api_inline_heal": {"timeout": 120, "max_tokens": 5000, "json_mode": True, "enable_thinking": True, "temperature": 0.1},
     "web_ui_case_gen": {"timeout": 240, "max_tokens": 20000, "json_mode": True, "enable_thinking": True, "temperature": 0.2},
+    "web_ui_source_select": {"timeout": 120, "max_tokens": 4000, "json_mode": True, "enable_thinking": False, "temperature": 0.1},
 }
 
 

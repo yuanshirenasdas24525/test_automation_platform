@@ -1102,21 +1102,26 @@ def _handle_test_result_analysis(run: "AiRun", session) -> dict:
 
 
 def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
-    """功能用例/元素库生成 Web UI 自动化用例草稿。"""
+    """按当前模块自动筛选来源，并分批生成 Web UI 自动化用例草稿。"""
     from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
     from database.models import Module, TestCase, UiAutomationCaseDraft, UI_AUTO_DRAFT_PENDING
     from server.services.ai_model_service import get_ai_model
     from server.services.web_ui_case_generation_service import (
+        build_auto_source_catalog,
         build_generation_context,
         compile_ai_case,
+        normalize_auto_source_selection,
     )
 
     payload = run.input_payload or {}
     project_id = int(payload.get("project_id") or run.project_id or 0)
+    target_module_id = int(payload.get("target_module_id") or 0)
     model_name = str(payload.get("model_name") or "").strip()
     batch_id = str(payload.get("batch_id") or "").strip()
     if project_id <= 0:
         raise ValueError("project_id 必填")
+    if target_module_id <= 0:
+        raise ValueError("target_module_id 必填")
     if not model_name:
         raise ValueError("model_name 必填")
     if not batch_id:
@@ -1125,88 +1130,329 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     cfg = get_ai_model(session, model_name, project_id=project_id)
     if cfg is None or not cfg.enabled:
         raise ValueError(f"AI 模型 {model_name!r} 不存在或未启用")
+    target_module = (
+        session.query(Module)
+        .filter(Module.id == target_module_id, Module.project_id == project_id)
+        .one_or_none()
+    )
+    if target_module is None:
+        raise ValueError("当前用例模块不存在或不属于该项目")
 
+    source_mode = str(payload.get("source_mode") or "auto")
     functional_case_ids = [int(item) for item in (payload.get("functional_case_ids") or [])]
-    if payload.get("source_mode") == "elements_only":
-        functional_case_ids = []
-    context, element_map, snapshot_map = build_generation_context(
-        session,
-        project_id=project_id,
-        functional_case_ids=functional_case_ids,
-        page_keys=[str(item) for item in (payload.get("page_keys") or [])],
-    )
-    placeholders = {
-        "COUNT": int(payload.get("count") or 8),
-        "SOURCE_MODE": payload.get("source_mode") or "functional_and_elements",
-        "INCLUDE_STRUCTURE_ASSERTIONS": bool(payload.get("include_structure_assertions", True)),
-        "INCLUDE_VISUAL_ASSERTIONS": bool(payload.get("include_visual_assertions", False)),
-        "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
-        "EVIDENCE_CONTEXT": context,
+    page_keys = [str(item) for item in (payload.get("page_keys") or [])]
+    selection: dict[str, Any] = {
+        "functional_case_ids": functional_case_ids,
+        "page_keys": page_keys,
+        "rationale": "使用人工指定的生成范围",
+        "warnings": [],
+        "budget": {},
     }
-    prompt = _render_prompt(_load_prompt("web_ui_case_gen"), placeholders)
-    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    options = model_task_options(cfg, "web_ui_case_gen")
-    raw_text, tokens_in, tokens_out = chat_markdown(
-        prompt,
-        cfg,
-        timeout=options["timeout"],
-        system_prompt=(
-            "你是 Web UI 自动化测试架构师。只输出满足用户指定结构的 JSON，"
-            "不得虚构元素 ID、页面或定位器。"
-        ),
-        enable_thinking=options["enable_thinking"],
-        json_mode=True,
-        max_tokens=options["max_tokens"],
-        temperature=options["temperature"],
-        reasoning_effort=options["reasoning_effort"],
-    )
-    text_value = raw_text.strip()
-    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text_value, re.IGNORECASE)
-    if fenced:
-        text_value = fenced.group(1).strip()
-    try:
-        parsed = json.loads(text_value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"AI 输出不是合法 JSON：{exc}") from exc
-    raw_cases = parsed.get("cases") if isinstance(parsed, dict) else parsed
-    if not isinstance(raw_cases, list):
-        raise ValueError("AI 输出缺少 cases 数组")
+    selection_tokens_in = 0
+    selection_tokens_out = 0
+    prompt_hashes: list[str] = []
+    if source_mode == "auto":
+        catalog = build_auto_source_catalog(
+            session,
+            project_id=project_id,
+            target_module_id=target_module_id,
+            user_prompt=str(payload.get("user_prompt") or ""),
+        )
+        selection_options = model_task_options(cfg, "web_ui_source_select")
+        candidate_batches: list[list[dict[str, Any]]] = []
+        candidate_batch: list[dict[str, Any]] = []
+        candidate_batch_chars = 0
+        candidate_char_limit = int(catalog["budget"].get("functional_char_budget") or 24_000)
+        for candidate in catalog["functional_candidates"]:
+            if int(candidate.get("automation_score") or 0) < 2:
+                continue
+            candidate_chars = len(json.dumps(candidate, ensure_ascii=False, default=str))
+            if candidate_batch and candidate_batch_chars + candidate_chars > candidate_char_limit:
+                candidate_batches.append(candidate_batch)
+                candidate_batch = []
+                candidate_batch_chars = 0
+            candidate_batch.append(candidate)
+            candidate_batch_chars += candidate_chars
+        if candidate_batch:
+            candidate_batches.append(candidate_batch)
+        if not candidate_batches:
+            candidate_batches = [[]]
 
-    selected_functional = set(functional_case_ids)
+        selected_case_ids: list[int] = []
+        selected_page_keys: list[str] = []
+        selection_rationales: list[str] = []
+        selection_warnings: list[str] = []
+        selection_prompt_hashes: list[str] = []
+        invalid_selection_batches = 0
+        for candidate_index, candidate_items in enumerate(candidate_batches, start=1):
+            selection_placeholders = {
+                "TARGET_MODULE": catalog["target_module"],
+                "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
+                "SOURCE_CATALOG": {
+                    "candidate_batch": f"{candidate_index}/{len(candidate_batches)}",
+                    "functional_candidates": candidate_items,
+                    "page_candidates": catalog["page_candidates"],
+                },
+            }
+            selection_prompt = _render_prompt(
+                _load_prompt("web_ui_source_select"),
+                selection_placeholders,
+            )
+            selection_prompt_hash = hashlib.sha256(selection_prompt.encode("utf-8")).hexdigest()
+            selection_prompt_hashes.append(selection_prompt_hash)
+            prompt_hashes.append(selection_prompt_hash)
+            selection_text, tokens_in, tokens_out = chat_markdown(
+                selection_prompt,
+                cfg,
+                timeout=selection_options["timeout"],
+                system_prompt="你只负责从给定候选中筛选适合 Web UI 自动化的功能用例和页面，只输出 JSON。",
+                enable_thinking=selection_options["enable_thinking"],
+                json_mode=True,
+                max_tokens=selection_options["max_tokens"],
+                temperature=selection_options["temperature"],
+                reasoning_effort=selection_options["reasoning_effort"],
+            )
+            selection_tokens_in += tokens_in or 0
+            selection_tokens_out += tokens_out or 0
+            selection_value = selection_text.strip()
+            selection_fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", selection_value, re.IGNORECASE)
+            if selection_fenced:
+                selection_value = selection_fenced.group(1).strip()
+            selection_json_valid = True
+            try:
+                selection_raw = json.loads(selection_value)
+            except json.JSONDecodeError:
+                selection_json_valid = False
+                invalid_selection_batches += 1
+                selection_raw = {"warnings": [f"第 {candidate_index} 批 AI 筛选输出不完整"]}
+            batch_catalog = {
+                **catalog,
+                "functional_candidates": candidate_items,
+                "fallback_functional_case_ids": [
+                    int(item["functional_case_id"])
+                    for item in candidate_items[:40]
+                ],
+            }
+            batch_selection = normalize_auto_source_selection(
+                selection_raw,
+                batch_catalog,
+                fallback_on_empty=not selection_json_valid,
+            )
+            for case_id in batch_selection["functional_case_ids"]:
+                if case_id not in selected_case_ids:
+                    selected_case_ids.append(case_id)
+            for page_key in batch_selection["page_keys"]:
+                if page_key not in selected_page_keys:
+                    selected_page_keys.append(page_key)
+            if batch_selection.get("rationale"):
+                selection_rationales.append(str(batch_selection["rationale"]))
+            selection_warnings.extend(batch_selection.get("warnings") or [])
+
+        if not selected_case_ids and invalid_selection_batches:
+            fallback_selection = normalize_auto_source_selection({}, catalog)
+            selected_case_ids = fallback_selection["functional_case_ids"]
+            selection_warnings.extend(fallback_selection["warnings"])
+        elif not selected_case_ids:
+            selection_warnings.append(
+                "AI 未发现与当前模块录制页面有充分证据关联的功能用例，已降级为仅元素库生成"
+            )
+        if not selected_page_keys:
+            selected_page_keys = list(catalog.get("fallback_page_keys") or [])
+        selection = {
+            "target_module": catalog["target_module"],
+            "functional_case_ids": selected_case_ids,
+            "page_keys": selected_page_keys[:8],
+            "rationale": "；".join(selection_rationales)[:1000],
+            "warnings": list(dict.fromkeys(selection_warnings)),
+            "budget": {
+                **catalog["budget"],
+                "selection_batch_count": len(candidate_batches),
+            },
+            "prompt_hashes": selection_prompt_hashes,
+        }
+        functional_case_ids = selection["functional_case_ids"]
+        page_keys = selection["page_keys"]
+    elif source_mode == "elements_only":
+        functional_case_ids = []
+        selection["functional_case_ids"] = []
+    if functional_case_ids:
+        valid_module_case_ids = {
+            int(item[0])
+            for item in session.query(TestCase.id)
+            .filter(
+                TestCase.id.in_(functional_case_ids),
+                TestCase.module_id == target_module_id,
+                TestCase.case_type == "functional",
+            )
+            .all()
+        }
+        out_of_scope_ids = [item for item in functional_case_ids if item not in valid_module_case_ids]
+        if out_of_scope_ids:
+            raise ValueError(f"功能用例不属于当前模块“{target_module.name}”：{out_of_scope_ids}")
+    if not page_keys:
+        raise ValueError("没有检索到可生成的 Web 页面；请先补录页面和元素库")
     existing_titles = {
         str(item[0]).strip().lower()
         for item in session.query(TestCase.name)
-        .join(Module, TestCase.module_id == Module.id)
         .filter(
-            Module.project_id == project_id,
+            TestCase.module_id == target_module_id,
             TestCase.case_type == "web",
         )
         .all()
     }
     compiled_items: list[dict[str, Any]] = []
     dropped = 0
-    for raw_case in raw_cases[: int(payload.get("count") or 8)]:
-        if not isinstance(raw_case, dict):
-            dropped += 1
-            continue
-        compiled = compile_ai_case(
-            raw_case,
-            element_map=element_map,
-            snapshot_map=snapshot_map,
-            include_structure_assertions=bool(payload.get("include_structure_assertions", True)),
-            include_visual_assertions=bool(payload.get("include_visual_assertions", False)),
-            visual_threshold=float(payload.get("visual_threshold") or 0.02),
+    dropped_reasons: list[str] = []
+    generated_functional_ids: set[int] = set()
+    generation_tokens_in = 0
+    generation_tokens_out = 0
+    context_budgets: list[dict[str, Any]] = []
+    batch_summaries: list[dict[str, Any]] = []
+    evidence_functional_ids: set[int] = set()
+    evidence_page_keys: set[str] = set()
+    evidence_element_ids: set[int] = set()
+    evidence_action_count = 0
+    generation_batch_size = 6
+    queue: list[list[int]] = [
+        functional_case_ids[index:index + generation_batch_size]
+        for index in range(0, len(functional_case_ids), generation_batch_size)
+    ] or [[]]
+    options = model_task_options(cfg, "web_ui_case_gen")
+    batch_index = 0
+    while queue:
+        current_case_ids = queue.pop(0)
+        batch_index += 1
+        context, element_map, snapshot_map = build_generation_context(
+            session,
+            project_id=project_id,
+            functional_case_ids=current_case_ids,
+            page_keys=page_keys,
         )
-        if compiled is None or compiled["title"].strip().lower() in existing_titles:
-            dropped += 1
+        batch_scope = (
+            f"当前模块“{target_module.name}”；功能用例 ID：{current_case_ids}。"
+            "每个功能用例最多生成一条直接对应的草稿"
+            if current_case_ids
+            else f"当前模块“{target_module.name}”；本批仅按匹配页面元素生成基础可执行场景"
+        )
+        placeholders = {
+            "BATCH_SCOPE": batch_scope,
+            "SOURCE_MODE": (
+                "auto_functional_and_elements" if source_mode == "auto" and current_case_ids
+                else "auto_elements_only" if source_mode == "auto"
+                else source_mode
+            ),
+            "INCLUDE_STRUCTURE_ASSERTIONS": bool(payload.get("include_structure_assertions", True)),
+            "INCLUDE_VISUAL_ASSERTIONS": bool(payload.get("include_visual_assertions", False)),
+            "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
+            "EVIDENCE_CONTEXT": context,
+        }
+        prompt = _render_prompt(_load_prompt("web_ui_case_gen"), placeholders)
+        prompt_hashes.append(hashlib.sha256(prompt.encode("utf-8")).hexdigest())
+        try:
+            raw_text, tokens_in, tokens_out = chat_markdown(
+                prompt,
+                cfg,
+                timeout=options["timeout"],
+                system_prompt=(
+                    "你是 Web UI 自动化测试架构师。只输出满足用户指定结构的 JSON，"
+                    "不得虚构元素 ID、页面、业务范围或定位器。"
+                ),
+                enable_thinking=options["enable_thinking"],
+                json_mode=True,
+                max_tokens=options["max_tokens"],
+                temperature=options["temperature"],
+                reasoning_effort=options["reasoning_effort"],
+            )
+            generation_tokens_in += tokens_in or 0
+            generation_tokens_out += tokens_out or 0
+            text_value = raw_text.strip()
+            fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text_value, re.IGNORECASE)
+            if fenced:
+                text_value = fenced.group(1).strip()
+            parsed = json.loads(text_value)
+            raw_cases = parsed.get("cases") if isinstance(parsed, dict) else parsed
+            if not isinstance(raw_cases, list):
+                raise ValueError("AI 输出缺少 cases 数组")
+        except (json.JSONDecodeError, ValueError) as exc:
+            if len(current_case_ids) > 1:
+                midpoint = max(1, len(current_case_ids) // 2)
+                queue[0:0] = [current_case_ids[:midpoint], current_case_ids[midpoint:]]
+                selection["warnings"].append(
+                    f"第 {batch_index} 批输出不完整，系统已自动拆成更小批次继续生成"
+                )
+            else:
+                dropped += max(1, len(current_case_ids))
+                dropped_reasons.append(
+                    f"功能用例 {current_case_ids or '元素库基础批次'} 生成中断：{str(exc)[:160]}"
+                )
             continue
-        if compiled["functional_case_id"] not in selected_functional:
-            compiled["functional_case_id"] = None
-        existing_titles.add(compiled["title"].strip().lower())
-        compiled_items.append(compiled)
+
+        selected_in_batch = set(current_case_ids)
+        accepted_before = len(compiled_items)
+        for raw_case in raw_cases:
+            if not isinstance(raw_case, dict):
+                dropped += 1
+                dropped_reasons.append("AI 返回了非对象用例，已丢弃")
+                continue
+            compiled = compile_ai_case(
+                raw_case,
+                element_map=element_map,
+                snapshot_map=snapshot_map,
+                include_structure_assertions=bool(payload.get("include_structure_assertions", True)),
+                include_visual_assertions=bool(payload.get("include_visual_assertions", False)),
+                visual_threshold=float(payload.get("visual_threshold") or 0.02),
+            )
+            if compiled is None:
+                dropped += 1
+                dropped_reasons.append("AI 返回了无法编译或没有步骤的用例")
+                continue
+            functional_case_id = compiled["functional_case_id"]
+            if current_case_ids and functional_case_id not in selected_in_batch:
+                dropped += 1
+                dropped_reasons.append(f"用例“{compiled['title']}”未关联本批功能用例，已阻止跨模块内容入库")
+                continue
+            if not current_case_ids:
+                compiled["functional_case_id"] = None
+            elif functional_case_id in generated_functional_ids:
+                dropped += 1
+                dropped_reasons.append(f"功能用例 #{functional_case_id} 已生成草稿，重复结果已丢弃")
+                continue
+            normalized_title = compiled["title"].strip().lower()
+            if normalized_title in existing_titles:
+                dropped += 1
+                dropped_reasons.append(f"用例“{compiled['title']}”已存在")
+                continue
+            if bool(payload.get("executable_only", True)) and compiled["manual_reasons"]:
+                dropped += 1
+                dropped_reasons.append(f"用例“{compiled['title']}”需要人工处理，未纳入可执行草稿")
+                continue
+            existing_titles.add(normalized_title)
+            if functional_case_id:
+                generated_functional_ids.add(functional_case_id)
+            compiled_items.append(compiled)
+
+        context_budget = context.get("context_budget") or {}
+        context_budgets.append(context_budget)
+        evidence_functional_ids.update(item["id"] for item in context["functional_cases"])
+        evidence_page_keys.update(item["page_key"] for item in context["pages"])
+        evidence_element_ids.update(
+            int(element["element_id"])
+            for page in context["pages"]
+            for element in page["elements"]
+        )
+        evidence_action_count += len(context["recorded_actions"])
+        batch_summaries.append({
+            "functional_case_ids": current_case_ids,
+            "draft_count": len(compiled_items) - accepted_before,
+            "status": "completed",
+        })
 
     if not compiled_items:
-        raise ValueError("AI 没有生成可编译草稿；请补录元素或缩小页面范围后重试")
+        reason_text = "；".join(list(dict.fromkeys(dropped_reasons))[:3])
+        raise ValueError(
+            "自动筛选后没有生成通过可执行门禁的草稿。"
+            f"{reason_text or '请补录元素、定位器或功能预期后重试'}"
+        )
 
     model_label = f"{cfg.provider} / {cfg.model}"
     draft_ids: list[int] = []
@@ -1240,20 +1486,30 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             "draft_ids": draft_ids,
             "draft_count": len(draft_ids),
             "dropped_count": dropped,
+            "target_module": {"id": target_module.id, "name": target_module.name},
             "source_mode": payload.get("source_mode"),
+            "source_selection": selection,
+            "context_budget": {
+                "batch_count": len(context_budgets),
+                "elements_available": sum(int(item.get("elements_available") or 0) for item in context_budgets),
+                "elements_included": sum(int(item.get("elements_included") or 0) for item in context_budgets),
+                "elements_truncated": any(bool(item.get("elements_truncated")) for item in context_budgets),
+            },
+            "generation_batches": batch_summaries,
+            "dropped_reasons": list(dict.fromkeys(dropped_reasons))[:20],
             "evidence_summary": {
-                "functional_cases": len(context["functional_cases"]),
-                "pages": len(context["pages"]),
-                "elements": sum(len(item["elements"]) for item in context["pages"]),
-                "recorded_actions": len(context["recorded_actions"]),
+                "functional_cases": len(evidence_functional_ids),
+                "pages": len(evidence_page_keys),
+                "elements": len(evidence_element_ids),
+                "recorded_actions": evidence_action_count,
             },
         },
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
+        "tokens_in": selection_tokens_in + generation_tokens_in,
+        "tokens_out": selection_tokens_out + generation_tokens_out,
         "provider": cfg.provider,
         "model": cfg.model,
-        "prompt_hash": prompt_hash,
-        "prompt_version": "web-ui-v1",
+        "prompt_hash": hashlib.sha256("".join(prompt_hashes).encode("utf-8")).hexdigest(),
+        "prompt_version": "web-ui-v3-module-scoped-batched",
     }
 
 

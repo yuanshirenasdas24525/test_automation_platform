@@ -1,6 +1,7 @@
 """功能用例与元素事实到 Web UI 自动化草稿的构建、编译和入库。"""
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from typing import Any
@@ -56,6 +57,30 @@ _LOCATOR_STEP_TYPES = {
     "web_wait",
     "web_assert_text",
 }
+_AUTO_FUNCTIONAL_CANDIDATE_LIMIT = 1000
+_AUTO_PAGE_CANDIDATE_LIMIT = 60
+_AUTO_SELECTED_FUNCTIONAL_LIMIT = 1000
+_AUTO_FALLBACK_FUNCTIONAL_LIMIT = 40
+_AUTO_SELECTED_PAGE_LIMIT = 8
+_AUTO_FALLBACK_PAGE_LIMIT = 3
+_DETAIL_ELEMENT_LIMIT = 360
+_DETAIL_CONTEXT_CHAR_LIMIT = 80_000
+_FUNCTIONAL_CATALOG_CHAR_LIMIT = 24_000
+_PAGE_ELEMENT_FLOOR = 30
+_PAGE_ELEMENT_CEILING = 90
+_UI_POSITIVE_MARKERS = {
+    "页面", "按钮", "表单", "弹窗", "登录", "退出", "新建", "创建", "编辑",
+    "搜索", "筛选", "查询", "导航", "菜单", "列表", "详情", "上传", "下载",
+    "输入框", "用户名", "密码", "提示", "跳转",
+}
+_UI_NEGATIVE_MARKERS = {
+    "接口", "api", "数据库", "sql", "性能", "压力", "并发", "漏洞", "注入",
+    "代码质量", "技术债务", "许可证", "文档完整", "错误码", "服务实例", "负载均衡",
+}
+_GENERIC_ELEMENT_NAMES = {
+    "项目", "功能", "api", "web", "android", "ios", "管理员", "编辑", "删除",
+    "取消", "确定", "关闭", "返回", "更多", "菜单", "用户", "状态",
+}
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -64,6 +89,75 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return default
+
+
+def _redact_dynamic_text(value: Any, limit: int = 500) -> str:
+    """压缩交给模型的文本，并遮蔽常见动态个人数据。"""
+    text = str(value or "")
+    text = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "${email}", text)
+    text = re.sub(r"(?<!\d)1\d{10}(?!\d)", "${phone}", text)
+    text = re.sub(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F-]{20,}\b",
+        "${dynamic_id}",
+        text,
+    )
+    return text[:limit]
+
+
+def _scrub_sensitive(value: Any, key: str = "") -> Any:
+    """功能用例上下文中的密码、令牌等值不发送给模型。"""
+    if any(marker in key.lower() for marker in _SENSITIVE_VARIABLE_MARKERS):
+        return "${secret}"
+    if isinstance(value, dict):
+        return {str(item_key): _scrub_sensitive(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_scrub_sensitive(item, key) for item in value]
+    if isinstance(value, str):
+        return _redact_dynamic_text(value, 1000)
+    return value
+
+
+def _functional_text(case: TestCase) -> str:
+    spec = _scrub_sensitive(case.functional_spec or {})
+    return " ".join([
+        case.name or "",
+        case.description or "",
+        json.dumps(spec, ensure_ascii=False, default=str),
+        " ".join(str(item) for item in (case.tags or [])),
+    ]).lower()
+
+
+def _automation_suitability(text: str, matched_pages: int) -> int:
+    """本地只做候选降噪，最终选择仍由 AI 完成。"""
+    score = sum(2 for marker in _UI_POSITIVE_MARKERS if marker in text)
+    score -= sum(5 for marker in _UI_NEGATIVE_MARKERS if marker in text)
+    score += min(10, matched_pages * 3)
+    return score
+
+
+def _module_page_score(module_name: str, page: dict[str, Any]) -> int:
+    """给录制页面计算当前模块相关度，阻止热门但无关页面进入候选。"""
+    name = module_name.strip().lower()
+    if not name:
+        return 0
+    page_name = str(page.get("page_name") or "").strip().lower()
+    route = str(page.get("route") or "").strip().lower()
+    samples = [str(item).split("(", 1)[0].strip().lower() for item in page.get("element_samples") or []]
+    score = 0
+    if page_name == name:
+        score += 30
+    elif name in page_name:
+        score += 15
+    route_tokens = {token for token in re.split(r"[^\w\u4e00-\u9fff]+", route) if token}
+    if name in route_tokens:
+        score += 25
+    elif name in route:
+        score += 12
+    exact_samples = sum(1 for sample in samples if sample == name)
+    contains_samples = sum(1 for sample in samples if name in sample)
+    score += min(24, exact_samples * 8)
+    score += min(6, contains_samples)
+    return score
 
 
 def _safe_url(url: str | None, *, redact_query: bool = False) -> str | None:
@@ -91,17 +185,20 @@ def _safe_url(url: str | None, *, redact_query: bool = False) -> str | None:
 
 
 def _functional_payload(case: TestCase) -> dict[str, Any]:
-    spec = case.functional_spec or {}
+    spec = _scrub_sensitive(case.functional_spec or {})
+    preconditions = list(spec.get("preconditions") or []) if isinstance(spec, dict) else []
+    steps = list(spec.get("steps") or []) if isinstance(spec, dict) else []
     return {
         "id": case.id,
         "module_id": case.module_id,
         "name": case.name,
-        "description": case.description or "",
+        "description": _redact_dynamic_text(case.description or "", 1000),
         "priority": case.priority or 2,
         "tags": case.tags or [],
-        "preconditions": list(spec.get("preconditions") or []),
-        "steps": list(spec.get("steps") or []),
-        "expected": spec.get("expected") or "",
+        "preconditions": preconditions[:20],
+        "steps": steps[:40],
+        "expected": _redact_dynamic_text(spec.get("expected") if isinstance(spec, dict) else "", 1000),
+        "context_trimmed": len(preconditions) > 20 or len(steps) > 40,
     }
 
 
@@ -118,7 +215,281 @@ def _locator_payload(element: UiElement) -> list[dict[str, Any]]:
             "unique": locator.is_unique,
             "verified": locator.last_verified_at is not None,
         })
-    return candidates[:5]
+    return candidates[:2]
+
+
+def build_auto_source_catalog(
+    db: Session,
+    *,
+    project_id: int,
+    target_module_id: int,
+    user_prompt: str = "",
+) -> dict[str, Any]:
+    """仅在当前模块内构建功能用例和强相关页面目录，供 AI 自动筛选。"""
+    target_module = (
+        db.query(Module)
+        .filter(Module.id == target_module_id, Module.project_id == project_id)
+        .one_or_none()
+    )
+    if target_module is None:
+        raise ValueError("当前用例模块不存在或不属于该项目")
+    page_base_filters = (
+        UiElement.project_id == project_id,
+        UiElement.platform == UI_PLATFORM_WEB,
+        UiElement.status != UI_ELEMENT_ARCHIVED,
+    )
+    page_total = db.query(func.count(func.distinct(UiElement.page_key))).filter(*page_base_filters).scalar() or 0
+    page_rows = (
+        db.query(
+            UiElement.page_key,
+            func.max(UiElement.page_name),
+            func.count(UiElement.id),
+        )
+        .filter(*page_base_filters)
+        .group_by(UiElement.page_key)
+        .order_by(func.count(UiElement.id).desc(), UiElement.page_key)
+        .limit(_AUTO_PAGE_CANDIDATE_LIMIT)
+        .all()
+    )
+    if not page_rows:
+        raise ValueError("当前项目没有 Web 元素，无法自动检索；请先完成录制或 AI 探索录制")
+
+    page_keys = [str(row[0]) for row in page_rows]
+    snapshots = (
+        db.query(UiPageSnapshot)
+        .filter(
+            UiPageSnapshot.project_id == project_id,
+            UiPageSnapshot.platform == UI_PLATFORM_WEB,
+            UiPageSnapshot.page_key.in_(page_keys),
+        )
+        .order_by(UiPageSnapshot.snapshot_version.desc(), UiPageSnapshot.id.desc())
+        .all()
+    )
+    latest_snapshots: dict[str, UiPageSnapshot] = {}
+    for snapshot in snapshots:
+        latest_snapshots.setdefault(snapshot.page_key, snapshot)
+
+    semantic_rows = (
+        db.query(
+            UiElement.page_key,
+            UiElement.semantic_name,
+            UiElement.element_type,
+        )
+        .filter(
+            UiElement.project_id == project_id,
+            UiElement.platform == UI_PLATFORM_WEB,
+            UiElement.status != UI_ELEMENT_ARCHIVED,
+            UiElement.page_key.in_(page_keys),
+        )
+        .order_by(UiElement.usage_count.desc(), UiElement.last_verified_at.desc().nullslast())
+        .limit(3000)
+        .all()
+    )
+    semantic_by_page: dict[str, list[str]] = defaultdict(list)
+    for page_key, name, element_type in semantic_rows:
+        label = f"{name}({element_type})"
+        if label not in semantic_by_page[str(page_key)] and len(semantic_by_page[str(page_key)]) < 16:
+            semantic_by_page[str(page_key)].append(label)
+
+    all_page_candidates = []
+    for page_key, page_name, element_count in page_rows:
+        key = str(page_key)
+        snapshot = latest_snapshots.get(key)
+        all_page_candidates.append({
+            "page_key": key,
+            "page_name": str(page_name or (snapshot.page_name if snapshot else key)),
+            "route": _safe_url(snapshot.url if snapshot else None, redact_query=True),
+            "element_count": int(element_count or 0),
+            "element_samples": semantic_by_page.get(key, []),
+            "interactive": bool(snapshot and snapshot.is_interactive),
+        })
+    for page in all_page_candidates:
+        page["module_score"] = _module_page_score(target_module.name, page)
+    strongest_page_score = max((int(item["module_score"]) for item in all_page_candidates), default=0)
+    # 只保留最高分页面；全局导航里的“退出登录”等弱命中不能把其他业务页带进登录模块。
+    minimum_page_score = strongest_page_score
+    page_candidates = [
+        item for item in all_page_candidates
+        if int(item["module_score"]) >= minimum_page_score
+    ]
+    page_candidates.sort(key=lambda item: (-int(item["module_score"]), -int(item["element_count"]), item["page_key"]))
+    if not page_candidates:
+        raise ValueError(
+            f"元素库中没有与当前模块“{target_module.name}”明确匹配的 Web 页面；"
+            "请先录制该模块页面，或调整模块名称与页面业务名称"
+        )
+
+    case_query = (
+        db.query(TestCase)
+        .join(Module, TestCase.module_id == Module.id)
+        .filter(
+            Module.project_id == project_id,
+            TestCase.module_id == target_module_id,
+            TestCase.case_type == CASE_TYPE_FUNCTIONAL,
+        )
+    )
+    functional_total = case_query.count()
+    cases = (
+        case_query.order_by(TestCase.priority, TestCase.id)
+        .limit(1000)
+        .all()
+    )
+    prompt_text = user_prompt.strip().lower()
+    ranked_cases: list[dict[str, Any]] = []
+    for case in cases:
+        text = _functional_text(case)
+        matched = []
+        for page in page_candidates:
+            names = [page["page_name"], *[item.split("(", 1)[0] for item in page["element_samples"]]]
+            overlap = sum(
+                max(1, len(name) // 2)
+                for name in names
+                if len(name) >= 2
+                and name.strip().lower() not in _GENERIC_ELEMENT_NAMES
+                and name.lower() in text
+            )
+            if overlap:
+                matched.append((overlap, page["page_key"]))
+        matched.sort(reverse=True)
+        score = _automation_suitability(text, len(matched))
+        module_name = target_module.name.strip().lower()
+        if module_name and module_name in (case.name or "").lower():
+            score += 8
+        elif module_name and module_name in text:
+            score += 3
+        if prompt_text and any(part in text for part in re.findall(r"[\w\u4e00-\u9fff]{2,}", prompt_text)):
+            score += 6
+        spec = _scrub_sensitive(case.functional_spec or {})
+        ranked_cases.append({
+            "functional_case_id": case.id,
+            "name": _redact_dynamic_text(case.name, 200),
+            "description": _redact_dynamic_text(case.description, 240),
+            "expected": _redact_dynamic_text(spec.get("expected") if isinstance(spec, dict) else "", 240),
+            "step_summary": _redact_dynamic_text(
+                json.dumps(spec.get("steps") or [], ensure_ascii=False, default=str)
+                if isinstance(spec, dict) else "",
+                500,
+            ),
+            "priority": case.priority or 2,
+            "automation_score": score,
+            "matched_page_keys": [item[1] for item in matched[:3]],
+        })
+    ranked_cases.sort(key=lambda item: (-item["automation_score"], item["priority"], item["functional_case_id"]))
+    functional_candidates = []
+    functional_chars = 0
+    for item in ranked_cases[:_AUTO_FUNCTIONAL_CANDIDATE_LIMIT]:
+        item_chars = len(json.dumps(item, ensure_ascii=False, default=str))
+        functional_candidates.append(item)
+        functional_chars += item_chars
+    recommended = [item for item in functional_candidates if item["automation_score"] >= 2]
+    fallback_cases = recommended[:_AUTO_FALLBACK_FUNCTIONAL_LIMIT]
+    fallback_page_scores: dict[str, int] = defaultdict(int)
+    for item in fallback_cases:
+        for index, page_key in enumerate(item["matched_page_keys"]):
+            fallback_page_scores[page_key] += 3 - min(index, 2)
+    fallback_pages = [
+        page_key for page_key, _score in sorted(
+            fallback_page_scores.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
+    if not fallback_pages:
+        fallback_pages = [item["page_key"] for item in page_candidates[:min(3, len(page_candidates))]]
+    catalog_estimated_chars = len(json.dumps({
+        "functional_candidates": functional_candidates,
+        "page_candidates": page_candidates,
+    }, ensure_ascii=False, default=str))
+
+    return {
+        "target_module": {"id": target_module.id, "name": target_module.name},
+        "functional_candidates": functional_candidates,
+        "page_candidates": page_candidates,
+        "fallback_functional_case_ids": [item["functional_case_id"] for item in fallback_cases],
+        "fallback_page_keys": fallback_pages[:_AUTO_SELECTED_PAGE_LIMIT],
+        "budget": {
+            "functional_total": functional_total,
+            "functional_included": len(functional_candidates),
+            "functional_truncated": functional_total > len(functional_candidates),
+            "functional_char_budget": _FUNCTIONAL_CATALOG_CHAR_LIMIT,
+            "functional_estimated_chars": functional_chars,
+            "functional_selection_batched": functional_chars > _FUNCTIONAL_CATALOG_CHAR_LIMIT,
+            "page_included": len(page_candidates),
+            "page_total": int(page_total),
+            "page_truncated": int(page_total) > len(page_candidates),
+            "page_limit": _AUTO_PAGE_CANDIDATE_LIMIT,
+            "catalog_estimated_chars": catalog_estimated_chars,
+        },
+    }
+
+
+def normalize_auto_source_selection(
+    raw: Any,
+    catalog: dict[str, Any],
+    *,
+    fallback_on_empty: bool = True,
+) -> dict[str, Any]:
+    """校验 AI 筛选结果，只允许候选目录中的用例和页面。"""
+    payload = raw if isinstance(raw, dict) else {}
+    valid_case_ids = {
+        int(item["functional_case_id"])
+        for item in catalog["functional_candidates"]
+        if int(item.get("automation_score") or 0) >= 2
+    }
+    valid_page_keys = {str(item["page_key"]) for item in catalog["page_candidates"]}
+    selected_case_ids = []
+    for value in payload.get("functional_case_ids") or []:
+        case_id = _as_int(value)
+        if case_id in valid_case_ids and case_id not in selected_case_ids:
+            selected_case_ids.append(case_id)
+    selected_case_ids = selected_case_ids[:_AUTO_SELECTED_FUNCTIONAL_LIMIT]
+
+    selected_page_keys = []
+    for value in payload.get("page_keys") or []:
+        page_key = str(value)
+        if page_key in valid_page_keys and page_key not in selected_page_keys:
+            selected_page_keys.append(page_key)
+    selected_page_keys = selected_page_keys[:_AUTO_SELECTED_PAGE_LIMIT]
+    warnings = [str(item)[:300] for item in (payload.get("warnings") or []) if str(item).strip()][:10]
+    if not selected_case_ids and fallback_on_empty:
+        selected_case_ids = list(catalog.get("fallback_functional_case_ids") or [])[:_AUTO_SELECTED_FUNCTIONAL_LIMIT]
+        if selected_case_ids:
+            warnings.append("AI 未返回有效功能用例，已使用本地自动化适配度排序结果")
+        else:
+            warnings.append("候选功能用例均不适合 Web UI 自动化，本批将仅根据元素库生成")
+    if not selected_page_keys:
+        matched_page_scores: dict[str, int] = defaultdict(int)
+        by_id = {int(item["functional_case_id"]): item for item in catalog["functional_candidates"]}
+        for case_id in selected_case_ids:
+            for index, page_key in enumerate(by_id.get(case_id, {}).get("matched_page_keys") or []):
+                if page_key in valid_page_keys:
+                    matched_page_scores[page_key] += 3 - min(index, 2)
+        matched_pages = [
+            page_key for page_key, _score in sorted(
+                matched_page_scores.items(),
+                key=lambda item: (-item[1], item[0]),
+            )
+        ]
+        selected_page_keys = (matched_pages or list(catalog.get("fallback_page_keys") or []))[:_AUTO_FALLBACK_PAGE_LIMIT]
+        warnings.append("AI 未返回有效页面，已根据功能用例与元素语义自动关联页面")
+    budget = catalog.get("budget") or {}
+    if budget.get("functional_truncated"):
+        warnings.append(
+            f"功能用例候选已按自动化适配度从 {budget.get('functional_total')} 条裁剪为 "
+            f"{budget.get('functional_included')} 条，避免上下文过大"
+        )
+    if budget.get("page_truncated"):
+        warnings.append(
+            f"页面候选已从 {budget.get('page_total')} 个裁剪为 {budget.get('page_included')} 个，"
+            "可通过业务范围补充词提高目标页面排序"
+        )
+    return {
+        "target_module": catalog.get("target_module") or {},
+        "functional_case_ids": selected_case_ids,
+        "page_keys": selected_page_keys,
+        "rationale": _redact_dynamic_text(payload.get("rationale"), 1000),
+        "warnings": list(dict.fromkeys(warnings)),
+        "budget": budget,
+    }
 
 
 def build_generation_context(
@@ -164,9 +535,34 @@ def build_generation_context(
         element_query = element_query.filter(UiElement.page_key.in_(page_keys))
         snapshot_query = snapshot_query.filter(UiPageSnapshot.page_key.in_(page_keys))
 
-    elements = element_query.order_by(UiElement.page_key, UiElement.id).limit(600).all()
-    if not elements:
+    element_total = element_query.count()
+    available_elements = element_query.order_by(UiElement.page_key, UiElement.id).limit(2000).all()
+    if not available_elements:
         raise ValueError("当前范围没有可用于生成的 Web 元素，请先完成录制或 AI 探索录制")
+    relevance_text = " ".join(_functional_text(item) for item in functional_cases)
+    grouped_elements: dict[str, list[UiElement]] = defaultdict(list)
+    for element in available_elements:
+        grouped_elements[element.page_key].append(element)
+    page_count = max(1, len(grouped_elements))
+    per_page_limit = max(
+        _PAGE_ELEMENT_FLOOR,
+        min(_PAGE_ELEMENT_CEILING, _DETAIL_ELEMENT_LIMIT // page_count),
+    )
+    elements: list[UiElement] = []
+    for page_key in sorted(grouped_elements):
+        ranked = sorted(
+            grouped_elements[page_key],
+            key=lambda element: (
+                -int(bool(element.semantic_name and element.semantic_name.lower() in relevance_text)),
+                -int(element.element_type in {"button", "input", "select", "textarea", "link", "checkbox", "radio"}),
+                -int(bool(element.locators)),
+                -int(element.last_verified_at is not None),
+                -int(element.usage_count or 0),
+                element.id,
+            ),
+        )
+        elements.extend(ranked[:per_page_limit])
+    elements = elements[:_DETAIL_ELEMENT_LIMIT]
 
     snapshots_all = snapshot_query.order_by(
         UiPageSnapshot.page_key,
@@ -228,7 +624,7 @@ def build_generation_context(
             "page_name": element.page_name,
             "type": element.element_type,
             "status": element.status,
-            "text": str(attrs.get("text") or attrs.get("inner_text") or "")[:300],
+            "text": _redact_dynamic_text(attrs.get("text") or attrs.get("inner_text") or "", 300),
             "tag": attrs.get("tag"),
             "role": attrs.get("role"),
             "placeholder": attrs.get("placeholder"),
@@ -251,9 +647,10 @@ def build_generation_context(
             "elements": page_elements,
         })
 
+    functional_payloads = [_functional_payload(item) for item in functional_cases]
     context = {
         "project_id": project_id,
-        "functional_cases": [_functional_payload(item) for item in functional_cases],
+        "functional_cases": functional_payloads,
         "pages": pages,
         "recorded_actions": [
             {
@@ -281,7 +678,58 @@ def build_generation_context(
             }
             for item in exchanges
         ],
+        "context_budget": {
+            "selected_pages": len(by_page),
+            "elements_available": element_total,
+            "elements_included": len(elements),
+            "elements_truncated": element_total > len(elements),
+            "per_page_element_limit": per_page_limit,
+            "actions_included": len(actions),
+            "transitions_included": len(transitions),
+            "network_exchanges_included": len(exchanges),
+            "functional_cases_included": len(functional_cases),
+            "functional_cases_with_trimmed_steps": sum(
+                1 for item in functional_payloads if item["context_trimmed"]
+            ),
+        },
     }
+    estimated_chars_before = len(json.dumps(context, ensure_ascii=False, default=str))
+    estimated_chars = estimated_chars_before
+    while estimated_chars > _DETAIL_CONTEXT_CHAR_LIMIT:
+        largest_page = max(
+            context["pages"],
+            key=lambda item: len(item.get("elements") or []),
+            default=None,
+        )
+        if largest_page and len(largest_page.get("elements") or []) > 15:
+            removable = min(10, len(largest_page["elements"]) - 15)
+            del largest_page["elements"][-removable:]
+        elif len(context["recorded_actions"]) > 40:
+            context["recorded_actions"] = context["recorded_actions"][:max(40, len(context["recorded_actions"]) // 2)]
+        elif len(context["page_transitions"]) > 30:
+            context["page_transitions"] = context["page_transitions"][:max(30, len(context["page_transitions"]) // 2)]
+        elif len(context["observed_network"]) > 30:
+            context["observed_network"] = context["observed_network"][:max(30, len(context["observed_network"]) // 2)]
+        else:
+            break
+        estimated_chars = len(json.dumps(context, ensure_ascii=False, default=str))
+
+    visible_element_ids = {
+        int(element["element_id"])
+        for page in context["pages"]
+        for element in page.get("elements") or []
+    }
+    element_map = {element_id: element for element_id, element in element_map.items() if element_id in visible_element_ids}
+    budget = context["context_budget"]
+    budget["elements_included"] = len(visible_element_ids)
+    budget["elements_truncated"] = element_total > len(visible_element_ids)
+    budget["actions_included"] = len(context["recorded_actions"])
+    budget["transitions_included"] = len(context["page_transitions"])
+    budget["network_exchanges_included"] = len(context["observed_network"])
+    budget["estimated_chars_before_trim"] = estimated_chars_before
+    budget["estimated_chars"] = len(json.dumps(context, ensure_ascii=False, default=str))
+    budget["hard_char_limit"] = _DETAIL_CONTEXT_CHAR_LIMIT
+    budget["hard_limit_reached"] = budget["estimated_chars"] > _DETAIL_CONTEXT_CHAR_LIMIT
     snapshot_map = {item.id: item for item in latest_snapshots.values()}
     return context, element_map, snapshot_map
 

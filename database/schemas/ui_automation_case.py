@@ -12,11 +12,12 @@ class WebUiCaseGenerationRequest(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     project_id: int
+    target_module_id: int
     model_name: str = Field(..., min_length=1, max_length=120)
-    source_mode: Literal["functional_and_elements", "elements_only"] = "functional_and_elements"
+    source_mode: Literal["auto", "functional_and_elements", "elements_only"] = "auto"
     functional_case_ids: list[int] = Field(default_factory=list, max_length=50)
-    page_keys: list[str] = Field(default_factory=list, min_length=1, max_length=20)
-    count: int = Field(default=8, ge=1, le=20)
+    page_keys: list[str] = Field(default_factory=list, max_length=20)
+    executable_only: bool = True
     include_structure_assertions: bool = True
     include_visual_assertions: bool = False
     visual_threshold: float = Field(default=0.02, ge=0, le=1)
@@ -26,6 +27,8 @@ class WebUiCaseGenerationRequest(BaseModel):
     def validate_source(self):
         if self.source_mode == "functional_and_elements" and not self.functional_case_ids:
             raise ValueError("联合生成模式至少选择一条功能用例")
+        if self.source_mode != "auto" and not self.page_keys:
+            raise ValueError("非自动筛选模式至少选择一个已录制页面")
         return self
 
 

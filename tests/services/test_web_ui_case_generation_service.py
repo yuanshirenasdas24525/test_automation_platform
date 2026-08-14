@@ -4,9 +4,15 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+from pydantic import ValidationError
+
+from database.schemas.ui_automation_case import WebUiCaseGenerationRequest
 from server.services.web_ui_case_generation_service import (
+    _module_page_score,
     _safe_url,
     compile_ai_case,
+    normalize_auto_source_selection,
     validate_draft_step_edit,
     validate_draft_steps,
 )
@@ -18,6 +24,63 @@ def test_prompt_url_removes_credentials_fragment_and_sensitive_query_values():
         redact_query=True,
     )
     assert value == "https://example.test/orders?status=open&access_token=%24%7Bredacted%7D&code=%24%7Bredacted%7D"
+
+
+def test_auto_request_needs_no_manual_cases_or_pages():
+    payload = WebUiCaseGenerationRequest(project_id=1, target_module_id=7, model_name="default")
+    assert payload.source_mode == "auto"
+    assert payload.functional_case_ids == []
+    assert payload.page_keys == []
+    assert payload.executable_only is True
+    assert "count" not in payload.model_dump()
+
+    with pytest.raises(ValidationError):
+        WebUiCaseGenerationRequest(
+            project_id=1,
+            target_module_id=7,
+            model_name="default",
+            source_mode="functional_and_elements",
+            functional_case_ids=[1],
+            page_keys=[],
+        )
+
+
+def test_module_page_score_prefers_exact_business_page_over_global_navigation_match():
+    login_page = {
+        "page_name": "自动化测试平台",
+        "route": "http://127.0.0.1:54351/login",
+        "element_samples": ["登录(submit)", "用户名(input)", "密码(password)"],
+    }
+    project_page = {
+        "page_name": "项目管理",
+        "route": "http://127.0.0.1:54351/projects",
+        "element_samples": ["退出登录(button)", "新建项目(button)"],
+    }
+    assert _module_page_score("登录", login_page) > _module_page_score("登录", project_page)
+
+
+def test_auto_selection_rejects_unknown_and_unsuitable_ai_choices():
+    catalog = {
+        "functional_candidates": [
+            {"functional_case_id": 1, "automation_score": 12, "matched_page_keys": ["page-a"]},
+            {"functional_case_id": 2, "automation_score": -8, "matched_page_keys": ["page-b"]},
+        ],
+        "page_candidates": [{"page_key": "page-a"}, {"page_key": "page-b"}],
+        "fallback_functional_case_ids": [1],
+        "fallback_page_keys": ["page-a"],
+        "budget": {
+            "functional_total": 200,
+            "functional_included": 80,
+            "functional_truncated": True,
+        },
+    }
+    selected = normalize_auto_source_selection(
+        {"functional_case_ids": [2, 999], "page_keys": ["missing"]},
+        catalog,
+    )
+    assert selected["functional_case_ids"] == [1]
+    assert selected["page_keys"] == ["page-a"]
+    assert any("裁剪" in item for item in selected["warnings"])
 
 
 def _locator(strategy: str, value: str, *, primary: bool = False, score: int = 80):
