@@ -15,7 +15,7 @@ from typing import Any
 
 import bcrypt
 import pydantic
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import selectinload
@@ -27,6 +27,7 @@ from database.models import (
     API_KEY_SCOPE_AI, API_KEY_SCOPE_EXECUTE, API_KEY_SCOPE_READ,
 )
 from server.api.deps import DBDep
+from utils.rel_crypto import rel_decrypt_json, rel_encrypt
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -612,3 +613,69 @@ def change_password(
     revoke_user_sessions(db, current_user.id, "password_changed")
     db.session.flush()
     return {"status": "success", "message": "密码修改成功"}
+
+
+# ---------------------------------------------------------------------------
+# echo_test —— RSA + AES-ECB 加解密自测靶子（强制加密传输）
+# ---------------------------------------------------------------------------
+# 契约见 echo_test.openapi.json：入参 username(必填 str) + amount(必填 int)
+# + note/tags(可选)，成功返回 {status:"success", message:"hello", data:<回显>}。
+# 但**线上只收 REL 密文信封 {key,data}**：先私钥解密→按下述规则校验→响应用公钥
+# 加密返回。OpenAPI 描述的是解密后的逻辑契约。
+#
+# 平台用例侧配 encryption_decryption 走 utils.custom_crypto 的 rel_* handler 即可：
+#   on_off: true / custom_request_handler: rel_request_crypto
+#   custom_response_handler: rel_response_crypto / custom_crypto_only: true
+#
+# 无需平台登录态：auth_router 挂在 main.py 的无鉴权路由组，模拟外部被测系统。
+def _validate_echo_payload(payload: Any) -> dict[str, Any]:
+    """按 openapi 契约校验解密后的明文；不合规抛 422。返回回显用的 echo。"""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="请求体解密后必须是 JSON 对象")
+
+    errors: list[str] = []
+    username = payload.get("username")
+    if "username" not in payload:
+        errors.append("username 必填")
+    elif not isinstance(username, str):
+        errors.append("username 必须是字符串")
+
+    amount = payload.get("amount")
+    if "amount" not in payload:
+        errors.append("amount 必填")
+    elif not isinstance(amount, int) or isinstance(amount, bool):
+        errors.append("amount 必须是整数")
+
+    note = payload.get("note")
+    if note is not None and not isinstance(note, str):
+        errors.append("note 必须是字符串")
+
+    tags = payload.get("tags")
+    if tags is not None and (
+        not isinstance(tags, list) or not all(isinstance(t, str) for t in tags)
+    ):
+        errors.append("tags 必须是字符串数组")
+
+    if errors:
+        raise HTTPException(status_code=422, detail="；".join(errors))
+
+    echo: dict[str, Any] = {"username": username, "amount": amount}
+    if note is not None:
+        echo["note"] = note
+    if tags is not None:
+        echo["tags"] = tags
+    return echo
+
+
+@router.post("/echo_test")
+def echo_test(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
+    """RSA+AES-ECB 加密回显靶子：解密请求 → 校验 → 加密返回。"""
+    try:
+        plain = rel_decrypt_json(payload)
+    except Exception as exc:  # noqa: BLE001 —— 靶子对外表现要像真实系统
+        LOGGER.warning("echo_test 解密失败: %s: %s", type(exc).__name__, exc)
+        raise HTTPException(status_code=400, detail=f"密文解密失败: {exc}") from exc
+
+    echo = _validate_echo_payload(plain)
+    reply = {"status": "success", "message": "hello", "data": echo}
+    return rel_encrypt(reply)

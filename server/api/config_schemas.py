@@ -356,6 +356,15 @@ API_CONFIG_SCHEMA: list[dict[str, Any]] = [
         "example": "true",
         "applies_to": ["api"],
     },
+    {
+        "config_group": "encryption_decryption",
+        "key": "rsa_public_key",
+        "type": "str",
+        "default": "",
+        "description": "rel_request_crypto 加密请求用的 RSA 公钥（PEM，或纯 base64 主体）。必须与测试接口写死的私钥配对。留空回落内置公钥。",
+        "example": "-----BEGIN PUBLIC KEY-----\\nMIIB...\\n-----END PUBLIC KEY-----",
+        "applies_to": ["api"],
+    },
 
     # —— 6. headers：推荐请求头 ——
     # 接口用例的 case-level headers 通常会覆盖这里；这里给『全局兜底』和『一键填入』

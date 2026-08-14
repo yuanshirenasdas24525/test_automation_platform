@@ -18,6 +18,7 @@ from .cases import router as cases_router
 from .api_cases import router as api_cases_router
 from .config import router as config_router
 from .content import router as content_router
+from .crypto_echo import router as crypto_echo_router
 from .knowledge import router as knowledge_router
 from .devices import router as devices_router
 from .functional_cases import router as functional_cases_router
@@ -52,6 +53,7 @@ __all__ = [
     "api_cases_router",
     "config_router",
     "content_router",
+    "crypto_echo_router",
     "knowledge_router",
     "devices_router",
     "functional_cases_router",

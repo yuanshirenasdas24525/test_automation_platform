@@ -76,6 +76,7 @@ from server.api import (
     api_cases_router,
     config_router,
     content_router,
+    crypto_echo_router,
     knowledge_router,
     devices_router,
     functional_cases_router,
@@ -176,6 +177,7 @@ def health():
 # ---------------------------------------------------------------------------
 for router in (
     auth_router,
+    crypto_echo_router,  # 加解密自测靶子：模拟外部系统，无需平台登录态
 ):
     app.include_router(router, prefix="/api")
 
