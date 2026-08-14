@@ -88,6 +88,7 @@ from server.api import (
     change_adjust_router,
     config_router,
     content_router,
+    crypto_echo_router,
     knowledge_router,
     devices_router,
     functional_cases_router,
@@ -189,7 +190,8 @@ def health():
 # ---------------------------------------------------------------------------
 for router in (
     auth_router,
-    users_router,
+    users_router,  # 各端点强制 BearerUserDep；避免全局依赖额外暴露不可用 API Key 方案
+    crypto_echo_router,  # 加解密自测靶子：模拟外部系统，无需平台登录态
 ):
     app.include_router(router, prefix="/api")
 
