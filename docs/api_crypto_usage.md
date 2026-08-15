@@ -422,9 +422,10 @@ sign_access_key = REL_ECHO_AK               # 留空用内置默认
 | `crypto_scope = all`（默认/留空） | 全项目 API 用例都加密 | **默认全局开启** |
 | `crypto_scope = include` + `crypto_cases = ["用例名", 1024]` | 只有名单里的用例加密 | **指定接口开启** |
 | `crypto_scope = include` + `crypto_modules = ["支付","结算"]` | 名单模块下的用例都加密 | **指定模块开启** |
-| `crypto_scope = exclude` + `crypto_modules/crypto_cases` | 名单之外的都加密 | 少数接口除外 |
+| `crypto_scope = include` + `crypto_paths = ["/api/auth/echo_test"]` | 命中该请求路径的才加密 | **指定接口(路径)开启** |
+| `crypto_scope = exclude` + `crypto_modules/crypto_cases/crypto_paths` | 名单之外的都加密 | 少数接口除外 |
 
-`crypto_cases` 支持**用例名或用例 id**，`crypto_modules` 是**模块名**，都支持 JSON 数组或逗号串。`include`/`exclude` 可同时给 `crypto_modules` 和 `crypto_cases`，命中任一即算命中。
+`crypto_cases` 支持**用例名或用例 id**，`crypto_modules` 是**模块名**，`crypto_paths` 是**请求路径**（精确 `/api/auth/echo_test` 或前缀通配 `/api/auth/*`，按请求 `_request_path`/`_request_url` 匹配——引擎已把它们注入脚本上下文）。三者都支持 JSON 数组或逗号串；`include`/`exclude` 可同时给多个，**命中任一即算命中**。
 
 **配置示例——只加密"支付"模块 + 一个额外用例：**
 
