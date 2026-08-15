@@ -13,7 +13,7 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
-from utils import rel_script_api
+from utils import crypto_toolkit
 from utils.logger import LOGGER
 
 
@@ -27,9 +27,9 @@ ALLOWED_MODULES = {
     "re": re,
     "time": time,
     "uuid": uuid,
-    # 受控口子：只暴露审过的 REL 加解密/签名 facade（不是放开任意 cryptography）。
-    # 让 crypto_request/crypto_response 页面脚本能做 RSA+AES-ECB 与 power-* 签名。
-    "rel": rel_script_api,
+    # 受控口子：暴露审过的通用加密工具箱（不是放开任意 cryptography）。
+    # 项目专属加解密/签名逻辑写成 DB 脚本调 crypto.*，repo 不再为每个项目加文件。
+    "crypto": crypto_toolkit,
 }
 
 SAFE_BUILTINS = {
