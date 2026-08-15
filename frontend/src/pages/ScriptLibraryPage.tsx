@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  BookOpen,
   CheckCircle2,
   Code2,
   Copy,
@@ -18,6 +19,7 @@ import {
   Trash2,
 } from "lucide-react";
 
+import { CryptoTutorialDrawer } from "@/components/script/CryptoTutorialDrawer";
 import { RichTextEditor } from "@/components/editor/RichTextEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -105,6 +107,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
   const [testOutput, setTestOutput] = useState("{\n  \"status\": \"pending\"\n}");
   const [hasCachedDraft, setHasCachedDraft] = useState(false);
   const [newDraftCache, setNewDraftCache] = useState<CachedScriptDraft | null>(null);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
   const skipNextCacheWrite = useRef(false);
 
   const queryParams = { project_id: projectId, scope, kind: kind === "all" ? undefined : kind };
@@ -317,11 +320,19 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
             {projectId ? `项目 #${projectId} 可用脚本` : "全项目通用脚本"}
           </p>
         </div>
-        <Button size="sm" onClick={createDraft}>
-          <Plus className="mr-2 h-4 w-4" />
-          新建脚本
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="outline" onClick={() => setTutorialOpen(true)}>
+            <BookOpen className="mr-2 h-4 w-4" />
+            加密教程
+          </Button>
+          <Button size="sm" onClick={createDraft}>
+            <Plus className="mr-2 h-4 w-4" />
+            新建脚本
+          </Button>
+        </div>
       </div>
+
+      <CryptoTutorialDrawer open={tutorialOpen} onClose={() => setTutorialOpen(false)} />
 
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-80 shrink-0 flex-col border-r bg-muted/20">
