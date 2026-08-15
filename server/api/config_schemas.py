@@ -385,6 +385,15 @@ API_CONFIG_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "config_group": "encryption_decryption",
+        "key": "crypto_paths",
+        "type": "json",
+        "default": "[]",
+        "description": "crypto_scope=include/exclude 时的请求路径名单：精确(/api/auth/echo_test)或前缀通配(/api/auth/*)，按请求 path/url 匹配。JSON 数组或逗号串。",
+        "example": '["/api/auth/echo_test", "/api/pay/*"]',
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "encryption_decryption",
         "key": "rsa_public_key",
         "type": "str",
         "default": "",

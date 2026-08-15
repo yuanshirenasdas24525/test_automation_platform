@@ -277,7 +277,14 @@ class HttpRequestStepRunner(BaseStepRunner):
         resolved_file_path = self._resolve_value(file_path, ctx) if file_path else None
         files = self.processor.handler_files(resolved_file_path) if resolved_file_path else None
 
-        crypto = RequestCryptoProcessor(self._encryption_config(), vars=self._merged_pool(ctx))
+        # 把当前请求的路径/URL/方法一并给到加解密脚本，供 crypto.should_apply 按接口路径判定
+        crypto_vars = {
+            **self._merged_pool(ctx),
+            "_request_path": path,
+            "_request_url": url,
+            "_request_method": method,
+        }
+        crypto = RequestCryptoProcessor(self._encryption_config(), vars=crypto_vars)
         headers, body, crypto_request_meta = crypto.apply_request(headers, body)
 
         # 2) 记录 Allure/报告：变量池 + Request（请求详情）

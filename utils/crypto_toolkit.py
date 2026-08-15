@@ -121,6 +121,26 @@ def _as_list(raw: Any) -> list[str]:
     return [p.strip() for p in text.split(",") if p.strip()]
 
 
+def _path_match(patterns: list[str], path: str, url: str) -> bool:
+    """请求路径/URL 是否命中名单。支持精确匹配与 ``尾部*`` 前缀通配。
+
+    例：``/api/auth/echo_test`` 精确；``/api/auth/*`` 前缀。
+    """
+    path = path or ""
+    url = url or ""
+    for pat in patterns:
+        pat = str(pat).strip()
+        if not pat:
+            continue
+        if pat.endswith("*"):
+            pre = pat[:-1]
+            if path.startswith(pre) or url.startswith(pre):
+                return True
+        elif path == pat or url == pat:
+            return True
+    return False
+
+
 def should_apply(config: Any, vars: Any = None, flag: str = "rel_crypto") -> bool:  # noqa: A002
     """按"全局/指定用例/指定模块"策略判断当前用例是否该加解密。
 
@@ -132,8 +152,10 @@ def should_apply(config: Any, vars: Any = None, flag: str = "rel_crypto") -> boo
         ``all`` / 缺省  —— 全项目开启（模式1）
         ``include``     —— 仅命中 ``crypto_modules`` / ``crypto_cases`` 名单的开启（模式2/3）
         ``exclude``     —— 名单之外的开启
-    - ``crypto_modules``：模块名列表；``crypto_cases``：用例名或用例 id 列表
-      （JSON 数组、逗号串均可）。
+    - ``crypto_modules``：模块名列表；``crypto_cases``：用例名或用例 id 列表；
+      ``crypto_paths``：请求路径列表（精确 ``/api/auth/echo_test`` 或前缀 ``/api/auth/*``），
+      按当前请求的 ``_request_path`` / ``_request_url`` 匹配。
+      三者命中任一即算命中；均支持 JSON 数组或逗号串。
     """
     vars = vars or {}
     config = config or {}
@@ -148,13 +170,17 @@ def should_apply(config: Any, vars: Any = None, flag: str = "rel_crypto") -> boo
 
     modules = _as_list(config.get("crypto_modules"))
     cases = _as_list(config.get("crypto_cases"))
+    paths = _as_list(config.get("crypto_paths"))
     cur_module = str(vars.get("_module_name") or "")
     cur_case = str(vars.get("_case_name") or "")
     cur_case_id = str(vars.get("_case_id") or "")
+    cur_path = str(vars.get("_request_path") or "")
+    cur_url = str(vars.get("_request_url") or "")
     hit = bool(
         (cur_module and cur_module in modules)
         or (cur_case and cur_case in cases)
         or (cur_case_id and cur_case_id in cases)
+        or _path_match(paths, cur_path, cur_url)
     )
 
     if scope in ("include", "whitelist", "only"):
