@@ -154,7 +154,7 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
         </span>
       }
     >
-      <div className="space-y-6 p-5">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
         <Section title="它是什么">
           <p>
             一套 <b>RSA + AES-ECB「数字信封」</b>加解密：随机 AES 密钥加密业务数据（<Kbd>data</Kbd>），
