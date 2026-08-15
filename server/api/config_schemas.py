@@ -365,6 +365,33 @@ API_CONFIG_SCHEMA: list[dict[str, Any]] = [
         "example": "-----BEGIN PUBLIC KEY-----\\nMIIB...\\n-----END PUBLIC KEY-----",
         "applies_to": ["api"],
     },
+    {
+        "config_group": "encryption_decryption",
+        "key": "sign_on",
+        "type": "bool",
+        "default": "false",
+        "description": "rel_request_crypto 是否追加 power-* 签名头（对明文业务参数签名）。开启后靶子验签失败会 401。",
+        "example": "true",
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "encryption_decryption",
+        "key": "sign_secret",
+        "type": "str",
+        "default": "",
+        "description": "power-sign 的签名密钥（只参与 MD5、不随请求发送）。必须与测试接口写死的密钥一致。留空用内置默认值。",
+        "example": "rel-echo-sign-secret-2026",
+        "applies_to": ["api"],
+    },
+    {
+        "config_group": "encryption_decryption",
+        "key": "sign_access_key",
+        "type": "str",
+        "default": "",
+        "description": "power-access-key 请求头的值（公开标识，非密钥）。必须与测试接口预期一致。留空用内置默认值。",
+        "example": "REL_ECHO_AK",
+        "applies_to": ["api"],
+    },
 
     # —— 6. headers：推荐请求头 ——
     # 接口用例的 case-level headers 通常会覆盖这里；这里给『全局兜底』和『一键填入』

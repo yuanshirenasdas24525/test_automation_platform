@@ -28,6 +28,7 @@ from database.models import (
 )
 from server.api.deps import DBDep
 from utils.rel_crypto import rel_decrypt_json, rel_encrypt
+from utils.rel_sign import verify_sign_headers
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -744,13 +745,24 @@ def _validate_echo_payload(payload: Any) -> dict[str, Any]:
 
 
 @router.post("/echo_test")
-def echo_test(payload: dict[str, Any] = Body(...)) -> dict[str, str]:
-    """RSA+AES-ECB 加密回显靶子：解密请求 → 校验 → 加密返回。"""
+def echo_test(request: Request, payload: dict[str, Any] = Body(...)) -> dict[str, str]:
+    """RSA+AES-ECB 加密回显靶子：解密请求 → 验签 → 校验 → 加密返回。
+
+    强制加密（解不出 → 400）+ 强制签名（power-* 验签失败 → 401）+ 字段校验（→ 422）。
+    """
     try:
         plain = rel_decrypt_json(payload)
     except Exception as exc:  # noqa: BLE001 —— 靶子对外表现要像真实系统
         LOGGER.warning("echo_test 解密失败: %s: %s", type(exc).__name__, exc)
         raise HTTPException(status_code=400, detail=f"密文解密失败: {exc}") from exc
+
+    # 对解密后的业务参数验签（内置默认密钥/access-key）
+    ok, reason = verify_sign_headers(
+        dict(request.headers), plain if isinstance(plain, dict) else {}
+    )
+    if not ok:
+        LOGGER.warning("echo_test 验签失败: %s", reason)
+        raise HTTPException(status_code=401, detail=f"验签失败: {reason}")
 
     echo = _validate_echo_payload(plain)
     reply = {"status": "success", "message": "hello", "data": echo}
