@@ -32,7 +32,7 @@ function Kbd({ children }: { children: ReactNode }) {
   );
 }
 
-/** 数据流示意图：平台加密请求 → 靶子解密/验签 → 加密响应 → 平台解密。 */
+/** 数据流示意图：请求发出前跑请求脚本，响应回来后跑响应脚本（两个钩子）。 */
 function FlowDiagram() {
   return (
     <svg viewBox="0 0 720 200" className="h-auto w-full" role="img" aria-label="加解密数据流示意">
@@ -41,20 +41,20 @@ function FlowDiagram() {
       <text x="83" y="95" textAnchor="middle" className="fill-blue-700 dark:fill-blue-300 text-[13px] font-semibold">平台（客户端）</text>
       <text x="83" y="114" textAnchor="middle" className="fill-blue-600/80 dark:fill-blue-400/80 text-[10px]">用例执行</text>
 
-      {/* 靶子/服务端 */}
+      {/* 被测系统 */}
       <rect x="562" y="70" width="150" height="60" rx="8" className="fill-emerald-100 stroke-emerald-400 dark:fill-emerald-950/60 dark:stroke-emerald-600" strokeWidth="1.5" />
-      <text x="637" y="95" textAnchor="middle" className="fill-emerald-700 dark:fill-emerald-300 text-[13px] font-semibold">被测系统 / 靶子</text>
-      <text x="637" y="114" textAnchor="middle" className="fill-emerald-600/80 dark:fill-emerald-400/80 text-[10px]">echo_test</text>
+      <text x="637" y="98" textAnchor="middle" className="fill-emerald-700 dark:fill-emerald-300 text-[13px] font-semibold">被测系统</text>
+      <text x="637" y="115" textAnchor="middle" className="fill-emerald-600/80 dark:fill-emerald-400/80 text-[10px]">你的接口</text>
 
       {/* 请求箭头（上） */}
       <line x1="158" y1="82" x2="558" y2="82" className="stroke-slate-400 dark:stroke-slate-500" strokeWidth="1.5" markerEnd="url(#arrow)" />
-      <text x="358" y="60" textAnchor="middle" className="fill-foreground text-[11px] font-medium">① rel_request：公钥加密 body → {"{key,data}"} + 加签名头</text>
-      <text x="358" y="74" textAnchor="middle" className="fill-muted-foreground text-[10px]">私钥解密 · 验签 →</text>
+      <text x="358" y="66" textAnchor="middle" className="fill-foreground text-[11px] font-medium">① 请求脚本 crypto_request</text>
+      <text x="358" y="79" textAnchor="middle" className="fill-muted-foreground text-[10px]">发出前：按你的算法加密 / 加签 headers、body</text>
 
       {/* 响应箭头（下） */}
       <line x1="558" y1="120" x2="158" y2="120" className="stroke-slate-400 dark:stroke-slate-500" strokeWidth="1.5" markerEnd="url(#arrow)" />
-      <text x="358" y="140" textAnchor="middle" className="fill-muted-foreground text-[10px]">← 公钥加密响应</text>
-      <text x="358" y="156" textAnchor="middle" className="fill-foreground text-[11px] font-medium">② rel_response：私钥解密 → 明文进断言/提取</text>
+      <text x="358" y="140" textAnchor="middle" className="fill-foreground text-[11px] font-medium">② 响应脚本 crypto_response</text>
+      <text x="358" y="153" textAnchor="middle" className="fill-muted-foreground text-[10px]">断言前：把响应解密回明文</text>
 
       <defs>
         <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
@@ -97,6 +97,28 @@ function ScopeDiagram() {
   );
 }
 
+const REQUEST_SKELETON = `# 类型：请求加密 (crypto_request)
+def handler(headers, body, config, vars=None):
+    # headers: 请求头 dict | body: 请求体 | config: encryption_decryption 配置 | vars: 变量池
+    # 在这里按你的算法改 headers / body
+    return headers, body        # 必须返回 (新headers, 新body)`;
+
+const RESPONSE_SKELETON = `# 类型：响应解密 (crypto_response)
+def handler(response_body, config, vars=None):
+    # response_body: 服务端返回体（已按 JSON 解析）
+    # 在这里解密，返回明文 dict/list —— 后续断言/提取用它
+    return response_body`;
+
+const CUSTOM_EXAMPLE = `# 自己拼一套：整体 AES-GCM 加密 + HMAC 签名头
+def handler(headers, body, config, vars=None):
+    if not crypto.should_apply(config, vars):
+        return headers, body
+    key = config.get("key") or "my-secret"
+    token = crypto.aes_gcm_encrypt(body, key)          # 密文字符串
+    headers = dict(headers or {})
+    headers["X-Sign"] = crypto.hmac_sha256(token, key) # 签名
+    return headers, {"data": token}                    # 换成你服务端要的字段名`;
+
 const REQUEST_SCRIPT = `def handler(headers, body, config, vars=None):
     # 作用范围判定：全局 / 指定用例 / 指定模块 / 指定路径
     if not crypto.should_apply(config, vars):
@@ -125,6 +147,12 @@ const RESPONSE_SCRIPT = `def handler(response_body, config, vars=None):
         return crypto.rsa_aes_ecb_decrypt(response_body)
     return response_body`;
 
+const CONFIG_BASE = `on_off = true
+custom_request_handler = <你的请求脚本名>
+custom_response_handler = <你的响应脚本名>
+custom_crypto_only = true          # 只走你的脚本，跳过平台内置签名/AES
+key = <你的密钥>                    # 脚本里 config.get("key") 取；也可加任意自定义参数`;
+
 const CONFIG_EXAMPLE = `on_off = true
 custom_request_handler = rel_request_crypto
 custom_response_handler = rel_response_crypto
@@ -147,43 +175,38 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
       defaultWidth={720}
       title={
         <span className="flex items-center gap-2">
-          <span className="text-base font-semibold">加解密脚本教程</span>
+          <span className="text-base font-semibold">搭建你的加解密</span>
           <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
-            RSA + AES-ECB
+            脚本库教程
           </span>
         </span>
       }
     >
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
-        <Section title="它是什么">
+        <Section title="脚本库能帮你做什么">
           <p>
-            一套 <b>RSA + AES-ECB「数字信封」</b>加解密：随机 AES 密钥加密业务数据（<Kbd>data</Kbd>），
-            再用 RSA 公钥加密该 AES 密钥（<Kbd>key</Kbd>），密文形如 <Kbd>{"{ key, data }"}</Kbd>；
-            可选叠加 <Kbd>power-*</Kbd> 请求签名头。加解密逻辑写成<b>脚本库里的页面脚本</b>，
-            按项目/模块/用例/路径灵活生效。
+            如果你的被测接口需要<b>加密请求 / 解密响应 / 加签名</b>才能调通，就在<b>脚本库</b>里写两段
+            Python 脚本：平台会在<b>发请求前</b>和<b>收到响应后</b>自动调用它们。<b>算法完全由你定</b>——
+            平台只负责"什么时候调"，加解密怎么算是你脚本里的事。本教程教你怎么搭，末尾用本系统的
+            RSA+AES-ECB 做一个完整示例。
           </p>
-        </Section>
-
-        <Section title="数据流">
           <div className="rounded-lg border bg-card p-3">
             <FlowDiagram />
           </div>
+        </Section>
+
+        <Section title="第 1 步 · 新建两条脚本">
+          <p>脚本库 →「新建脚本」，各建一条，都要定义 <Kbd>handler</Kbd>：</p>
+          <Code>{REQUEST_SKELETON}</Code>
+          <Code>{RESPONSE_SKELETON}</Code>
+          <p>参数约定固定，返回值约定：请求脚本返回 <Kbd>(headers, body)</Kbd>，响应脚本返回<b>解密后的对象</b>。</p>
+        </Section>
+
+        <Section title="第 2 步 · 用 crypto 工具箱写你的算法">
           <p>
-            平台发请求前跑 <Kbd>请求加密</Kbd> 脚本（公钥加密 + 加签名头）；收到响应后跑
-            <Kbd>响应解密</Kbd> 脚本（私钥解密），明文再进断言/提取。私钥写死在被测系统/靶子里，
-            客户端只需公钥。
+            沙箱里不能 import <Kbd>cryptography</Kbd>，但平台把常用加密原语打包成了 <Kbd>crypto</Kbd>
+            （脚本里直接用，无需 import）。你用它们<b>拼</b>出自己的方案——对称/非对称、整体/字段、要不要签名，随你组合：
           </p>
-        </Section>
-
-        <Section title="三步上手">
-          <ol className="list-decimal space-y-1 pl-5">
-            <li>在<b>脚本库</b>新建两条脚本：类型 <Kbd>请求加密</Kbd> 和 <Kbd>响应解密</Kbd>（模板见下）。</li>
-            <li>在<b>项目配置 → encryption_decryption</b> 填 handler 名与策略（见配置示例）。</li>
-            <li>跑用例：命中的接口自动加解密，请求体照写明文、断言照写解密后结构。</li>
-          </ol>
-        </Section>
-
-        <Section title="crypto 工具箱（脚本里直接用，无需 import）">
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-xs">
               <thead>
@@ -211,14 +234,26 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
               </tbody>
             </table>
           </div>
+          <p className="font-medium text-foreground">例：自己拼一套（AES-GCM 整体加密 + HMAC 签名）</p>
+          <Code>{CUSTOM_EXAMPLE}</Code>
+          <p>换成你服务端要的信封字段名、算法、签名头即可——这就是"搭建自己的加解密"。</p>
         </Section>
 
-        <Section title="作用范围策略：只让部分接口加密">
+        <Section title="第 3 步 · 配置指到你的脚本">
+          <p>项目配置 →「encryption_decryption」，填脚本名 + 开关：</p>
+          <Code>{CONFIG_BASE}</Code>
+          <p>
+            <Kbd>custom_crypto_only=true</Kbd> = 只走你的脚本。密钥等参数放 config，脚本里 <Kbd>config.get("key")</Kbd> 取，
+            <b>不写死在脚本里</b>，方便不同环境换值。
+          </p>
+        </Section>
+
+        <Section title="第 4 步 · 控制作用范围：只让部分接口加密">
           <div className="rounded-lg border bg-card p-3">
             <ScopeDiagram />
           </div>
           <p>
-            <Kbd>encryption_decryption</Kbd> 是<b>项目级全局配置</b>，靠 <Kbd>crypto.should_apply</Kbd> 分流：
+            <Kbd>encryption_decryption</Kbd> 是<b>项目级全局配置</b>，靠 <Kbd>crypto.should_apply(config, vars)</Kbd> 分流：
             <b>用例开关 rel_crypto（1/0）优先级最高</b>，其次全局 <Kbd>crypto_scope</Kbd>：
           </p>
           <ul className="list-disc space-y-1 pl-5">
@@ -232,14 +267,21 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
           </p>
         </Section>
 
-        <Section title="脚本模板">
-          <p className="font-medium text-foreground">请求加密（kind = crypto_request）</p>
-          <Code>{REQUEST_SCRIPT}</Code>
-          <p className="font-medium text-foreground">响应解密（kind = crypto_response）</p>
-          <Code>{RESPONSE_SCRIPT}</Code>
+        <Section title="第 5 步 · 测试与生效">
+          <ol className="list-decimal space-y-1 pl-5">
+            <li>脚本页右上「<b>测试运行</b>」：填 <Kbd>测试输入</Kbd>（headers/body/config/vars），看输出对不对。</li>
+            <li>脚本内容改完即时生效；只有改了平台引擎/沙箱相关代码才需重启 worker。</li>
+            <li>跑一条命中的用例：请求体照写<b>明文</b>，断言照写<b>解密后</b>结构，加解密对用例透明。</li>
+          </ol>
         </Section>
 
-        <Section title="配置示例（encryption_decryption）">
+        <Section title="完整示例 · 本系统 RSA + AES-ECB + 签名">
+          <p>把前面几步串起来的一个真实例子：RSA 公钥加密随机 AES 密钥、AES-ECB 加密请求体、叠加 power-* 签名头。可直接复制改成你的。</p>
+          <p className="font-medium text-foreground">请求脚本（crypto_request）</p>
+          <Code>{REQUEST_SCRIPT}</Code>
+          <p className="font-medium text-foreground">响应脚本（crypto_response）</p>
+          <Code>{RESPONSE_SCRIPT}</Code>
+          <p className="font-medium text-foreground">配置</p>
           <Code>{CONFIG_EXAMPLE}</Code>
         </Section>
 
