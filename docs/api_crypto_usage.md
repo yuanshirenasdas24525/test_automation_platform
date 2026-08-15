@@ -340,6 +340,7 @@ def handler(response_body, config, vars=None):
 | `crypto.b64encode(raw)` / `b64decode(text)` | base64 |
 | `crypto.random_hex(n=8)` / `now_ms()` | 随机串 / 毫秒时间戳 |
 | `crypto.generate_rsa_keypair(bits=2048)` | 生成 `(私钥PEM, 公钥PEM)` |
+| `crypto.should_apply(config, vars, flag="rel_crypto")` | 按作用范围策略判断当前用例是否该加解密（见下节） |
 | `crypto.TEST_PUBLIC_KEY_PEM` / `TEST_PRIVATE_KEY_PEM` | 自测靶子内置密钥（仅自测用） |
 
 密钥留空（传 `None`）时 RSA 函数回落内置测试密钥；真实项目在 config 里传自己的密钥。
@@ -354,9 +355,8 @@ def handler(response_body, config, vars=None):
 
 ```python
 def handler(headers, body, config, vars=None):
-    vars = vars or {}
-    # 开关：用例没设 rel_crypto=1 就原样放行，不加密不签名
-    if str(vars.get("rel_crypto") or "").strip().lower() not in ("1", "true", "on", "yes", "y"):
+    # 作用范围策略：全局/指定用例/指定模块，见「加解密作用范围策略」小节
+    if not crypto.should_apply(config, vars):
         return headers, body
     headers = dict(headers or {})
     # 可选：对明文业务参数加 power-* 签名头
@@ -380,8 +380,7 @@ def handler(headers, body, config, vars=None):
 
 ```python
 def handler(response_body, config, vars=None):
-    vars = vars or {}
-    if str(vars.get("rel_crypto") or "").strip().lower() not in ("1", "true", "on", "yes", "y"):
+    if not crypto.should_apply(config, vars):
         return response_body
     if isinstance(response_body, dict) and "key" in response_body and "data" in response_body:
         return crypto.rsa_aes_ecb_decrypt(
@@ -406,16 +405,43 @@ sign_access_key = REL_ECHO_AK               # 留空用内置默认
 
 用例请求体照常写**明文** dict，断言照常写**解密后**结构——加解密全透明。
 
-### 只对部分用例加密（与不加密接口混用）
+### 加解密作用范围策略（全局 / 指定用例 / 指定模块混用）
 
-`encryption_decryption` 是**项目级全局配置**（`config_center.get("encryption_decryption", project_id=...)`），一旦开启会作用到该项目**所有** API 用例；step/case 无法在配置层单独关。因此**不能靠配置**做"只对某些接口加密"。
+`encryption_decryption` 是**项目级全局配置**（`config_center.get("encryption_decryption", project_id=...)`），一旦开启会作用到该项目**所有** API 用例；step/case 无法在配置层单独关。因此加密/不加密混用不能靠配置分组，而是由脚本里的 `crypto.should_apply(config, vars)` 按策略判定——它读**全局配置的策略字段** + **用例/模块身份**（引擎已把 `_case_id`/`_case_name`/`_module_name`/`_module_id` 注入变量池）。
 
-正确做法是用上面脚本里的**开关变量 `rel_crypto`**（脚本能读到用例变量池 `vars`）：
+判定优先级：**用例显式开关 > 全局策略**。
 
-- **要加密的用例**：给它加一个变量 `rel_crypto = 1`（用例级变量即可，作用域只在该用例）。脚本命中开关 → 加密+签名。
-- **不加密的接口**：什么都不用做。脚本读不到 `rel_crypto` → 直接原样放行，明文照常发、响应照常透传。
+**① 用例显式开关（最高优先，单用例强制开/关）**
 
-这样全局开着加解密，也只有标记的用例真正加密，其它接口不受影响。**变量名 `rel_crypto` 可自定义**，与脚本里的判断保持一致即可。
+给用例加变量 `rel_crypto = 1`（强制加密）或 `rel_crypto = 0`（强制不加密），作用域仅该用例，覆盖下面的全局策略。
+
+**② 全局策略（`crypto_scope`）**
+
+| 配置 | 效果 | 对应诉求 |
+|---|---|---|
+| `crypto_scope = all`（默认/留空） | 全项目 API 用例都加密 | **默认全局开启** |
+| `crypto_scope = include` + `crypto_cases = ["用例名", 1024]` | 只有名单里的用例加密 | **指定接口开启** |
+| `crypto_scope = include` + `crypto_modules = ["支付","结算"]` | 名单模块下的用例都加密 | **指定模块开启** |
+| `crypto_scope = exclude` + `crypto_modules/crypto_cases` | 名单之外的都加密 | 少数接口除外 |
+
+`crypto_cases` 支持**用例名或用例 id**，`crypto_modules` 是**模块名**，都支持 JSON 数组或逗号串。`include`/`exclude` 可同时给 `crypto_modules` 和 `crypto_cases`，命中任一即算命中。
+
+**配置示例——只加密"支付"模块 + 一个额外用例：**
+
+```text
+on_off = true
+custom_request_handler = rel_request_crypto
+custom_response_handler = rel_response_crypto
+custom_crypto_only = true
+crypto_scope = include
+crypto_modules = ["支付"]
+crypto_cases = ["对账单下载加密用例"]
+rsa_public_key = <公钥，留空用内置>
+```
+
+其它模块/用例：脚本 `should_apply` 返回 False → 明文原样放行、响应原样透传，完全不受影响。想临时给某个不在名单里的用例开一下，加个用例变量 `rel_crypto=1` 即可。
+
+> 变量名默认 `rel_crypto`，可在 `should_apply(config, vars, flag="自定义名")` 里改。
 
 ### 自测靶子（服务端 mock，验证链路用）
 
