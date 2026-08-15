@@ -198,6 +198,7 @@ const caseSchema = z.object({
   steps: z.array(z.any()).optional(),
   pre_hook: z.array(z.any()).optional(),
   case_type: z.string().optional(),
+  variables: z.record(z.unknown()).optional(),
 });
 
 export type CaseFormValues = z.infer<typeof caseSchema>;
@@ -458,6 +459,7 @@ export function CaseDialog({
         steps,
         pre_hook: ((src.pre_hook as TestCaseHookDraft[] | undefined) ?? []).map(hookToStepDraft),
         case_type: (src.case_type as string | undefined) ?? category,
+        variables: (src.variables as Record<string, unknown> | null | undefined) ?? {},
       };
     }
     return {
@@ -478,6 +480,7 @@ export function CaseDialog({
       steps: [],
       pre_hook: [],
       case_type: category,
+      variables: {},
     };
   }, [existing, detail, category]);
 
@@ -522,6 +525,21 @@ export function CaseDialog({
       : state?.mode === "create" && state.insertAt !== undefined
         ? "在此处插入用例"
         : "新建用例";
+
+  // 加解密开关（三态）：写用例变量 rel_crypto。default=不写(跟随全局策略)/on=1/off=0
+  const relCryptoRaw = (form.watch("variables") as Record<string, unknown> | undefined)?.rel_crypto;
+  const relCryptoMode = (() => {
+    if (relCryptoRaw === undefined || relCryptoRaw === null || relCryptoRaw === "") return "default";
+    return ["1", "true", "on", "yes", "y"].includes(String(relCryptoRaw).trim().toLowerCase())
+      ? "on"
+      : "off";
+  })();
+  const setRelCryptoMode = (mode: string) => {
+    const cur = { ...((form.watch("variables") as Record<string, unknown> | undefined) ?? {}) };
+    if (mode === "default") delete cur.rel_crypto;
+    else cur.rel_crypto = mode === "on" ? "1" : "0";
+    form.setValue("variables", cur, { shouldDirty: true });
+  };
 
   return (
     <Dialog open={state !== null} onOpenChange={(v) => !v && onClose()}>
@@ -650,6 +668,25 @@ export function CaseDialog({
               跳过执行
             </label>
           )}
+
+          {isApi ? (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <Label className="text-muted-foreground">加解密</Label>
+              <Select value={relCryptoMode} onValueChange={setRelCryptoMode}>
+                <SelectTrigger className="h-8 w-[220px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">默认（跟随全局策略）</SelectItem>
+                  <SelectItem value="on">强制加密（rel_crypto=1）</SelectItem>
+                  <SelectItem value="off">强制不加密（rel_crypto=0）</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-muted-foreground">
+                写入用例变量 rel_crypto，覆盖配置中心的全局/模块策略
+              </span>
+            </div>
+          ) : null}
 
           {isApi ? (
             <div className="rounded-md border border-amber-300/70 bg-amber-50/40 p-3 dark:bg-amber-950/10">
