@@ -346,6 +346,16 @@ class CaseExecutor:
         project_id = case_dict.get("project_id")
         if project_id is not None:
             ctx.set_var("_project_id", project_id)
+        # 用例/模块身份：供脚本（如加解密策略 crypto.should_apply）按用例/模块判定作用范围。
+        # 都是 `_` 前缀内部变量，_run_shared_vars 注入时会跳过 `_` 开头，不会被串写。
+        for _k, _v in (
+            ("_case_id", case_dict.get("id")),
+            ("_case_name", case_dict.get("name")),
+            ("_module_name", case_dict.get("module_name")),
+            ("_module_id", case_dict.get("module_id")),
+        ):
+            if _v is not None:
+                ctx.set_var(_k, _v)
         # 0a) 项目级：default_parameters（兜底层）
         self._inject_default_parameters(ctx)
         # 0b) sql: 前缀需要的 target DB 连接，从配置中心拿；拿不到不阻塞

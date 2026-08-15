@@ -100,6 +100,70 @@ def now_ms() -> int:
     return int(round(_time.time() * 1000))
 
 
+_TRUE = {"1", "true", "on", "yes", "y", "启用", "开启"}
+
+
+def _as_list(raw: Any) -> list[str]:
+    """JSON 数组字符串 / 逗号串 / 列表，统一成字符串列表。"""
+    if raw in (None, "", False):
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw).strip()
+    if text.startswith("["):
+        import json as _json
+
+        try:
+            arr = _json.loads(text)
+            return [str(x).strip() for x in arr if str(x).strip()]
+        except Exception:  # noqa: BLE001
+            pass
+    return [p.strip() for p in text.split(",") if p.strip()]
+
+
+def should_apply(config: Any, vars: Any = None, flag: str = "rel_crypto") -> bool:  # noqa: A002
+    """按"全局/指定用例/指定模块"策略判断当前用例是否该加解密。
+
+    优先级：用例显式开关 > 全局策略。config/vars 均可缺省。
+
+    - 用例显式开关：用例变量 ``flag``（默认 ``rel_crypto``）= 1/true/on → 强制开；
+      = 0/false/off → 强制关。未设则看下面的全局策略。
+    - 全局策略 ``config['crypto_scope']``：
+        ``all`` / 缺省  —— 全项目开启（模式1）
+        ``include``     —— 仅命中 ``crypto_modules`` / ``crypto_cases`` 名单的开启（模式2/3）
+        ``exclude``     —— 名单之外的开启
+    - ``crypto_modules``：模块名列表；``crypto_cases``：用例名或用例 id 列表
+      （JSON 数组、逗号串均可）。
+    """
+    vars = vars or {}
+    config = config or {}
+
+    explicit = vars.get(flag)
+    if explicit is not None and str(explicit).strip() != "":
+        return str(explicit).strip().lower() in _TRUE
+
+    scope = str(config.get("crypto_scope") or "all").strip().lower()
+    if scope in ("all", "global", ""):
+        return True
+
+    modules = _as_list(config.get("crypto_modules"))
+    cases = _as_list(config.get("crypto_cases"))
+    cur_module = str(vars.get("_module_name") or "")
+    cur_case = str(vars.get("_case_name") or "")
+    cur_case_id = str(vars.get("_case_id") or "")
+    hit = bool(
+        (cur_module and cur_module in modules)
+        or (cur_case and cur_case in cases)
+        or (cur_case_id and cur_case_id in cases)
+    )
+
+    if scope in ("include", "whitelist", "only"):
+        return hit
+    if scope in ("exclude", "blacklist"):
+        return not hit
+    return True
+
+
 def generate_rsa_keypair(bits: int = 2048) -> tuple[str, str]:
     """返回 (private_pem_pkcs8, public_pem)，仅便于生成密钥。"""
     return _generate_keypair(bits)
