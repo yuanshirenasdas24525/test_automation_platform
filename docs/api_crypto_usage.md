@@ -324,6 +324,7 @@ def handler(response_body, config, vars=None):
 - **只能 import**：`base64 / hashlib / hmac / json / math / random / re / time / uuid`，外加受控的 `crypto`。
 - **禁止** import `cryptography` 等重库；内置函数受限（**没有** `bytes / ord / chr / sorted / open` 等）；静态拦截所有 dunder 访问与非白名单 import。
 - 因此 **RSA/AES 这类重加密不能在脚本里手写**，必须调下面的 `crypto` 工具箱（它是 repo 里受信代码，把审过的高层原语递进沙箱）。
+- 脚本用**分离的 globals/locals** 执行，`handler` **调不到同级定义的其它顶层函数**（会 `NameError`）。逻辑要么全内联进 `handler`，要么用 `handler` 内的嵌套函数。
 
 ### `crypto` 工具箱 API
 
@@ -347,13 +348,19 @@ def handler(response_body, config, vars=None):
 
 对应自测靶子 `POST /api/auth/echo_test`（见下一节）。
 
+脚本带一个**开关变量 `rel_crypto`**：只有用例变量池里 `rel_crypto` 为真才加密/解密，否则原样放行。这样即使 `encryption_decryption` 是项目级全局配置、对所有 API 用例生效，也只有**标记了 `rel_crypto=1` 的用例**真正走加密，其它接口完全不受影响（见后面「只对部分用例加密」）。
+
 **请求脚本**（名称任意，如 `rel_request_crypto`，kind `crypto_request`）：
 
 ```python
 def handler(headers, body, config, vars=None):
+    vars = vars or {}
+    # 开关：用例没设 rel_crypto=1 就原样放行，不加密不签名
+    if str(vars.get("rel_crypto") or "").strip().lower() not in ("1", "true", "on", "yes", "y"):
+        return headers, body
     headers = dict(headers or {})
     # 可选：对明文业务参数加 power-* 签名头
-    if str(config.get("sign_on", "")).lower() in ("1", "true", "on", "yes", "y"):
+    if str(config.get("sign_on") or "").strip().lower() in ("1", "true", "on", "yes", "y"):
         params = body if isinstance(body, dict) else {}
         ts = str(crypto.now_ms())
         nonce = crypto.random_hex(6)
@@ -373,6 +380,9 @@ def handler(headers, body, config, vars=None):
 
 ```python
 def handler(response_body, config, vars=None):
+    vars = vars or {}
+    if str(vars.get("rel_crypto") or "").strip().lower() not in ("1", "true", "on", "yes", "y"):
+        return response_body
     if isinstance(response_body, dict) and "key" in response_body and "data" in response_body:
         return crypto.rsa_aes_ecb_decrypt(
             response_body,
@@ -395,6 +405,17 @@ sign_access_key = REL_ECHO_AK               # 留空用内置默认
 ```
 
 用例请求体照常写**明文** dict，断言照常写**解密后**结构——加解密全透明。
+
+### 只对部分用例加密（与不加密接口混用）
+
+`encryption_decryption` 是**项目级全局配置**（`config_center.get("encryption_decryption", project_id=...)`），一旦开启会作用到该项目**所有** API 用例；step/case 无法在配置层单独关。因此**不能靠配置**做"只对某些接口加密"。
+
+正确做法是用上面脚本里的**开关变量 `rel_crypto`**（脚本能读到用例变量池 `vars`）：
+
+- **要加密的用例**：给它加一个变量 `rel_crypto = 1`（用例级变量即可，作用域只在该用例）。脚本命中开关 → 加密+签名。
+- **不加密的接口**：什么都不用做。脚本读不到 `rel_crypto` → 直接原样放行，明文照常发、响应照常透传。
+
+这样全局开着加解密，也只有标记的用例真正加密，其它接口不受影响。**变量名 `rel_crypto` 可自定义**，与脚本里的判断保持一致即可。
 
 ### 自测靶子（服务端 mock，验证链路用）
 
