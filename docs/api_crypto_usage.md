@@ -163,6 +163,8 @@ response_body_whole_decrypt_field =
 
 ## 自定义加解密算法
 
+> 提示：本节是「改文件」的方式（方式二/三）。**推荐优先看后面的[方式一：页面脚本（DB）+ `crypto` 工具箱](#方式一页面脚本db-crypto-工具箱推荐)**——按项目隔离、免发版重启。三种方式对比见[自定义加解密的三种落地方式](#自定义加解密的三种落地方式)。
+
 当业务算法不是平台内置签名/AES 时，直接修改：
 
 ```text
@@ -284,6 +286,133 @@ custom_crypto_only = false
 ```
 
 表示先执行自定义函数，然后继续执行内置签名/AES 配置。适用于“先补业务字段，再走平台统一签名”的场景。
+
+## 自定义加解密的三种落地方式
+
+同样的 `custom_request_handler` / `custom_response_handler` 名字，平台按下面的优先级查找实现：**项目脚本 > 全局脚本 > 文件函数**（见 `runners/api` 调用链与 `utils/encrypt.py::RequestCryptoProcessor`）。
+
+| 方式 | 写在哪 | 隔离粒度 | 要发版/重启 | 适用 |
+|---|---|---|---|---|
+| 方式一（推荐） | **DB 页面脚本**（脚本管理） | 按项目 / 全局 | 不用（改脚本即时生效） | 项目专属算法、想快、免发版 |
+| 方式二 | `utils/<模块>.py`，配 `custom_crypto_module` | 全仓库 | 要 | 逻辑重、要 review/复用 |
+| 方式三 | 直接写进 `utils/custom_crypto.py` | 全仓库 | 要 | 真·通用的少数几个 |
+
+> 上一节的“自定义加解密算法”即方式二/三。下面重点讲**方式一**。
+
+## 方式一：页面脚本（DB）+ `crypto` 工具箱（推荐）
+
+在**脚本管理**里为项目（或全局）新建脚本，用例配置里 `custom_request_handler` / `custom_response_handler` 填**脚本名**即可命中；同名脚本会自动覆盖文件函数，因此从方式二/三迁移**不用改配置**。
+
+### 脚本约定
+
+脚本必须定义 `handler`，按 kind 不同签名不同（见 `utils/script_runtime.py`）：
+
+```python
+# kind = crypto_request
+def handler(headers, body, config, vars=None):
+    return headers, body          # 返回 (新请求头, 新请求体)
+
+# kind = crypto_response
+def handler(response_body, config, vars=None):
+    return response_body          # 返回解密后的 dict/list，进入 extract/assert
+```
+
+### 沙箱限制（重要）
+
+页面脚本跑在加固沙箱里（`utils/script_runtime.py`）：
+
+- **只能 import**：`base64 / hashlib / hmac / json / math / random / re / time / uuid`，外加受控的 `crypto`。
+- **禁止** import `cryptography` 等重库；内置函数受限（**没有** `bytes / ord / chr / sorted / open` 等）；静态拦截所有 dunder 访问与非白名单 import。
+- 因此 **RSA/AES 这类重加密不能在脚本里手写**，必须调下面的 `crypto` 工具箱（它是 repo 里受信代码，把审过的高层原语递进沙箱）。
+
+### `crypto` 工具箱 API
+
+在脚本里直接用 `crypto.xxx`（无需 import），实现见 `utils/crypto_toolkit.py`：
+
+| 函数 | 用途 |
+|---|---|
+| `crypto.rsa_aes_ecb_encrypt(data, public_key_pem=None)` | RSA(PKCS#1v1.5)+AES-ECB 加密 → `{key,data}` 信封 |
+| `crypto.rsa_aes_ecb_decrypt(payload, private_key_pem=None)` | 解密 `{key,data}` 信封 → dict/list |
+| `crypto.aes_gcm_encrypt(text, key)` / `aes_gcm_decrypt(token, key)` | AES-256-GCM 通用对称 |
+| `crypto.md5(text)` / `sha256(text)` / `hmac_sha256(text, key)` | 摘要 / 签名 |
+| `crypto.canonical(params, fields=None)` | 参数拼成 `k=v&k=v`（给 fields 按序，否则 key 升序）；沙箱没 `sorted`，签名靠它 |
+| `crypto.b64encode(raw)` / `b64decode(text)` | base64 |
+| `crypto.random_hex(n=8)` / `now_ms()` | 随机串 / 毫秒时间戳 |
+| `crypto.generate_rsa_keypair(bits=2048)` | 生成 `(私钥PEM, 公钥PEM)` |
+| `crypto.TEST_PUBLIC_KEY_PEM` / `TEST_PRIVATE_KEY_PEM` | 自测靶子内置密钥（仅自测用） |
+
+密钥留空（传 `None`）时 RSA 函数回落内置测试密钥；真实项目在 config 里传自己的密钥。
+
+### 完整示例：RSA+AES-ECB 信封 + power-\* 请求签名
+
+对应自测靶子 `POST /api/auth/echo_test`（见下一节）。
+
+**请求脚本**（名称任意，如 `rel_request_crypto`，kind `crypto_request`）：
+
+```python
+def handler(headers, body, config, vars=None):
+    headers = dict(headers or {})
+    # 可选：对明文业务参数加 power-* 签名头
+    if str(config.get("sign_on", "")).lower() in ("1", "true", "on", "yes", "y"):
+        params = body if isinstance(body, dict) else {}
+        ts = str(crypto.now_ms())
+        nonce = crypto.random_hex(6)
+        secret = config.get("sign_secret") or "rel-echo-sign-secret-2026"
+        raw = crypto.canonical(params) + "&" + ts + nonce + secret
+        headers["power-timestamp"] = ts
+        headers["power-nonce"] = nonce
+        headers["power-access-key"] = config.get("sign_access_key") or "REL_ECHO_AK"
+        headers["power-sign"] = crypto.md5(raw)
+    # RSA+AES-ECB 加密请求体
+    return headers, crypto.rsa_aes_ecb_encrypt(
+        body, public_key_pem=config.get("rsa_public_key") or crypto.TEST_PUBLIC_KEY_PEM
+    )
+```
+
+**响应脚本**（名称 `rel_response_crypto`，kind `crypto_response`）：
+
+```python
+def handler(response_body, config, vars=None):
+    if isinstance(response_body, dict) and "key" in response_body and "data" in response_body:
+        return crypto.rsa_aes_ecb_decrypt(
+            response_body,
+            private_key_pem=config.get("rsa_private_key") or crypto.TEST_PRIVATE_KEY_PEM,
+        )
+    return response_body
+```
+
+**用例配置**（`encryption_decryption`）：
+
+```text
+on_off = true
+custom_request_handler = rel_request_crypto
+custom_response_handler = rel_response_crypto
+custom_crypto_only = true
+rsa_public_key =  <被测系统公钥；打自测靶子可留空用内置公钥>
+sign_on = true
+sign_secret = rel-echo-sign-secret-2026     # 留空用内置默认
+sign_access_key = REL_ECHO_AK               # 留空用内置默认
+```
+
+用例请求体照常写**明文** dict，断言照常写**解密后**结构——加解密全透明。
+
+### 自测靶子（服务端 mock，验证链路用）
+
+平台内建两个无鉴权靶子，模拟“外部被测系统”，方便端到端验证加解密：
+
+| 接口 | 说明 |
+|---|---|
+| `POST /api/auth/echo_test` | 强制加密 + 强制 power-* 验签的回显靶子：解密失败 400 / 验签失败 401 / 字段校验 422（`username`、`amount` 必填）/ 成功回 `{status,message:"hello",data:<回显>}`（加密返回）。见 `server/api/auth.py` |
+| `POST /api/crypto_echo/echo` | 纯回显靶子（只加解密、不校验字段）；`GET /api/crypto_echo/public-key` 返回内置公钥 PEM。见 `server/api/crypto_echo.py` |
+
+靶子内置的**私钥写死在服务端**、公钥即 `crypto.TEST_PUBLIC_KEY_PEM`，与前端 REL 解密 HTML 同源。
+
+### 切换与排错
+
+- 改了 `utils/script_runtime.py`（沙箱白名单）或 `utils/crypto_toolkit.py` 后，**必须重启 worker**（用例在 celery worker 里执行）。
+- 报 `NameError: name 'crypto' is not defined` → worker 用的是旧代码，重启 worker。
+- 报 `handler 不存在` / 走了文件旧逻辑 → 脚本没保存或名字/kind 不对。
+- 切换脚本内容与重启之间别跑用例（新旧不匹配的短窗口）。
 
 ## 常见配置组合
 
