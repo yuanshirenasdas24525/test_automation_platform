@@ -154,10 +154,10 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
         if cleanup_tokens:
             try:
                 db_session.rollback()
-                from server.services.web_test_data_service import cleanup_web_test_accounts
+                from server.services.test_accounts import cleanup_web_test_accounts
 
-                cleaned = cleanup_web_test_accounts(db_session, cleanup_tokens)
-                LOGGER.info("[run_test_task] 已清理 %s 个 Web 临时测试账号", cleaned)
+                cleanup_web_test_accounts(cleanup_tokens)
+                LOGGER.info("[run_test_task] 已处理 %s 个 Web 临时测试账号的清理", len(cleanup_tokens))
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("[run_test_task] 清理 Web 临时测试账号失败（忽略）: %s", exc)
         try:

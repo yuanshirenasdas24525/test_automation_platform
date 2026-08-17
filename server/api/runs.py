@@ -127,7 +127,7 @@ def run_test(req: RunTestRequest, db: DBDep):
     # AI Web 用例的账号变量只在运行前绑定。真实密码不落用例、不进入 AI 上下文；
     # 动态账号随本次任务创建，任务 finally 中统一清理。
     if cat_lower in {"web", "mixed"}:
-        from server.services.web_test_data_service import (
+        from server.services.test_accounts import (
             WebTestDataError,
             prepare_web_test_data,
         )
