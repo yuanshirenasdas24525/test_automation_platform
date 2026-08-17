@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -128,6 +128,31 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
   const [newDraftCache, setNewDraftCache] = useState<CachedScriptDraft | null>(null);
   const [tutorialOpen, setTutorialOpen] = useState(false);
   const skipNextCacheWrite = useRef(false);
+
+  // 右侧属性栏宽度：可拖分隔条动态调整（左侧代码区至少保留 360px）。
+  const [asideWidth, setAsideWidth] = useState(320);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const startResize = (e: ReactPointerEvent) => {
+    e.preventDefault();
+    const grid = gridRef.current;
+    if (!grid) return;
+    const onMove = (ev: PointerEvent) => {
+      const rect = grid.getBoundingClientRect();
+      const next = rect.right - ev.clientX;              // 光标到右边缘的距离即属性栏宽度
+      const max = Math.max(280, rect.width - 360);       // 给左侧代码区留 ≥360px
+      setAsideWidth(Math.min(Math.max(next, 260), max));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
 
   const queryParams = { project_id: projectId, scope, kind: kind === "all" ? undefined : kind };
   const scriptsQuery = useQuery({
@@ -336,7 +361,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
   };
 
   return (
-    <div className="flex h-full min-h-[640px] flex-col bg-background">
+    <div className="flex h-full min-h-0 flex-col bg-background">
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -480,8 +505,12 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
               </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_320px]">
-              <div className="min-h-0 p-6">
+            <div
+              ref={gridRef}
+              className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]"
+              style={{ gridTemplateColumns: `minmax(0,1fr) ${asideWidth}px` }}
+            >
+              <div className="min-h-0 overflow-y-auto p-6">
                 <Label className="mb-2 block">Python 脚本</Label>
                 <RichTextEditor
                   key={`script-${current.id ?? "draft"}-${current.kind}`}
@@ -496,7 +525,13 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                   placeholder="用代码块编写 Python handler"
                 />
               </div>
-              <aside className="border-l bg-muted/20 p-5">
+              <div className="relative min-h-0 border-l">
+                <div
+                  onPointerDown={startResize}
+                  title="拖动调整左右宽度"
+                  className="absolute inset-y-0 -left-1 z-20 w-2 cursor-col-resize transition-colors hover:bg-primary/30"
+                />
+                <aside className="h-full overflow-y-auto bg-muted/20 p-5">
                 <div className="space-y-5">
                   <div>
                     <Label className="mb-2 block">脚本名称</Label>
@@ -589,7 +624,8 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                     <pre className="h-28 overflow-auto rounded-md border bg-background p-3 text-xs text-muted-foreground">{testOutput}</pre>
                   </div>
                 </div>
-              </aside>
+                </aside>
+              </div>
             </div>
           </section>
         )}

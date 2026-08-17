@@ -32,7 +32,14 @@ router = APIRouter(tags=["runs"])
 
 
 @router.post("/run_test")
-async def run_test(req: RunTestRequest, db: DBDep):
+def run_test(req: RunTestRequest, db: DBDep):
+    # 必须是同步 def：本函数会同步做两件阻塞 I/O ——
+    #   1. prepare_web_test_data 通过 requests 调「账号工厂」登录被测系统；
+    #   2. sync_mode 下 run_test_task.apply() 在本进程内同步跑 pytest。
+    # 若声明成 async def，这些阻塞调用会卡死 uvicorn 的事件循环；当被测系统就是
+    # 平台自己（api_base_url 回落到 web/browser.base_url = 127.0.0.1:54351）时，
+    # 账号工厂回调本平台的 /api/auth/login 永远等不到事件循环处理 → ReadTimeout。
+    # 用同步 def 让 Starlette 把它丢进线程池，事件循环空出来响应自调用。
     # 延迟 import：read_test_cases 里会拖一堆 loader 依赖；tasks 会拖 Celery。
     from tasks import run_test_task
     from utils.read_test_cases import get_cases_v2_from_db

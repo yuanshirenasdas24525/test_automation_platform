@@ -39,7 +39,7 @@ function ToolbarGroup({
   compact?: boolean;
 }) {
   return (
-    <div className={cn("flex items-center gap-0.5", compact ? "px-0.5" : "px-1")}>
+    <div className={cn("flex shrink-0 items-center gap-0.5", compact ? "px-0.5" : "px-1")}>
       {buttons.map((btn) => (
         <button
           key={btn.label}
@@ -61,7 +61,7 @@ function ToolbarGroup({
 }
 
 function Divider() {
-  return <div className="mx-0.5 h-5 w-px bg-border" />;
+  return <div className="mx-0.5 h-5 w-px shrink-0 bg-border" />;
 }
 
 export function Toolbar({
@@ -207,7 +207,7 @@ export function Toolbar({
 
   if (level === "minimal") {
     return (
-      <div className="flex items-center gap-0 rounded-t-md border-b bg-muted/30 px-1.5 py-1">
+      <div className="flex items-center gap-0 overflow-x-auto rounded-t-md border-b bg-muted/30 px-1.5 py-1">
         <ToolbarGroup buttons={[boldBtn, italicBtn, underlineBtn]} compact />
         <Divider />
         <ToolbarGroup buttons={[bulletBtn, orderedBtn]} compact />
@@ -225,7 +225,7 @@ export function Toolbar({
   }
 
   return (
-    <div className="flex items-center gap-0 rounded-t-md border-b bg-muted/30 px-1.5 py-1">
+    <div className="flex items-center gap-0 overflow-x-auto rounded-t-md border-b bg-muted/30 px-1.5 py-1">
       <ToolbarGroup buttons={[boldBtn, italicBtn, underlineBtn, strikeBtn, codeBtn]} compact />
       <Divider />
       <ToolbarGroup buttons={[h1Btn, h2Btn, h3Btn]} compact />
