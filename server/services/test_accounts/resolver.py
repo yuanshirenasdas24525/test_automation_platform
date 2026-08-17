@@ -18,6 +18,9 @@ _PROFILE_STATE = {
     "dynamic_active": "normal",
     "dynamic_disabled": "disabled",
     "dynamic_boundary": "boundary",
+    # isolated_lock_account 是"连续失败把账号跑锁"的破坏性场景，需要每轮一次性可锁账号；
+    # 静态池里放一个 state=locked 的常驻账号语义上并不对，真正正确的是走 dynamic_script。
+    # 这里保留映射只是让"池里恰好有 locked 账号"时也能兜底，别指望它做隔离。
     "isolated_lock_account": "locked",
 }
 _STATE_LABEL = {
@@ -33,9 +36,16 @@ class ResolvedAccount:
 
 
 def validate_account_requirement(
-    session: Session, project_id: int, requirement: dict[str, Any]
+    session: Session,
+    project_id: int,
+    requirement: dict[str, Any],
+    *,
+    sources: dict[str, Any] | None = None,
 ) -> list[str]:
-    """运行/提交前校验需求可否绑定；返回错误文案列表（空=可绑定）。"""
+    """运行/提交前校验需求可否绑定；返回错误文案列表（空=可绑定）。
+
+    调用方已加载 sources 时可传入复用，避免每条用例重复查库。
+    """
     status = str(requirement.get("status") or "ready")
     if status != "ready":
         return [str(requirement.get("reason") or "测试数据前置条件不满足")]
@@ -46,9 +56,10 @@ def validate_account_requirement(
         "LOGIN_THROTTLE_ENABLED", "1"
     ).strip().lower() in {"0", "false", "no", "off"}:
         return ["当前环境已关闭登录限流，无法验证连续失败后的账号锁定"]
-    from server.services.test_accounts.sources import load_account_sources
+    if sources is None:
+        from server.services.test_accounts.sources import load_account_sources
 
-    sources = load_account_sources(session, project_id)
+        sources = load_account_sources(session, project_id)
     if _pick_pool_account(sources["accounts"], profile) is not None:
         return []
     if sources["dynamic_script"]:

@@ -49,3 +49,36 @@ def test_prepare_collects_cleanup_token_from_script(monkeypatch):
     assert cases[0]["variables"]["username"] == "fresh"
     assert len(tokens) == 1
     assert tokens[0]["script_name"] == "provision"
+
+
+def test_cleanup_token_is_attached_to_case_for_celery_transport(monkeypatch):
+    # 回归 C1：令牌必须挂到 case 上，否则跨 Celery 进程边界丢失、动态账号泄漏。
+    fake = lambda *_: _fake_sources([], "provision")
+    monkeypatch.setattr(binding, "load_account_sources", fake)
+    monkeypatch.setattr("server.services.test_accounts.sources.load_account_sources", fake)
+    monkeypatch.setattr(
+        "server.services.test_accounts.resolver.run_named_script",
+        lambda *a, **k: (True, {"ok": True, "result": {"username": "fresh", "password": "pw"}, "cleanup": {"user_id": 9}}),
+    )
+    cases = [{
+        "name": "停用账号", "variables": {"username": "", "password": ""},
+        "generation_metadata": {"test_data_requirement": {
+            "status": "ready", "profile": "dynamic_disabled", "credential_mode": "correct",
+            "username_variable": "username", "password_variable": "password",
+        }},
+    }]
+    binding.prepare_web_test_data(None, cases, project_id=1)
+
+    # 1) 令牌挂在 case 上（随 cases 序列化进 Celery 载荷）
+    assert cases[0]["_test_data_cleanup_tokens"][0]["script_name"] == "provision"
+
+    # 2) 复现 run_test_task 的重建逻辑，证明令牌真能被收尾清理拿到
+    reconstructed = [
+        dict(token)
+        for case in cases
+        if isinstance(case, dict)
+        for token in (case.get("_test_data_cleanup_tokens") or [])
+        if isinstance(token, dict)
+    ]
+    assert len(reconstructed) == 1
+    assert reconstructed[0]["payload"] == {"user_id": 9}

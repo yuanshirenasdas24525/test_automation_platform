@@ -30,7 +30,9 @@ def prepare_web_test_data(
             requirement = infer_account_requirement(
                 case.get("name"), case.get("description"), case.get("variables") or {}
             )
-        errors = validate_account_requirement(session, project_id, requirement)
+        errors = validate_account_requirement(
+            session, project_id, requirement, sources=sources
+        )
         if errors:
             raise WebTestDataError(
                 f"用例“{case.get('name')}”测试数据未就绪：{'；'.join(errors)}"
@@ -44,6 +46,12 @@ def prepare_web_test_data(
             case["variables"] = variables
         if resolved.cleanup_token is not None:
             cleanup_tokens.append(resolved.cleanup_token)
+            # 令牌必须挂回 case：cases 会被序列化进 Celery 载荷，run_test_task 收尾时
+            # 从 case["_test_data_cleanup_tokens"] 重建令牌来清理脚本造的号。只返回列表
+            # 传不过进程边界（runs.py 不转发返回值），会导致动态账号泄漏。
+            case_tokens = list(case.get("_test_data_cleanup_tokens") or [])
+            case_tokens.append(resolved.cleanup_token)
+            case["_test_data_cleanup_tokens"] = case_tokens
     return cleanup_tokens
 
 
