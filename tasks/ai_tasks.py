@@ -20,6 +20,7 @@ import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from typing import Any, Optional
 
 # celery worker fork 子进程时 sys.path 可能不含项目根，导致 handler 里
@@ -34,6 +35,66 @@ from utils.logger import LOGGER
 
 logger = logging.getLogger(__name__)
 
+_WEB_UI_TASK_TIME_BUDGET_SECONDS = 12 * 60
+_WEB_UI_SELECTED_FUNCTIONAL_BUDGET = 24
+_AI_RUN_PROMPT_VERSION_LIMIT = 20
+
+
+class _AiTaskCancelled(RuntimeError):
+    """任务已被用户取消，handler 应立即停止且不能覆盖 cancelled 状态。"""
+
+
+def _normalize_prompt_version(value: Any) -> str | None:
+    """对齐 ai_runs.prompt_version VARCHAR(20)，避免任务在最后收尾时回滚。"""
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized[:_AI_RUN_PROMPT_VERSION_LIMIT] or None
+
+
+def _write_web_ui_progress(
+    run: "AiRun",
+    session,
+    *,
+    batch_id: str,
+    stage: str,
+    message: str,
+    selection_completed: int = 0,
+    selection_total: int = 0,
+    generation_completed: int = 0,
+    generation_total: int = 0,
+    draft_ids: list[int] | None = None,
+    dropped_count: int = 0,
+    source_selection: dict[str, Any] | None = None,
+) -> None:
+    """每个批次提交一次轻量进度；JSON 列必须整体赋值才能触发脏检查。"""
+    from database.models import AI_RUN_STATUS_CANCELLED
+
+    session.refresh(run)
+    if run.status == AI_RUN_STATUS_CANCELLED:
+        raise _AiTaskCancelled("Web UI 用例生成已取消")
+    current_output = dict(run.output_payload or {})
+    current_output.update({
+        "batch_id": batch_id,
+        "draft_ids": list(draft_ids or []),
+        "draft_count": len(draft_ids or []),
+        "dropped_count": dropped_count,
+        "progress": {
+            "stage": stage,
+            "message": message,
+            "selection_completed": selection_completed,
+            "selection_total": selection_total,
+            "generation_completed": generation_completed,
+            "generation_total": generation_total,
+            "draft_count": len(draft_ids or []),
+            "updated_at": datetime.now().isoformat(),
+        },
+    })
+    if source_selection is not None:
+        current_output["source_selection"] = source_selection
+    run.output_payload = current_output
+    session.commit()
+
 
 @celery_app.task(name="tasks.dispatch_ai_task", bind=True)
 def dispatch_ai_task(self, ai_run_id: int) -> dict:
@@ -46,7 +107,13 @@ def dispatch_ai_task(self, ai_run_id: int) -> dict:
         4. 落 token / cost / model 等审计字段
     """
     from database.db import DB
-    from database.models import AiRun, AI_RUN_STATUS_RUNNING, AI_RUN_STATUS_SUCCESS, AI_RUN_STATUS_FAILED
+    from database.models import (
+        AI_RUN_STATUS_CANCELLED,
+        AI_RUN_STATUS_FAILED,
+        AI_RUN_STATUS_RUNNING,
+        AI_RUN_STATUS_SUCCESS,
+        AiRun,
+    )
 
     LOGGER.info(f"[ai_task] start ai_run_id={ai_run_id}")
     db = DB()
@@ -57,6 +124,9 @@ def dispatch_ai_task(self, ai_run_id: int) -> dict:
         if run is None:
             LOGGER.error(f"[ai_task] ai_run {ai_run_id} 不存在")
             return {"status": "error", "message": "ai_run not found"}
+        if run.status == AI_RUN_STATUS_CANCELLED:
+            LOGGER.info(f"[ai_task] ai_run {ai_run_id} 已取消，跳过执行")
+            return {"status": "cancelled", "ai_run_id": ai_run_id}
 
         run.status = AI_RUN_STATUS_RUNNING
         run.celery_task_id = self.request.id
@@ -70,6 +140,11 @@ def dispatch_ai_task(self, ai_run_id: int) -> dict:
 
         result = handler(run, session)
 
+        session.refresh(run)
+        if run.status == AI_RUN_STATUS_CANCELLED:
+            LOGGER.info(f"[ai_task] ai_run {ai_run_id} 在收尾前已取消")
+            return {"status": "cancelled", "ai_run_id": ai_run_id}
+
         # handler 返回 {"output": ..., "tokens_in": ..., "tokens_out": ...,
         #              "cost_usd": ..., "provider": ..., "model": ...,
         #              "prompt_hash": ..., "prompt_version": ...}
@@ -80,7 +155,7 @@ def dispatch_ai_task(self, ai_run_id: int) -> dict:
         run.provider = result.get("provider")
         run.model = result.get("model")
         run.prompt_hash = result.get("prompt_hash")
-        run.prompt_version = result.get("prompt_version")
+        run.prompt_version = _normalize_prompt_version(result.get("prompt_version"))
         run.status = AI_RUN_STATUS_SUCCESS
         run.ended_at = datetime.now()
         db.commit()
@@ -88,10 +163,17 @@ def dispatch_ai_task(self, ai_run_id: int) -> dict:
         LOGGER.info(f"[ai_task] ai_run {ai_run_id} success")
         return {"status": "success", "ai_run_id": ai_run_id}
 
+    except _AiTaskCancelled:
+        session.rollback()
+        LOGGER.info(f"[ai_task] ai_run {ai_run_id} cancelled")
+        return {"status": "cancelled", "ai_run_id": ai_run_id}
     except Exception as exc:
         LOGGER.error(f"[ai_task] ai_run {ai_run_id} failed: {exc}")
         traceback.print_exc()
         try:
+            # flush/commit 失败后 Session 处于 PendingRollbackError 状态，
+            # 必须先回滚才能重新查询并写入失败状态。
+            session.rollback()
             run = session.query(AiRun).filter(AiRun.id == ai_run_id).first()
             if run is not None:
                 run.status = AI_RUN_STATUS_FAILED
@@ -1103,7 +1185,7 @@ def _handle_test_result_analysis(run: "AiRun", session) -> dict:
 
 def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     """按当前模块自动筛选来源，并分批生成 Web UI 自动化用例草稿。"""
-    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+    from ai_gateway.gateway import ProviderError, _load_prompt, _render_prompt, chat_markdown, model_task_options
     from database.models import Module, TestCase, UiAutomationCaseDraft, UI_AUTO_DRAFT_PENDING
     from server.services.ai_model_service import get_ai_model
     from server.services.web_ui_case_generation_service import (
@@ -1138,6 +1220,17 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     if target_module is None:
         raise ValueError("当前用例模块不存在或不属于该项目")
 
+    task_started_at = monotonic()
+    draft_ids: list[int] = []
+    _write_web_ui_progress(
+        run,
+        session,
+        batch_id=batch_id,
+        stage="preparing",
+        message="正在读取当前模块、功能用例和元素库事实",
+        draft_ids=draft_ids,
+    )
+
     source_mode = str(payload.get("source_mode") or "auto")
     functional_case_ids = [int(item) for item in (payload.get("functional_case_ids") or [])]
     page_keys = [str(item) for item in (payload.get("page_keys") or [])]
@@ -1150,6 +1243,8 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     }
     selection_tokens_in = 0
     selection_tokens_out = 0
+    selection_completed_count = 0
+    selection_total_count = 0
     prompt_hashes: list[str] = []
     if source_mode == "auto":
         catalog = build_auto_source_catalog(
@@ -1177,6 +1272,20 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             candidate_batches.append(candidate_batch)
         if not candidate_batches:
             candidate_batches = [[]]
+        selection_total_count = len(candidate_batches)
+
+        _write_web_ui_progress(
+            run,
+            session,
+            batch_id=batch_id,
+            stage="source_selection",
+            message=(
+                f"事实门禁已排除 {int(catalog['budget'].get('functional_filtered') or 0)} 条非 UI 用例，"
+                f"正在筛选 {len(catalog['functional_candidates'])} 条候选（0/{len(candidate_batches)}）"
+            ),
+            selection_total=len(candidate_batches),
+            draft_ids=draft_ids,
+        )
 
         selected_case_ids: list[int] = []
         selected_page_keys: list[str] = []
@@ -1185,6 +1294,9 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         selection_prompt_hashes: list[str] = []
         invalid_selection_batches = 0
         for candidate_index, candidate_items in enumerate(candidate_batches, start=1):
+            if candidate_index > 1 and monotonic() - task_started_at >= _WEB_UI_TASK_TIME_BUDGET_SECONDS:
+                selection_warnings.append("任务达到内部时间预算，已使用当前已完成筛选结果继续生成")
+                break
             selection_placeholders = {
                 "TARGET_MODULE": catalog["target_module"],
                 "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
@@ -1201,17 +1313,30 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             selection_prompt_hash = hashlib.sha256(selection_prompt.encode("utf-8")).hexdigest()
             selection_prompt_hashes.append(selection_prompt_hash)
             prompt_hashes.append(selection_prompt_hash)
-            selection_text, tokens_in, tokens_out = chat_markdown(
-                selection_prompt,
-                cfg,
-                timeout=selection_options["timeout"],
-                system_prompt="你只负责从给定候选中筛选适合 Web UI 自动化的功能用例和页面，只输出 JSON。",
-                enable_thinking=selection_options["enable_thinking"],
-                json_mode=True,
-                max_tokens=selection_options["max_tokens"],
-                temperature=selection_options["temperature"],
-                reasoning_effort=selection_options["reasoning_effort"],
+            LOGGER.info(
+                "[web_ui_case_gen] run=%s source_selection batch=%s/%s candidates=%s",
+                run.id,
+                candidate_index,
+                len(candidate_batches),
+                len(candidate_items),
             )
+            try:
+                selection_text, tokens_in, tokens_out = chat_markdown(
+                    selection_prompt,
+                    cfg,
+                    timeout=selection_options["timeout"],
+                    system_prompt="你只负责从给定候选中筛选适合 Web UI 自动化的功能用例和页面，只输出 JSON。",
+                    enable_thinking=selection_options["enable_thinking"],
+                    json_mode=True,
+                    max_tokens=selection_options["max_tokens"],
+                    temperature=selection_options["temperature"],
+                    reasoning_effort=selection_options["reasoning_effort"],
+                )
+            except ProviderError as exc:
+                selection_text, tokens_in, tokens_out = "", 0, 0
+                selection_warnings.append(
+                    f"第 {candidate_index} 批 AI 筛选失败，已使用本地事实排序降级：{str(exc)[:120]}"
+                )
             selection_tokens_in += tokens_in or 0
             selection_tokens_out += tokens_out or 0
             selection_value = selection_text.strip()
@@ -1247,6 +1372,20 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             if batch_selection.get("rationale"):
                 selection_rationales.append(str(batch_selection["rationale"]))
             selection_warnings.extend(batch_selection.get("warnings") or [])
+            selection_completed_count = candidate_index
+            _write_web_ui_progress(
+                run,
+                session,
+                batch_id=batch_id,
+                stage="source_selection",
+                message=(
+                    f"已完成候选筛选 {candidate_index}/{len(candidate_batches)}，"
+                    f"当前选中 {len(selected_case_ids)} 条功能用例"
+                ),
+                selection_completed=candidate_index,
+                selection_total=len(candidate_batches),
+                draft_ids=draft_ids,
+            )
 
         if not selected_case_ids and invalid_selection_batches:
             fallback_selection = normalize_auto_source_selection({}, catalog)
@@ -1258,6 +1397,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             )
         if not selected_page_keys:
             selected_page_keys = list(catalog.get("fallback_page_keys") or [])
+        selected_case_ids = selected_case_ids[:_WEB_UI_SELECTED_FUNCTIONAL_BUDGET]
         selection = {
             "target_module": catalog["target_module"],
             "functional_case_ids": selected_case_ids,
@@ -1291,6 +1431,20 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             raise ValueError(f"功能用例不属于当前模块“{target_module.name}”：{out_of_scope_ids}")
     if not page_keys:
         raise ValueError("没有检索到可生成的 Web 页面；请先补录页面和元素库")
+    generation_batch_size = 6
+    initial_generation_total = max(1, (len(functional_case_ids) + generation_batch_size - 1) // generation_batch_size)
+    _write_web_ui_progress(
+        run,
+        session,
+        batch_id=batch_id,
+        stage="generation",
+        message=f"筛选完成，准备生成可执行草稿（0/{initial_generation_total}）",
+        selection_completed=selection_completed_count,
+        selection_total=selection_total_count,
+        generation_total=initial_generation_total,
+        draft_ids=draft_ids,
+        source_selection=selection,
+    )
     existing_titles = {
         str(item[0]).strip().lower()
         for item in session.query(TestCase.name)
@@ -1312,7 +1466,9 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     evidence_page_keys: set[str] = set()
     evidence_element_ids: set[int] = set()
     evidence_action_count = 0
-    generation_batch_size = 6
+    model_label = f"{cfg.provider} / {cfg.model}"
+    time_budget_reached = False
+    remaining_functional_case_ids: list[int] = []
     queue: list[list[int]] = [
         functional_case_ids[index:index + generation_batch_size]
         for index in range(0, len(functional_case_ids), generation_batch_size)
@@ -1320,6 +1476,13 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     options = model_task_options(cfg, "web_ui_case_gen")
     batch_index = 0
     while queue:
+        if batch_index > 0 and monotonic() - task_started_at >= _WEB_UI_TASK_TIME_BUDGET_SECONDS:
+            time_budget_reached = True
+            remaining_functional_case_ids = [case_id for batch in queue for case_id in batch]
+            selection["warnings"].append(
+                "本轮达到内部时间预算，已保存当前草稿；剩余功能用例可在后续批次继续"
+            )
+            break
         current_case_ids = queue.pop(0)
         batch_index += 1
         context, element_map, snapshot_map = build_generation_context(
@@ -1348,6 +1511,13 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         }
         prompt = _render_prompt(_load_prompt("web_ui_case_gen"), placeholders)
         prompt_hashes.append(hashlib.sha256(prompt.encode("utf-8")).hexdigest())
+        LOGGER.info(
+            "[web_ui_case_gen] run=%s generation batch=%s cases=%s queued=%s",
+            run.id,
+            batch_index,
+            current_case_ids,
+            len(queue),
+        )
         try:
             raw_text, tokens_in, tokens_out = chat_markdown(
                 prompt,
@@ -1373,7 +1543,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             raw_cases = parsed.get("cases") if isinstance(parsed, dict) else parsed
             if not isinstance(raw_cases, list):
                 raise ValueError("AI 输出缺少 cases 数组")
-        except (json.JSONDecodeError, ValueError) as exc:
+        except (ProviderError, json.JSONDecodeError, ValueError) as exc:
             if len(current_case_ids) > 1:
                 midpoint = max(1, len(current_case_ids) // 2)
                 queue[0:0] = [current_case_ids[:midpoint], current_case_ids[midpoint:]]
@@ -1385,6 +1555,29 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 dropped_reasons.append(
                     f"功能用例 {current_case_ids or '元素库基础批次'} 生成中断：{str(exc)[:160]}"
                 )
+            batch_summaries.append({
+                "functional_case_ids": current_case_ids,
+                "draft_count": 0,
+                "status": "split_retry" if len(current_case_ids) > 1 else "failed",
+            })
+            _write_web_ui_progress(
+                run,
+                session,
+                batch_id=batch_id,
+                stage="generation",
+                message=(
+                    f"第 {batch_index} 批输出不完整，正在缩小批次重试"
+                    if len(current_case_ids) > 1
+                    else f"第 {batch_index} 批未生成可执行草稿，继续下一批"
+                ),
+                selection_completed=selection_completed_count,
+                selection_total=selection_total_count,
+                generation_completed=batch_index,
+                generation_total=batch_index + len(queue),
+                draft_ids=draft_ids,
+                dropped_count=dropped,
+                source_selection=selection,
+            )
             continue
 
         selected_in_batch = set(current_case_ids)
@@ -1431,6 +1624,32 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 generated_functional_ids.add(functional_case_id)
             compiled_items.append(compiled)
 
+        # 每批通过事实门禁后立即入库并随进度一起提交；关闭页面或后续批次失败都不会丢失。
+        for item in compiled_items[accepted_before:]:
+            draft = UiAutomationCaseDraft(
+                project_id=project_id,
+                module_id=target_module_id,
+                functional_case_id=item["functional_case_id"],
+                ai_run_id=run.id,
+                batch_id=batch_id,
+                model_label=model_label,
+                title=item["title"],
+                description=item["description"],
+                priority=item["priority"],
+                tags=item["tags"],
+                variables=item["variables"],
+                steps=item["steps"],
+                evidence=item["evidence"],
+                warnings=item["warnings"],
+                manual_reasons=item["manual_reasons"],
+                confidence=item["confidence"],
+                visual_assertion=item["visual_assertion"],
+                status=UI_AUTO_DRAFT_PENDING,
+            )
+            session.add(draft)
+            session.flush()
+            draft_ids.append(draft.id)
+
         context_budget = context.get("context_budget") or {}
         context_budgets.append(context_budget)
         evidence_functional_ids.update(item["id"] for item in context["functional_cases"])
@@ -1446,6 +1665,23 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             "draft_count": len(compiled_items) - accepted_before,
             "status": "completed",
         })
+        _write_web_ui_progress(
+            run,
+            session,
+            batch_id=batch_id,
+            stage="generation",
+            message=(
+                f"已完成生成批次 {batch_index}/{batch_index + len(queue)}，"
+                f"当前得到 {len(draft_ids)} 条可执行草稿"
+            ),
+            selection_completed=selection_completed_count,
+            selection_total=selection_total_count,
+            generation_completed=batch_index,
+            generation_total=batch_index + len(queue),
+            draft_ids=draft_ids,
+            dropped_count=dropped,
+            source_selection=selection,
+        )
 
     if not compiled_items:
         reason_text = "；".join(list(dict.fromkeys(dropped_reasons))[:3])
@@ -1453,32 +1689,6 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             "自动筛选后没有生成通过可执行门禁的草稿。"
             f"{reason_text or '请补录元素、定位器或功能预期后重试'}"
         )
-
-    model_label = f"{cfg.provider} / {cfg.model}"
-    draft_ids: list[int] = []
-    for item in compiled_items:
-        draft = UiAutomationCaseDraft(
-            project_id=project_id,
-            functional_case_id=item["functional_case_id"],
-            ai_run_id=run.id,
-            batch_id=batch_id,
-            model_label=model_label,
-            title=item["title"],
-            description=item["description"],
-            priority=item["priority"],
-            tags=item["tags"],
-            variables=item["variables"],
-            steps=item["steps"],
-            evidence=item["evidence"],
-            warnings=item["warnings"],
-            manual_reasons=item["manual_reasons"],
-            confidence=item["confidence"],
-            visual_assertion=item["visual_assertion"],
-            status=UI_AUTO_DRAFT_PENDING,
-        )
-        session.add(draft)
-        session.flush()
-        draft_ids.append(draft.id)
 
     return {
         "output": {
@@ -1496,7 +1706,23 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 "elements_truncated": any(bool(item.get("elements_truncated")) for item in context_budgets),
             },
             "generation_batches": batch_summaries,
+            "remaining_functional_case_ids": remaining_functional_case_ids,
+            "time_budget_reached": time_budget_reached,
             "dropped_reasons": list(dict.fromkeys(dropped_reasons))[:20],
+            "progress": {
+                "stage": "completed",
+                "message": (
+                    f"本轮已保存 {len(draft_ids)} 条草稿，达到时间预算"
+                    if time_budget_reached
+                    else f"生成完成，共保存 {len(draft_ids)} 条可执行草稿"
+                ),
+                "selection_completed": selection_completed_count,
+                "selection_total": selection_total_count,
+                "generation_completed": batch_index,
+                "generation_total": batch_index + len(queue),
+                "draft_count": len(draft_ids),
+                "updated_at": datetime.now().isoformat(),
+            },
             "evidence_summary": {
                 "functional_cases": len(evidence_functional_ids),
                 "pages": len(evidence_page_keys),
@@ -1509,7 +1735,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         "provider": cfg.provider,
         "model": cfg.model,
         "prompt_hash": hashlib.sha256("".join(prompt_hashes).encode("utf-8")).hexdigest(),
-        "prompt_version": "web-ui-v3-module-scoped-batched",
+        "prompt_version": "web-ui-v4-batched",
     }
 
 

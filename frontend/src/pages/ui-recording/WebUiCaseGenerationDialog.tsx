@@ -7,6 +7,7 @@ import {
   Save,
   Send,
   Sparkles,
+  Square,
   XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -36,14 +37,38 @@ import {
   modulesApi,
   webUiCasesApi,
 } from "@/lib/api";
+import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import type {
+  AiRun,
   WebUiCaseDraft,
 } from "@/types/domain";
 
 function messageOf(error: unknown): string {
   if (error instanceof ApiError || error instanceof Error) return error.message;
   return "操作失败";
+}
+
+function payloadString(run: AiRun, key: string): string {
+  const value = run.input_payload?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function payloadModuleId(run: AiRun): number | null {
+  const value = Number(run.input_payload?.target_module_id);
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function findRestorableRun(runs: AiRun[], moduleId: number): AiRun | null {
+  const scoped = runs.filter((run) => (
+    run.feature === "web_ui_case_gen"
+    && payloadModuleId(run) === moduleId
+    && Boolean(payloadString(run, "batch_id"))
+  ));
+  return scoped.find((run) => run.status === "pending" || run.status === "running")
+    // listRuns 按创建时间倒序；已取消/失败任务也可能已保存部分草稿。
+    ?? scoped[0]
+    ?? null;
 }
 
 function ToggleRow({
@@ -85,7 +110,7 @@ export function WebUiCaseGenerationDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const initializedProjectRef = useRef<number | null>(null);
+  const initializedScopeRef = useRef("");
   const initializedDraftBatchRef = useRef("");
   const [modelName, setModelName] = useState("");
   const [structureAssertions, setStructureAssertions] = useState(true);
@@ -111,6 +136,17 @@ export function WebUiCaseGenerationDialog({
     queryFn: () => modulesApi.listForPicker(projectId),
     enabled: open,
   });
+  const recoveryQuery = useQuery({
+    queryKey: ["ai-runs", "web-ui-generation", "restore", projectId, initialModuleId],
+    queryFn: () => aiApi.listRuns({
+      project_id: projectId,
+      feature: "web_ui_case_gen",
+      limit: 100,
+    }),
+    enabled: open && initialModuleId != null,
+    staleTime: 0,
+    refetchOnMount: "always",
+  });
   const runQuery = useQuery({
     queryKey: ["ai-run", "web-ui-generation", runId],
     queryFn: () => aiApi.getRun(runId as number),
@@ -123,7 +159,10 @@ export function WebUiCaseGenerationDialog({
   const draftsQuery = useQuery({
     queryKey: ["web-ui-case-drafts", projectId, batchId],
     queryFn: () => webUiCasesApi.listDrafts({ projectId, batchId }),
-    enabled: open && Boolean(batchId) && runQuery.data?.status === "success",
+    enabled: open && Boolean(batchId),
+    refetchInterval: () => (
+      runQuery.data?.status === "pending" || runQuery.data?.status === "running" ? 2_000 : false
+    ),
   });
 
   const enabledModels = useMemo(
@@ -148,14 +187,38 @@ export function WebUiCaseGenerationDialog({
     elements_truncated?: boolean;
   } | undefined;
   const droppedReasons = (runQuery.data?.output_payload?.dropped_reasons ?? []) as string[];
+  const progress = runQuery.data?.output_payload?.progress as {
+    stage?: string;
+    message?: string;
+    selection_completed?: number;
+    selection_total?: number;
+    generation_completed?: number;
+    generation_total?: number;
+    draft_count?: number;
+    updated_at?: string;
+  } | undefined;
+  const progressCompleted = progress?.stage === "source_selection"
+    ? Number(progress.selection_completed ?? 0)
+    : Number(progress?.generation_completed ?? 0);
+  const progressTotal = progress?.stage === "source_selection"
+    ? Number(progress.selection_total ?? 0)
+    : Number(progress?.generation_total ?? 0);
+  const progressPercent = progressTotal > 0
+    ? Math.min(100, Math.round((progressCompleted / progressTotal) * 100))
+    : 5;
+  const progressStageLabel = progress?.stage === "preparing"
+    ? "准备事实数据"
+    : progress?.stage === "source_selection"
+      ? "筛选功能用例"
+      : progress?.stage === "generation"
+        ? "生成并编译草稿"
+        : "等待任务进度";
 
   useEffect(() => {
-    if (!open) {
-      initializedProjectRef.current = null;
-      return;
-    }
-    if (initializedProjectRef.current === projectId) return;
-    initializedProjectRef.current = projectId;
+    if (!open) return;
+    const scopeKey = `${projectId}:${initialModuleId ?? ""}`;
+    if (initializedScopeRef.current === scopeKey) return;
+    initializedScopeRef.current = scopeKey;
     setModelName("");
     setModuleId(initialModuleId ? String(initialModuleId) : "");
     setRunId(null);
@@ -164,6 +227,31 @@ export function WebUiCaseGenerationDialog({
     setSelectedDraftIds([]);
     setActiveDraftId(null);
   }, [initialModuleId, open, projectId]);
+
+  useEffect(() => {
+    if (!open || runId != null || initialModuleId == null || !recoveryQuery.data) return;
+    const restored = findRestorableRun(recoveryQuery.data, initialModuleId);
+    if (!restored) return;
+    const restoredBatchId = payloadString(restored, "batch_id");
+    if (!restoredBatchId) return;
+
+    setRunId(restored.id);
+    setBatchId(restoredBatchId);
+    initializedDraftBatchRef.current = "";
+
+    const restoredModelName = payloadString(restored, "model_name");
+    if (restoredModelName) setModelName(restoredModelName);
+    const restoredPrompt = payloadString(restored, "user_prompt");
+    setUserPrompt(restoredPrompt);
+    if (typeof restored.input_payload?.include_structure_assertions === "boolean") {
+      setStructureAssertions(restored.input_payload.include_structure_assertions);
+    }
+    if (typeof restored.input_payload?.include_visual_assertions === "boolean") {
+      setVisualAssertions(restored.input_payload.include_visual_assertions);
+    }
+    const restoredThreshold = Number(restored.input_payload?.visual_threshold);
+    if (Number.isFinite(restoredThreshold)) setVisualThreshold(restoredThreshold);
+  }, [initialModuleId, open, recoveryQuery.data, runId]);
 
   useEffect(() => {
     if (modelName || enabledModels.length === 0) return;
@@ -213,7 +301,25 @@ export function WebUiCaseGenerationDialog({
       setRunId(result.ai_run_id);
       setBatchId(result.batch_id);
       initializedDraftBatchRef.current = "";
+      void queryClient.invalidateQueries({
+        queryKey: ["ai-runs", "web-ui-generation", "restore", projectId, initialModuleId],
+      });
       toast.success("生成任务已提交，结果会先进入待评审草稿");
+    },
+    onError: (error) => toast.error(messageOf(error)),
+  });
+
+  const cancelMutation = useMutation({
+    mutationFn: () => {
+      if (runId == null) throw new Error("当前没有可终止的生成任务");
+      return aiApi.cancelRun(runId);
+    },
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["ai-run", "web-ui-generation", runId] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasksInProgress() }),
+      ]);
+      toast.success(result.message || "生成任务已终止，已完成草稿会保留");
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -337,12 +443,25 @@ export function WebUiCaseGenerationDialog({
                 <Textarea id="web-ui-prompt" value={userPrompt} onChange={(event) => setUserPrompt(event.target.value)} placeholder="例如：优先项目创建、搜索和编辑；不要生成删除或停用流程。" className="mt-1.5 min-h-20" />
               </div>
 
-              <Button className="w-full" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>
-                {generateMutation.isPending || generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                {generating ? "AI 正在筛选、检索并编译…" : "一键生成可执行草稿"}
-              </Button>
+              <div className="flex gap-2">
+                <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>
+                  {generateMutation.isPending || generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                  {generating ? "AI 正在分批生成…" : "一键生成可执行草稿"}
+                </Button>
+                {generating ? (
+                  <Button
+                    variant="outline"
+                    className="shrink-0 text-red-600 hover:bg-red-50 hover:text-red-700"
+                    disabled={cancelMutation.isPending}
+                    onClick={() => cancelMutation.mutate()}
+                  >
+                    {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
+                    终止
+                  </Button>
+                ) : null}
+              </div>
               <p className="text-[11px] leading-5 text-muted-foreground">
-                系统只分析当前模块的功能用例和匹配页面，并自动拆成多个小批次连续生成；单批输出中断时会继续拆小重试，无需设置生成数量。
+                任务会在后台持续运行，可以关闭弹窗或切换页面；再次进入当前模块时会自动恢复任务状态和最近一批草稿。
               </p>
             </div>
           </section>
@@ -355,15 +474,74 @@ export function WebUiCaseGenerationDialog({
                 <p className="mt-2 max-w-lg text-sm">一次点击会先筛选功能用例与页面，再检索元素库并编译真实定位器；未通过可执行门禁的结果会被自动丢弃并说明原因。</p>
               </div>
             ) : generating ? (
-              <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground">
-                <Loader2 className="mb-3 h-8 w-8 animate-spin text-violet-600" />
-                <p className="font-medium text-foreground">正在分析业务路径、元素证据与页面关系</p>
-                <p className="mt-1 text-sm">生成完成后会自动显示草稿，不会直接入库。</p>
+              <div className="min-h-0 flex-1 overflow-y-auto p-8">
+                <div className="mx-auto max-w-3xl space-y-5">
+                  <div className="rounded-xl border border-violet-200 bg-violet-50/60 p-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="flex items-center gap-2 font-semibold text-violet-950">
+                          <Loader2 className="h-4 w-4 animate-spin text-violet-600" />
+                          {progressStageLabel}
+                        </p>
+                        <p className="mt-1 text-sm text-violet-800">
+                          {progress?.message || "后台任务已启动，正在等待首个批次进度"}
+                        </p>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white px-3 py-1 text-xs font-medium text-violet-700 ring-1 ring-violet-200">
+                        {progressTotal > 0 ? `${progressCompleted}/${progressTotal}` : "准备中"}
+                      </span>
+                    </div>
+                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-violet-100">
+                      <div
+                        className="h-full rounded-full bg-violet-600 transition-[width] duration-500"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                    <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
+                      <div className="rounded-lg bg-white p-3 ring-1 ring-violet-100">
+                        <span className="text-muted-foreground">已完成筛选</span>
+                        <strong className="mt-1 block text-base text-foreground">{progress?.selection_completed ?? 0}/{progress?.selection_total ?? 0}</strong>
+                      </div>
+                      <div className="rounded-lg bg-white p-3 ring-1 ring-violet-100">
+                        <span className="text-muted-foreground">已完成生成批次</span>
+                        <strong className="mt-1 block text-base text-foreground">{progress?.generation_completed ?? 0}/{progress?.generation_total ?? 0}</strong>
+                      </div>
+                      <div className="rounded-lg bg-white p-3 ring-1 ring-violet-100">
+                        <span className="text-muted-foreground">已保存草稿</span>
+                        <strong className="mt-1 block text-base text-foreground">{drafts.length || progress?.draft_count || 0}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {drafts.length > 0 ? (
+                    <div className="rounded-xl border bg-background">
+                      <div className="border-b px-4 py-3">
+                        <p className="text-sm font-semibold">已完成的草稿会立即保留</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">后续批次继续运行时，可以关闭此页面；全部结束后再统一评审入库。</p>
+                      </div>
+                      <div className="divide-y">
+                        {drafts.map((draft) => (
+                          <div key={draft.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
+                            <span className="min-w-0 truncate">{draft.title}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground">{draft.steps.length} 步</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-center text-sm text-muted-foreground">首个生成批次完成后，草稿会立即出现在这里。</p>
+                  )}
+                </div>
               </div>
             ) : runStatus === "failed" ? (
               <div className="m-auto max-w-xl rounded-lg border border-red-200 bg-red-50 p-5 text-sm text-red-700">
                 <div className="flex items-center gap-2 font-medium"><XCircle className="h-4 w-4" />生成失败</div>
                 <p className="mt-2 break-words">{runQuery.data?.error || "未知错误"}</p>
+              </div>
+            ) : runStatus === "cancelled" ? (
+              <div className="m-auto max-w-xl rounded-lg border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">
+                <div className="flex items-center gap-2 font-medium"><Square className="h-4 w-4" />生成任务已终止</div>
+                <p className="mt-2">已完成的 {drafts.length} 条草稿已保留，可以重新生成或稍后继续处理。</p>
               </div>
             ) : (
               <>

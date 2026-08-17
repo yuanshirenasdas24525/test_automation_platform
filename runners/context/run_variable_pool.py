@@ -14,6 +14,35 @@ from runners.context.auth_cache import is_login_path
 from runners.protocol import CaseResult, StepStatus
 
 
+_SENSITIVE_VARIABLE_MARKERS = (
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "authorization",
+    "cookie",
+    "密码",
+    "令牌",
+    "密钥",
+)
+
+
+def is_sensitive_variable_name(name: Any) -> bool:
+    """判断变量名是否承载凭据；用于执行记录和跨用例发布门禁。"""
+    lowered = str(name or "").lower()
+    return any(marker in lowered for marker in _SENSITIVE_VARIABLE_MARKERS)
+
+
+def redact_variable_pool(pool: dict[str, Any] | None) -> dict[str, Any]:
+    """保留变量键供排障，凭据值统一遮盖。"""
+    return {
+        str(name): "***" if is_sensitive_variable_name(name) else value
+        for name, value in (pool or {}).items()
+        if not str(name).startswith("_")
+    }
+
+
 def _jwt_claims(value: Any) -> dict[str, Any] | None:
     """不校验签名，只读取 JWT 的非敏感生命周期字段。"""
     if not isinstance(value, str):
@@ -107,6 +136,15 @@ def update_run_shared_vars(
     """
     pool: dict[str, object] = dict(shared)
     unavailable: set[tuple[str, str | None, str]] = set()
+    extracted_names = {
+        str(name)
+        for step in result.steps or []
+        for name in (step.extracted or {})
+    }
+    input_variable_names = {
+        str(name)
+        for name in (getattr(ctx, "vars", {}).get("_input_variable_names") or [])
+    }
 
     for step in result.steps or []:
         target = str(step.target or "").lower()
@@ -169,6 +207,14 @@ def update_run_shared_vars(
     if result.status == StepStatus.PASSED:
         for name, value in (getattr(ctx, "vars", {}) or {}).items():
             if str(name).startswith("_"):
+                continue
+            if is_sensitive_variable_name(name):
+                # JWT 在上面的登录生命周期分支按真实会话发布；普通密码、密钥等
+                # 永远不能作为“业务变量”串到下一条用例。
+                continue
+            if str(name) in input_variable_names and str(name) not in extracted_names:
+                # 默认参数、环境变量和当前用例输入是本用例前置，不是输出。旧逻辑
+                # 把 username/password 全量发布，后一个账号用例因此被前一个覆盖。
                 continue
             claims = _jwt_claims(value)
             if claims is not None and _identity(claims) in unavailable:

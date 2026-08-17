@@ -27,40 +27,29 @@ import pytest
 
 
 # ===========================================================================
-# #1 脚本沙箱：dunder 逃逸链必须被拦，正常脚本必须照跑
+# #1 脚本运行隔离：项目脚本不在 API/Worker 进程内 exec
 # ===========================================================================
-class TestScriptSandbox:
+class TestScriptIsolation:
     def _mod(self):
         return importlib.import_module("utils.script_runtime")
 
-    @pytest.mark.parametrize(
-        "code",
-        [
-            "x = ().__class__.__base__.__subclasses__()",
-            "y = ''.__class__.__mro__[1]",
-            "def handler(**k):\n    return (1).__class__",
-            "import os",
-            "from os import system",
-            "z = __import__",
-            "g = (lambda: 0).__globals__",
-        ],
-    )
-    def test_escape_blocked(self, code):
+    def test_platform_package_is_not_importable(self):
         sr = self._mod()
-        with pytest.raises(Exception):
-            sr.compile_script(code)
+        with pytest.raises(sr.ScriptRuntimeError, match="ModuleNotFoundError"):
+            sr.run_script(
+                "import server\ndef handler(input, vars=None, config=None): return server.__name__",
+                kind="workflow",
+            )
 
-    def test_legit_script_compiles_and_runs(self):
+    def test_legit_script_runs(self):
         sr = self._mod()
-        ns = sr.compile_script("def handler(*a, **k):\n    return sum(a)")
-        assert callable(ns.get("handler"))
         assert sr.run_script(
             "def handler(*a, **k):\n    return sum(a)",
             kind="function",
             args=[2, 3, 4],
         ) == 9
 
-    def test_whitelisted_import_still_works(self):
+    def test_installed_import_works(self):
         sr = self._mod()
         code = "import json\ndef handler(body, config, vars=None):\n    return json.dumps(body)"
         out = sr.run_script(code, kind="crypto_response", body={"a": 1}, config={})

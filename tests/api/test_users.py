@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-from server.api.users import UserCreate, _assert_admin, create_user
+from server.api.users import UserCreate, _assert_admin, create_user, purge_test_account
 
 
 class _Role:
@@ -22,6 +22,37 @@ class _FailOnDatabaseAccess:
     @property
     def session(self):
         raise AssertionError("非管理员请求不应访问数据库")
+
+
+class _Query:
+    def __init__(self, user):
+        self.user = user
+
+    def filter(self, *_args):
+        return self
+
+    def first(self):
+        return self.user
+
+
+class _Session:
+    def __init__(self, user):
+        self.user = user
+        self.deleted = []
+
+    def query(self, *_args):
+        return _Query(self.user)
+
+    def delete(self, user):
+        self.deleted.append(user)
+
+    def flush(self):
+        return None
+
+
+class _DB:
+    def __init__(self, user):
+        self.session = _Session(user)
 
 
 def _valid_payload() -> dict:
@@ -72,3 +103,30 @@ def test_create_user_normalizes_and_deduplicates_roles():
     model = UserCreate.model_validate(payload)
 
     assert model.role_codes == ["dev", "test"]
+
+
+def test_purge_test_account_only_deletes_factory_account():
+    account = type("Account", (), {
+        "full_name": "Web UI 自动化临时账号",
+        "username": "AUTO_UI_abcd",
+    })()
+    db = _DB(account)
+
+    result = purge_test_account(9, db, _User("admin"))
+
+    assert result["status"] == "success"
+    assert db.session.deleted == [account]
+
+
+def test_purge_test_account_rejects_normal_user():
+    account = type("Account", (), {
+        "full_name": "普通用户",
+        "username": "demo_admin",
+    })()
+    db = _DB(account)
+
+    with pytest.raises(HTTPException) as exc_info:
+        purge_test_account(9, db, _User("admin"))
+
+    assert exc_info.value.status_code == 403
+    assert db.session.deleted == []

@@ -24,6 +24,14 @@
 8. 元素库不足以证明某个步骤时，使用 `manual` 说明缺口，禁止虚构元素。
 9. 每条用例至少包含一个 `goto` 或一个来自录制链路的可达前置，并以功能断言或结构断言收尾。
 10. 原则上每个输入功能用例生成一条对应草稿；证据不足则不生成该条，不得用其他业务用例补足。
+11. 登录/鉴权用例不得编造真实账号或密码。必须声明 `test_data_requirement`：
+    - 页面加载、空值校验：`profile=none`；
+    - 正常账号：`dynamic_active`；停用账号：`dynamic_disabled`；
+    - 连续失败/锁定：`isolated_lock_account`；内置管理员：`shared_admin`；
+    - 不存在用户：`synthetic_nonexistent`。
+    真实密码只能写 `${password}` 等变量引用，不得出现在输出中。
+12. 用户名字符、密码长度等“创建账号约束”不能直接当作登录页面约束。若功能用例预期与页面/接口事实无法互证，输出 `manual` 说明契约不一致。
+13. 正确凭据登录成功后，禁止继续 `wait`/`assert_visible` 登录按钮，也不要在登录页 `html` 上虚构“登录成功”文案。`dynamic_active`/`dynamic_boundary` 账号应断言元素库中的“测试工作台”，`shared_admin` 应断言“管理员工作台”；上下文缺少目标元素时输出 `manual`。
 
 # 输出格式
 
@@ -37,6 +45,11 @@
       "functional_case_id": 123,
       "priority": 2,
       "tags": ["smoke"],
+      "test_data_requirement": {
+        "profile": "dynamic_active",
+        "credential_mode": "correct",
+        "precondition": "none"
+      },
       "variables": {"username": "", "project_name": ""},
       "steps": [
         {"action": "goto", "page_key": "真实页面 key", "name": "页面名"},

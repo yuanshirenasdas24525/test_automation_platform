@@ -11,6 +11,7 @@ from database.schemas.ui_automation_case import WebUiCaseGenerationRequest
 from server.services.web_ui_case_generation_service import (
     _module_page_score,
     _safe_url,
+    _ui_candidate_rejection_reason,
     compile_ai_case,
     normalize_auto_source_selection,
     validate_draft_step_edit,
@@ -57,6 +58,48 @@ def test_module_page_score_prefers_exact_business_page_over_global_navigation_ma
         "element_samples": ["退出登录(button)", "新建项目(button)"],
     }
     assert _module_page_score("登录", login_page) > _module_page_score("登录", project_page)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "登录接口 ssrf 攻击测试",
+        "post /api/auth/login 请求体 content-type 错误",
+        "登录接口性能基准与并发请求压力测试",
+        "登录接口文档完整性检查",
+        "数据库口令不得写在代码里",
+    ],
+)
+def test_non_ui_technical_cases_are_rejected_before_ai_selection(text: str):
+    assert _ui_candidate_rejection_reason(text.lower(), matched_pages=0)
+
+
+def test_real_page_interaction_case_is_kept_for_ai_selection():
+    text = "用户名为空时点击登录按钮，输入框下显示请输入用户名提示"
+    assert _ui_candidate_rejection_reason(
+        text,
+        matched_pages=1,
+        page_semantics="username 用户名 password 密码 登录 submit",
+    ) is None
+
+
+def test_post_login_admin_action_without_button_evidence_is_rejected():
+    reason = _ui_candidate_rejection_reason(
+        "登录成功后管理员新建用户，验证用户名必填",
+        matched_pages=1,
+        page_semantics="username 用户名 password 密码 登录 submit",
+        action_text="登录成功后管理员新建用户",
+    )
+    assert reason == "主操作缺少页面元素证据：create"
+
+
+def test_login_after_disabled_precondition_still_uses_login_as_primary_action():
+    assert _ui_candidate_rejection_reason(
+        "用户被停用后尝试登录，页面显示账号不可用",
+        matched_pages=1,
+        page_semantics="username 用户名 password 密码 登录 submit",
+        action_text="用户被停用后尝试登录",
+    ) is None
 
 
 def test_auto_selection_rejects_unknown_and_unsuitable_ai_choices():
@@ -138,6 +181,70 @@ def test_compile_uses_element_library_locator_and_parameterizes_input():
         "element_id": 2,
     }
     assert compiled["evidence"]["element_ids"] == [1, 2]
+
+
+def test_compile_replaces_post_login_wait_with_destination_assertion():
+    username = _element(1, "用户名", element_type="input")
+    password = _element(2, "密码", element_type="input")
+    login = _element(3, "登录")
+    destination = _element(4, "测试工作台", element_type="h1")
+    destination.page_key = "page-workspace-test"
+    page = _element(5, "登录页面", element_type="html")
+    compiled = compile_ai_case(
+        {
+            "title": "合法账号登录成功",
+            "variables": {"username": "valid_user", "password": ""},
+            "steps": [
+                {"action": "input", "element_id": 1, "value": "${username}"},
+                {"action": "input", "element_id": 2, "value": "${password}"},
+                {"action": "click", "element_id": 3},
+                {"action": "wait", "element_id": 3},
+                {"action": "assert_text", "element_id": 5, "contains": "登录成功"},
+                {"action": "assert_visible", "element_id": 3},
+            ],
+        },
+        element_map={
+            1: username,
+            2: password,
+            3: login,
+            4: destination,
+            5: page,
+        },
+        snapshot_map={},
+        include_structure_assertions=True,
+        include_visual_assertions=False,
+        visual_threshold=0.02,
+    )
+    assert compiled is not None
+    assert compiled["manual_reasons"] == []
+    assert [item["config"].get("element_id") for item in compiled["steps"]] == [1, 2, 3, 4]
+    assert compiled["steps"][-1]["config"]["assertion_kind"] == "visible"
+    assert compiled["evidence"]["element_ids"] == [1, 2, 3, 4]
+    assert any("成功跳转冲突" in item for item in compiled["warnings"])
+
+
+def test_compile_moves_dynamic_form_error_assertion_from_label_to_page_root():
+    label = _element(11, "用户名", element_type="label")
+    page = _element(12, "登录页面", element_type="html")
+    compiled = compile_ai_case(
+        {
+            "title": "用户名为空时提示请输入用户名",
+            "variables": {"username": "", "password": "valid"},
+            "steps": [
+                {"action": "assert_text", "element_id": 11, "contains": "请输入用户名"},
+            ],
+        },
+        element_map={11: label, 12: page},
+        snapshot_map={},
+        include_structure_assertions=True,
+        include_visual_assertions=False,
+        visual_threshold=0.02,
+    )
+    assert compiled is not None
+    assert compiled["steps"][0]["config"]["element_id"] == 12
+    assert compiled["steps"][0]["config"]["locator"] == "[data-testid='element-12']"
+    assert compiled["evidence"]["element_ids"] == [12]
+    assert any("动态表单校验" in item for item in compiled["warnings"])
 
 
 def test_compile_marks_unknown_element_and_captcha_for_manual_intervention():

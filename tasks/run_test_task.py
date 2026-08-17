@@ -55,6 +55,13 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
         f"[run_test_task] ENTERED t_id={t_id} r_id={r_id} "
         f"category={category} cases_count={len(cases) if cases else 0}"
     )
+    cleanup_tokens = [
+        dict(token)
+        for case in (cases or [])
+        if isinstance(case, dict)
+        for token in (case.get("_test_data_cleanup_tokens") or [])
+        if isinstance(token, dict)
+    ]
 
     import pytest
     from database.db import DB
@@ -144,6 +151,15 @@ def run_test_task(t_id, r_id, cases, category, ai_heal: bool = False, ai_model: 
             LOGGER.warning(f"[run_test_task] 兜底也失败: {inner}")
 
     finally:
+        if cleanup_tokens:
+            try:
+                db_session.rollback()
+                from server.services.web_test_data_service import cleanup_web_test_accounts
+
+                cleaned = cleanup_web_test_accounts(db_session, cleanup_tokens)
+                LOGGER.info("[run_test_task] 已清理 %s 个 Web 临时测试账号", cleaned)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("[run_test_task] 清理 Web 临时测试账号失败（忽略）: %s", exc)
         try:
             db_session.close()
         except Exception:

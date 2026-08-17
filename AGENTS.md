@@ -113,6 +113,7 @@ POST /api/run_test  (server/api/runs.py)
 
 **核心不变量**：
 - **Runner 永不 raise**：所有异常包装为 `StepResult(status=FAILED|ERROR)`（见 `runners/protocol.py`）。`AssertionError` → FAILED，其他 → ERROR + traceback。
+- **项目测试逻辑与平台源码完全隔离**：账号准备、动态数据、签名、复杂断言、清理等项目逻辑必须进入项目脚本库，通过 `script` 步骤或 `function:xxx()` 调用；禁止为某条用例向 `server/services`、`runners`、`utils` 添加专用 Python 函数。脚本由 `script_runner/worker.py` 独立进程执行，平台只交换 JSON。
 - **Runner 接 dict + ExecutionContext，不依赖 ORM** —— 这是为了将来能脱离平台单跑。
 - **重试 / wait_before / on_failure 在 dispatcher 实现一次**，Runner 内部别再写。
 - **没有 steps 的老 API 用例**先经 `database/migrations/data_migrations/v2_cases_to_steps.py` 迁移，CaseExecutor 遇到没 steps 的直接抛错。

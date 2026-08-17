@@ -91,6 +91,19 @@ def _require_by_locator(config: dict) -> tuple[str, str]:
     return str(by), str(locator)
 
 
+def _is_sensitive_input(config: dict, locator: str) -> bool:
+    """密码、令牌等输入只发送给浏览器，不进入步骤动作和执行明细。"""
+    text = " ".join([
+        str(locator or ""),
+        str(config.get("value") or ""),
+        str(config.get("name") or ""),
+        str(config.get("input_type") or ""),
+    ]).lower()
+    return any(marker in text for marker in (
+        "password", "passwd", "pwd", "secret", "token", "密码", "令牌", "密钥",
+    ))
+
+
 # ============================================================
 # 1. web_goto
 # ============================================================
@@ -154,9 +167,13 @@ class WebInputStepRunner(BaseStepRunner):
             clear_first=clear_first, timeout=timeout,
         )
 
-        result.action = f"input {locator} = {value!r}"
+        sensitive = _is_sensitive_input(config, str(locator))
+        result.action = f"input {locator}"
         result.target = f"{by}={locator}"
-        result.input_data = {"value": value}
+        result.input_data = {
+            "value": "***" if sensitive else value,
+            "redacted": sensitive,
+        }
 
 
 # ============================================================
@@ -183,7 +200,7 @@ class WebSelectStepRunner(BaseStepRunner):
             timeout=timeout,
         )
 
-        result.action = f"select {locator} value={value} label={label} index={index}"
+        result.action = f"select {locator}"
         result.target = f"{by}={locator}"
         result.input_data = {"value": value, "label": label, "index": index}
 

@@ -1377,27 +1377,20 @@ def _namespace_write_data(body: Any, path: str = "$") -> list[str]:
 
 
 _FUNC_REF_RE = re.compile(r"function:([A-Za-z_]\w*)")
-_KNOWN_FUNCS_CACHE: set[str] | None = None
 
 
-def _known_function_names() -> set[str]:
-    global _KNOWN_FUNCS_CACHE
-    if _KNOWN_FUNCS_CACHE is None:
-        try:
-            import inspect
-            from utils.function_executor import function_name
-            _KNOWN_FUNCS_CACHE = {
-                n for n, f in function_name().items()
-                if inspect.isfunction(f) and not n.startswith("_")
-            }
-        except Exception:
-            _KNOWN_FUNCS_CACHE = set()
-    return _KNOWN_FUNCS_CACHE
+def _known_function_names(project_id: int | None = None) -> set[str]:
+    try:
+        from utils.script_runtime import list_script_names
+
+        return set(list_script_names("function", project_id=project_id))
+    except Exception:
+        return set()
 
 
-def _unknown_functions(case: dict) -> set[str]:
-    """找出用例里引用了但平台没注册的 function 名（AI 瞎编的）。"""
-    known = _known_function_names()
+def _unknown_functions(case: dict, project_id: int | None = None) -> set[str]:
+    """找出用例里引用了但当前项目脚本库没注册的 function 名。"""
+    known = _known_function_names(project_id)
     if not known:
         return set()
     text = json.dumps(_case_requests(case), ensure_ascii=False, default=str)
@@ -1470,7 +1463,12 @@ def _login_with_uncreated_unique(case: dict) -> bool:
     return False
 
 
-def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_vars: set[str]) -> list[dict]:
+def _harden_generated_cases(
+    cases: list[dict],
+    var_pool_keys: set[str],
+    carried_vars: set[str],
+    project_id: int | None = None,
+) -> list[dict]:
     """生成后校验 + 加固（问题5/6/7 + 数据治理#1）：
       - 未解析 ${var}（无变量池来源、无前置用例 extract 产出）→ 记 warnings 引导用户/下一轮 AI。
       - 缺断言 → 记 warnings。
@@ -1518,7 +1516,7 @@ def _harden_generated_cases(cases: list[dict], var_pool_keys: set[str], carried_
                         ds["cleanup_required"] = True
 
         # 1.4) 引用了不存在的动态函数（AI 瞎编函数名）→ 执行必报错
-        bad_funcs = _unknown_functions(case)
+        bad_funcs = _unknown_functions(case, project_id)
         if bad_funcs:
             msg = (
                 f"用到了平台不存在的动态函数：{', '.join(sorted('function:' + n for n in bad_funcs))}。"
@@ -1608,6 +1606,7 @@ def _auto_repair_flawed_cases(
     carried_vars: set[str],
     variable_pool_block: str = "",
     contract_block: str = "",
+    project_id: int | None = None,
 ) -> list[dict]:
     """P0-2 自修回路：把 _harden_generated_cases 标了 warnings 的用例发回给模型修一轮。
 
@@ -1634,7 +1633,8 @@ def _auto_repair_flawed_cases(
                 "FLAWED_ITEMS_JSON": flawed_json[:20000],
                 "REPAIR_CONTEXT": (
                     "可用变量池：\n" + (variable_pool_block or "（无）")
-                    + "\n\n可用动态函数：function:unique / unique_mobile / unique_email"
+                    + "\n\n当前项目脚本库可用动态函数：\n"
+                    + (_available_functions_block(db, project_id) if project_id else "（无）")
                     + "\n\n接口契约（method/path/参数位置/required/enum/security/响应模型均以此为准）：\n"
                     + (contract_block or "（未解析到结构化契约，缺信息时必须省略该条，禁止猜测）")
                 ),
@@ -1676,7 +1676,12 @@ def _auto_repair_flawed_cases(
     # 全量重算 warnings（先清掉旧的,harden 只在有问题时才写 warnings）
     for c in merged:
         c.pop("warnings", None)
-    merged = _harden_generated_cases(merged, var_pool_keys, carried_vars)
+    merged = _harden_generated_cases(
+        merged,
+        var_pool_keys,
+        carried_vars,
+        project_id=project_id,
+    )
     logger.info(
         "[ai_batch] 自修回路: %d 条有 warnings,模型修复 %d 条,修后仍有 warnings %d 条",
         len(flawed), replaced, sum(1 for c in merged if c.get("warnings")),
@@ -2751,7 +2756,12 @@ def _revalidate_interface_cases(
         try:
             # 单条加固、单条编译：某一条历史草稿字段畸形时只把该条标红，不能让
             # 168 条整批请求一起 500。
-            _harden_generated_cases([case], var_pool_keys, available)
+            _harden_generated_cases(
+                [case],
+                var_pool_keys,
+                available,
+                project_id=module.project_id,
+            )
             harden_blocking = messages(case.get("blocking_warnings"))
             harden_warnings = messages(case.get("warnings"))
             compiled, compile_issues = compile_generated_case(
@@ -2940,32 +2950,28 @@ def ai_generation_quality(
     }
 
 
-def _available_functions_block() -> str:
-    """枚举平台已注册的动态函数（function:xxx），生成"名字+作用"清单喂给 AI，
-    防止它瞎编不存在的函数名（如 function:random_username）。"""
+def _available_functions_block(db: DBDep, project_id: int) -> str:
+    """从脚本库读取当前项目可用函数，禁止再扫描平台 Python 函数。"""
     try:
-        import inspect
-        from utils.function_executor import function_name
-        funcs = function_name()
+        from database.models import ScriptStore
+
+        rows = (
+            db.session.query(ScriptStore)
+            .filter(
+                ScriptStore.kind == "function",
+                ScriptStore.enabled.is_(True),
+                (ScriptStore.project_id == project_id) | ScriptStore.project_id.is_(None),
+            )
+            .order_by(ScriptStore.project_id.asc().nullsfirst(), ScriptStore.name.asc())
+            .all()
+        )
     except Exception:
         return "function:unique(前缀)、function:unique_mobile()、function:unique_email()（无法读取完整列表）"
-    lines: list[str] = []
-    for name, fn in funcs.items():
-        if name.startswith("_") or not inspect.isfunction(fn):
-            continue
-        doc = (inspect.getdoc(fn) or "").strip().splitlines()
-        desc = doc[0].strip() if doc else "（无说明）"
-        try:
-            params = inspect.signature(fn).parameters
-            req = [
-                p.name for p in params.values()
-                if p.kind in (p.POSITIONAL_OR_KEYWORD, p.POSITIONAL_ONLY)
-                and p.default is p.empty and p.name not in ("args", "kwargs")
-            ]
-            arg_hint = "(" + ", ".join(req) + ")" if req else "()"
-        except Exception:
-            arg_hint = "()"
-        lines.append(f"- function:{name}{arg_hint} —— {desc}")
+    by_name = {row.name: row for row in rows}
+    lines = [
+        f"- function:{name}() —— {row.description or '脚本库动态函数'}"
+        for name, row in by_name.items()
+    ]
     return "\n".join(sorted(lines)) if lines else ""
 
 
@@ -3105,7 +3111,7 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep, user: OptionalUserDep 
         "DONE_NAMES": done_names,
         "EXISTING_ORDERED": existing_ordered,
         "VARIABLE_POOL": _variable_pool_block(db, module.project_id) if payload.mode == "interface" else "",
-        "AVAILABLE_FUNCTIONS": _available_functions_block() if payload.mode == "interface" else "",
+        "AVAILABLE_FUNCTIONS": _available_functions_block(db, module.project_id) if payload.mode == "interface" else "",
         # 真实响应结构 / API 约定（从记忆层 api_contract 检索）——这是写对
         # extract/assertion JSONPath 的关键:没它模型只能照 prompt 示例猜路径
         "PROJECT_CONTEXT": "\n\n".join([
@@ -3208,7 +3214,12 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep, user: OptionalUserDep 
         cases = _merge_response_check_cases(cases)
         var_pool_keys = _variable_pool_keys(db, module.project_id)
         carried = set(payload.carried_vars or []) | _module_produced_vars(db, payload.module_id)
-        cases = _harden_generated_cases(cases, var_pool_keys, carried)
+        cases = _harden_generated_cases(
+            cases,
+            var_pool_keys,
+            carried,
+            project_id=module.project_id,
+        )
         # P0-2: 有 warnings 的用例先让模型自修一轮，仍有问题的保留 warnings 给人看
         cases = _auto_repair_flawed_cases(
             db, cfg, cases, var_pool_keys, carried,
@@ -3218,6 +3229,7 @@ def ai_generate_batch(payload: AiBatchRequest, db: DBDep, user: OptionalUserDep 
                 + "\n\n"
                 + placeholders["PROJECT_CONTEXT"]
             ),
+            project_id=module.project_id,
         )
 
         from server.services.api_case_contract import compile_generated_case

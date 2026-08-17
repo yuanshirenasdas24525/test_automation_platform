@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Loader2,
+  LockKeyhole,
   Trash2,
 } from "lucide-react";
 
@@ -35,6 +36,12 @@ import { Label } from "@/components/ui/label";
 import { configApi, type ConfigItem, type ConfigSchemaItem } from "@/lib/api";
 
 type Category = "api" | "web" | "app" | "other";
+
+const SECRET_MASK = "••••••••";
+
+function isSensitiveConfig(group: string, key: string) {
+  return group === "test_accounts" && key === "shared_password";
+}
 
 // ---------------------------------------------------------------------------
 // 主组件
@@ -149,7 +156,11 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
                         <span>{item.config_key}</span>
                       </div>
                       <div className="truncate font-mono text-xs text-muted-foreground">
-                        {item.config_value || <span className="italic">（空）</span>}
+                        {isSensitiveConfig(item.config_group, item.config_key) && item.config_value ? (
+                          <span className="inline-flex items-center gap-1 font-sans text-emerald-700">
+                            <LockKeyhole className="h-3 w-3" />已加密保存
+                          </span>
+                        ) : item.config_value || <span className="italic">（空）</span>}
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -282,7 +293,11 @@ function ConfigFormDialog({
       if (initial) {
         setGroup(initial.config_group ?? "");
         setKey(initial.config_key ?? "");
-        setValue(initial.config_value ?? "");
+        setValue(
+          isSensitiveConfig(initial.config_group, initial.config_key)
+            ? ""
+            : initial.config_value ?? "",
+        );
       } else if (prefillGroup) {
         setGroup(prefillGroup);
         setKey("");
@@ -324,14 +339,36 @@ function ConfigFormDialog({
           </div>
           <div>
             <Label className="text-xs">值</Label>
-            <Input className="h-8" value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://..." />
+            <Input
+              className="h-8"
+              type={isSensitiveConfig(group, key) ? "password" : "text"}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={
+                isSensitiveConfig(group, key)
+                  ? isEdit ? "留空则保留原密码" : "输入测试账号密码"
+                  : "https://..."
+              }
+              autoComplete={isSensitiveConfig(group, key) ? "new-password" : undefined}
+            />
+            {isSensitiveConfig(group, key) && isEdit ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                当前密码已加密保存；只有输入新值才会覆盖。
+              </p>
+            ) : null}
           </div>
         </div>
         <DialogFooter>
           <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>取消</Button>
           <Button size="sm" onClick={() => {
             if (!group.trim() || !key.trim()) { toast.error("配置组和键不能为空"); return; }
-            onSave({ config_group: group.trim(), config_key: key.trim(), config_value: value, category, project_id: projectId });
+            onSave({
+              config_group: group.trim(),
+              config_key: key.trim(),
+              config_value: value === SECRET_MASK ? "" : value,
+              category,
+              project_id: projectId,
+            });
           }}>保存</Button>
         </DialogFooter>
       </DialogContent>

@@ -14,7 +14,7 @@ from utils.script_runtime import run_script
 
 router = APIRouter(prefix="/scripts", tags=["scripts"])
 
-ScriptKind = Literal["function", "crypto_request", "crypto_response"]
+ScriptKind = Literal["function", "crypto_request", "crypto_response", "workflow"]
 ScriptScope = Literal["global", "project"]
 
 
@@ -25,6 +25,7 @@ class ScriptPayload(pydantic.BaseModel):
     enabled: bool = True
     project_id: int | None = None
     description: str | None = None
+    requirements: list[str] = pydantic.Field(default_factory=list)
 
 
 class ScriptTestPayload(pydantic.BaseModel):
@@ -34,6 +35,7 @@ class ScriptTestPayload(pydantic.BaseModel):
     body: Any = None
     config: dict[str, Any] | None = None
     vars: dict[str, Any] | None = None  # noqa: A003 - 前端字段名就是 vars
+    timeout: int = 30
 
 
 @router.get("")
@@ -78,6 +80,7 @@ def create_script(payload: ScriptPayload, db: DBDep):
         enabled=payload.enabled,
         project_id=payload.project_id,
         description=payload.description,
+        requirements=_normalize_requirements(payload.requirements),
     )
     db.session.add(row)
     db.session.flush()
@@ -95,6 +98,7 @@ def update_script(script_id: int, payload: ScriptPayload, db: DBDep):
     row.enabled = payload.enabled
     row.project_id = payload.project_id
     row.description = payload.description
+    row.requirements = _normalize_requirements(payload.requirements)
     db.session.flush()
     return {"status": "success", "data": row.to_dict()}
 
@@ -120,6 +124,8 @@ def test_script(script_id: int, payload: ScriptTestPayload, db: DBDep):
             body=payload.body,
             config=payload.config,
             vars=payload.vars,
+            timeout=payload.timeout,
+            requirements=row.requirements,
         )
     except Exception as exc:  # noqa: BLE001
         return {
@@ -149,6 +155,23 @@ def _validate_payload(payload: ScriptPayload) -> None:
         raise HTTPException(status_code=422, detail=f"不支持的脚本类型：{payload.kind}")
     if "def handler" not in payload.code:
         raise HTTPException(status_code=422, detail="脚本必须定义 handler 函数")
+    _normalize_requirements(payload.requirements)
+
+
+def _normalize_requirements(raw: list[str] | None) -> list[str]:
+    """规整脚本独立依赖；禁止把 pip 命令参数伪装成包名。"""
+    result: list[str] = []
+    for item in raw or []:
+        requirement = str(item or "").strip()
+        if not requirement:
+            continue
+        if requirement.startswith("-") or any(char in requirement for char in "\r\n\x00"):
+            raise HTTPException(status_code=422, detail=f"非法脚本依赖：{requirement!r}")
+        if requirement not in result:
+            result.append(requirement)
+    if len(result) > 30:
+        raise HTTPException(status_code=422, detail="单个脚本最多配置 30 个依赖")
+    return result
 
 
 def _ensure_unique(

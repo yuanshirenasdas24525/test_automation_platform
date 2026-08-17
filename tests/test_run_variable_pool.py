@@ -5,7 +5,7 @@ import base64
 import json
 
 from runners.context.execution_context import ExecutionContext
-from runners.context.run_variable_pool import update_run_shared_vars
+from runners.context.run_variable_pool import redact_variable_pool, update_run_shared_vars
 from runners.protocol import CaseResult, StepResult, StepStatus
 
 
@@ -130,3 +130,41 @@ def test_logout_all_removes_all_tokens_for_subject():
     assert "first" not in shared
     assert "second" not in shared
     assert shared["unrelated"] == unrelated
+
+
+def test_case_input_credentials_are_not_published_to_next_case():
+    """当前用例的账号输入不是输出，批量运行时不能覆盖下一条用例。"""
+    shared = {"existing": "keep"}
+    ctx = ExecutionContext()
+    ctx.vars = {
+        "username": "temporary-user",
+        "password": "temporary-password",
+        "created_id": 42,
+        "_input_variable_names": ["username", "password"],
+    }
+    extracted = StepResult(
+        step_id=4,
+        step_order=0,
+        step_name="创建",
+        step_type="http_request",
+        status=StepStatus.PASSED,
+        extracted={"created_id": 42},
+    )
+
+    update_run_shared_vars(shared, _case_result(StepStatus.PASSED, extracted), ctx)
+
+    assert shared == {"existing": "keep", "created_id": 42}
+
+
+def test_report_variable_pool_masks_credentials():
+    assert redact_variable_pool({
+        "username": "alice",
+        "password": "secret",
+        "access_token": "token-value",
+        "project_id": 7,
+    }) == {
+        "username": "alice",
+        "password": "***",
+        "access_token": "***",
+        "project_id": 7,
+    }

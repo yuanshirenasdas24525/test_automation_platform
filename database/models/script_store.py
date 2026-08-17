@@ -3,16 +3,18 @@ from __future__ import annotations
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import relationship
 
-from database.base import Base
+from database.base import Base, JSONType
 
 
 SCRIPT_KIND_FUNCTION = "function"
 SCRIPT_KIND_CRYPTO_REQUEST = "crypto_request"
 SCRIPT_KIND_CRYPTO_RESPONSE = "crypto_response"
+SCRIPT_KIND_WORKFLOW = "workflow"
 ALL_SCRIPT_KINDS = {
     SCRIPT_KIND_FUNCTION,
     SCRIPT_KIND_CRYPTO_REQUEST,
     SCRIPT_KIND_CRYPTO_RESPONSE,
+    SCRIPT_KIND_WORKFLOW,
 }
 
 
@@ -20,7 +22,8 @@ class ScriptStore(Base):
     """页面可编辑脚本库。
 
     project_id 为空表示全项目通用；不为空表示项目专属脚本。
-    脚本函数统一暴露 handler，外部用 name 作为 function:xxx 或 handler 名引用。
+    脚本函数统一暴露 handler，外部用 name 作为 function:xxx 或 script 步骤引用。
+    workflow 用于 API/Web/App 共用的项目逻辑，并始终在独立脚本进程中执行。
     """
 
     __tablename__ = "script_store"
@@ -32,6 +35,7 @@ class ScriptStore(Base):
     enabled = Column(Boolean, nullable=False, default=True, server_default="true", index=True)
     project_id = Column(Integer, ForeignKey("projects.id"), nullable=True, index=True)
     description = Column(String(500), nullable=True)
+    requirements = Column(JSONType, nullable=False, default=list, server_default="[]")
     created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -47,6 +51,7 @@ class ScriptStore(Base):
             "project_id": self.project_id,
             "scope": "project" if self.project_id is not None else "global",
             "description": self.description,
+            "requirements": list(self.requirements or []),
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -65,6 +65,11 @@ const KIND_META: Record<ScriptKind, { label: string; icon: typeof Code2; referen
     icon: ShieldCheck,
     reference: (name) => `custom_response_handler = ${name}`,
   },
+  workflow: {
+    label: "项目逻辑",
+    icon: Code2,
+    reference: (name) => `script step = ${name}`,
+  },
 };
 
 const TEMPLATE: Record<ScriptKind, string> = {
@@ -85,6 +90,20 @@ const TEMPLATE: Record<ScriptKind, string> = {
     if isinstance(response_body, dict) and "data" in response_body:
         return response_body["data"]
     return response_body
+`,
+  workflow: `import httpx
+
+def handler(input, vars=None, config=None):
+    """API / Web / App 用例共用的项目逻辑。
+
+    返回 variables 会写回当前用例变量池；raise AssertionError 表示业务断言失败。
+    """
+    payload = dict(input or {})
+    return {
+        "result": payload,
+        "variables": {"workflow_ok": True},
+        "logs": ["项目脚本执行完成"],
+    }
 `,
 };
 
@@ -238,13 +257,20 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
     const nextKind: ScriptKind = kind === "all" ? "function" : kind;
     const next: ScriptDraft = {
       id: null,
-      name: nextKind === "function" ? "new_function" : nextKind === "crypto_request" ? "sign_request" : "decrypt_response",
+      name: nextKind === "function"
+        ? "new_function"
+        : nextKind === "crypto_request"
+          ? "sign_request"
+          : nextKind === "crypto_response"
+            ? "decrypt_response"
+            : "project_workflow",
       kind: nextKind,
       code: TEMPLATE[nextKind],
       enabled: true,
       project_id: scope === "project" ? projectId ?? null : null,
       scope,
       description: "",
+      requirements: [],
     };
     setSelectedId("draft");
     setDraft(next);
@@ -286,6 +312,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
       enabled: current.enabled,
       project_id: current.scope === "project" ? projectId ?? current.project_id : null,
       description: current.description,
+      requirements: current.requirements ?? [],
     });
     setDraft({ ...current, code });
   };
@@ -362,6 +389,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                 <SelectItem value="function">动态函数</SelectItem>
                 <SelectItem value="crypto_request">请求加密</SelectItem>
                 <SelectItem value="crypto_response">响应解密</SelectItem>
+                <SelectItem value="workflow">项目逻辑</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -504,6 +532,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                         <SelectItem value="function">动态函数</SelectItem>
                         <SelectItem value="crypto_request">请求加密</SelectItem>
                         <SelectItem value="crypto_response">响应解密</SelectItem>
+                        <SelectItem value="workflow">项目逻辑</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -532,6 +561,24 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                       toolbar="full"
                       placeholder="支持表格、代码块、列表等富文本说明"
                     />
+                  </div>
+                  <div>
+                    <Label className="mb-2 block">独立依赖</Label>
+                    <Textarea
+                      className="h-24 resize-none font-mono text-xs"
+                      value={(current.requirements ?? []).join("\n")}
+                      onChange={(event) => setDraft({
+                        ...current,
+                        requirements: event.target.value
+                          .split(/\r?\n|,/)
+                          .map((item) => item.trim())
+                          .filter(Boolean),
+                      })}
+                      placeholder={"例如：\nfaker==28.0.0\npython-dateutil>=2.9"}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      每行一个 pip 包；按依赖集合缓存到独立目录，不会修改平台 requirements.txt。
+                    </p>
                   </div>
                   <div>
                     <Label className="mb-2 block">测试输入</Label>
@@ -605,6 +652,7 @@ function toDraft(script: ScriptItem | ScriptDraft): ScriptDraft {
     project_id: script.project_id,
     scope: script.scope,
     description: script.description,
+    requirements: script.requirements ?? [],
     created_at: script.created_at,
     updated_at: script.updated_at,
   };
@@ -687,6 +735,9 @@ function defaultTestInput(kind: ScriptKind): string {
   }
   if (kind === "crypto_request") {
     return JSON.stringify({ headers: {}, body: { username: "admin" }, config: { key: "secret" }, vars: {} }, null, 2);
+  }
+  if (kind === "workflow") {
+    return JSON.stringify({ body: { action: "prepare" }, config: {}, vars: {}, timeout: 30 }, null, 2);
   }
   return JSON.stringify({ body: { data: { ok: true } }, config: {}, vars: {} }, null, 2);
 }

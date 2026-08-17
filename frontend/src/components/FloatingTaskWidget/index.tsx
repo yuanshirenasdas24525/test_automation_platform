@@ -182,6 +182,8 @@ export function FloatingTaskWidget() {
   // ── 拖拽事件 ─────────────────────────────────────────────────────
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest("[data-task-drag-handle]")) return;
       e.preventDefault();
       dragging.current = false;
       moved.current = false;
@@ -210,6 +212,7 @@ export function FloatingTaskWidget() {
 
   const onPointerUp = useCallback(
     (e: React.PointerEvent) => {
+      if (!elRef.current?.hasPointerCapture(e.pointerId)) return;
       elRef.current?.releasePointerCapture(e.pointerId);
       if (moved.current) {
         setPos((p) => snap(p.x, p.y));
@@ -264,6 +267,7 @@ export function FloatingTaskWidget() {
     >
       {/* ── 弹出面板 ──────────────────────────────────────────── */}
       <div
+        data-task-drag-handle
         className={cn(
           "absolute top-0 w-72 rounded-xl border bg-white shadow-xl transition-all duration-300 ease-out",
           expanded

@@ -19,6 +19,10 @@ from sqlalchemy import or_
 from server.api.deps import BearerUserDep, DBDep
 from server.api.auth import HTTPErrorResponse, revoke_user_sessions
 from database.models import User, Role, ALL_ROLE_CODES
+from server.services.web_test_data_service import (
+    TEST_ACCOUNT_FULL_NAME,
+    TEST_ACCOUNT_USER_PREFIX,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -275,6 +279,39 @@ def delete_user(user_id: Annotated[int, Path(gt=0)], db: DBDep, current_user: Be
     revoke_user_sessions(db, user.id, "user_deleted")
     db.session.flush()
     return {"status": "success", "message": "已软删（is_active=False）"}
+
+
+@router.delete(
+    "/{user_id}/purge-test-account",
+    include_in_schema=False,
+    responses={
+        **AUTH_ADMIN_RESPONSES,
+        403: {"model": HTTPErrorResponse, "description": "仅允许清理自动化临时账号"},
+        404: {"model": HTTPErrorResponse, "description": "用户不存在"},
+    },
+)
+def purge_test_account(
+    user_id: Annotated[int, Path(gt=0)],
+    db: DBDep,
+    current_user: BearerUserDep,
+):
+    """硬删除账号工厂创建的临时账号，供自动化 cleanup 接口调用。"""
+    _assert_admin(current_user)
+    user = db.session.query(User).filter(User.id == user_id).first()
+    if user is None:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    is_managed_account = (
+        user.full_name == TEST_ACCOUNT_FULL_NAME
+        and (
+            user.username.startswith(TEST_ACCOUNT_USER_PREFIX)
+            or user.username.startswith("AUTO.ui-test_")
+        )
+    )
+    if not is_managed_account:
+        raise HTTPException(status_code=403, detail="仅允许清理自动化临时账号")
+    db.session.delete(user)
+    db.session.flush()
+    return {"status": "success", "message": "自动化临时账号已清理"}
 
 
 # ============ 角色管理 ============

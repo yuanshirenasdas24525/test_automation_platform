@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
 
 import pydantic
@@ -360,4 +361,6 @@ def cancel_ai_run(run_id: int, db: DBDep):
             pass
 
     run.status = AI_RUN_STATUS_CANCELLED
+    run.error = "用户主动取消"
+    run.ended_at = datetime.now()
     return {"status": "success", "message": "已取消"}

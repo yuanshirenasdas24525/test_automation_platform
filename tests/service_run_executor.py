@@ -17,7 +17,7 @@ import pytest
 from runners.case_executor import CaseExecutor
 from runners.context.auth_cache import RunAuthCache
 from runners.context.execution_context import ExecutionContext
-from runners.context.run_variable_pool import update_run_shared_vars
+from runners.context.run_variable_pool import redact_variable_pool, update_run_shared_vars
 from runners.protocol import StepStatus
 
 
@@ -234,7 +234,7 @@ class TestService:
         # JWT 生命周期更新。失败用例若已经签发新会话，不能让旧 token 留在池里继续
         # 造成几十条连锁 401。
         update_run_shared_vars(_RUN_SHARED_VARS, result, ctx)
-        record_property("variable_pool", dict(_RUN_SHARED_VARS))
+        record_property("variable_pool", redact_variable_pool(_RUN_SHARED_VARS))
 
         # 把最终聚合结果也写进 record_property，便于平台 tasks 层消费
         record_property("case_id", result.case_id)

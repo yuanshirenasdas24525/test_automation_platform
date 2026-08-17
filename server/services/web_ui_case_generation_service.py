@@ -28,6 +28,10 @@ from database.models import (
     UI_ELEMENT_ARCHIVED,
     UI_PLATFORM_WEB,
 )
+from server.services.web_test_data_service import (
+    infer_account_requirement,
+    validate_account_requirement,
+)
 
 
 _SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link"}
@@ -57,15 +61,16 @@ _LOCATOR_STEP_TYPES = {
     "web_wait",
     "web_assert_text",
 }
-_AUTO_FUNCTIONAL_CANDIDATE_LIMIT = 1000
+_AUTO_FUNCTIONAL_CANDIDATE_LIMIT = 80
 _AUTO_PAGE_CANDIDATE_LIMIT = 60
-_AUTO_SELECTED_FUNCTIONAL_LIMIT = 1000
-_AUTO_FALLBACK_FUNCTIONAL_LIMIT = 40
+_AUTO_SELECTED_FUNCTIONAL_LIMIT = 24
+_AUTO_FALLBACK_FUNCTIONAL_LIMIT = 24
 _AUTO_SELECTED_PAGE_LIMIT = 8
 _AUTO_FALLBACK_PAGE_LIMIT = 3
+_AUTO_MIN_AUTOMATION_SCORE = 6
 _DETAIL_ELEMENT_LIMIT = 360
 _DETAIL_CONTEXT_CHAR_LIMIT = 80_000
-_FUNCTIONAL_CATALOG_CHAR_LIMIT = 24_000
+_FUNCTIONAL_CATALOG_CHAR_LIMIT = 36_000
 _PAGE_ELEMENT_FLOOR = 30
 _PAGE_ELEMENT_CEILING = 90
 _UI_POSITIVE_MARKERS = {
@@ -77,6 +82,35 @@ _UI_NEGATIVE_MARKERS = {
     "接口", "api", "数据库", "sql", "性能", "压力", "并发", "漏洞", "注入",
     "代码质量", "技术债务", "许可证", "文档完整", "错误码", "服务实例", "负载均衡",
 }
+_UI_INTERACTION_MARKERS = {
+    "页面", "按钮", "输入框", "表单", "弹窗", "点击", "输入", "选择",
+    "跳转", "菜单", "列表", "详情", "提示", "上传", "下载", "勾选",
+    "用户名", "密码", "搜索框", "下拉框", "复选框", "单选框",
+}
+_HARD_NON_UI_MARKERS = {
+    "ssrf", "ddos", "sql注入", "反序列化", "批量分配漏洞", "jwt令牌安全",
+    "响应头安全", "content-type", "数据库口令", "代码里", "数据备份恢复",
+    "文档完整性", "接口文档", "性能基准", "压力测试", "负载测试", "并发请求",
+    "服务节点宕机", "负载均衡", "异常流量检测", "数据保留策略",
+    "设备指纹",
+}
+_API_REQUEST_PATTERN = re.compile(
+    r"(?:\b(?:get|post|put|patch|delete)\s+/|/api/|请求体格式|http\s*[45]\d{2})",
+    re.IGNORECASE,
+)
+_UI_ACTION_GROUPS: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
+    ("create", re.compile(r"新建|创建|新增|\b(?:add|create)\b", re.IGNORECASE), ("新建", "创建", "新增", "add", "create")),
+    ("edit", re.compile(r"编辑|修改|重置|\b(?:edit|update|reset)\b", re.IGNORECASE), ("编辑", "修改", "重置", "edit", "update", "reset")),
+    ("toggle", re.compile(r"启用|停用|禁用|\b(?:enable|disable)\b", re.IGNORECASE), ("启用", "停用", "禁用", "enable", "disable")),
+    ("delete", re.compile(r"删除|\b(?:delete|remove)\b", re.IGNORECASE), ("删除", "delete", "remove")),
+    ("upload", re.compile(r"上传|\bupload\b", re.IGNORECASE), ("上传", "upload")),
+    ("download", re.compile(r"下载|导出|\b(?:download|export)\b", re.IGNORECASE), ("下载", "导出", "download", "export")),
+    ("search", re.compile(r"搜索|筛选|查询|\b(?:search|filter)\b", re.IGNORECASE), ("搜索", "筛选", "查询", "search", "filter")),
+    ("view", re.compile(r"查看|详情|历史记录|\b(?:view|detail|history)\b", re.IGNORECASE), ("查看", "详情", "历史", "view", "detail", "history")),
+    ("logout", re.compile(r"退出登录|注销|\b(?:logout|sign\s*out)\b", re.IGNORECASE), ("退出登录", "注销", "logout", "sign out")),
+    # “登录状态/会话/历史/页”是状态或名词，不能覆盖更靠后的真实主操作。
+    ("login", re.compile(r"登录(?!状态|会话|历史|记录|页)|\b(?:login|sign\s*in)\b", re.IGNORECASE), ("登录", "login", "sign in", "submit")),
+)
 _GENERIC_ELEMENT_NAMES = {
     "项目", "功能", "api", "web", "android", "ios", "管理员", "编辑", "删除",
     "取消", "确定", "关闭", "返回", "更多", "菜单", "用户", "状态",
@@ -133,6 +167,51 @@ def _automation_suitability(text: str, matched_pages: int) -> int:
     score -= sum(5 for marker in _UI_NEGATIVE_MARKERS if marker in text)
     score += min(10, matched_pages * 3)
     return score
+
+
+def _primary_ui_action(text: str) -> tuple[str, tuple[str, ...]] | None:
+    """取文本中最靠后的业务动作，用来区分“登录后新建用户”和真实登录用例。"""
+    matches: list[tuple[int, str, tuple[str, ...]]] = []
+    for group, pattern, evidence_markers in _UI_ACTION_GROUPS:
+        for match in pattern.finditer(text):
+            matches.append((match.start(), group, evidence_markers))
+    if not matches:
+        return None
+    _, group, evidence_markers = max(matches, key=lambda item: item[0])
+    return group, evidence_markers
+
+
+def _ui_candidate_rejection_reason(
+    text: str,
+    matched_pages: int,
+    page_semantics: str = "",
+    action_text: str = "",
+) -> str | None:
+    """用确定性规则先挡掉不可能由浏览器 UI Runner 执行的功能用例。"""
+    hard_marker = next((marker for marker in _HARD_NON_UI_MARKERS if marker in text), None)
+    if hard_marker:
+        return f"非 UI 技术场景：{hard_marker}"
+    if any(marker in text for marker in ("登录", "用户名", "密码", "账号", "锁定")):
+        data_requirement = infer_account_requirement(
+            action_text or text,
+            text,
+            {"username": "", "password": ""},
+        )
+        if data_requirement.get("status") != "ready":
+            return f"测试数据不可稳定准备：{data_requirement.get('reason')}"
+
+    interaction_hits = sum(1 for marker in _UI_INTERACTION_MARKERS if marker in text)
+    if _API_REQUEST_PATTERN.search(text) and interaction_hits < 2:
+        return "接口请求场景缺少页面交互证据"
+    if matched_pages <= 0 and interaction_hits < 2:
+        return "缺少页面元素或用户交互证据"
+    primary_action = _primary_ui_action(action_text or text)
+    normalized_semantics = page_semantics.lower()
+    if primary_action and normalized_semantics:
+        group, evidence_markers = primary_action
+        if not any(marker in normalized_semantics for marker in evidence_markers):
+            return f"主操作缺少页面元素证据：{group}"
+    return None
 
 
 def _module_page_score(module_name: str, page: dict[str, Any]) -> int:
@@ -335,30 +414,55 @@ def build_auto_source_catalog(
         .all()
     )
     prompt_text = user_prompt.strip().lower()
+    module_name = target_module.name.strip().lower()
+    page_semantics = " ".join(
+        str(value)
+        for page in page_candidates
+        for value in (
+            page.get("page_name") or "",
+            page.get("route") or "",
+            *(page.get("element_samples") or []),
+        )
+    ).lower()
     ranked_cases: list[dict[str, Any]] = []
+    filtered_reasons: dict[str, int] = defaultdict(int)
     for case in cases:
         text = _functional_text(case)
         matched = []
         for page in page_candidates:
-            names = [page["page_name"], *[item.split("(", 1)[0] for item in page["element_samples"]]]
+            # 页面名和模块名会出现在同模块几乎所有用例里，不能作为逐用例页面证据；
+            # 这里只使用具体元素语义（用户名、密码、登录按钮等）做交叉匹配。
+            names = [item.split("(", 1)[0] for item in page["element_samples"]]
             overlap = sum(
                 max(1, len(name) // 2)
                 for name in names
                 if len(name) >= 2
                 and name.strip().lower() not in _GENERIC_ELEMENT_NAMES
+                and name.strip().lower() != module_name
                 and name.lower() in text
             )
             if overlap:
                 matched.append((overlap, page["page_key"]))
         matched.sort(reverse=True)
+        rejection_reason = _ui_candidate_rejection_reason(
+            text,
+            len(matched),
+            page_semantics=page_semantics,
+            action_text=(case.name or "").lower(),
+        )
+        if rejection_reason:
+            filtered_reasons[rejection_reason] += 1
+            continue
         score = _automation_suitability(text, len(matched))
-        module_name = target_module.name.strip().lower()
         if module_name and module_name in (case.name or "").lower():
             score += 8
         elif module_name and module_name in text:
             score += 3
         if prompt_text and any(part in text for part in re.findall(r"[\w\u4e00-\u9fff]{2,}", prompt_text)):
             score += 6
+        if score < _AUTO_MIN_AUTOMATION_SCORE:
+            filtered_reasons["页面自动化相关度不足"] += 1
+            continue
         spec = _scrub_sensitive(case.functional_spec or {})
         ranked_cases.append({
             "functional_case_id": case.id,
@@ -381,7 +485,10 @@ def build_auto_source_catalog(
         item_chars = len(json.dumps(item, ensure_ascii=False, default=str))
         functional_candidates.append(item)
         functional_chars += item_chars
-    recommended = [item for item in functional_candidates if item["automation_score"] >= 2]
+    recommended = [
+        item for item in functional_candidates
+        if item["automation_score"] >= _AUTO_MIN_AUTOMATION_SCORE
+    ]
     fallback_cases = recommended[:_AUTO_FALLBACK_FUNCTIONAL_LIMIT]
     fallback_page_scores: dict[str, int] = defaultdict(int)
     for item in fallback_cases:
@@ -409,7 +516,11 @@ def build_auto_source_catalog(
         "budget": {
             "functional_total": functional_total,
             "functional_included": len(functional_candidates),
-            "functional_truncated": functional_total > len(functional_candidates),
+            "functional_filtered": functional_total - len(ranked_cases),
+            "functional_filter_reasons": dict(
+                sorted(filtered_reasons.items(), key=lambda item: (-item[1], item[0]))
+            ),
+            "functional_truncated": len(ranked_cases) > len(functional_candidates),
             "functional_char_budget": _FUNCTIONAL_CATALOG_CHAR_LIMIT,
             "functional_estimated_chars": functional_chars,
             "functional_selection_batched": functional_chars > _FUNCTIONAL_CATALOG_CHAR_LIMIT,
@@ -433,7 +544,7 @@ def normalize_auto_source_selection(
     valid_case_ids = {
         int(item["functional_case_id"])
         for item in catalog["functional_candidates"]
-        if int(item.get("automation_score") or 0) >= 2
+        if int(item.get("automation_score") or 0) >= _AUTO_MIN_AUTOMATION_SCORE
     }
     valid_page_keys = {str(item["page_key"]) for item in catalog["page_candidates"]}
     selected_case_ids = []
@@ -472,6 +583,10 @@ def normalize_auto_source_selection(
         selected_page_keys = (matched_pages or list(catalog.get("fallback_page_keys") or []))[:_AUTO_FALLBACK_PAGE_LIMIT]
         warnings.append("AI 未返回有效页面，已根据功能用例与元素语义自动关联页面")
     budget = catalog.get("budget") or {}
+    if budget.get("functional_filtered"):
+        warnings.append(
+            f"本地事实门禁已排除 {budget.get('functional_filtered')} 条非 UI 或缺少页面证据的功能用例"
+        )
     if budget.get("functional_truncated"):
         warnings.append(
             f"功能用例候选已按自动化适配度从 {budget.get('functional_total')} 条裁剪为 "
@@ -518,6 +633,32 @@ def build_generation_context(
         if missing:
             raise ValueError(f"功能用例不存在或不属于当前项目：{missing}")
 
+    relevance_text = " ".join(_functional_text(item) for item in functional_cases)
+    page_keys = list(dict.fromkeys(page_keys))
+    if any("/login" in page_key.lower() for page_key in page_keys) and "工作台" in relevance_text:
+        # 登录成功会先进入 /workspace 再按账号角色重定向。录制事实中的中间路由通常
+        # 没有快照，因此把两种账号工厂会到达的终态一并带入编译上下文：临时账号
+        # 使用测试角色，共享管理员使用管理员角色。这样 AI 只能引用真实目标页元素，
+        # 不会把“重新看到登录按钮”误当成成功断言。
+        workspace_snapshots = (
+            db.query(UiPageSnapshot)
+            .filter(
+                UiPageSnapshot.project_id == project_id,
+                UiPageSnapshot.platform == UI_PLATFORM_WEB,
+                or_(
+                    UiPageSnapshot.page_key.ilike("%/workspace/test"),
+                    UiPageSnapshot.page_key.ilike("%/workspace/admin"),
+                ),
+            )
+            .order_by(UiPageSnapshot.id.desc())
+            .all()
+        )
+        for snapshot in workspace_snapshots:
+            if snapshot.page_key not in page_keys:
+                page_keys.append(snapshot.page_key)
+            if len(page_keys) >= _AUTO_SELECTED_PAGE_LIMIT:
+                break
+
     element_query = (
         db.query(UiElement)
         .options(selectinload(UiElement.locators))
@@ -539,7 +680,6 @@ def build_generation_context(
     available_elements = element_query.order_by(UiElement.page_key, UiElement.id).limit(2000).all()
     if not available_elements:
         raise ValueError("当前范围没有可用于生成的 Web 元素，请先完成录制或 AI 探索录制")
-    relevance_text = " ".join(_functional_text(item) for item in functional_cases)
     grouped_elements: dict[str, list[UiElement]] = defaultdict(list)
     for element in available_elements:
         grouped_elements[element.page_key].append(element)
@@ -814,6 +954,173 @@ def _step(order: int, name: str, step_type: str, config: dict[str, Any], *, skip
         "retry": 0,
         "on_failure": "stop",
     }
+
+
+def _repair_successful_login_assertion(
+    steps: list[dict[str, Any]],
+    *,
+    requirement: dict[str, Any],
+    element_map: dict[int, UiElement],
+    warnings: list[str],
+    manual_reasons: list[str],
+    evidence_elements: set[int],
+    evidence_pages: set[str],
+) -> None:
+    """把成功登录后的断言收敛到账号类型对应的工作台事实。
+
+    模型有时会在点击登录后继续等待登录按钮，或在登录页 ``html`` 上虚构
+    “登录成功”文案。前者必然超时，后者和真实页面不一致。这里在编译期删除
+    这两类矛盾步骤，并用元素库中的目标工作台标题作为确定性断言。
+    """
+    if str(requirement.get("credential_mode") or "") != "correct":
+        return
+    profile = str(requirement.get("profile") or "")
+    if profile not in {"shared_admin", "dynamic_active", "dynamic_boundary"}:
+        return
+
+    submit_index = -1
+    submit_element_id = 0
+    for index, item in enumerate(steps):
+        if item.get("step_type") != "web_click":
+            continue
+        config = item.get("config") or {}
+        element_id = _as_int(config.get("element_id"))
+        element = element_map.get(element_id)
+        locator_text = str(config.get("locator") or "").lower()
+        semantic_name = str(getattr(element, "semantic_name", "") or "").strip().lower()
+        if semantic_name in {"登录", "登入", "sign in", "login"} or "login-submit" in locator_text:
+            submit_index = index
+            submit_element_id = element_id
+            break
+    if submit_index < 0:
+        return
+
+    repaired = steps[:submit_index + 1]
+    removed = 0
+    for item in steps[submit_index + 1:]:
+        config = item.get("config") or {}
+        if _as_int(config.get("element_id")) == submit_element_id:
+            removed += 1
+            continue
+        expected = str(config.get("contains") or config.get("equals") or "").strip().lower()
+        if item.get("step_type") == "web_assert_text" and expected in {"登录成功", "login success", "login successful"}:
+            removed += 1
+            continue
+        repaired.append(item)
+    if removed:
+        warnings.append(f"已移除 {removed} 个与成功跳转冲突的登录页等待/文案断言")
+
+    destination_name = "管理员工作台" if profile == "shared_admin" else "测试工作台"
+    destination = next(
+        (
+            element for element in element_map.values()
+            if str(element.semantic_name or "").strip() == destination_name
+            and _preferred_locator(element) is not None
+        ),
+        None,
+    )
+    if destination is None:
+        reason = f"成功登录缺少“{destination_name}”元素事实，请补录目标工作台后重新生成"
+        if reason not in manual_reasons:
+            manual_reasons.append(reason)
+        repaired.append(_step(
+            len(repaired) + 1,
+            f"待补录 {destination_name}",
+            "web_wait",
+            {"seconds": 0, "manual_intervention": True, "reason": reason},
+            skip=True,
+        ))
+    elif not any(
+        _as_int((item.get("config") or {}).get("element_id")) == destination.id
+        and item.get("step_type") == "web_wait"
+        and (item.get("config") or {}).get("assertion_kind") == "visible"
+        for item in repaired
+    ):
+        by, locator = _preferred_locator(destination) or ("", "")
+        repaired.append(_step(
+            len(repaired) + 1,
+            f"断言 {destination_name} 可见",
+            "web_wait",
+            {
+                "by": by,
+                "locator": locator,
+                "element_id": destination.id,
+                "state": "visible",
+                "assertion_kind": "visible",
+            },
+        ))
+        evidence_elements.add(destination.id)
+        evidence_pages.add(destination.page_key)
+
+    for order, item in enumerate(repaired, start=1):
+        item["step_order"] = order
+    used_element_ids = {
+        _as_int((item.get("config") or {}).get("element_id"))
+        for item in repaired
+        if (item.get("config") or {}).get("element_id")
+    }
+    evidence_elements.intersection_update(used_element_ids)
+    steps[:] = repaired
+
+
+def _repair_form_validation_assertions(
+    steps: list[dict[str, Any]],
+    *,
+    element_map: dict[int, UiElement],
+    warnings: list[str],
+    evidence_elements: set[int],
+    evidence_pages: set[str],
+) -> None:
+    """把“请输入…”校验文案从静态 label 收敛到同页根元素。
+
+    表单错误节点只在提交后动态挂载，录制基础状态可能没有独立元素；模型容易把
+    “请输入用户名”断言到静态“用户名”标签。根元素是已录制且稳定的页面事实，
+    同页动态校验文案可在其文本中可靠验证。
+    """
+    repaired_count = 0
+    replaced_ids: set[int] = set()
+    for item in steps:
+        if item.get("step_type") != "web_assert_text":
+            continue
+        config = item.get("config") or {}
+        expected = str(config.get("contains") or config.get("equals") or "").strip()
+        if not expected.startswith("请输入"):
+            continue
+        element_id = _as_int(config.get("element_id"))
+        element = element_map.get(element_id)
+        if element is None or expected in str(element.semantic_name or ""):
+            continue
+        root = next(
+            (
+                candidate for candidate in element_map.values()
+                if candidate.page_key == element.page_key
+                and str(candidate.element_type or "").lower() in {"html", "body"}
+                and _preferred_locator(candidate) is not None
+            ),
+            None,
+        )
+        if root is None:
+            continue
+        by, locator = _preferred_locator(root) or ("", "")
+        item["config"] = {
+            **config,
+            "by": by,
+            "locator": locator,
+            "element_id": root.id,
+        }
+        item["step_name"] = f"断言页面提示 {expected}"
+        replaced_ids.add(element_id)
+        evidence_elements.add(root.id)
+        evidence_pages.add(root.page_key)
+        repaired_count += 1
+    used_ids = {
+        _as_int((item.get("config") or {}).get("element_id"))
+        for item in steps
+        if (item.get("config") or {}).get("element_id")
+    }
+    evidence_elements.difference_update(replaced_ids - used_ids)
+    if repaired_count:
+        warnings.append(f"已把 {repaired_count} 个动态表单校验文案改为同页根元素断言")
 
 
 def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
@@ -1149,6 +1456,27 @@ def compile_ai_case(
                 continue
             append(f"断言 {element.semantic_name} 文本", "web_assert_text", assertion_config)
 
+    test_data_requirement = infer_account_requirement(
+        title,
+        str(raw.get("description") or ""),
+        variables,
+    )
+    _repair_form_validation_assertions(
+        steps,
+        element_map=element_map,
+        warnings=warnings,
+        evidence_elements=evidence_elements,
+        evidence_pages=evidence_pages,
+    )
+    _repair_successful_login_assertion(
+        steps,
+        requirement=test_data_requirement,
+        element_map=element_map,
+        warnings=warnings,
+        manual_reasons=manual_reasons,
+        evidence_elements=evidence_elements,
+        evidence_pages=evidence_pages,
+    )
     if not steps:
         return None
     has_assertion = any(
@@ -1169,6 +1497,10 @@ def compile_ai_case(
             {"seconds": 0, "manual_intervention": True, "reason": reason},
             skip=True,
         )
+    if test_data_requirement.get("status") != "ready":
+        reason = str(test_data_requirement.get("reason") or "测试数据前置条件不满足")
+        warnings.append(f"测试数据门禁：{reason}")
+        manual_reasons.append(reason)
     confidence = 0.92
     confidence -= min(0.45, len(manual_reasons) * 0.18)
     confidence -= min(0.2, len(warnings) * 0.03)
@@ -1194,7 +1526,9 @@ def compile_ai_case(
             "element_ids": sorted(evidence_elements),
             "page_keys": sorted(evidence_pages),
             "snapshot_ids": sorted(evidence_snapshots),
+            "test_data_requirement": test_data_requirement,
         },
+        "test_data_requirement": test_data_requirement,
     }
 
 
@@ -1240,31 +1574,56 @@ def commit_drafts(db: Session, *, draft_ids: list[int], module_id: int) -> tuple
         if evidence_errors:
             skipped.append({"draft_id": draft_id, "reason": "；".join(evidence_errors[:5])})
             continue
+        requirement = (draft.evidence or {}).get("test_data_requirement")
+        if not isinstance(requirement, dict):
+            requirement = infer_account_requirement(
+                draft.title,
+                draft.description,
+                draft.variables or {},
+            )
+        data_errors = validate_account_requirement(db, draft.project_id, requirement)
+        if data_errors:
+            skipped.append({
+                "draft_id": draft_id,
+                "reason": "测试数据未就绪：" + "；".join(data_errors[:5]),
+            })
+            continue
 
         max_order += 1
         manual_reasons = list(draft.manual_reasons or [])
+        case_tags = list(draft.tags or [])
+        if manual_reasons and "需人工调整" not in case_tags:
+            case_tags.append("需人工调整")
+        generation_metadata = {
+            "source": "web_ui_case_generation",
+            "ai_run_id": draft.ai_run_id,
+            "draft_id": draft.id,
+            "functional_case_id": draft.functional_case_id,
+            "confidence": draft.confidence,
+            "evidence": draft.evidence or {},
+            "warnings": draft.warnings or [],
+            "manual_reasons": manual_reasons,
+            "visual_assertion": bool(draft.visual_assertion),
+            "test_data_requirement": requirement,
+        }
+        if manual_reasons:
+            generation_metadata.update({
+                "needs_manual_adjustment": True,
+                "manual_adjustment_status": "pending",
+                "manual_adjustment_reasons": manual_reasons,
+            })
         case = TestCase(
             module_id=module_id,
             name=draft.title,
             description=draft.description,
             sort_order=max_order,
             case_type="web",
-            tags=list(draft.tags or []),
+            tags=case_tags,
             skip=bool(manual_reasons),
             priority=draft.priority,
             variables=dict(draft.variables or {}),
             source="ai_m8_web",
-            generation_metadata={
-                "source": "web_ui_case_generation",
-                "ai_run_id": draft.ai_run_id,
-                "draft_id": draft.id,
-                "functional_case_id": draft.functional_case_id,
-                "confidence": draft.confidence,
-                "evidence": draft.evidence or {},
-                "warnings": draft.warnings or [],
-                "manual_reasons": manual_reasons,
-                "visual_assertion": bool(draft.visual_assertion),
-            },
+            generation_metadata=generation_metadata,
         )
         db.add(case)
         db.flush()

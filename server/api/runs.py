@@ -117,6 +117,19 @@ async def run_test(req: RunTestRequest, db: DBDep):
     if not cases_to_run:
         raise HTTPException(status_code=404, detail="未找到可执行的用例")
 
+    # AI Web 用例的账号变量只在运行前绑定。真实密码不落用例、不进入 AI 上下文；
+    # 动态账号随本次任务创建，任务 finally 中统一清理。
+    if cat_lower in {"web", "mixed"}:
+        from server.services.web_test_data_service import (
+            WebTestDataError,
+            prepare_web_test_data,
+        )
+
+        try:
+            prepare_web_test_data(db.session, cases_to_run, project_id=req.project)
+        except WebTestDataError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     # ---- 指定设备：前端 RunCaseDialog 让用户在 app/android/ios 用例上手选某台设备 ----
     # 逻辑：
     #   - 必须是 idle。busy/offline 都拒绝（409）——否则要么抢别人的任务，要么根本连不上。
@@ -183,7 +196,10 @@ async def run_test(req: RunTestRequest, db: DBDep):
 
     # Celery 异步触发（这里的 commit 由 get_db 兜底，确保 report 记录对 worker 可见）
     db.commit()
-    LOGGER.info(f"看看cases_to_run是啥：{cases_to_run}")
+    LOGGER.info(
+        "[run_test] 已装载 %s 条用例，账号密钥与步骤参数不写入日志",
+        len(cases_to_run),
+    )
 
     # 同步模式：读取配置中心 web.browser.sync_mode，
     # 开启后任务直接在 uvicorn 进程内同步执行，浏览器弹窗可见

@@ -204,8 +204,9 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
 
         <Section title="第 2 步 · 用 crypto 工具箱写你的算法">
           <p>
-            沙箱里不能 import <Kbd>cryptography</Kbd>，但平台把常用加密原语打包成了 <Kbd>crypto</Kbd>
-            （脚本里直接用，无需 import）。你用它们<b>拼</b>出自己的方案——对称/非对称、整体/字段、要不要签名，随你组合：
+            脚本现在运行在独立 Python 进程，可以直接 import 当前脚本运行环境已经安装的
+            <Kbd>cryptography</Kbd>、<Kbd>httpx</Kbd> 等包。下面的 <Kbd>crypto</Kbd>
+            示例属于旧脚本兼容写法；新项目建议显式 import 依赖，让脚本与平台代码完全解耦：
           </p>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-xs">
@@ -221,7 +222,7 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
                   ["crypto.rsa_aes_ecb_decrypt(payload, private_key_pem=None)", "私钥解密信封 → dict/list"],
                   ["crypto.aes_gcm_encrypt / aes_gcm_decrypt(text, key)", "AES-256-GCM 通用对称"],
                   ["crypto.md5 / sha256 / hmac_sha256(text[, key])", "摘要 / 签名"],
-                  ["crypto.canonical(params, fields=None)", "参数有序拼 k=v&k=v（沙箱没 sorted）"],
+                  ["crypto.canonical(params, fields=None)", "旧脚本兼容：参数有序拼 k=v&k=v"],
                   ["crypto.now_ms() / random_hex(n) / b64encode / b64decode", "时间戳 / 随机 / 编解码"],
                   ["crypto.should_apply(config, vars)", "按作用范围策略判断是否加解密"],
                   ["crypto.TEST_PUBLIC_KEY_PEM / TEST_PRIVATE_KEY_PEM", "自测靶子内置密钥（仅自测）"],
@@ -270,7 +271,7 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
         <Section title="第 5 步 · 测试与生效">
           <ol className="list-decimal space-y-1 pl-5">
             <li>脚本页右上「<b>测试运行</b>」：填 <Kbd>测试输入</Kbd>（headers/body/config/vars），看输出对不对。</li>
-            <li>脚本内容改完即时生效；只有改了平台引擎/沙箱相关代码才需重启 worker。</li>
+            <li>脚本内容改完即时生效；每次调用都会启动隔离进程，不会把模块或全局变量残留到下一条用例。</li>
             <li>跑一条命中的用例：请求体照写<b>明文</b>，断言照写<b>解密后</b>结构，加解密对用例透明。</li>
           </ol>
         </Section>
@@ -287,10 +288,9 @@ export function CryptoTutorialDrawer({ open, onClose }: { open: boolean; onClose
 
         <Section title="常见坑">
           <ul className="list-disc space-y-1.5 pl-5">
-            <li>沙箱<b>禁止 import cryptography</b>、也没有 <Kbd>bytes/ord/sorted</Kbd>——重加密只能调 <Kbd>crypto.*</Kbd>，别手写 AES。</li>
-            <li>脚本用分离 globals/locals 执行，<Kbd>handler</Kbd> <b>调不到同级定义的其它顶层函数</b>（会 NameError）——逻辑内联进 handler。</li>
-            <li>改了脚本沙箱/引擎相关代码后<b>要重启 celery worker</b>（用例在 worker 里执行）；只改配置或脚本内容不用重启。</li>
-            <li>报 <Kbd>rel is not defined</Kbd> / <Kbd>crypto is not defined</Kbd>：worker 用的是旧代码，重启。</li>
+            <li>允许 <Kbd>import</Kbd> 已安装依赖；未安装的包会明确报 <Kbd>ModuleNotFoundError</Kbd>，不需要向平台业务目录新增 Python 文件。</li>
+            <li><Kbd>handler</Kbd> 可以调用脚本中同级定义的函数，也支持同步函数与 <Kbd>async def</Kbd>。</li>
+            <li>脚本通过 JSON 与平台交换数据，不能直接 import <Kbd>server</Kbd>、<Kbd>database</Kbd>、<Kbd>runners</Kbd>，也拿不到平台数据库/JWT环境变量。</li>
             <li>报 <Kbd>handler 不存在</Kbd>：脚本没保存，或名字/类型和配置里的 handler 名不一致。</li>
           </ul>
         </Section>

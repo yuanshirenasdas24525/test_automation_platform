@@ -35,6 +35,7 @@ from runners.context.auth_cache import (
     extract_hook_values,
 )
 from runners.context.execution_context import ExecutionContext
+from runners.context.run_variable_pool import redact_variable_pool
 from runners.context.ui_context_collector import collector_for
 from runners.dispatcher import StepDispatcher
 from runners.protocol import CaseResult, StepResult, StepStatus
@@ -371,12 +372,19 @@ class CaseExecutor:
         if isinstance(case_vars, dict):
             for k, v in case_vars.items():
                 ctx.set_var(k, v)
-        # 3) 同一轮执行内由前序 case 提取出的变量，优先级最高。
-        # 这样“登录用例提取 token → 后续接口用例使用 ${token}”这类链式执行可以成立。
+        input_variable_names = {
+            str(key)
+            for key in (ctx.vars or {})
+            if not str(key).startswith("_")
+        }
+        ctx.set_var("_input_variable_names", sorted(input_variable_names))
+        # 3) 同一轮执行内由前序 case 提取出的变量用于补充当前用例；当前用例显式
+        # 声明的同名变量保持最高优先级，避免批量账号场景相互覆盖。这样既支持
+        # “登录提取 token → 后续接口使用 ${token}”，又保持每条用例的数据隔离。
         run_shared_vars = ctx.vars.get("_run_shared_vars") or {}
         if isinstance(run_shared_vars, dict):
             for k, v in run_shared_vars.items():
-                if not str(k).startswith("_"):
+                if not str(k).startswith("_") and str(k) not in case_vars:
                     ctx.set_var(k, v)
 
     @staticmethod
@@ -752,10 +760,7 @@ class CaseExecutor:
             input_data = result.input_data
             if isinstance(input_data, dict):
                 input_data = dict(input_data)
-                input_data["variable_pool"] = {
-                    k: v for k, v in (ctx.vars or {}).items()
-                    if not str(k).startswith("_")
-                }
+                input_data["variable_pool"] = redact_variable_pool(ctx.vars)
 
             # 记录到 record_property，平台 tasks 层会读
             records_after = getattr(ctx, "records", {})

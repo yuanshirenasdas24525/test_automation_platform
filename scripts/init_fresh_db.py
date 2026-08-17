@@ -78,6 +78,20 @@ def _seed_roles() -> None:
         db.close()
 
 
+def _seed_script_library() -> None:
+    """幂等 seed 平台通用动态函数；项目逻辑不在这里维护。"""
+    from database.db import DB
+    from database.script_seeds import seed_global_scripts
+
+    db = DB()
+    try:
+        added = seed_global_scripts(db.session)
+        db.session.commit()
+        print(f"[init_fresh_db] 脚本库 seed 完成，新增: {added}")
+    finally:
+        db.close()
+
+
 def main() -> None:
     from alembic import command
 
@@ -88,6 +102,7 @@ def main() -> None:
         # 已有库：正常增量迁移
         print("[init_fresh_db] 检测到 alembic_version，执行增量迁移 alembic upgrade head ...")
         command.upgrade(_alembic_config(), "head")
+        _seed_script_library()
         print("[init_fresh_db] ✅ 增量迁移完成")
         return
 
@@ -97,6 +112,7 @@ def main() -> None:
     print(f"[init_fresh_db] ✅ 已创建 {len(Base.metadata.tables)} 张表")
 
     _seed_roles()
+    _seed_script_library()
 
     print("[init_fresh_db] alembic stamp head（标记版本，之后新增迁移可增量执行）...")
     command.stamp(_alembic_config(), "head")

@@ -625,6 +625,231 @@ AI_CONFIG_SCHEMA: list[dict[str, Any]] = [
 ]
 
 
+# =============================================================================
+# Web 测试账号工厂。密码由配置 API 加密保存，列表接口只返回掩码。
+# =============================================================================
+WEB_TEST_ACCOUNT_CONFIG_SCHEMA: list[dict[str, Any]] = [
+    {
+        "config_group": "test_accounts",
+        "key": "provider",
+        "type": "str",
+        "default": "static",
+        "description": (
+            "账号提供器。static 只使用共享账号；http 按本组配置的目标系统接口；"
+            "script 调用脚本库 workflow，适合特殊签名、多接口编排和项目专属逻辑。"
+        ),
+        "example": "script",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "shared_username",
+        "type": "str",
+        "default": "",
+        "description": "只用于内置管理员等不可动态创建的只读登录场景。",
+        "example": "qa_admin",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "shared_password",
+        "type": "secret",
+        "default": "",
+        "description": "共享账号密码。使用 AES-256-GCM 加密保存，不返回前端、不发送给 AI。",
+        "example": "",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "auto_cleanup",
+        "type": "bool",
+        "default": "true",
+        "description": "运行完成后自动删除本轮创建的临时账号。",
+        "example": "true",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "prepare_script",
+        "type": "str",
+        "default": "",
+        "description": (
+            "provider=script 时使用的 workflow 脚本名。运行前传入 action=create、"
+            "requirement 和建议账号；项目逻辑只保存在脚本库。"
+        ),
+        "example": "project_account_factory",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "cleanup_script",
+        "type": "str",
+        "default": "",
+        "description": (
+            "provider=script 时使用的清理 workflow；留空则复用 prepare_script，"
+            "并传入 action=cleanup。"
+        ),
+        "example": "project_account_factory",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "script_config",
+        "type": "json",
+        "default": "{}",
+        "description": (
+            "传给账号 workflow 的项目配置 JSON，例如接口路径、租户或角色；"
+            "api_base_url 和共享账号配置也会自动传入。"
+        ),
+        "example": '{"tenant":"qa","role_codes":["test"]}',
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "api_base_url",
+        "type": "str",
+        "default": "",
+        "description": (
+            "账号接口基础 URL。留空时依次复用 WEB_TEST_ACCOUNT_API_BASE_URL、"
+            "web/browser.base_url、api/host.url。"
+        ),
+        "example": "http://127.0.0.1:54351",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "login_method",
+        "type": "str",
+        "default": "POST",
+        "description": "获取账号管理凭据的 HTTP 方法。",
+        "example": "POST",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "login_path",
+        "type": "str",
+        "default": "/api/auth/login",
+        "description": "账号工厂登录路径；创建接口不需要认证时可保存为空。",
+        "example": "/api/auth/login",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "login_body",
+        "type": "json",
+        "default": (
+            '{"username":"${shared_username}","password":"${shared_password}",'
+            '"client":{"client_type":"automation","client_name":"Web UI Account Factory",'
+            '"device_id":"web-test-account-factory"}}'
+        ),
+        "description": "登录请求 JSON 模板，支持 ${shared_username}/${shared_password}。",
+        "example": '{"username":"${shared_username}","password":"${shared_password}"}',
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "token_jsonpath",
+        "type": "str",
+        "default": "$.data.access_token",
+        "description": "从登录响应提取访问令牌的 JSONPath；Cookie 会话认证时可保存为空。",
+        "example": "$.data.access_token",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "auth_header",
+        "type": "str",
+        "default": "Authorization",
+        "description": "创建和清理账号接口使用的鉴权请求头；Cookie 会话认证时可保存为空。",
+        "example": "Authorization",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "auth_scheme",
+        "type": "str",
+        "default": "Bearer",
+        "description": "访问令牌前缀；接口直接使用 token 时可保存为空。",
+        "example": "Bearer",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "create_method",
+        "type": "str",
+        "default": "POST",
+        "description": "创建临时账号的 HTTP 方法。",
+        "example": "POST",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "create_path",
+        "type": "str",
+        "default": "/api/users",
+        "description": "创建临时账号的接口路径。",
+        "example": "/api/users",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "create_body",
+        "type": "json",
+        "default": (
+            '{"username":"${username}","full_name":"${account_full_name}",'
+            '"password":"${password}","is_active":"${is_active}",'
+            '"role_codes":["test"]}'
+        ),
+        "description": (
+            "创建账号 JSON 模板，支持 username/password/is_active/profile/"
+            "account_full_name 及账号约束占位符。"
+        ),
+        "example": (
+            '{"username":"${username}","password":"${password}",'
+            '"is_active":"${is_active}","role_codes":["test"]}'
+        ),
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "user_id_jsonpath",
+        "type": "str",
+        "default": "$.data.id",
+        "description": "从创建响应提取清理标识的 JSONPath。",
+        "example": "$.data.id",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "cleanup_method",
+        "type": "str",
+        "default": "DELETE",
+        "description": "清理临时账号的 HTTP 方法。",
+        "example": "DELETE",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "cleanup_path",
+        "type": "str",
+        "default": "/api/users/${user_id}/purge-test-account",
+        "description": "清理接口路径模板，支持 ${user_id}/${username}。",
+        "example": "/api/users/${user_id}",
+        "applies_to": ["web"],
+    },
+    {
+        "config_group": "test_accounts",
+        "key": "timeout_seconds",
+        "type": "float",
+        "default": "10",
+        "description": "登录、创建和清理接口的单次超时秒数。",
+        "example": "10",
+        "applies_to": ["web"],
+    },
+]
+
+
 def get_schema(category: str) -> list[dict[str, Any]]:
     """按 category 取推荐 schema。未识别 category 返回空列表。
 
@@ -643,8 +868,9 @@ def get_schema(category: str) -> list[dict[str, Any]]:
             from runners.web.session import WEB_CONFIG_SCHEMA  # noqa: WPS433
         except Exception:  # noqa: BLE001
             return []
-        # web schema 没带 config_group 字段（它的隐式 group 是 'browser'），统一补上
-        return [{"config_group": "browser", **dict(item)} for item in WEB_CONFIG_SCHEMA]
+        # browser schema 没带 config_group 字段（隐式 group 是 browser）；账号工厂显式分组。
+        browser = [{"config_group": "browser", **dict(item)} for item in WEB_CONFIG_SCHEMA]
+        return [*browser, *[dict(item) for item in WEB_TEST_ACCOUNT_CONFIG_SCHEMA]]
     if cat == "other":
         return OTHER_CONFIG_SCHEMA
     return []

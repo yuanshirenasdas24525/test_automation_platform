@@ -43,6 +43,14 @@ def safe_json_dumps(data):
     return str(data)
 
 
+def _redacted_text(value, limit: int | None = None):
+    """步骤报告统一脱敏，并按数据库 VARCHAR 上限截断。"""
+    if value is None:
+        return None
+    text = safe_json_dumps(redact_context_payload(value))
+    return text if limit is None else text[:limit]
+
+
 def _coerce_int(value):
     """Integer 列里想放 int；拿不到就返回 None，绝不落字符串。"""
     if value is None:
@@ -291,41 +299,41 @@ def pytest_runtest_makereport(item, call):
                 report_id=report_id,
                 case_id=_coerce_int(props.get("case_id")),
                 step_id=_coerce_int(item.get("step_id")),
-                step_name=item.get("step_name") or case_name,
-                step_type=item.get("step_type"),
-                status=item.get("status") or report.outcome,
+                step_name=_redacted_text(item.get("step_name") or case_name, 255),
+                step_type=_redacted_text(item.get("step_type"), 50),
+                status=_redacted_text(item.get("status") or report.outcome, 20),
                 duration=_duration_seconds(item.get("duration_ms")),
-                action=safe_json_dumps(item.get("action")),
-                target=safe_json_dumps(item.get("target")),
-                input_data=safe_json_dumps(item.get("input_data")),
-                output_data=safe_json_dumps(item.get("output_data")),
+                action=_redacted_text(item.get("action"), 50),
+                target=_redacted_text(item.get("target")),
+                input_data=_redacted_text(item.get("input_data")),
+                output_data=_redacted_text(item.get("output_data")),
                 status_code=_coerce_int(item.get("status_code")),
-                extract_values=safe_json_dumps(item.get("extract_values")),
-                assertion_results=safe_json_dumps(item.get("assertion_results")),
-                page_info=safe_json_dumps(item.get("page_info")),
+                extract_values=_redacted_text(item.get("extract_values")),
+                assertion_results=_redacted_text(item.get("assertion_results")),
+                page_info=_redacted_text(item.get("page_info"), 100),
                 attachments=item.get("attachments"),
-                error_message=error_message,
+                error_message=_redacted_text(error_message, 4000),
                 create_time=datetime.now(),
             ))
     else:
         rows = [TestStepReport(
             report_id=report_id,
             case_id=_coerce_int(props.get("case_id")),
-            step_name=case_name,
-            status=report.outcome,          # passed / failed / skipped
+            step_name=_redacted_text(case_name, 255),
+            status=_redacted_text(report.outcome, 20),  # passed / failed / skipped
             duration=float(report.duration) if report.duration is not None else None,
-            action=safe_json_dumps(props.get("action")),
-            target=safe_json_dumps(props.get("target")),
-            input_data=safe_json_dumps(props.get("input_data")),
-            output_data=safe_json_dumps(props.get("output_data")),
+            action=_redacted_text(props.get("action"), 50),
+            target=_redacted_text(props.get("target")),
+            input_data=_redacted_text(props.get("input_data")),
+            output_data=_redacted_text(props.get("output_data")),
             status_code=_coerce_int(props.get("status_code")),
-            extract_values=safe_json_dumps(props.get("extract_values")),
-            assertion_results=safe_json_dumps(props.get("assertion_results")),
-            page_info=safe_json_dumps(props.get("page_info")),
+            extract_values=_redacted_text(props.get("extract_values")),
+            assertion_results=_redacted_text(props.get("assertion_results")),
+            page_info=_redacted_text(props.get("page_info"), 100),
             create_time=datetime.now(),
         )]
         if report.failed:
-            rows[0].error_message = str(report.longrepr)[:2000]
+            rows[0].error_message = _redacted_text(str(report.longrepr), 4000)
 
     # 每条用例一把独立 session —— 出错不污染别的用例
     db = DB()

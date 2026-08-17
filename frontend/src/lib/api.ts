@@ -1124,7 +1124,7 @@ export interface ConfigItem {
 export interface ConfigSchemaItem {
   config_group: string;
   key: string;
-  type: "str" | "bool" | "int" | "float" | "json";
+  type: "str" | "bool" | "int" | "float" | "json" | "secret";
   default: string;
   description: string;
   example: string;

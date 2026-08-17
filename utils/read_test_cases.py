@@ -398,6 +398,8 @@ def _serialize_case_v2(c, proj_name) -> Dict[str, Any]:
         "timeout": c.timeout,
         "retry": c.retry,
         "repeat_count": getattr(c, "repeat_count", 1) or 1,
+        "source": getattr(c, "source", "manual") or "manual",
+        "generation_metadata": getattr(c, "generation_metadata", None),
         "variables": c.variables,
         "pre_hook": c.pre_hook,
         "post_hook": c.post_hook,

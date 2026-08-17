@@ -1913,7 +1913,7 @@ export interface InProgressTask {
 // 脚本库 —— GET/POST /api/scripts
 // =============================================================================
 
-export type ScriptKind = "function" | "crypto_request" | "crypto_response";
+export type ScriptKind = "function" | "crypto_request" | "crypto_response" | "workflow";
 export type ScriptScope = "global" | "project";
 
 export interface ScriptItem {
@@ -1925,6 +1925,7 @@ export interface ScriptItem {
   project_id: number | null;
   scope: ScriptScope;
   description: string | null;
+  requirements: string[];
   created_at: string | null;
   updated_at: string | null;
 }
@@ -1936,6 +1937,7 @@ export interface ScriptPayload {
   enabled: boolean;
   project_id?: number | null;
   description?: string | null;
+  requirements?: string[];
 }
 
 export interface ScriptTestPayload {
@@ -1945,6 +1947,7 @@ export interface ScriptTestPayload {
   body?: unknown;
   config?: Record<string, unknown>;
   vars?: Record<string, unknown>;
+  timeout?: number;
 }
 
 export interface ScriptTestResult {

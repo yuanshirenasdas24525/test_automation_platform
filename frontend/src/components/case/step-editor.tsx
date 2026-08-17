@@ -47,7 +47,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { appPackagesApi } from "@/lib/api";
+import { appPackagesApi, scriptsApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import type { CaseType, TestStepDraft } from "@/types/domain";
 import { UiElementPickerDialog } from "./ui-element-picker-dialog";
@@ -61,7 +61,8 @@ type FieldKind =
   | "select" // 下拉（options 必填）
   | "highlight" // HighlightedTextarea：支持 ${var} / $. / function: / sql:
   | "bool" // checkbox
-  | "app_package"; // 已上传 App 包选择器：下拉 = 已上传包，留空走输入框（可手填路径/URL）
+  | "app_package" // 已上传 App 包选择器：下拉 = 已上传包，留空走输入框（可手填路径/URL）
+  | "workflow_script"; // 当前项目 + 全局的 workflow 脚本
 
 interface FieldSpec {
   key: string;
@@ -629,6 +630,25 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
 
   // ---------- 通用 ----------
   {
+    value: "script",
+    group: "generic",
+    label: "项目脚本 (script)",
+    desc: "在独立进程中执行脚本库的“项目逻辑”脚本。适用于账号准备、动态数据、外部系统调用、复杂断言和清理逻辑，API/Web/App 通用。",
+    defaultConfig: { script_name: "", input: "{}", script_config: "{}", export_variables: true },
+    defaultName: (c) => `运行脚本 ${String(c.script_name || "")}`.trim(),
+    fields: [
+      { key: "script_name", label: "项目逻辑脚本", kind: "workflow_script", required: true },
+      { key: "input", label: "输入 JSON", kind: "highlight", rows: 4,
+        placeholder: '{"username": "${username}"}',
+        hint: <>支持嵌套 JSON、<code>$&#123;var&#125;</code> 和 <code>function:xxx()</code></> },
+      { key: "script_config", label: "脚本配置 JSON", kind: "highlight", rows: 3,
+        placeholder: '{"base_url": "https://example.test"}' },
+      { key: "export_variables", label: "写回 variables", kind: "bool",
+        hint: <>脚本返回 <code>{'{"variables": {"token": "..."}}'}</code> 后可在后续步骤使用 <code>$&#123;token&#125;</code></> },
+      { key: "save_result_as", label: "完整结果保存到变量", kind: "text", placeholder: "script_result（可选）" },
+    ],
+  },
+  {
     value: "http_request",
     group: "generic",
     label: "HTTP 请求 (http_request)",
@@ -1166,6 +1186,7 @@ function StepRow({
                 <FieldRenderer
                   key={field.key}
                   field={field}
+                  projectId={projectId}
                   platform={platform}
                   value={
                     field.key === "target_db_group"
@@ -1282,11 +1303,13 @@ function StepRow({
 function FieldRenderer({
   field,
   platform,
+  projectId,
   value,
   onChange,
 }: {
   field: FieldSpec;
   platform: "android" | "ios" | null;
+  projectId?: number;
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
@@ -1386,10 +1409,51 @@ function FieldRenderer({
           onChange={onChange}
         />
       ) : null}
+      {field.kind === "workflow_script" ? (
+        <WorkflowScriptPicker
+          id={id}
+          projectId={projectId}
+          value={stringify(value)}
+          onChange={onChange}
+        />
+      ) : null}
       {field.hint ? (
         <p className="text-[11px] leading-tight text-muted-foreground">{field.hint}</p>
       ) : null}
     </div>
+  );
+}
+
+function WorkflowScriptPicker({
+  id,
+  projectId,
+  value,
+  onChange,
+}: {
+  id: string;
+  projectId?: number;
+  value: string;
+  onChange: (value: unknown) => void;
+}) {
+  const scriptsQuery = useQuery({
+    queryKey: queryKeys.scripts({ project_id: projectId, scope: "available", kind: "workflow" }),
+    queryFn: () => scriptsApi.list({ project_id: projectId, scope: "available", kind: "workflow" }),
+    staleTime: 30 * 1000,
+  });
+  const scripts = (scriptsQuery.data ?? []).filter((script) => script.enabled);
+  return (
+    <Select value={value || undefined} onValueChange={onChange}>
+      <SelectTrigger id={id} className="h-8 text-xs">
+        <SelectValue placeholder={scriptsQuery.isLoading ? "加载脚本中…" : "请选择脚本库中的项目逻辑"} />
+      </SelectTrigger>
+      <SelectContent>
+        {scripts.map((script) => (
+          <SelectItem key={script.id} value={script.name}>
+            {script.scope === "project" ? "[项目]" : "[全局]"} {script.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

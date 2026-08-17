@@ -206,6 +206,7 @@ from .script_store import (
     SCRIPT_KIND_FUNCTION,
     SCRIPT_KIND_CRYPTO_REQUEST,
     SCRIPT_KIND_CRYPTO_RESPONSE,
+    SCRIPT_KIND_WORKFLOW,
     ALL_SCRIPT_KINDS,
 )
 from .module_outline import (
@@ -529,7 +530,7 @@ __all__ = [
     "ConfigUpdateItem", "ResponseModel", "ReorderItem", "ReorderRequest",
     # Script store constants
     "SCRIPT_KIND_FUNCTION", "SCRIPT_KIND_CRYPTO_REQUEST",
-    "SCRIPT_KIND_CRYPTO_RESPONSE", "ALL_SCRIPT_KINDS",
+    "SCRIPT_KIND_CRYPTO_RESPONSE", "SCRIPT_KIND_WORKFLOW", "ALL_SCRIPT_KINDS",
     # Module outline
     "ModuleOutline", "ModuleOutlinePoint",
     "AiCaseFlag",

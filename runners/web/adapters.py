@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional
@@ -33,6 +34,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 BY_TYPES = ("css", "xpath", "id", "name", "class", "text", "link")
 ByType = Literal["css", "xpath", "id", "name", "class", "text", "link"]
+
+
+def _must_force_headless(
+    headless: bool,
+    *,
+    platform_name: str,
+    display: str | None,
+    wayland_display: str | None,
+) -> bool:
+    """只在 Linux 且同时没有 X11/Wayland 显示服务时强制无头。
+
+    macOS 使用 Quartz、Windows 使用桌面会话，两者通常都没有 DISPLAY，
+    不能因此将用户显式设置的 headless=false 覆盖掉。
+    """
+    return (
+        not headless
+        and platform_name.startswith("linux")
+        and not display
+        and not wayland_display
+    )
 
 
 def _normalize_by(by: str | None) -> ByType:
@@ -163,15 +184,20 @@ class PlaywrightAdapter(WebDriverAdapter):
         slow_mo = int(self.config.get("slow_mo") or 0)
         launch_args = list(self.config.get("launch_args") or [])
 
-        # 安全兜底：无显示器环境（Docker / SSH 服务器）强制无头模式，
-        # 否则 Chromium 会因 Missing X server 直接崩溃（TargetClosedError）
-        if not headless and not os.environ.get("DISPLAY"):
+        # 安全兜底：只有 Linux 容器 / SSH 且没有 X11/Wayland 时强制无头。
+        # macOS/Windows 不使用 DISPLAY，必须尊重 headless=false。
+        if _must_force_headless(
+            headless,
+            platform_name=sys.platform,
+            display=os.environ.get("DISPLAY"),
+            wayland_display=os.environ.get("WAYLAND_DISPLAY"),
+        ):
             print(
-                "[PlaywrightAdapter] 检测到无 DISPLAY 环境，"
+                "[PlaywrightAdapter] 检测到 Linux 无 X11/Wayland 环境，"
                 "自动将 headless=false → true（避免 XServer 报错）"
             )
             logger.warning(
-                "PlaywrightAdapter: 无 DISPLAY，强制 headless=true（原配置为 false）"
+                "PlaywrightAdapter: Linux 无 X11/Wayland，强制 headless=true（原配置为 false）"
             )
             headless = True
 
@@ -377,14 +403,19 @@ class SeleniumAdapter(WebDriverAdapter):
         binary = self.config.get("binary")
         window_size = self.config.get("window_size")
 
-        # 安全兜底：无显示器环境强制无头模式
-        if not headless and not os.environ.get("DISPLAY"):
+        # 与 Playwright 保持一致：仅 Linux 无显示服务时强制无头。
+        if _must_force_headless(
+            headless,
+            platform_name=sys.platform,
+            display=os.environ.get("DISPLAY"),
+            wayland_display=os.environ.get("WAYLAND_DISPLAY"),
+        ):
             print(
-                "[SeleniumAdapter] 检测到无 DISPLAY 环境，"
+                "[SeleniumAdapter] 检测到 Linux 无 X11/Wayland 环境，"
                 "自动将 headless=false → true（避免 XServer 报错）"
             )
             logger.warning(
-                "SeleniumAdapter: 无 DISPLAY，强制 headless=true（原配置为 false）"
+                "SeleniumAdapter: Linux 无 X11/Wayland，强制 headless=true（原配置为 false）"
             )
             headless = True
 

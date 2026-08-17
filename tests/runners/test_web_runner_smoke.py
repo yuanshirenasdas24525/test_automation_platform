@@ -34,13 +34,59 @@ from runners.dispatcher import StepDispatcher
 from runners.protocol import StepStatus
 from runners.steps.generic import AssertStepRunner, SleepStepRunner
 from runners.steps.web_actions import build_web_runners
-from runners.web.adapters import WebDriverAdapter
+from runners.web.adapters import WebDriverAdapter, _must_force_headless
 from runners.web.session import WebSession, acquire_session_for_case
 
 
 # =============================================================================
 # FakeAdapter：实现 WebDriverAdapter 全部方法，记下每次调用的入参
 # =============================================================================
+
+
+@pytest.mark.parametrize("platform_name", ["darwin", "win32"])
+def test_headed_mode_does_not_require_display_outside_linux(platform_name: str):
+    assert _must_force_headless(
+        False,
+        platform_name=platform_name,
+        display=None,
+        wayland_display=None,
+    ) is False
+
+
+def test_linux_without_x11_or_wayland_falls_back_to_headless():
+    assert _must_force_headless(
+        False,
+        platform_name="linux",
+        display=None,
+        wayland_display=None,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    ("display", "wayland_display"),
+    [(":0", None), (None, "wayland-0")],
+)
+def test_linux_with_display_service_keeps_headed_mode(
+    display: str | None,
+    wayland_display: str | None,
+):
+    assert _must_force_headless(
+        False,
+        platform_name="linux",
+        display=display,
+        wayland_display=wayland_display,
+    ) is False
+
+
+def test_explicit_headless_mode_never_needs_fallback():
+    assert _must_force_headless(
+        True,
+        platform_name="linux",
+        display=None,
+        wayland_display=None,
+    ) is False
+
+
 class FakeAdapter(WebDriverAdapter):
     engine = "fake"
 
@@ -179,6 +225,28 @@ def test_web_input_forwards_value_and_clear_first():
     assert name == "input"
     assert args == ("id", "username", "alice")
     assert kwargs == {"clear_first": False, "timeout": 4}
+
+
+def test_web_password_input_is_redacted_from_step_result():
+    ctx = ExecutionContext()
+    ctx.set_var("password", "Real#Secret123")
+    _, adapter = _bind_fake_session(ctx)
+    result = _dispatch_web_step(ctx, {
+        "id": 31,
+        "step_order": 0,
+        "step_name": "password input",
+        "step_type": "web_input",
+        "config": {
+            "by": "id",
+            "locator": "password",
+            "value": "${password}",
+            "clear_first": True,
+        },
+    })
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert adapter.calls[0][1] == ("id", "password", "Real#Secret123")
+    assert result.action == "input password"
+    assert result.input_data == {"value": "***", "redacted": True}
 
 
 # =============================================================================

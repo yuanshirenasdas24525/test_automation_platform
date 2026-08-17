@@ -597,6 +597,40 @@ def test_run_shared_variables_propagate_to_next_case(monkeypatch):
     assert calls["recorded"][0]["headers"].get("Authorization") == "Bearer from-login-case"
 
 
+def test_case_variables_override_same_name_from_shared_pool(monkeypatch):
+    """批量账号用例必须优先使用各自运行前绑定的凭据。"""
+    resp = _FakeResponse(200, {"ok": True})
+    http_runner, calls = _make_runner_with_mocked_http(monkeypatch, [resp])
+    executor = CaseExecutor(_build_dispatcher(http_runner))
+    ctx = ExecutionContext()
+    ctx.set_var("_run_shared_vars", {"username": "previous-case"})
+    case = {
+        "id": 31,
+        "name": "isolated account",
+        "case_type": "api",
+        "variables": {"username": "current-case"},
+        "steps": [{
+            "id": 3101,
+            "step_order": 0,
+            "step_name": "GET /profile",
+            "step_type": "http_request",
+            "config": {
+                "method": "GET",
+                "path": "/profile",
+                "headers": {"X-Username": "${username}"},
+                "data_type": "json",
+                "params": {},
+            },
+            "assertion": [{"type": "equal", "target": "status_code", "expected": 200}],
+        }],
+    }
+
+    result = executor.run(case, ctx)
+
+    assert result.status == StepStatus.PASSED, result.error_message
+    assert calls["recorded"][0]["headers"]["X-Username"] == "current-case"
+
+
 # ===================================================================
 # 4. HTTP 断言 expected 支持从变量池取值
 # ===================================================================

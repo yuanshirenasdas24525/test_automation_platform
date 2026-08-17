@@ -18,6 +18,10 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.api.deps import DBDep, RequireAdmin
 from database.models import ConfigStore, ConfigUpdateItem
+from server.services.web_test_data_service import (
+    mask_test_account_config,
+    prepare_test_account_config_value,
+)
 from utils.reload_config import config_center, is_database_config
 
 router = APIRouter(prefix="/config", tags=["config"])
@@ -86,6 +90,12 @@ async def get_all_configs(
     sql += " ORDER BY config_group, config_key"
 
     data = db.sql.query(sql, params)
+    for item in data:
+        item["config_value"] = mask_test_account_config(
+            item.get("config_group"),
+            item.get("config_key"),
+            item.get("config_value"),
+        )
     return {"status": "success", "data": data}
 
 
@@ -112,14 +122,22 @@ async def save_configs(configs: ConfigUpdateItem, db: DBDep):
         .first()
     )
 
+    stored_value = prepare_test_account_config_value(
+        configs.config_group,
+        configs.config_key,
+        configs.config_value,
+        existing=db_item.config_value if db_item else None,
+    )
     if db_item:
-        db_item.config_value = configs.config_value
+        db_item.config_value = stored_value
     else:
+        if stored_value is None:
+            raise HTTPException(status_code=400, detail="敏感配置首次保存时不能为空")
         db.session.add(
             ConfigStore(
                 config_group=configs.config_group,
                 config_key=configs.config_key,
-                config_value=configs.config_value,
+                config_value=stored_value,
                 category=configs.category,
                 project_id=configs.project_id,
             )
@@ -137,18 +155,21 @@ def add_config(item: ConfigUpdateItem, db: DBDep):
     if item.project_id is None:
         raise HTTPException(status_code=400, detail="project_id 必填")
 
-    sql = (
-        "INSERT INTO config_store (config_group, config_key, config_value, category, project_id) "
-        "VALUES (:g, :k, :v, :c, :pid)"
+    stored_value = prepare_test_account_config_value(
+        item.config_group,
+        item.config_key,
+        item.config_value,
     )
-    params = {
-        "g": item.config_group,
-        "k": item.config_key,
-        "v": item.config_value,
-        "c": item.category or "api",
-        "pid": item.project_id,
-    }
-    db.sql.execute(sql, params)
+    if stored_value is None:
+        raise HTTPException(status_code=400, detail="敏感配置首次保存时不能为空")
+    db.session.add(ConfigStore(
+        config_group=item.config_group,
+        config_key=item.config_key,
+        config_value=stored_value,
+        category=item.category or "api",
+        project_id=item.project_id,
+    ))
+    db.session.flush()
     config_center.reload(db.sql)
     return {"status": "success"}
 

@@ -31,6 +31,8 @@ x-app-common: &app-common
     # Web Recorder Agent 原生运行在宿主机，容器通过 host.docker.internal 控制。
     UI_RECORDER_AGENT_URL: ${UI_RECORDER_AGENT_URL:-http://host.docker.internal:54352}
     UI_RECORDER_AGENT_SECRET: ${UI_RECORDER_AGENT_SECRET:-}
+    # 项目未显式配置测试账号 API 地址时，API/worker 都通过 compose 服务名访问平台。
+    WEB_TEST_ACCOUNT_API_BASE_URL: ${WEB_TEST_ACCOUNT_API_BASE_URL:-http://api:8000}
     # 探活
     REDIS_HOST: redis
     REDIS_PORT: "6379"

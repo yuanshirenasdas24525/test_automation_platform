@@ -317,18 +317,19 @@ def handler(response_body, config, vars=None):
     return response_body          # 返回解密后的 dict/list，进入 extract/assert
 ```
 
-### 沙箱限制（重要）
+### 独立运行时（重要）
 
-页面脚本跑在加固沙箱里（`utils/script_runtime.py`）：
+脚本通过 `utils/script_runtime.py` 启动一次性隔离进程：
 
-- **只能 import**：`base64 / hashlib / hmac / json / math / random / re / time / uuid`，外加受控的 `crypto`。
-- **禁止** import `cryptography` 等重库；内置函数受限（**没有** `bytes / ord / chr / sorted / open` 等）；静态拦截所有 dunder 访问与非白名单 import。
-- 因此 **RSA/AES 这类重加密不能在脚本里手写**，必须调下面的 `crypto` 工具箱（它是 repo 里受信代码，把审过的高层原语递进沙箱）。
-- 脚本用**分离的 globals/locals** 执行，`handler` **调不到同级定义的其它顶层函数**（会 `NameError`）。逻辑要么全内联进 `handler`，要么用 `handler` 内的嵌套函数。
+- 可以 import 当前脚本运行环境已经安装的任意包，也可以在脚本页面声明独立 pip 依赖。
+- 平台 API/Worker 不会 import 或 exec 项目脚本；双方只交换 JSON。
+- 脚本不能 import `server/database/runners` 平台源码包，也拿不到平台数据库/JWT环境变量。
+- `handler` 可以调用同级函数，也支持 `async def`。
+- 旧加密脚本仍可直接使用独立运行时提供的 `crypto` 兼容对象；新脚本也可直接 import `cryptography`。
 
 ### `crypto` 工具箱 API
 
-在脚本里直接用 `crypto.xxx`（无需 import），实现见 `utils/crypto_toolkit.py`：
+在脚本里直接用 `crypto.xxx`（无需 import），实现位于独立运行时 `script_runner/crypto_compat.py`：
 
 | 函数 | 用途 |
 |---|---|
@@ -336,7 +337,7 @@ def handler(response_body, config, vars=None):
 | `crypto.rsa_aes_ecb_decrypt(payload, private_key_pem=None)` | 解密 `{key,data}` 信封 → dict/list |
 | `crypto.aes_gcm_encrypt(text, key)` / `aes_gcm_decrypt(token, key)` | AES-256-GCM 通用对称 |
 | `crypto.md5(text)` / `sha256(text)` / `hmac_sha256(text, key)` | 摘要 / 签名 |
-| `crypto.canonical(params, fields=None)` | 参数拼成 `k=v&k=v`（给 fields 按序，否则 key 升序）；沙箱没 `sorted`，签名靠它 |
+| `crypto.canonical(params, fields=None)` | 参数拼成 `k=v&k=v`（给 fields 按序，否则 key 升序） |
 | `crypto.b64encode(raw)` / `b64decode(text)` | base64 |
 | `crypto.random_hex(n=8)` / `now_ms()` | 随机串 / 毫秒时间戳 |
 | `crypto.generate_rsa_keypair(bits=2048)` | 生成 `(私钥PEM, 公钥PEM)` |
@@ -457,7 +458,7 @@ rsa_public_key = <公钥，留空用内置>
 
 ### 切换与排错
 
-- 改了 `utils/script_runtime.py`（沙箱白名单）或 `utils/crypto_toolkit.py` 后，**必须重启 worker**（用例在 celery worker 里执行）。
+- 改了脚本运行协议代码后必须重启 worker；只修改或保存脚本内容不需要重启。
 - 报 `NameError: name 'crypto' is not defined` → worker 用的是旧代码，重启 worker。
 - 报 `handler 不存在` / 走了文件旧逻辑 → 脚本没保存或名字/kind 不对。
 - 切换脚本内容与重启之间别跑用例（新旧不匹配的短窗口）。
