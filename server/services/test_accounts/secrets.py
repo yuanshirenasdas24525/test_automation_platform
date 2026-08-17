@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from utils.crypto import decrypt_secret, encrypt_secret
@@ -38,7 +39,35 @@ def decode_test_account_secret(value: str | None) -> str:
     return text
 
 
+def _coerce_pool(value: Any) -> list | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+    return value if isinstance(value, list) else None
+
+
+def _is_accounts_key(group: str | None, key: str | None) -> bool:
+    return (
+        str(group or "").strip().lower() == TEST_ACCOUNT_CONFIG_GROUP
+        and str(key or "").strip().lower() == "accounts"
+    )
+
+
 def mask_test_account_config(group: str | None, key: str | None, value: Any) -> Any:
+    if _is_accounts_key(group, key):
+        pool = _coerce_pool(value)
+        if pool is None:
+            return value
+        out = []
+        for item in pool:
+            if isinstance(item, dict):
+                item = dict(item)
+                if item.get("password"):
+                    item["password"] = TEST_ACCOUNT_SECRET_MASK
+            out.append(item)
+        return out
     if is_test_account_secret(group, key) and value:
         return TEST_ACCOUNT_SECRET_MASK
     return value
@@ -50,10 +79,35 @@ def prepare_test_account_config_value(
     value: str | None,
     *,
     existing: str | None = None,
-) -> str | None:
+) -> Any:
+    if _is_accounts_key(group, key):
+        return _prepare_account_pool(value, existing)
     if not is_test_account_secret(group, key):
         return value
     text = str(value or "")
     if text in {"", TEST_ACCOUNT_SECRET_MASK}:
         return existing
     return encode_test_account_secret(text)
+
+
+def _prepare_account_pool(value: Any, existing: Any) -> Any:
+    pool = _coerce_pool(value)
+    if pool is None:
+        return value
+    existing_pw: dict[str, Any] = {}
+    for item in _coerce_pool(existing) or []:
+        if isinstance(item, dict) and item.get("username"):
+            existing_pw[str(item["username"])] = item.get("password")
+    out = []
+    for item in pool:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        item = dict(item)
+        text = str(item.get("password") or "")
+        if text in {"", TEST_ACCOUNT_SECRET_MASK}:
+            item["password"] = existing_pw.get(str(item.get("username") or ""), "")
+        else:
+            item["password"] = encode_test_account_secret(text)
+        out.append(item)
+    return out
