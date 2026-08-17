@@ -13,7 +13,7 @@ from sqlalchemy.orm import selectinload
 
 from database.db import DB
 from database.models import Module, TestCase, TestStep, UiAutomationCaseDraft, UiElement
-from server.services.web_test_data_service import infer_account_requirement
+from server.services.test_accounts import infer_account_requirement
 
 
 _SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link"}

@@ -28,7 +28,7 @@ from database.models import (
     UI_ELEMENT_ARCHIVED,
     UI_PLATFORM_WEB,
 )
-from server.services.web_test_data_service import (
+from server.services.test_accounts import (
     infer_account_requirement,
     validate_account_requirement,
 )

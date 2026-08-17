@@ -8,6 +8,8 @@ from server.services.test_accounts.requirements import infer_account_requirement
 from server.services.test_accounts.resolver import validate_account_requirement
 from server.services.test_accounts.secrets import (
     TEST_ACCOUNT_CONFIG_GROUP,
+    TEST_ACCOUNT_FULL_NAME,
+    TEST_ACCOUNT_USER_PREFIX,
     decode_test_account_secret,
     encode_test_account_secret,
     is_test_account_secret,
@@ -18,7 +20,8 @@ from server.services.test_accounts.secrets import (
 __all__ = [
     "cleanup_web_test_accounts", "prepare_web_test_data", "WebTestDataError",
     "infer_account_requirement", "validate_account_requirement",
-    "TEST_ACCOUNT_CONFIG_GROUP", "decode_test_account_secret",
+    "TEST_ACCOUNT_CONFIG_GROUP", "TEST_ACCOUNT_FULL_NAME", "TEST_ACCOUNT_USER_PREFIX",
+    "decode_test_account_secret",
     "encode_test_account_secret", "is_test_account_secret",
     "mask_test_account_config", "prepare_test_account_config_value",
 ]

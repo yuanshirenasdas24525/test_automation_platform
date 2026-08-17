@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from server.api.deps import DBDep, RequireAdmin
 from database.models import ConfigStore, ConfigUpdateItem
-from server.services.web_test_data_service import (
+from server.services.test_accounts import (
     mask_test_account_config,
     prepare_test_account_config_value,
 )

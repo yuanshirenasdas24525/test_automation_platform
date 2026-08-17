@@ -19,7 +19,7 @@ from sqlalchemy import or_
 from server.api.deps import BearerUserDep, DBDep
 from server.api.auth import HTTPErrorResponse, revoke_user_sessions
 from database.models import User, Role, ALL_ROLE_CODES
-from server.services.web_test_data_service import (
+from server.services.test_accounts import (
     TEST_ACCOUNT_FULL_NAME,
     TEST_ACCOUNT_USER_PREFIX,
 )

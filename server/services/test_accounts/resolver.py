@@ -9,9 +9,8 @@ from sqlalchemy.orm import Session
 
 from database.models.script_store import SCRIPT_KIND_WORKFLOW
 from server.services.test_accounts.errors import WebTestDataError
+from server.services.test_accounts.secrets import TEST_ACCOUNT_FULL_NAME
 from utils.script_runtime import run_named_script
-
-TEST_ACCOUNT_FULL_NAME = "Web UI 自动化临时账号"
 
 # profile → 静态池 state
 _PROFILE_STATE = {

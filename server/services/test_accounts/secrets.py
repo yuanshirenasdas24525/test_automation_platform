@@ -10,6 +10,10 @@ TEST_ACCOUNT_SECRET_MASK = "••••••••"
 # 池内每个账号的密码键；配置写入时按此键加密、读取时掩码。
 _SECRET_KEYS = {"account_password"}
 
+# 平台内部标识 Web UI 自动化临时账号的常量（users.py 用于识别/过滤，resolver 用于命名）。
+TEST_ACCOUNT_USER_PREFIX = "AUTO_UI_"
+TEST_ACCOUNT_FULL_NAME = "Web UI 自动化临时账号"
+
 
 def is_test_account_secret(group: str | None, key: str | None) -> bool:
     return (
