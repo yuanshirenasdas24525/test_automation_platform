@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowDown,
   ArrowUp,
+  Lock,
+  LockOpen,
   Bug,
   Check,
   ChevronRight,
@@ -68,6 +70,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   manualAdjustmentInfo,
+  isCaseLocked,
   resolveManualAdjustment,
 } from "@/lib/case-manual-adjustment";
 import type {
@@ -638,6 +641,18 @@ export function AutomationCasesPage({
     }
   };
 
+  const toggleLock = async (row: ApiCase) => {
+    const next = !isCaseLocked(row);
+    try {
+      await casesApi.setLock(row.id, next);
+      if (next) setSelected((prev) => { const s = new Set(prev); s.delete(row.id); return s; });
+      invalidate();
+      toast.success(next ? "已锁定" : "已解锁");
+    } catch (error) {
+      toast.error(messageOf(error));
+    }
+  };
+
   const importFile = async (file: File) => {
     if (moduleId == null) return;
     try {
@@ -932,6 +947,7 @@ export function AutomationCasesPage({
                   onShowFlag={setFlagDialogCase}
                   onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
                   onReorder={reorder}
+                  onToggleLock={toggleLock}
                   onInsertAbove={insertRowAbove}
                   onSaved={invalidate}
                   newRows={newRows}
@@ -2075,7 +2091,7 @@ function AiFlagClearDialog({ row, onClose, onCleared }: {
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onToggleLock, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
@@ -2091,6 +2107,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
   onShowRunDetail: (row: ApiCase) => void;
   onShowFlag: (row: ApiCase) => void;
   onReorder: (row: ApiCase, direction: "up" | "down") => void;
+  onToggleLock: (row: ApiCase) => void;
   onInsertAbove: (caseId: number, sortOrder?: number | null) => void;
   onSaved: () => void;
   newRows: ApiQuickNewRow[];
@@ -2099,7 +2116,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
 }) {
   const selectableCases = quickEdit
     ? cases
-    : cases.filter((row) => !manualAdjustmentInfo(row).pending);
+    : cases.filter((row) => !manualAdjustmentInfo(row).pending && !isCaseLocked(row));
   const allSelected = selectableCases.length > 0 && selectableCases.every((row) => selected.has(row.id));
   const caseLabel = CASE_LABELS[caseType];
   const gridClass = quickEdit
@@ -2132,9 +2149,10 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
       </Fragment>
     ) : (() => {
       const manualAdjustment = manualAdjustmentInfo(row);
+      const locked = isCaseLocked(row);
       return (
       <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", manualAdjustment.pending && "bg-red-50/50", gridClass)}>
-        <Checkbox checked={selected.has(row.id)} disabled={manualAdjustment.pending} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
+        <Checkbox checked={selected.has(row.id)} disabled={manualAdjustment.pending || locked} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
         <div className="flex min-w-0 items-center gap-1.5">
           <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
           {manualAdjustment.pending ? (
@@ -2147,6 +2165,14 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
               <Wrench className="h-3 w-3" />需人工调整
             </button>
           ) : null}
+          {locked ? (
+            <span
+              title="已人工锁定：不参与多选 / 批量运行"
+              className="flex shrink-0 items-center gap-1 rounded bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium leading-none text-slate-700"
+            >
+              <Lock className="h-3 w-3" />人工锁定
+            </span>
+          ) : null}
           {enableAiActions ? <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} /> : null}
         </div>
         <Badge variant="outline" className="w-fit font-mono">{caseType === "api" ? row.method ?? "GET" : caseLabel}</Badge>
@@ -2158,7 +2184,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
           clickable={!row.skip && row.latest_run != null}
           onClick={() => row.latest_run && onShowRunDetail(row)}
         />
-        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="上移" disabled={index === 0} onClick={() => index > 0 && onReorder(row, "up")}><ArrowUp className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="下移" disabled={index >= cases.length - 1} onClick={() => index < cases.length - 1 && onReorder(row, "down")}><ArrowDown className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title={manualAdjustment.pending ? "请先完成人工调整并启用" : "运行"} disabled={manualAdjustment.pending} onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button>{enableAiActions ? <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button> : null}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
+        <div className="flex justify-end gap-1"><Button variant="ghost" size="icon" className="h-8 w-8" title="上移" disabled={index === 0} onClick={() => index > 0 && onReorder(row, "up")}><ArrowUp className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8" title="下移" disabled={index >= cases.length - 1} onClick={() => index < cases.length - 1 && onReorder(row, "down")}><ArrowDown className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className={cn("h-8 w-8", locked && "text-slate-700")} title={locked ? "解锁" : "锁定（不参与多选/批量运行）"} onClick={() => onToggleLock(row)}>{locked ? <Lock className="h-4 w-4" /> : <LockOpen className="h-4 w-4" />}</Button><Button variant="ghost" size="icon" className="h-8 w-8" title={manualAdjustment.pending ? "请先完成人工调整并启用" : "运行"} disabled={manualAdjustment.pending} onClick={() => onRun(row)}><Play className="h-4 w-4" /></Button>{enableAiActions ? <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" title="AI 分析执行结果" onClick={() => onDiagnose(row)}><Sparkles className="h-4 w-4" /></Button> : null}<Button variant="ghost" size="icon" className="h-8 w-8" title="编辑" onClick={() => onEdit(row)}><Pencil className="h-4 w-4" /></Button><Button variant="ghost" size="icon" className="h-8 w-8 text-destructive" title="删除" onClick={() => onDelete(row)}><Trash2 className="h-4 w-4" /></Button></div>
       </div>
       );
     })())}

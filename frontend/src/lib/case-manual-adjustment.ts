@@ -1,6 +1,17 @@
 import type { TestCaseCreate } from "@/types/domain";
 
 export const MANUAL_ADJUSTMENT_TAG = "需人工调整";
+export const CASE_LOCK_TAG = "人工锁定";
+
+/** 用户手动锁定的用例:禁止多选、显示"人工锁定"标记(存 generation_metadata.manual_locked)。 */
+export function isCaseLocked(value: {
+  generation_metadata?: Record<string, unknown> | null;
+}): boolean {
+  const metadata = value.generation_metadata;
+  return (
+    !!metadata && typeof metadata === "object" && metadata.manual_locked === true
+  );
+}
 
 type ManualAdjustmentCarrier = {
   generation_metadata?: Record<string, unknown> | null;

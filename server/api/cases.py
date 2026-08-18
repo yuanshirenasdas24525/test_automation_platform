@@ -463,6 +463,24 @@ def delete_case(
     return {"status": "success", "message": "删除成功", "data": {"batch_id": event.batch_id}}
 
 
+@router.post("/{case_id}/lock")
+def set_case_lock(case_id: int, body: dict, db: DBDep):
+    """人工锁定/解锁用例:仅切换 generation_metadata.manual_locked。
+
+    锁定后前端禁止多选、显示"人工锁定"标记。不动 steps / skip / 入库门禁,
+    api/web/android/ios 通用。
+    """
+    db_case = db.session.query(TestCase).filter(TestCase.id == case_id).first()
+    if db_case is None:
+        raise HTTPException(status_code=404, detail="用例不存在")
+    locked = bool(body.get("locked"))
+    meta = dict(db_case.generation_metadata or {})
+    meta["manual_locked"] = locked
+    db_case.generation_metadata = meta
+    db.session.flush()
+    return {"status": "success", "data": {"id": case_id, "locked": locked}}
+
+
 @router.post("/edit-history/batches/{batch_id}/rollback")
 def rollback_test_case_history(batch_id: int, payload: TestCaseRollbackPayload, db: DBDep):
     """回滚用例编辑历史：支持整次、单条、字段级。"""
