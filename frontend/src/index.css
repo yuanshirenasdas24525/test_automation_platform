@@ -586,6 +586,16 @@
   min-height: inherit;
 }
 
+/* fill 模式:编辑区撑满父容器高度,深色代码块一直铺到底(消除下方空白) */
+.rich-editor-fill .ProseMirror {
+  height: 100%;
+}
+.rich-editor-fill.rich-editor-code-only .ProseMirror pre {
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
 .rich-editor-code-only .ProseMirror > *:not(pre) {
   display: none;
 }

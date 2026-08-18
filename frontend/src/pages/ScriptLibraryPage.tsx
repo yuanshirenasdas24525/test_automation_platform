@@ -510,7 +510,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
               className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)]"
               style={{ gridTemplateColumns: `minmax(0,1fr) ${asideWidth}px` }}
             >
-              <div className="min-h-0 overflow-y-auto p-6">
+              <div className="flex min-h-0 flex-col p-6">
                 <Label className="mb-2 block">Python 脚本</Label>
                 <RichTextEditor
                   key={`script-${current.id ?? "draft"}-${current.kind}`}
@@ -519,7 +519,7 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                     setScriptHtml(value);
                     setDraft({ ...current, code: codeFromRichHtml(value) });
                   }}
-                  height={520}
+                  fill
                   toolbar="none"
                   variant="code"
                   placeholder="用代码块编写 Python handler"

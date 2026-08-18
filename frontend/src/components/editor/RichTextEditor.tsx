@@ -30,6 +30,8 @@ interface RichTextEditorProps {
   toolbar?: ToolbarLevel;
   readOnly?: boolean;
   variant?: EditorVariant;
+  /** 撑满父容器高度(内部滚动),忽略固定 height。父级需是有界高度的 flex 列。 */
+  fill?: boolean;
 }
 
 export function RichTextEditor({
@@ -40,6 +42,7 @@ export function RichTextEditor({
   toolbar = "full",
   readOnly = false,
   variant = "default",
+  fill = false,
 }: RichTextEditorProps) {
   const editor = useEditor({
     extensions: [
@@ -82,6 +85,7 @@ export function RichTextEditor({
           ? "bg-transparent"
           : "rounded-md border border-input bg-background",
         readOnly ? (isCodeVariant ? "" : "p-4") : "flex flex-col",
+        fill && "min-h-0 flex-1",
       )}
     >
       {toolbar !== "none" && !readOnly && !isCodeVariant && (
@@ -95,8 +99,9 @@ export function RichTextEditor({
           isCodeVariant && "rich-editor-code-only",
           !readOnly && !isCodeVariant && "flex-1 overflow-y-auto border-t px-4 py-3",
           !readOnly && isCodeVariant && "overflow-y-auto",
+          fill && "min-h-0 flex-1 rich-editor-fill",
         )}
-        style={readOnly ? {} : { minHeight: height, maxHeight: height }}
+        style={readOnly ? {} : fill ? {} : { minHeight: height, maxHeight: height }}
       />
     </div>
   );
