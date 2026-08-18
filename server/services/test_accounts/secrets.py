@@ -67,7 +67,8 @@ def mask_test_account_config(group: str | None, key: str | None, value: Any) -> 
                 if item.get("password"):
                     item["password"] = TEST_ACCOUNT_SECRET_MASK
             out.append(item)
-        return out
+        # config_value 是 String 列，返回 JSON 字符串与其它配置保持一致。
+        return json.dumps(out, ensure_ascii=False)
     if is_test_account_secret(group, key) and value:
         return TEST_ACCOUNT_SECRET_MASK
     return value
@@ -110,4 +111,5 @@ def _prepare_account_pool(value: Any, existing: Any) -> Any:
         else:
             item["password"] = encode_test_account_secret(text)
         out.append(item)
-    return out
+    # 写库存字符串：config_value 是 String 列。
+    return json.dumps(out, ensure_ascii=False)

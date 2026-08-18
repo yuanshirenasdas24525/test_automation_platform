@@ -50,3 +50,17 @@ def test_malformed_accounts_value_is_ignored():
     rows = [_Row("accounts", "not-a-list")]
     src = load_account_sources(_Session(rows), project_id=1)
     assert src["accounts"] == []
+
+
+def test_accounts_stored_as_json_string_is_parsed():
+    # config_store.config_value 是 String 列，真实存的是 json.dumps 后的字符串。
+    import json
+    stored = json.dumps([
+        {"label": "管理员", "username": "demo_admin",
+         "password": encode_test_account_secret("Demo#123"), "state": "admin"},
+    ])
+    src = load_account_sources(_Session([_Row("accounts", stored)]), project_id=1)
+    assert len(src["accounts"]) == 1
+    assert src["accounts"][0]["username"] == "demo_admin"
+    assert src["accounts"][0]["password"] == "Demo#123"  # 已解密
+    assert src["accounts"][0]["state"] == "admin"

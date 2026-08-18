@@ -1,6 +1,7 @@
 """把旧 web/test_accounts（HTTP/script provider）配置迁移为静态池 + dynamic_script。"""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 _DROP_KEYS = {
@@ -44,7 +45,8 @@ def upgrade(session) -> None:
         for r in list(rows):
             if r.project_id == project_id and str(r.config_key) in _DROP_KEYS:
                 session.delete(r)
-        _upsert(session, project_id, "accounts", pool)
+        # config_value 是 String 列：accounts 存 json.dumps 后的字符串（密码已加密）。
+        _upsert(session, project_id, "accounts", json.dumps(pool, ensure_ascii=False))
         _upsert(session, project_id, "dynamic_script", dynamic)
     session.commit()
 

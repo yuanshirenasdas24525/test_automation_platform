@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 from server.services.test_accounts.secrets import (
@@ -14,6 +15,13 @@ _VALID_STATES = {"normal", "admin", "disabled", "locked", "boundary"}
 
 
 def _coerce_accounts(raw: Any) -> list[dict[str, Any]]:
+    # config_store.config_value 是 String 列：JSON 配置以 json.dumps 后的字符串存，
+    # 读回来是 str，这里先反序列化再按池处理。
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
     if not isinstance(raw, list):
         return []
     out: list[dict[str, Any]] = []
