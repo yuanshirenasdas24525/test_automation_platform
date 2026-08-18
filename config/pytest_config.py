@@ -43,11 +43,15 @@ def safe_json_dumps(data):
     return str(data)
 
 
-def _redacted_text(value, limit: int | None = None):
-    """步骤报告统一脱敏，并按数据库 VARCHAR 上限截断。"""
+def _redacted_text(value, limit: int | None = None, *, redact: bool = True):
+    """步骤报告统一脱敏，并按数据库 VARCHAR 上限截断。
+
+    redact=False 用于 runner 生成的可控摘要(如 action):按平台配置直接展示实际值
+    (含密码明文),不套 password= 掩码;input_data/output_data 等仍默认脱敏。
+    """
     if value is None:
         return None
-    text = safe_json_dumps(redact_context_payload(value))
+    text = safe_json_dumps(redact_context_payload(value) if redact else value)
     return text if limit is None else text[:limit]
 
 
@@ -243,7 +247,7 @@ def pytest_runtest_makereport(item, call):
                 step_type=_redacted_text(item.get("step_type"), 50),
                 status=_redacted_text(item.get("status") or report.outcome, 20),
                 duration=_duration_seconds(item.get("duration_ms")),
-                action=_redacted_text(item.get("action"), 50),
+                action=_redacted_text(item.get("action"), 50, redact=False),
                 target=_redacted_text(item.get("target")),
                 input_data=_redacted_text(item.get("input_data")),
                 output_data=_redacted_text(item.get("output_data")),
