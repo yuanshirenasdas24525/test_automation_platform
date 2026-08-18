@@ -82,3 +82,44 @@ def test_cleanup_token_is_attached_to_case_for_celery_transport(monkeypatch):
     ]
     assert len(reconstructed) == 1
     assert reconstructed[0]["payload"] == {"user_id": 9}
+
+
+def test_manually_resolved_case_bypasses_data_gate(monkeypatch):
+    # 用户已"完成调整"的 contract_mismatch 用例:不再被数据门禁拦,放行执行(尽力绑账号)。
+    fake = lambda *_: _fake_sources(
+        [{"label": "管理员", "username": "demo_admin", "password": "pw", "state": "admin", "enabled": True}], ""
+    )
+    monkeypatch.setattr(binding, "load_account_sources", fake)
+    monkeypatch.setattr("server.services.test_accounts.sources.load_account_sources", fake)
+    cases = [{
+        "name": "0005 用户名长度65位", "variables": {"long_username": "", "password": ""},
+        "generation_metadata": {
+            "needs_manual_adjustment": False,
+            "manual_adjustment_status": "resolved",
+            "test_data_requirement": {
+                "status": "contract_mismatch", "profile": "unsupported",
+                "username_variable": "long_username", "password_variable": "password",
+                "reason": "登录不校验用户名长度",
+            },
+        },
+    }]
+    tokens = binding.prepare_web_test_data(None, cases, project_id=1)  # 不应抛错
+    assert tokens == []
+    # 尽力绑上了(池里 admin 兜底)
+    assert cases[0]["variables"]["long_username"] == "demo_admin"
+
+
+def test_unresolved_contract_mismatch_still_blocked(monkeypatch):
+    import pytest
+    fake = lambda *_: _fake_sources([], "")
+    monkeypatch.setattr(binding, "load_account_sources", fake)
+    monkeypatch.setattr("server.services.test_accounts.sources.load_account_sources", fake)
+    cases = [{
+        "name": "0002", "variables": {"username": "", "password": ""},
+        "generation_metadata": {
+            "needs_manual_adjustment": True, "manual_adjustment_status": "pending",
+            "test_data_requirement": {"status": "contract_mismatch", "profile": "unsupported", "reason": "bad"},
+        },
+    }]
+    with pytest.raises(binding.WebTestDataError):
+        binding.prepare_web_test_data(None, cases, project_id=1)

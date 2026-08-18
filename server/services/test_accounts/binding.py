@@ -8,6 +8,7 @@ from database.models.script_store import SCRIPT_KIND_WORKFLOW
 from server.services.test_accounts.errors import WebTestDataError
 from server.services.test_accounts.requirements import infer_account_requirement
 from server.services.test_accounts.resolver import (
+    ResolvedAccount,
     resolve_account,
     validate_account_requirement,
 )
@@ -30,16 +31,29 @@ def prepare_web_test_data(
             requirement = infer_account_requirement(
                 case.get("name"), case.get("description"), case.get("variables") or {}
             )
-        errors = validate_account_requirement(
-            session, project_id, requirement, sources=sources
+        # 用户已"完成调整"(needs_manual_adjustment=False 且 manual_adjustment_status
+        # =resolved)的用例:尊重其判断,跳过运行前数据门禁,尽力绑账号、绑不上也放行执行
+        # (让断言自然失败),而不是继续以"测试数据未就绪"阻断。默认(未解除)仍照常拦。
+        manually_resolved = (
+            metadata.get("needs_manual_adjustment") is False
+            and metadata.get("manual_adjustment_status") == "resolved"
         )
-        if errors:
-            raise WebTestDataError(
-                f"用例“{case.get('name')}”测试数据未就绪：{'；'.join(errors)}"
+        if not manually_resolved:
+            errors = validate_account_requirement(
+                session, project_id, requirement, sources=sources
             )
-        resolved = resolve_account(
-            requirement, sources, session=session, project_id=project_id
-        )
+            if errors:
+                raise WebTestDataError(
+                    f"用例“{case.get('name')}”测试数据未就绪：{'；'.join(errors)}"
+                )
+        try:
+            resolved = resolve_account(
+                requirement, sources, session=session, project_id=project_id
+            )
+        except WebTestDataError:
+            if not manually_resolved:
+                raise
+            resolved = ResolvedAccount()  # 已解除:绑不上也放行,按步骤自带值执行
         if resolved.bindings:
             variables = dict(case.get("variables") or {})
             variables.update(resolved.bindings)
