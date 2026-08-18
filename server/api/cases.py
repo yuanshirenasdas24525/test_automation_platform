@@ -476,9 +476,15 @@ def set_case_lock(case_id: int, body: dict, db: DBDep):
     locked = bool(body.get("locked"))
     meta = dict(db_case.generation_metadata or {})
     meta["manual_locked"] = locked
+    # 备注可选:传了就更新(锁定信息/原因),不传保留原值。
+    if "note" in body:
+        meta["manual_lock_note"] = str(body.get("note") or "")
     db_case.generation_metadata = meta
     db.session.flush()
-    return {"status": "success", "data": {"id": case_id, "locked": locked}}
+    return {
+        "status": "success",
+        "data": {"id": case_id, "locked": locked, "note": meta.get("manual_lock_note", "")},
+    }
 
 
 @router.post("/edit-history/batches/{batch_id}/rollback")

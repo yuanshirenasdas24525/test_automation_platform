@@ -13,6 +13,16 @@ export function isCaseLocked(value: {
   );
 }
 
+/** 读取锁定备注（generation_metadata.manual_lock_note）。 */
+export function lockNote(value: {
+  generation_metadata?: Record<string, unknown> | null;
+}): string {
+  const metadata = value.generation_metadata;
+  if (!metadata || typeof metadata !== "object") return "";
+  const note = metadata.manual_lock_note;
+  return typeof note === "string" ? note : "";
+}
+
 type ManualAdjustmentCarrier = {
   generation_metadata?: Record<string, unknown> | null;
 };

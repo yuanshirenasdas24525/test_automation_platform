@@ -71,6 +71,7 @@ import { cn } from "@/lib/utils";
 import {
   manualAdjustmentInfo,
   isCaseLocked,
+  lockNote,
   resolveManualAdjustment,
 } from "@/lib/case-manual-adjustment";
 import type {
@@ -378,6 +379,7 @@ export function AutomationCasesPage({
   const fileRef = useRef<HTMLInputElement>(null);
   const [diagnose, setDiagnose] = useState<{ row: ApiCase; loading: boolean; result: DiagnoseResult | null } | null>(null);
   const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
+  const [lockNoteCase, setLockNoteCase] = useState<ApiCase | null>(null);
   const [renumbering, setRenumbering] = useState(false);
   const [performancePool, setPerformancePool] = useState<PerformancePoolItem[]>(
     () => readPerformancePool(projectId),
@@ -948,6 +950,7 @@ export function AutomationCasesPage({
                   onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
                   onReorder={reorder}
                   onToggleLock={toggleLock}
+                  onShowLockNote={setLockNoteCase}
                   onInsertAbove={insertRowAbove}
                   onSaved={invalidate}
                   newRows={newRows}
@@ -987,7 +990,7 @@ export function AutomationCasesPage({
         </div>
       )}
 
-      <CaseDialog projectId={projectId} state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} />
+      <CaseDialog projectId={projectId} state={originalDialogState} category={caseType} onClose={() => setEditor(null)} onSubmit={submitCase} submitting={editorSaving} onLockChanged={invalidate} />
       {elementLibraryPlatform ? (
         <UiElementLibraryWorkspace
           open={elementLibraryOpen}
@@ -1064,6 +1067,7 @@ export function AutomationCasesPage({
       ) : null}
       <DiagnoseDialog state={diagnose} onClose={() => setDiagnose(null)} onFixed={() => { setDiagnose(null); invalidate(); }} />
       <RunDetailDialog row={runDetailCase} onClose={() => setRunDetailCase(null)} />
+      <LockNoteDialog row={lockNoteCase} onClose={() => setLockNoteCase(null)} onSaved={invalidate} />
       <AiFlagClearDialog row={flagDialogCase} onClose={() => setFlagDialogCase(null)} onCleared={() => { setFlagDialogCase(null); invalidate(); }} />
     </div>
   );
@@ -1600,6 +1604,50 @@ function DiagnoseDialog({
   );
 }
 
+function LockNoteDialog({ row, onClose, onSaved }: { row: ApiCase | null; onClose: () => void; onSaved: () => void }) {
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { setNote(row ? lockNote(row) : ""); }, [row]);
+  const submit = async (locked: boolean) => {
+    if (!row) return;
+    setSaving(true);
+    try {
+      await casesApi.setLock(row.id, locked, note.trim());
+      toast.success(locked ? "已保存锁定备注" : "已解锁");
+      onSaved();
+      onClose();
+    } catch (error) {
+      toast.error(messageOf(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Dialog open={row != null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><Lock className="h-4 w-4" />人工锁定备注</DialogTitle>
+          <DialogDescription className="truncate">{row?.name ?? ""}</DialogDescription>
+        </DialogHeader>
+        <Textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          placeholder="记录锁定原因 / 说明（例如：等被测接口修复后再启用）…"
+          className="min-h-[120px]"
+        />
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button variant="outline" onClick={() => submit(false)} disabled={saving}>
+            <LockOpen className="mr-1.5 h-4 w-4" />解锁
+          </Button>
+          <Button onClick={() => submit(true)} disabled={saving}>
+            <Save className="mr-1.5 h-4 w-4" />{saving ? "保存中…" : "保存备注"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () => void }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const query = useQuery({
@@ -2091,7 +2139,7 @@ function AiFlagClearDialog({ row, onClose, onCleared }: {
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onToggleLock, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onToggleLock, onShowLockNote, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
@@ -2108,6 +2156,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
   onShowFlag: (row: ApiCase) => void;
   onReorder: (row: ApiCase, direction: "up" | "down") => void;
   onToggleLock: (row: ApiCase) => void;
+  onShowLockNote: (row: ApiCase) => void;
   onInsertAbove: (caseId: number, sortOrder?: number | null) => void;
   onSaved: () => void;
   newRows: ApiQuickNewRow[];
@@ -2151,7 +2200,7 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
       const manualAdjustment = manualAdjustmentInfo(row);
       const locked = isCaseLocked(row);
       return (
-      <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", manualAdjustment.pending && "bg-red-50/50", gridClass)}>
+      <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", manualAdjustment.pending && "bg-red-50/50", locked && "bg-slate-100", gridClass)}>
         <Checkbox checked={selected.has(row.id)} disabled={manualAdjustment.pending || locked} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
         <div className="flex min-w-0 items-center gap-1.5">
           <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
@@ -2166,12 +2215,14 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
             </button>
           ) : null}
           {locked ? (
-            <span
-              title="已人工锁定：不参与多选 / 批量运行"
-              className="flex shrink-0 items-center gap-1 rounded bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium leading-none text-slate-700"
+            <button
+              type="button"
+              onClick={() => onShowLockNote(row)}
+              title={lockNote(row) ? `锁定备注：${lockNote(row)}\n点击查看/编辑` : "已人工锁定 · 点击添加备注"}
+              className="flex shrink-0 items-center gap-1 rounded bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium leading-none text-slate-700 hover:bg-slate-300"
             >
               <Lock className="h-3 w-3" />人工锁定
-            </span>
+            </button>
           ) : null}
           {enableAiActions ? <AiFlagBadge flag={row.ai_flag} onClick={() => onShowFlag(row)} /> : null}
         </div>

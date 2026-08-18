@@ -577,11 +577,11 @@ export const casesApi = {
       body: { items },
     });
   },
-  /** 人工锁定 / 解锁用例（切换 generation_metadata.manual_locked）。 */
-  setLock(id: number, locked: boolean) {
-    return request<{ status?: string; data?: { id: number; locked: boolean } }>(
+  /** 人工锁定 / 解锁用例（切换 generation_metadata.manual_locked）。note 可选（锁定备注）。 */
+  setLock(id: number, locked: boolean, note?: string) {
+    return request<{ status?: string; data?: { id: number; locked: boolean; note?: string } }>(
       `/api/test_cases/${id}/lock`,
-      { method: "POST", body: { locked } },
+      { method: "POST", body: note === undefined ? { locked } : { locked, note } },
     );
   },
   /** Excel 批量导入。后端期望 `file` 字段 + `module_id` query 参数。 */

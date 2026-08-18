@@ -3,7 +3,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useQuery } from "@tanstack/react-query";
-import { Braces, Check, ChevronDown, ChevronRight, Info, Loader2, X } from "lucide-react";
+import { Braces, Check, ChevronDown, ChevronRight, Info, Loader2, Lock, LockOpen, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { HighlightedInput, HighlightedTextarea } from "@/components/ui/highlighted-textarea";
 import { StepEditor, validateStepsForCategory } from "@/components/case/step-editor";
 import { casesApi, configApi } from "@/lib/api";
+import { isCaseLocked } from "@/lib/case-manual-adjustment";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { manualAdjustmentInfo } from "@/lib/case-manual-adjustment";
@@ -394,6 +395,7 @@ export function CaseDialog({
   onClose,
   onSubmit,
   submitting,
+  onLockChanged,
 }: {
   projectId: number;
   state:
@@ -404,8 +406,29 @@ export function CaseDialog({
   onClose: () => void;
   onSubmit: (values: CaseFormValues) => void;
   submitting: boolean;
+  onLockChanged?: () => void;
 }) {
   const existing = state?.mode === "edit" ? state.node : null;
+  const [caseLocked, setCaseLocked] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
+  useEffect(() => {
+    setCaseLocked(existing ? isCaseLocked(existing) : false);
+  }, [existing]);
+  const toggleCaseLock = async () => {
+    if (!existing) return;
+    const next = !caseLocked;
+    setLockBusy(true);
+    try {
+      await casesApi.setLock(existing.id, next);
+      setCaseLocked(next);
+      onLockChanged?.();
+      toast.success(next ? "已锁定" : "已解锁");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "操作失败");
+    } finally {
+      setLockBusy(false);
+    }
+  };
 
   const caseDetailQuery = useQuery({
     queryKey: existing ? queryKeys.case(existing.id) : ["case", -1],
@@ -545,7 +568,22 @@ export function CaseDialog({
     <Dialog open={state !== null} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-h-[92vh] w-[calc(100vw-2rem)] max-w-[1120px] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
+          <div className="flex items-center justify-between gap-3 pr-8">
+            <DialogTitle>{title}</DialogTitle>
+            {existing ? (
+              <Button
+                type="button"
+                variant={caseLocked ? "secondary" : "outline"}
+                size="sm"
+                disabled={lockBusy}
+                onClick={toggleCaseLock}
+                className="shrink-0"
+              >
+                {caseLocked ? <Lock className="mr-1.5 h-4 w-4" /> : <LockOpen className="mr-1.5 h-4 w-4" />}
+                {caseLocked ? "已锁定 · 点击解锁" : "锁定用例"}
+              </Button>
+            ) : null}
+          </div>
           <DialogDescription>
             用例的必填字段是名称。HTTP 相关字段只有 API 项目需要填。
           </DialogDescription>
