@@ -136,5 +136,22 @@ def test_ai_interface_admission_allows_explicit_manual_resolution_after_step_edi
                 "generation_metadata": resolved,
             },
             previous_metadata=previous,
+            previous_source="ai_interface",
             steps_provided=True,
         )
+
+
+def test_ai_interface_admission_ignores_non_ai_interface_pending_cases() -> None:
+    """回归:web 等其它来源的待调整用例不归 API 契约门禁管,更新时不应误拦。"""
+    pending = {
+        "needs_manual_adjustment": True,
+        "manual_adjustment_status": "pending",
+        "manual_adjustment_reasons": ["测试数据未就绪"],
+    }
+    # web 用例(source=ai_m8_web)保存/更新,previous 也是 web —— 不应抛门禁错误
+    validate_ai_interface_admission(
+        {"source": "ai_m8_web", "skip": True, "generation_metadata": pending},
+        previous_metadata=pending,
+        previous_source="ai_m8_web",
+        steps_provided=True,
+    )

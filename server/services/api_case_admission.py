@@ -54,6 +54,7 @@ def validate_ai_interface_admission(
     payload: dict[str, Any],
     *,
     previous_metadata: Any = None,
+    previous_source: Any = None,
     steps_provided: bool = False,
 ) -> None:
     """校验 AI 接口用例是否允许保存。
@@ -65,8 +66,11 @@ def validate_ai_interface_admission(
        解除动作会留下 manual_override 审计信息，后续普通编辑不再重复阻断。
     """
     previous_pending = needs_manual_adjustment(previous_metadata)
+    # 只有"原本就是 ai_interface 的待调整用例"被改走 source 才算绕过本门禁；
+    # web 等其它来源的待调整用例(账号数据门禁)不归这个 API 契约门禁管。
+    previous_was_ai_interface = str(previous_source or "") == AI_INTERFACE_SOURCE
     if str(payload.get("source") or "manual") != AI_INTERFACE_SOURCE:
-        if previous_pending:
+        if previous_pending and previous_was_ai_interface:
             raise ValueError("需人工调整的 AI 接口用例不能通过修改 source 绕过入库门禁")
         return
 

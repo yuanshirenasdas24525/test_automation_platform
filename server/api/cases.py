@@ -324,6 +324,7 @@ def update_case(
             validate_ai_interface_admission(
                 effective_payload,
                 previous_metadata=previous_metadata,
+                previous_source=getattr(db_case, "source", None),
                 steps_provided=steps_field_provided,
             )
         except ValueError as exc:
