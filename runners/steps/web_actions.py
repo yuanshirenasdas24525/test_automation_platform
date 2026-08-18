@@ -168,7 +168,9 @@ class WebInputStepRunner(BaseStepRunner):
         )
 
         sensitive = _is_sensitive_input(config, str(locator))
-        result.action = f"input {locator}"
+        # action 里带上实际输入值,便于报告核对；敏感字段(密码/令牌)只显示掩码。
+        shown = "***" if sensitive else ("" if value is None else str(value))
+        result.action = f"input {locator} = {shown}"
         result.target = f"{by}={locator}"
         result.input_data = {
             "value": "***" if sensitive else value,
