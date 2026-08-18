@@ -91,19 +91,6 @@ def _require_by_locator(config: dict) -> tuple[str, str]:
     return str(by), str(locator)
 
 
-def _is_sensitive_input(config: dict, locator: str) -> bool:
-    """密码、令牌等输入只发送给浏览器，不进入步骤动作和执行明细。"""
-    text = " ".join([
-        str(locator or ""),
-        str(config.get("value") or ""),
-        str(config.get("name") or ""),
-        str(config.get("input_type") or ""),
-    ]).lower()
-    return any(marker in text for marker in (
-        "password", "passwd", "pwd", "secret", "token", "密码", "令牌", "密钥",
-    ))
-
-
 # ============================================================
 # 1. web_goto
 # ============================================================
@@ -167,15 +154,12 @@ class WebInputStepRunner(BaseStepRunner):
             clear_first=clear_first, timeout=timeout,
         )
 
-        sensitive = _is_sensitive_input(config, str(locator))
-        # action 里带上实际输入值,便于报告核对；敏感字段(密码/令牌)只显示掩码。
-        shown = "***" if sensitive else ("" if value is None else str(value))
+        # 按平台配置,输入步骤在报告里直接显示实际填入值(含密码明文)——
+        # 这是本平台自身测试账号的调试需求;若需脱敏改回 _is_sensitive_input 即可。
+        shown = "" if value is None else str(value)
         result.action = f"input {locator} = {shown}"
         result.target = f"{by}={locator}"
-        result.input_data = {
-            "value": "***" if sensitive else value,
-            "redacted": sensitive,
-        }
+        result.input_data = {"value": value, "redacted": False}
 
 
 # ============================================================
