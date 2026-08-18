@@ -17,7 +17,9 @@
 #   START_WEB=0 ./start-dev.sh          # 只起后端
 #   START_WORKER=0 START_BEAT=0 ./start-dev.sh   # 只起 API + 前端（不跑异步任务）
 #   API_RELOAD=0 ./start-dev.sh         # 关掉 uvicorn 热重载
+#   CLEAN_STALE=0 ./start-dev.sh        # 不清理上一轮遗留进程（默认会清，防孤儿 worker）
 #
+# 启动前会自动杀掉上一轮遗留的本项目 celery/uvicorn 孤儿进程（防止跑旧代码）。
 # Ctrl+C 一次，干净停掉所有起的进程。日志在 data/logs/dev/ 下。
 # =============================================================================
 set -euo pipefail
@@ -60,6 +62,7 @@ START_WORKER="${START_WORKER:-1}"
 START_BEAT="${START_BEAT:-1}"
 START_WEB="${START_WEB:-1}"
 API_RELOAD="${API_RELOAD:-1}"          # uvicorn --reload
+CLEAN_STALE="${CLEAN_STALE:-1}"        # 启动前清理上一轮遗留的本项目进程（孤儿 worker 等）
 
 LOG_DIR="$PROJECT_ROOT/data/logs/dev"
 mkdir -p "$LOG_DIR"
@@ -81,6 +84,39 @@ cleanup() {
   log "已全部停止 ✓"
 }
 trap cleanup INT TERM EXIT
+
+# ---- 0. 清理上一轮遗留的本项目进程 ----
+# make dev 重启时,上一轮若非正常退出(关终端 / 被 SIGKILL),celery worker/beat、
+# uvicorn 会变成孤儿继续存活:worker 不热重载 → 消费任务时跑的是【旧代码】,造成
+# "改了代码却跑旧逻辑" 的鬼打墙;beat 多实例会重复调度;uvicorn 占端口导致启动失败。
+# 这里只按【本项目特有】的命令特征杀(celery_app / server.main / recorder_agent.main),
+# 不会误伤别的项目。关掉:CLEAN_STALE=0 ./start-dev.sh
+kill_stale() {
+  local patterns=(
+    "celery -A celery_app"          # celery worker + beat(核心:防跑旧代码)
+    "uvicorn server.main"           # 后端 API
+    "uvicorn recorder_agent.main"   # 录制 agent
+  )
+  local hit=0 pids
+  for pat in "${patterns[@]}"; do
+    pids="$(pgrep -f "$pat" 2>/dev/null | grep -vw "$$" || true)"
+    if [[ -n "$pids" ]]; then
+      echo "$pids" | xargs -r kill -9 2>/dev/null || true
+      hit=1
+    fi
+  done
+  # 遗留的 vite(占着 WEB_PORT,node 进程不好按名字匹配,按端口清)
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:$WEB_PORT" 2>/dev/null | grep -vw "$$" | xargs -r kill -9 2>/dev/null || true
+  fi
+  # 遗留的日志 tail
+  pkill -9 -f "tail -n +1 -F $LOG_DIR" 2>/dev/null || true
+  if [[ "$hit" == "1" ]]; then
+    log "已清理上一轮遗留的本项目进程(celery / uvicorn 孤儿),避免跑旧代码"
+    sleep 1   # 给端口 / broker 连接一点释放时间
+  fi
+}
+[[ "$CLEAN_STALE" == "1" ]] && kill_stale
 
 # ---- 1. Python 环境 ----
 USE_VENV="${USE_VENV:-1}"
