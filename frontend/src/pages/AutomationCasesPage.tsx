@@ -1627,6 +1627,9 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
               {detail.steps.map((step, index) => {
                 const key = step.step_report_id;
                 const open = expanded.has(key);
+                // web_* / app_* 步骤是 UI 自动化:后端把 action→request.method、target→request.url,
+                // 按 UI 语义(动作/目标元素/断言)展示,而不是 API 的请求/响应/状态码。
+                const isUi = /^(web_|app_)/.test(step.step_type || "");
                 return (
                   <div key={key} className="rounded border">
                     <button
@@ -1642,17 +1645,50 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
                       <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", open && "rotate-90")} />
                       <StatusBadge status={normalizeRunStatus(step.status)} />
                       <span className="min-w-0 flex-1 truncate">{index + 1}. {step.step_name || step.step_type || `步骤 ${key}`}</span>
-                      <span className="font-mono text-xs text-muted-foreground">{step.request.method || step.step_type || "--"}</span>
-                      <span className="text-xs text-muted-foreground">{step.status_code ?? "--"}</span>
+                      {isUi ? (
+                        <>
+                          <span className="max-w-[260px] truncate font-mono text-xs text-muted-foreground">{step.request.method || step.step_type || "--"}</span>
+                          <span className="text-xs text-muted-foreground">{step.duration != null ? `${step.duration.toFixed(2)}s` : "--"}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-mono text-xs text-muted-foreground">{step.request.method || step.step_type || "--"}</span>
+                          <span className="text-xs text-muted-foreground">{step.status_code ?? "--"}</span>
+                        </>
+                      )}
                     </button>
                     {open ? (
                       <div className="space-y-2 border-t bg-muted/10 p-3">
-                        <RequestSection request={step.request} />
-                        <DetailSection title="响应参数" summary={summarizeValue(step.response)} defaultOpen={false}>
-                          <JsonPre value={step.response} />
-                        </DetailSection>
-                        <AssertionSection assertion={step.assertion} />
-                        <ExtractSection extract={step.extract} />
+                        {isUi ? (
+                          <>
+                            <div className="grid grid-cols-[72px_1fr] gap-x-3 gap-y-1.5 text-xs">
+                              <span className="text-muted-foreground">类型</span>
+                              <span className="font-mono">{step.step_type || "--"}</span>
+                              <span className="text-muted-foreground">动作</span>
+                              <span className="break-all font-mono">{step.request.method || "--"}</span>
+                              <span className="text-muted-foreground">目标元素</span>
+                              <span className="break-all font-mono">{step.request.url || "--"}</span>
+                              {step.duration != null ? (
+                                <><span className="text-muted-foreground">耗时</span><span>{step.duration.toFixed(3)}s</span></>
+                              ) : null}
+                            </div>
+                            {summarizeValue(step.response) ? (
+                              <DetailSection title="输出" summary={summarizeValue(step.response)} defaultOpen={false}>
+                                <JsonPre value={step.response} />
+                              </DetailSection>
+                            ) : null}
+                            <AssertionSection assertion={step.assertion} />
+                          </>
+                        ) : (
+                          <>
+                            <RequestSection request={step.request} />
+                            <DetailSection title="响应参数" summary={summarizeValue(step.response)} defaultOpen={false}>
+                              <JsonPre value={step.response} />
+                            </DetailSection>
+                            <AssertionSection assertion={step.assertion} />
+                            <ExtractSection extract={step.extract} />
+                          </>
+                        )}
                         {step.error_message ? (
                           <DetailSection title="错误信息" summary={String(step.error_message).slice(0, 80)} defaultOpen>
                             <JsonPre value={step.error_message} />
