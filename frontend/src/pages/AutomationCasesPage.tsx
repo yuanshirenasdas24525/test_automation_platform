@@ -1672,11 +1672,6 @@ function RunDetailDialog({ row, onClose }: { row: ApiCase | null; onClose: () =>
                                 <><span className="text-muted-foreground">耗时</span><span>{step.duration.toFixed(3)}s</span></>
                               ) : null}
                             </div>
-                            {summarizeValue(step.response) ? (
-                              <DetailSection title="输出" summary={summarizeValue(step.response)} defaultOpen={false}>
-                                <JsonPre value={step.response} />
-                              </DetailSection>
-                            ) : null}
                             <AssertionSection assertion={step.assertion} />
                           </>
                         ) : (

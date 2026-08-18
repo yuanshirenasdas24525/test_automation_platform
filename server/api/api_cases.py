@@ -198,8 +198,10 @@ def _serialize_run_step(step: TestStepReport, step_def: TestStep | None = None) 
     request_body_template = input_data.get("body_template") if isinstance(input_data, dict) else None
     request_headers = input_data.get("headers") if isinstance(input_data, dict) else None
     request_params = input_data.get("params") if isinstance(input_data, dict) else None
-    request_method = input_data.get("method") if isinstance(input_data, dict) else _jsonish(step.action)
-    request_url = input_data.get("url") if isinstance(input_data, dict) else _jsonish(step.target)
+    # API 步骤:input_data 带 method/url。web/app 步骤:input_data 是 {value,...} 没有
+    # method/url,回落到 step.action(如 "input username = demo_admin")/step.target(定位)。
+    request_method = (input_data.get("method") if isinstance(input_data, dict) else None) or _jsonish(step.action)
+    request_url = (input_data.get("url") if isinstance(input_data, dict) else None) or _jsonish(step.target)
     variable_pool = input_data.get("variable_pool") if isinstance(input_data, dict) else None
     config = step_def.config if step_def is not None and isinstance(step_def.config, dict) else {}
     return {
