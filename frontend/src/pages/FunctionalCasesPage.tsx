@@ -78,6 +78,7 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { markForManualAdjustment } from "@/lib/case-manual-adjustment";
+import { useCaseCopyPaste } from "@/lib/use-case-copy-paste";
 import type {
   AiGeneratedCase,
   AiOutlinePoint,
@@ -659,10 +660,6 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
   };
 
   // ------ 渲染 ------
-  if (!Number.isFinite(projectId)) {
-    return <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>;
-  }
-
   // 模块/用例分别从两个查询拿 —— contentQuery 给模块，casesQuery 给用例
   const modules = (contentQuery.data ?? []).filter((n) => n.type === "module");
   const allCases = casesQuery.data?.items ?? [];
@@ -671,6 +668,20 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
   const nf = nameFilter.trim().toLowerCase();
   const cases = testMode && nf ? baseCases.filter((c) => c.name.toLowerCase().includes(nf)) : baseCases;
   const totalCases = caseIdFilter || (testMode && nf) ? cases.length : casesQuery.data?.total ?? 0;
+
+  // 复制/粘贴（用例级，functional 无 steps）—— 须在早退（下方 projectId 校验）之前调用，满足 Hooks 规则
+  const copyPaste = useCaseCopyPaste({
+    caseType: "functional",
+    moduleId: currentParentId,
+    sessionId: null,
+    cases: cases.map((c) => ({ id: c.id, name: c.name })),
+    selected,
+    onAfterChange: invalidateAll,
+  });
+
+  if (!Number.isFinite(projectId)) {
+    return <div className="p-8 text-sm text-destructive">非法的项目 ID。</div>;
+  }
 
   // 拖拽排序：把 fromId 移到 toId 的位置，整组重排后发 /api/reorder
   const reorderTo = (fromId: number, toId: number) => {
@@ -966,31 +977,36 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
                   }
                 />
               ) : (
-                <CaseList
-                  cases={cases}
-                  testMode={testMode}
-                  quickEditMode={quickEditMode}
-                  selected={selected}
-                  newRows={newRows}
-                  allSelectedOnPage={allSelectedOnPage}
-                  moduleId={currentParentId}
-                  onToggleSelectAll={toggleSelectAll}
-                  onToggleSelect={toggleSelect}
-                  onMark={(c) => setMarkingCase(c)}
-                  onEdit={(c) => setCaseDialog({ mode: "edit", caseId: c.id })}
-                  onDelete={(c) =>
-                    setPendingDelete({ kind: "case", id: c.id, name: c.name })
-                  }
-                  onShowHistory={(c) => setHistoryCase(c)}
-                  onOpenDetail={(c) => setDetailCase(c)}
-                  onInsertAbove={insertRowsAbove}
-                  onReorder={reorderTo}
-                  onRemoveNewRow={removeNewRow}
-                  onFirstInput={handleFirstInput}
-                  statusOverride={statusOverride}
-                  sessionId={quickEditMode ? quickEditSessionId ?? undefined : undefined}
-                  caseDiff={caseDiff}
-                />
+                <div {...copyPaste.containerProps}>
+                  <CaseList
+                    cases={cases}
+                    testMode={testMode}
+                    quickEditMode={quickEditMode}
+                    selected={selected}
+                    newRows={newRows}
+                    allSelectedOnPage={allSelectedOnPage}
+                    moduleId={currentParentId}
+                    onToggleSelectAll={toggleSelectAll}
+                    onToggleSelect={toggleSelect}
+                    onMark={(c) => setMarkingCase(c)}
+                    onEdit={(c) => setCaseDialog({ mode: "edit", caseId: c.id })}
+                    onDelete={(c) =>
+                      setPendingDelete({ kind: "case", id: c.id, name: c.name })
+                    }
+                    onShowHistory={(c) => setHistoryCase(c)}
+                    onOpenDetail={(c) => setDetailCase(c)}
+                    onInsertAbove={insertRowsAbove}
+                    onReorder={reorderTo}
+                    onRemoveNewRow={removeNewRow}
+                    onFirstInput={handleFirstInput}
+                    statusOverride={statusOverride}
+                    sessionId={quickEditMode ? quickEditSessionId ?? undefined : undefined}
+                    caseDiff={caseDiff}
+                    activeCaseId={copyPaste.activeCaseId}
+                    flashingIds={copyPaste.flashing}
+                    onRowActivate={copyPaste.setActiveCaseId}
+                  />
+                </div>
               )}
               <div className="mt-4 flex items-center justify-end gap-2">
                 <span className="text-xs text-muted-foreground">每页</span>
@@ -1313,6 +1329,9 @@ function CaseList({
   statusOverride,
   sessionId,
   caseDiff,
+  activeCaseId,
+  flashingIds,
+  onRowActivate,
 }: {
   cases: FunctionalCase[];
   testMode: boolean;
@@ -1335,6 +1354,9 @@ function CaseList({
   statusOverride: Map<number, FunctionalRunStatus>;
   sessionId?: string;
   caseDiff: Map<number, CaseDiffEntry> | null;
+  activeCaseId: number | null;
+  flashingIds: Set<number>;
+  onRowActivate: (id: number) => void;
 }) {
   // 底部快速输入行（belowCaseId / aboveCaseId 都为空的才算底部行；最后一行是 trailing 录入入口）
   const bottomRows = newRows.filter(
@@ -1404,6 +1426,9 @@ function CaseList({
                   statusOverride={statusOverride}
                   sessionId={sessionId}
                   diff={caseDiff?.get(c.id) ?? null}
+                  active={activeCaseId === c.id}
+                  flash={flashingIds.has(c.id)}
+                  onActivate={() => onRowActivate(c.id)}
                 />
               </Fragment>
             );
@@ -1465,6 +1490,9 @@ function CaseRow({
   statusOverride,
   sessionId,
   diff,
+  active,
+  flash,
+  onActivate,
 }: {
   row: FunctionalCase;
   testMode: boolean;
@@ -1487,6 +1515,9 @@ function CaseRow({
   statusOverride?: Map<number, FunctionalRunStatus>;
   sessionId?: string;
   diff?: CaseDiffEntry | null;
+  active: boolean;
+  flash: boolean;
+  onActivate: () => void;
 }) {
   const queryClient = useQueryClient();
   // 测试模式下状态列看本轮/选中批次（覆盖表，没有=待执行）；其它模式看最近一次
@@ -1534,7 +1565,17 @@ function CaseRow({
 
   return (
     <tr
-      className={cn("hover:bg-accent/30", selected && "bg-accent/40", isCreated && "bg-emerald-50", isDragOver && "border-t-2 border-primary", isDragging && "opacity-40", row.skip && "opacity-60")}
+      onClick={onActivate}
+      className={cn(
+        "hover:bg-accent/30 relative",
+        selected && "bg-accent/40",
+        isCreated && "bg-emerald-50",
+        isDragOver && "border-t-2 border-primary",
+        isDragging && "opacity-40",
+        row.skip && "opacity-60",
+        active && "ring-2 ring-inset ring-primary/50",
+        flash && "copy-flash",
+      )}
       onDragOver={dragEnabled ? (e) => { e.preventDefault(); onDragOverRow?.(); } : undefined}
       onDrop={dragEnabled ? () => onDropRow?.() : undefined}
       onDragEnd={dragEnabled ? () => onDragEndRow?.() : undefined}
