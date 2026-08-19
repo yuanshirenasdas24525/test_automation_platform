@@ -928,8 +928,11 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
     const inEditable =
       !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
     if (key === "c") {
-      const hasText = (window.getSelection()?.toString() ?? "").length > 0;
-      if (inEditable && hasText) return;
+      // 输入框 / textarea / contenteditable 内一律让位原生复制
+      // （window.getSelection() 看不到表单控件内部选区，不能靠它判断）
+      if (inEditable) return;
+      // 非编辑区若有选中文本，也让位原生复制
+      if ((window.getSelection()?.toString() ?? "").length > 0) return;
       if (activeStepIndex == null) return;
       e.preventDefault();
       doCopyStep();

@@ -103,14 +103,18 @@ export function useCaseCopyPaste({
     if (!rec || busy) return;
     setBusy(true);
     try {
-      for (const id of rec.createdIds) {
-        await casesApi.remove(id, sessionId ?? undefined);
-      }
+      // allSettled：某条已被其它操作删掉(404)也不阻断其余撤销，避免半途失败留下残副本
+      const results = await Promise.allSettled(
+        rec.createdIds.map((id) => casesApi.remove(id, sessionId ?? undefined)),
+      );
       lastPaste.current = null;
       onAfterChange();
-      toast.success("已撤销粘贴");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "撤销失败");
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed > 0) {
+        toast.error(`撤销部分失败：${failed} 条未删除`);
+      } else {
+        toast.success("已撤销粘贴");
+      }
     } finally {
       setBusy(false);
     }
@@ -125,8 +129,11 @@ export function useCaseCopyPaste({
       const inEditable =
         !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
       if (key === "c") {
-        const hasText = (window.getSelection()?.toString() ?? "").length > 0;
-        if (inEditable && hasText) return;
+        // 输入框 / textarea / contenteditable 内一律让位原生复制
+        // （window.getSelection() 看不到表单控件内部选区，不能靠它判断）
+        if (inEditable) return;
+        // 非编辑区若有选中文本，也让位原生复制
+        if ((window.getSelection()?.toString() ?? "").length > 0) return;
         if (selected.size === 0 && activeCaseId == null) return;
         e.preventDefault();
         void doCopy();
