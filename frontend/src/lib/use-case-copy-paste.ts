@@ -1,10 +1,14 @@
-import { useCallback, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { toast } from "sonner";
-import { casesApi } from "@/lib/api";
-import { copyClipboard } from "@/lib/case-clipboard";
-import { buildCaseCopyPayload, canPasteCase, dedupeCopyName } from "@/lib/copy-clone";
-import { useCopyFlash } from "@/lib/use-copy-flash";
-import type { CaseType } from "@/types/domain";
+import { casesApi, functionalCasesApi } from "@/lib/api";
+import { copyClipboard, useCopyClipboard, type CaseSnapshot } from "@/lib/case-clipboard";
+import {
+  buildCaseCopyPayload,
+  buildFunctionalCopyPayload,
+  canPasteCase,
+  dedupeCopyName,
+} from "@/lib/copy-clone";
+import type { CaseType, FunctionalCase, TestCaseDetail } from "@/types/domain";
 
 /** 列表页传进来的当前页用例（已按显示顺序）。 */
 export interface CopyPasteCaseRow {
@@ -32,10 +36,51 @@ export function useCaseCopyPaste({
   onAfterChange,
 }: UseCaseCopyPasteArgs) {
   const [activeCaseId, setActiveCaseId] = useState<number | null>(null);
-  const { flashing, trigger } = useCopyFlash<number>();
   const containerRef = useRef<HTMLDivElement>(null);
   const lastPaste = useRef<{ createdIds: number[] } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // 功能用例的内容(functional_spec)在独立 JSON 列，必须走 functionalCasesApi；
+  // 自动化用例(api/web/android/ios)走通用 casesApi。reorder 两者共用 /api/reorder。
+  const isFunctional = caseType === "functional";
+
+  const fetchSnapshot = useCallback(
+    (id: number): Promise<CaseSnapshot> =>
+      isFunctional ? functionalCasesApi.get(id) : casesApi.get(id),
+    [isFunctional],
+  );
+
+  const createCopy = useCallback(
+    (snapshot: CaseSnapshot, targetModuleId: number, name: string) =>
+      isFunctional
+        ? functionalCasesApi.create(
+            buildFunctionalCopyPayload(snapshot as FunctionalCase, targetModuleId, name),
+            sessionId ?? undefined,
+          )
+        : casesApi.create(
+            buildCaseCopyPayload(snapshot as TestCaseDetail, targetModuleId, name),
+            sessionId ?? undefined,
+          ),
+    [isFunctional, sessionId],
+  );
+
+  const removeCopy = useCallback(
+    (id: number) =>
+      isFunctional
+        ? functionalCasesApi.remove(id, sessionId ?? undefined)
+        : casesApi.remove(id, sessionId ?? undefined),
+    [isFunctional, sessionId],
+  );
+
+  // 常驻高亮：跟随剪贴板状态（参考 Excel 蚁行线），不再用定时器自动消失。
+  // 复制别的用例 → 高亮跟着走；复制其它文本 / 离开页面 → 剪贴板清空 → 高亮消失。
+  const clip = useCopyClipboard();
+  const markedIds = useMemo<Set<number>>(() => {
+    if (clip && clip.kind === "case" && clip.caseType === caseType) {
+      return new Set(clip.sourceIds);
+    }
+    return new Set();
+  }, [clip, caseType]);
 
   const doCopy = useCallback(async () => {
     const ids =
@@ -46,13 +91,12 @@ export function useCaseCopyPaste({
           : [];
     if (ids.length === 0) return;
     try {
-      const snapshots = await Promise.all(ids.map((id) => casesApi.get(id)));
-      copyClipboard.set({ kind: "case", caseType, snapshots });
-      trigger(ids);
+      const snapshots = await Promise.all(ids.map((id) => fetchSnapshot(id)));
+      copyClipboard.set({ kind: "case", caseType, snapshots, sourceIds: ids });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "复制失败");
     }
-  }, [selected, cases, activeCaseId, caseType, trigger]);
+  }, [selected, cases, activeCaseId, caseType, fetchSnapshot]);
 
   const doPaste = useCallback(async () => {
     if (moduleId == null || busy) return;
@@ -66,13 +110,10 @@ export function useCaseCopyPaste({
     try {
       const existing = new Set(cases.map((c) => c.name));
       const createdIds: number[] = [];
-      for (const detail of item.snapshots) {
-        const name = dedupeCopyName(detail.name, existing);
+      for (const snapshot of item.snapshots) {
+        const name = dedupeCopyName(snapshot.name, existing);
         existing.add(name);
-        const res = await casesApi.create(
-          buildCaseCopyPayload(detail, moduleId, name),
-          sessionId ?? undefined,
-        );
+        const res = await createCopy(snapshot, moduleId, name);
         createdIds.push(res.id);
       }
       const currentIds = cases.map((c) => c.id);
@@ -96,7 +137,7 @@ export function useCaseCopyPaste({
     } finally {
       setBusy(false);
     }
-  }, [moduleId, busy, caseType, cases, activeCaseId, sessionId, onAfterChange]);
+  }, [moduleId, busy, caseType, cases, activeCaseId, createCopy, onAfterChange]);
 
   const undoPaste = useCallback(async () => {
     const rec = lastPaste.current;
@@ -104,9 +145,7 @@ export function useCaseCopyPaste({
     setBusy(true);
     try {
       // allSettled：某条已被其它操作删掉(404)也不阻断其余撤销，避免半途失败留下残副本
-      const results = await Promise.allSettled(
-        rec.createdIds.map((id) => casesApi.remove(id, sessionId ?? undefined)),
-      );
+      const results = await Promise.allSettled(rec.createdIds.map((id) => removeCopy(id)));
       lastPaste.current = null;
       onAfterChange();
       const failed = results.filter((r) => r.status === "rejected").length;
@@ -118,7 +157,7 @@ export function useCaseCopyPaste({
     } finally {
       setBusy(false);
     }
-  }, [busy, sessionId, onAfterChange]);
+  }, [busy, removeCopy, onAfterChange]);
 
   const onKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
@@ -154,7 +193,7 @@ export function useCaseCopyPaste({
   return {
     activeCaseId,
     setActiveCaseId,
-    flashing,
+    markedIds,
     containerRef,
     containerProps: {
       ref: containerRef,

@@ -1003,7 +1003,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
                     sessionId={quickEditMode ? quickEditSessionId ?? undefined : undefined}
                     caseDiff={caseDiff}
                     activeCaseId={copyPaste.activeCaseId}
-                    flashingIds={copyPaste.flashing}
+                    flashingIds={copyPaste.markedIds}
                     onRowActivate={copyPaste.setActiveCaseId}
                   />
                 </div>

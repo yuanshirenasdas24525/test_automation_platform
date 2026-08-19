@@ -50,9 +50,8 @@ import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { appPackagesApi, scriptsApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
-import { copyClipboard } from "@/lib/case-clipboard";
+import { copyClipboard, useCopyClipboard } from "@/lib/case-clipboard";
 import { canPasteStep, resolveCopyStepGroup } from "@/lib/copy-clone";
-import { useCopyFlash } from "@/lib/use-copy-flash";
 import type { CaseType, TestStepDraft } from "@/types/domain";
 import { UiElementPickerDialog } from "./ui-element-picker-dialog";
 
@@ -840,12 +839,14 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
   };
   const removeStep = (i: number) => {
     lastPaste.current = null;
+    setCopiedStepIndex(null);
     const arr = value.slice();
     arr.splice(i, 1);
     onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
   };
   const moveStep = (i: number, dir: -1 | 1) => {
     lastPaste.current = null;
+    setCopiedStepIndex(null);
     const j = i + dir;
     if (j < 0 || j >= value.length) return;
     const arr = value.slice();
@@ -858,6 +859,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
   // 实际插入索引要 -1，避免拖到下方一格"看起来没动"。
   const reorderStep = (from: number, to: number) => {
     lastPaste.current = null;
+    setCopiedStepIndex(null);
     if (from === to) return;
     if (from < 0 || to < 0 || from >= value.length || to > value.length) return;
     const arr = value.slice();
@@ -872,10 +874,20 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
 
   // ---- 复制/粘贴/撤销 ----
   const [activeStepIndex, setActiveStepIndex] = React.useState<number | null>(null);
-  const { flashing: stepFlash, trigger: triggerStepFlash } = useCopyFlash<number>();
   const containerRef = React.useRef<HTMLDivElement>(null);
   // 记录最近一次粘贴（仅单级撤销）；任何其它改动都会清空它。
   const lastPaste = React.useRef<{ index: number } | null>(null);
+
+  // 常驻复制高亮（参考 Excel 蚁行线，不定时消失）：
+  // ownerToken 标识"这一步是本编辑器实例复制的"，避免不同用例里同序号误亮。
+  const ownerTokenRef = React.useRef<string>(Math.random().toString(36).slice(2));
+  const [copiedStepIndex, setCopiedStepIndex] = React.useState<number | null>(null);
+  const clip = useCopyClipboard();
+  // 剪贴板已不是本编辑器复制的这一步（复制了别的用例/步骤、或被清空）→ 撤掉高亮
+  React.useEffect(() => {
+    const mine = clip?.kind === "step" && clip.ownerToken === ownerTokenRef.current;
+    if (!mine) setCopiedStepIndex(null);
+  }, [clip]);
 
   const doCopyStep = () => {
     if (activeStepIndex == null) return;
@@ -886,8 +898,9 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
       kind: "step",
       platformGroup: group,
       snapshot: structuredClone(step),
+      ownerToken: ownerTokenRef.current,
     });
-    triggerStepFlash(activeStepIndex);
+    setCopiedStepIndex(activeStepIndex);
   };
 
   const doPasteStep = () => {
@@ -950,6 +963,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
 
   const addStep = () => {
     lastPaste.current = null;
+    setCopiedStepIndex(null);
     const spec = findSpec(defaultNewType) ?? availableSpecs[0];
     if (!spec) return;
     const cfg = { ...defaultConfigForPlatform(spec, platform) };
@@ -1029,7 +1043,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
                 setDragIdx(null);
               }}
               active={activeStepIndex === i}
-              flash={stepFlash.has(i)}
+              flash={copiedStepIndex === i}
               onActivate={() => {
                 setActiveStepIndex(i);
                 containerRef.current?.focus();

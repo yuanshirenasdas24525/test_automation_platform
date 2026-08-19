@@ -737,55 +737,55 @@
 .rich-editor-content .ProseMirror [style*="text-align: right"] { text-align: right; }
 
 /* ------------------------------------------------------------------ */
-/* 复制成功：边缘流动光效（绕行一圈，单次）。给目标元素加 .copy-flash。 */
+/* 复制标记：Excel 风格「蚁行线」跑马灯虚线边框，常驻直到剪贴板变化。       */
+/* 给目标元素加 .copy-flash（沿用旧类名，行/步骤共用）。                    */
 /* ------------------------------------------------------------------ */
-@property --copy-flow-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
-}
-
-@keyframes copy-flow-spin {
-  to {
-    --copy-flow-angle: 360deg;
-  }
-}
-
 .copy-flash {
   position: relative;
+  z-index: 1;
 }
 
 .copy-flash::after {
   content: "";
   position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 2px;
-  background: conic-gradient(
-    from var(--copy-flow-angle),
-    transparent 0deg,
-    transparent 250deg,
-    hsl(var(--primary) / 0.9) 320deg,
-    #ffffff 350deg,
-    transparent 360deg
-  );
-  /* 只保留边框那一圈：内容区用 mask 掏空 */
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: copy-flow-spin 1.15s linear 1;
+  inset: 0;
   pointer-events: none;
   z-index: 5;
+  border-radius: inherit;
+  /* 四条边各铺一条虚线渐变：上/下用横向重复，左/右用纵向重复 */
+  background-image:
+    linear-gradient(90deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(90deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(0deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(0deg, var(--copy-ant) 45%, transparent 45%);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-size:
+    14px 2px,
+    14px 2px,
+    2px 14px,
+    2px 14px;
+  background-position:
+    0 0,
+    0 100%,
+    0 0,
+    100% 0;
+  /* 蚁行线颜色：优先主题色，够醒目 */
+  --copy-ant: hsl(var(--primary));
+  animation: copy-ants 0.5s infinite linear;
+}
+
+@keyframes copy-ants {
+  to {
+    background-position:
+      14px 0,
+      -14px 100%,
+      0 -14px,
+      100% 14px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .copy-flash::after {
     animation: none;
-    background: hsl(var(--primary) / 0.6);
   }
 }

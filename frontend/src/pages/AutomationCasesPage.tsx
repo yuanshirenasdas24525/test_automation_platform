@@ -975,7 +975,7 @@ export function AutomationCasesPage({
                       return next.some((item) => item.aboveCaseId == null) ? next : [...next, { tempId: sessionId() }];
                     })}
                     activeCaseId={copyPaste.activeCaseId}
-                    flashingIds={copyPaste.flashing}
+                    flashingIds={copyPaste.markedIds}
                     onRowActivate={copyPaste.setActiveCaseId}
                   />
                 </div>

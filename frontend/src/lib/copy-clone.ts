@@ -1,4 +1,10 @@
-import type { CaseType, TestCaseCreate, TestCaseDetail } from "@/types/domain";
+import type {
+  CaseType,
+  FunctionalCase,
+  FunctionalCaseCreate,
+  TestCaseCreate,
+  TestCaseDetail,
+} from "@/types/domain";
 import type { StepPlatformGroup } from "@/lib/case-clipboard";
 
 /**
@@ -63,5 +69,28 @@ export function buildCaseCopyPayload(
     module_id: moduleId,
     name,
     steps: (steps ?? []).map((s, idx) => ({ ...s, id: null, step_order: idx })),
+  };
+}
+
+/**
+ * 由功能用例快照组装「新建副本」的 payload。功能用例内容在 functional_spec
+ * (前置条件/步骤/预期) 这个 JSON 列里，走 functionalCasesApi，不能用上面的通用 payload。
+ * 去掉 id / sort_order / latest_run，深拷贝 functional_spec，改名。
+ */
+export function buildFunctionalCopyPayload(
+  source: FunctionalCase,
+  moduleId: number,
+  name: string,
+): FunctionalCaseCreate {
+  return {
+    module_id: moduleId,
+    name,
+    description: source.description ?? null,
+    skip: source.skip,
+    priority: source.priority ?? null,
+    tags: source.tags ?? [],
+    functional_spec: source.functional_spec
+      ? structuredClone(source.functional_spec)
+      : null,
   };
 }
