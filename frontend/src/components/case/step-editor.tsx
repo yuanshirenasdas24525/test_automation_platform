@@ -47,8 +47,11 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { appPackagesApi, scriptsApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
+import { copyClipboard, useCopyClipboard } from "@/lib/case-clipboard";
+import { canPasteStep, resolveCopyStepGroup } from "@/lib/copy-clone";
 import type { CaseType, TestStepDraft } from "@/types/domain";
 import { UiElementPickerDialog } from "./ui-element-picker-dialog";
 
@@ -829,16 +832,21 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
   );
 
   const setStep = (i: number, next: TestStepDraft) => {
+    lastPaste.current = null;
     const arr = value.slice();
     arr[i] = { ...next, step_order: i };
     onChange(arr);
   };
   const removeStep = (i: number) => {
+    lastPaste.current = null;
+    setCopiedStepIndex(null);
     const arr = value.slice();
     arr.splice(i, 1);
     onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
   };
   const moveStep = (i: number, dir: -1 | 1) => {
+    lastPaste.current = null;
+    setCopiedStepIndex(null);
     const j = i + dir;
     if (j < 0 || j >= value.length) return;
     const arr = value.slice();
@@ -850,6 +858,8 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
   // 注意：当 from < to 时，把 from 取出后剩余数组里 to 的位置会左移 1，所以
   // 实际插入索引要 -1，避免拖到下方一格"看起来没动"。
   const reorderStep = (from: number, to: number) => {
+    lastPaste.current = null;
+    setCopiedStepIndex(null);
     if (from === to) return;
     if (from < 0 || to < 0 || from >= value.length || to > value.length) return;
     const arr = value.slice();
@@ -861,7 +871,99 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
 
   // 当前正在拖动哪一行：父级管理，让所有 row 都能感知，便于做悬停高亮（可选）。
   const [dragIdx, setDragIdx] = React.useState<number | null>(null);
+
+  // ---- 复制/粘贴/撤销 ----
+  const [activeStepIndex, setActiveStepIndex] = React.useState<number | null>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  // 记录最近一次粘贴（仅单级撤销）；任何其它改动都会清空它。
+  const lastPaste = React.useRef<{ index: number } | null>(null);
+
+  // 常驻复制高亮（参考 Excel 蚁行线，不定时消失）：
+  // ownerToken 标识"这一步是本编辑器实例复制的"，避免不同用例里同序号误亮。
+  const ownerTokenRef = React.useRef<string>(Math.random().toString(36).slice(2));
+  const [copiedStepIndex, setCopiedStepIndex] = React.useState<number | null>(null);
+  const clip = useCopyClipboard();
+  // 剪贴板已不是本编辑器复制的这一步（复制了别的用例/步骤、或被清空）→ 撤掉高亮
+  React.useEffect(() => {
+    const mine = clip?.kind === "step" && clip.ownerToken === ownerTokenRef.current;
+    if (!mine) setCopiedStepIndex(null);
+  }, [clip]);
+
+  const doCopyStep = () => {
+    if (activeStepIndex == null) return;
+    const step = value[activeStepIndex];
+    if (!step) return;
+    const group = resolveCopyStepGroup(step.step_type, category);
+    copyClipboard.set({
+      kind: "step",
+      platformGroup: group,
+      snapshot: structuredClone(step),
+      ownerToken: ownerTokenRef.current,
+    });
+    setCopiedStepIndex(activeStepIndex);
+  };
+
+  const doPasteStep = () => {
+    const item = copyClipboard.get();
+    if (!item || item.kind !== "step") return;
+    if (!canPasteStep(item.platformGroup, category)) {
+      toast.error("不能跨类型粘贴步骤");
+      return;
+    }
+    const insertAt = activeStepIndex == null ? 0 : activeStepIndex + 1;
+    const cloned: TestStepDraft = { ...structuredClone(item.snapshot), id: null };
+    const arr = value.slice();
+    arr.splice(insertAt, 0, cloned);
+    onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
+    lastPaste.current = { index: insertAt };
+    setActiveStepIndex(insertAt);
+  };
+
+  const undoPasteStep = () => {
+    const rec = lastPaste.current;
+    if (!rec) return;
+    if (rec.index < 0 || rec.index >= value.length) {
+      lastPaste.current = null;
+      return;
+    }
+    const arr = value.slice();
+    arr.splice(rec.index, 1);
+    onChange(arr.map((s, idx) => ({ ...s, step_order: idx })));
+    lastPaste.current = null;
+    setActiveStepIndex(null);
+  };
+
+  const onEditorKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    const key = e.key.toLowerCase();
+    if (key !== "c" && key !== "v" && key !== "z") return;
+    const el = document.activeElement as HTMLElement | null;
+    const inEditable =
+      !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+    if (key === "c") {
+      // 输入框 / textarea / contenteditable 内一律让位原生复制
+      // （window.getSelection() 看不到表单控件内部选区，不能靠它判断）
+      if (inEditable) return;
+      // 非编辑区若有选中文本，也让位原生复制
+      if ((window.getSelection()?.toString() ?? "").length > 0) return;
+      if (activeStepIndex == null) return;
+      e.preventDefault();
+      doCopyStep();
+    } else if (key === "v") {
+      if (inEditable) return;
+      e.preventDefault();
+      doPasteStep();
+    } else if (key === "z") {
+      if (inEditable) return;
+      if (!lastPaste.current) return;
+      e.preventDefault();
+      undoPasteStep();
+    }
+  };
+
   const addStep = () => {
+    lastPaste.current = null;
+    setCopiedStepIndex(null);
     const spec = findSpec(defaultNewType) ?? availableSpecs[0];
     if (!spec) return;
     const cfg = { ...defaultConfigForPlatform(spec, platform) };
@@ -883,7 +985,13 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
   };
 
   return (
-    <div className="space-y-3">
+    <div
+      ref={containerRef}
+      className="space-y-3 outline-none"
+      tabIndex={-1}
+      onKeyDown={onEditorKeyDown}
+      onClick={() => containerRef.current?.focus()}
+    >
       <div className="flex items-center justify-between">
         <Label className="text-sm">
           步骤（{value.length}）
@@ -934,6 +1042,12 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
                 reorderStep(from, value.length);
                 setDragIdx(null);
               }}
+              active={activeStepIndex === i}
+              flash={copiedStepIndex === i}
+              onActivate={() => {
+                setActiveStepIndex(i);
+                containerRef.current?.focus();
+              }}
             />
           ))}
         </div>
@@ -961,6 +1075,9 @@ function StepRow({
   onDragEnd,
   onDropBefore,
   onDropAtEnd,
+  active,
+  flash,
+  onActivate,
 }: {
   index: number;
   total: number;
@@ -979,6 +1096,9 @@ function StepRow({
   onDropBefore: (from: number) => void;
   /** 用户拖到本行"之后"（仅最后一行有意义，用来排到末尾）。 */
   onDropAtEnd: (from: number) => void;
+  active: boolean;
+  flash: boolean;
+  onActivate: () => void;
 }) {
   const [expanded, setExpanded] = React.useState(index === 0 || !step.step_type);
   const [elementPickerOpen, setElementPickerOpen] = React.useState(false);
@@ -1057,7 +1177,10 @@ function StepRow({
         step.skip && "opacity-60",
         isDragging && "opacity-50 ring-2 ring-primary/30",
         isDropTarget && "border-primary/40 bg-primary/5",
+        active && "ring-2 ring-primary/60",
+        flash && "copy-flash",
       )}
+      onClick={onActivate}
       onDragOver={handleRowDragOver}
       onDrop={handleRowDrop}
     >

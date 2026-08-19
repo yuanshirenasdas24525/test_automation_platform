@@ -735,3 +735,57 @@
 .rich-editor-content .ProseMirror [style*="text-align: left"] { text-align: left; }
 .rich-editor-content .ProseMirror [style*="text-align: center"] { text-align: center; }
 .rich-editor-content .ProseMirror [style*="text-align: right"] { text-align: right; }
+
+/* ------------------------------------------------------------------ */
+/* 复制标记：Excel 风格「蚁行线」跑马灯虚线边框，常驻直到剪贴板变化。       */
+/* 给目标元素加 .copy-flash（沿用旧类名，行/步骤共用）。                    */
+/* ------------------------------------------------------------------ */
+.copy-flash {
+  position: relative;
+  z-index: 1;
+}
+
+.copy-flash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  border-radius: inherit;
+  /* 四条边各铺一条虚线渐变：上/下用横向重复，左/右用纵向重复 */
+  background-image:
+    linear-gradient(90deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(90deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(0deg, var(--copy-ant) 45%, transparent 45%),
+    linear-gradient(0deg, var(--copy-ant) 45%, transparent 45%);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-size:
+    14px 2px,
+    14px 2px,
+    2px 14px,
+    2px 14px;
+  background-position:
+    0 0,
+    0 100%,
+    0 0,
+    100% 0;
+  /* 蚁行线颜色：优先主题色，够醒目 */
+  --copy-ant: hsl(var(--primary));
+  animation: copy-ants 0.5s infinite linear;
+}
+
+@keyframes copy-ants {
+  to {
+    background-position:
+      14px 0,
+      -14px 100%,
+      0 -14px,
+      100% 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-flash::after {
+    animation: none;
+  }
+}
