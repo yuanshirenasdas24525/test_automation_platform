@@ -93,6 +93,7 @@ import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
 import { WebUiCaseGenerationDialog } from "./ui-recording/WebUiCaseGenerationDialog";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
+import { useCaseCopyPaste } from "@/lib/use-case-copy-paste";
 
 type DiagnoseResult = {
   classification: string;
@@ -534,6 +535,15 @@ export function AutomationCasesPage({
     ]);
   }, []);
 
+  const copyPaste = useCaseCopyPaste({
+    caseType: caseType as CaseType,
+    moduleId,
+    sessionId: editSession,
+    cases: cases.map((c) => ({ id: c.id, name: c.name })),
+    selected,
+    onAfterChange: invalidate,
+  });
+
   // AI 自愈必须有语义模型：规则只提供证据，最终修改要受用例名称/描述/需求约束。
   const [healModel, setHealModel] = useState<string>("");
   const { data: healModels } = useQuery({
@@ -931,39 +941,44 @@ export function AutomationCasesPage({
             <section className="space-y-2">
               <h3 className="text-sm font-semibold">{caseLabel} 用例（{total}）</h3>
               {casesQuery.isLoading ? <Loading /> : cases.length === 0 ? <Empty text={`当前模块还没有 ${caseLabel} 用例`} /> : (
-                <ApiCaseTable
-                  cases={cases}
-                  moduleId={moduleId}
-                  quickEdit={quickEdit}
-                  caseType={caseType}
-                  enableAiActions={isApiWorkbench}
-                  sessionId={editSession}
-                  selected={selected}
-                  onSelected={setSelected}
-                  onEdit={setEditor}
-                  onRun={(row) => runMutation.mutate({ ids: [row.id] })}
-                  onDiagnose={handleDiagnose}
-                  onShowRunDetail={setRunDetailCase}
-                  onShowFlag={setFlagDialogCase}
-                  onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
-                  onReorder={reorder}
-                  onToggleLock={toggleLock}
-                  onInsertAbove={insertRowAbove}
-                  onSaved={invalidate}
-                  newRows={newRows}
-                  onFirstInput={(rowId) => {
-                    setNewRows((current) => {
-                      const bottomRows = current.filter((item) => item.aboveCaseId == null);
-                      return bottomRows.at(-1)?.tempId === rowId
-                        ? [...current, { tempId: sessionId() }]
-                        : current;
-                    });
-                  }}
-                  onRemoveNewRow={(rowId) => setNewRows((current) => {
-                    const next = current.filter((item) => item.tempId !== rowId);
-                    return next.some((item) => item.aboveCaseId == null) ? next : [...next, { tempId: sessionId() }];
-                  })}
-                />
+                <div {...copyPaste.containerProps}>
+                  <ApiCaseTable
+                    cases={cases}
+                    moduleId={moduleId}
+                    quickEdit={quickEdit}
+                    caseType={caseType}
+                    enableAiActions={isApiWorkbench}
+                    sessionId={editSession}
+                    selected={selected}
+                    onSelected={setSelected}
+                    onEdit={setEditor}
+                    onRun={(row) => runMutation.mutate({ ids: [row.id] })}
+                    onDiagnose={handleDiagnose}
+                    onShowRunDetail={setRunDetailCase}
+                    onShowFlag={setFlagDialogCase}
+                    onDelete={(row) => window.confirm(`确定删除“${row.name}”吗？`) && removeMutation.mutate(row.id)}
+                    onReorder={reorder}
+                    onToggleLock={toggleLock}
+                    onInsertAbove={insertRowAbove}
+                    onSaved={invalidate}
+                    newRows={newRows}
+                    onFirstInput={(rowId) => {
+                      setNewRows((current) => {
+                        const bottomRows = current.filter((item) => item.aboveCaseId == null);
+                        return bottomRows.at(-1)?.tempId === rowId
+                          ? [...current, { tempId: sessionId() }]
+                          : current;
+                      });
+                    }}
+                    onRemoveNewRow={(rowId) => setNewRows((current) => {
+                      const next = current.filter((item) => item.tempId !== rowId);
+                      return next.some((item) => item.aboveCaseId == null) ? next : [...next, { tempId: sessionId() }];
+                    })}
+                    activeCaseId={copyPaste.activeCaseId}
+                    flashingIds={copyPaste.flashing}
+                    onRowActivate={copyPaste.setActiveCaseId}
+                  />
+                </div>
               )}
               <div className="flex items-center justify-end gap-2">
                 <span className="text-xs text-muted-foreground">每页</span>
@@ -2091,7 +2106,7 @@ function AiFlagClearDialog({ row, onClose, onCleared }: {
 function Loading() { return <div className="flex items-center justify-center rounded-lg border py-10 text-sm text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />加载中…</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">{text}</div>; }
 
-function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onToggleLock, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow }: {
+function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, sessionId, selected, onSelected, onEdit, onRun, onDelete, onDiagnose, onShowRunDetail, onShowFlag, onReorder, onToggleLock, onInsertAbove, onSaved, newRows, onFirstInput, onRemoveNewRow, activeCaseId, flashingIds, onRowActivate }: {
   cases: ApiCase[];
   moduleId: number;
   quickEdit: boolean;
@@ -2113,6 +2128,9 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
   newRows: ApiQuickNewRow[];
   onFirstInput: (rowId: string) => void;
   onRemoveNewRow: (rowId: string) => void;
+  activeCaseId: number | null;
+  flashingIds: Set<number>;
+  onRowActivate: (id: number) => void;
 }) {
   const selectableCases = quickEdit
     ? cases
@@ -2151,7 +2169,17 @@ function ApiCaseTable({ cases, moduleId, quickEdit, caseType, enableAiActions, s
       const manualAdjustment = manualAdjustmentInfo(row);
       const locked = isCaseLocked(row);
       return (
-      <div key={row.id} className={cn("grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30", manualAdjustment.pending && "bg-red-50/50", gridClass)}>
+      <div
+        key={row.id}
+        onClick={() => onRowActivate(row.id)}
+        className={cn(
+          "grid items-center gap-2 border-b px-3 py-2.5 text-sm last:border-b-0 hover:bg-muted/30",
+          manualAdjustment.pending && "bg-red-50/50",
+          activeCaseId === row.id && "bg-primary/5 ring-2 ring-inset ring-primary/50",
+          flashingIds.has(row.id) && "copy-flash",
+          gridClass,
+        )}
+      >
         <Checkbox checked={selected.has(row.id)} disabled={manualAdjustment.pending || locked} onCheckedChange={() => { const next = new Set(selected); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); onSelected(next); }} />
         <div className="flex min-w-0 items-center gap-1.5">
           <button className="flex min-w-0 items-center gap-2 text-left hover:underline" onClick={() => onEdit(row)} title={(row.step_count ?? 0) > 1 ? "多步骤用例 · 点击编辑" : "点击编辑"}>{(row.step_count ?? 0) > 1 ? <ListChecks className="h-4 w-4 shrink-0 text-violet-500" /> : <FileText className="h-4 w-4 shrink-0 text-sky-500" />}<span className="truncate">{row.name}</span></button>
