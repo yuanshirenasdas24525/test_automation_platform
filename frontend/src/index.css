@@ -735,3 +735,57 @@
 .rich-editor-content .ProseMirror [style*="text-align: left"] { text-align: left; }
 .rich-editor-content .ProseMirror [style*="text-align: center"] { text-align: center; }
 .rich-editor-content .ProseMirror [style*="text-align: right"] { text-align: right; }
+
+/* ------------------------------------------------------------------ */
+/* 复制成功：边缘流动光效（绕行一圈，单次）。给目标元素加 .copy-flash。 */
+/* ------------------------------------------------------------------ */
+@property --copy-flow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes copy-flow-spin {
+  to {
+    --copy-flow-angle: 360deg;
+  }
+}
+
+.copy-flash {
+  position: relative;
+}
+
+.copy-flash::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 2px;
+  background: conic-gradient(
+    from var(--copy-flow-angle),
+    transparent 0deg,
+    transparent 250deg,
+    hsl(var(--primary) / 0.9) 320deg,
+    #ffffff 350deg,
+    transparent 360deg
+  );
+  /* 只保留边框那一圈：内容区用 mask 掏空 */
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: copy-flow-spin 1.15s linear 1;
+  pointer-events: none;
+  z-index: 5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-flash::after {
+    animation: none;
+    background: hsl(var(--primary) / 0.6);
+  }
+}
