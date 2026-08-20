@@ -30,6 +30,22 @@ class ScriptStepRunner(BaseStepRunner):
         script_input = resolve_value_deep(script_input, ctx)
         script_config = resolve_value_deep(script_config, ctx)
         project_id = _as_project_id(ctx.get_var("_project_id"))
+        export_variables = bool(config.get("export_variables", True))
+        save_as = str(config.get("save_result_as") or "").strip()
+
+        # 调脚本前先写入执行快照。这样即使脚本不存在、超时或内部抛错，Allure 仍能
+        # 展示“执行了哪个脚本、给了什么输入、用了哪些配置”，不用只靠一行 traceback 猜。
+        result.action = f"运行项目脚本 {script_name}"
+        result.target = script_name
+        result.input_data = {
+            "script_name": script_name,
+            "project_id": project_id,
+            "timeout_seconds": step.get("timeout") or 30,
+            "export_variables": export_variables,
+            "save_result_as": save_as or None,
+            "script_config": script_config,
+            "input": script_input,
+        }
 
         found, output = run_named_script(
             script_name,
@@ -44,15 +60,12 @@ class ScriptStepRunner(BaseStepRunner):
         if not found:
             raise ValueError(f"未找到启用的项目逻辑脚本：{script_name}")
 
-        result.action = f"运行项目脚本 {script_name}"
-        result.target = script_name
-        result.input_data = script_input
         result.output_data = output
 
         if isinstance(output, dict):
             if output.get("ok") is False:
                 raise AssertionError(str(output.get("error") or output.get("message") or "项目脚本返回失败"))
-            if bool(config.get("export_variables", True)):
+            if export_variables:
                 variables = output.get("variables")
                 if variables is not None and not isinstance(variables, dict):
                     raise TypeError("项目脚本返回的 variables 必须是 JSON 对象")
@@ -64,7 +77,6 @@ class ScriptStepRunner(BaseStepRunner):
                 for message in logs:
                     ctx.log(f"[script:{script_name}] {message}")
 
-        save_as = str(config.get("save_result_as") or "").strip()
         if save_as:
             value = output.get("result") if isinstance(output, dict) and "result" in output else output
             ctx.set_var(save_as, value)

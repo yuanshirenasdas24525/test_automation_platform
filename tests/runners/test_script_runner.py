@@ -50,6 +50,15 @@ def test_script_runner_exports_variables_and_result(monkeypatch) -> None:
     assert ctx.get_var("account") == {"id": 9}
     assert result.extracted["password"] == "Secret#1"
     assert "账号已创建" in ctx.logs[-1]
+    assert result.input_data == {
+        "script_name": "prepare_account",
+        "project_id": 7,
+        "timeout_seconds": 5,
+        "export_variables": True,
+        "save_result_as": "account",
+        "script_config": {},
+        "input": {"prefix": "AUTO"},
+    }
 
 
 def test_script_runner_reports_missing_script() -> None:

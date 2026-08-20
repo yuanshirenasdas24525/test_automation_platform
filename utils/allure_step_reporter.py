@@ -16,14 +16,28 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
+import re
 import time
-from typing import Iterator
+from typing import Any, Iterator
 
 # 不要在模块顶部直接 import allure —— 离线单测环境可能没装。
 # 全部走 lazy import + 异常吞掉。
 logger = logging.getLogger(__name__)
+
+_MAX_ATTACHMENT_STRING = 16_000
+_MAX_ATTACHMENT_ITEMS = 200
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+\S+")
+_COOKIE_VALUE_RE = re.compile(r"(?i)\b(_homeland_session|user_id)=([^;\s\"']+)")
+_REPORT_VISIBLE_TOKEN_NAMES = {
+    "authenticity_token",
+    "csrf_token",
+    "x_csrf_token",
+    "xsrf_token",
+    "x_xsrf_token",
+}
 
 
 def _try_import_allure():
@@ -59,6 +73,89 @@ def _attach_text(name: str, content: str) -> None:
         logger.debug("allure.attach text 失败（忽略）：%s", exc)
 
 
+def _attach_json(name: str, content: Any) -> None:
+    """以格式化 JSON 附加结构化详情；不可序列化值退回字符串。"""
+    allure = _try_import_allure()
+    if allure is None or content is None:
+        return
+    try:
+        payload = json.dumps(content, ensure_ascii=False, indent=2, default=str)
+        allure.attach(payload, name, allure.attachment_type.JSON)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("allure.attach json 失败（忽略）：%s", exc)
+
+
+def _redact_sensitive(value: Any, key: str = "") -> Any:
+    """递归脱敏并限制附件体积，避免凭据或整页 HTML 直接进入报告。"""
+    try:
+        from runners.context.run_variable_pool import is_sensitive_variable_name  # noqa: WPS433
+    except Exception:  # noqa: BLE001
+        is_sensitive_variable_name = lambda name: False  # noqa: E731
+
+    normalized_key = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+    # CSRF/XSRF Token 是请求合法性校验参数，当前项目需要在报告中核对提取和回写
+    # 是否一致，因此明确保留原值；登录令牌、Cookie、密码等仍按敏感数据遮盖。
+    if (
+        key
+        and normalized_key not in _REPORT_VISIBLE_TOKEN_NAMES
+        and is_sensitive_variable_name(key)
+    ):
+        return "***"
+    if isinstance(value, dict):
+        items = list(value.items())
+        redacted = {
+            str(item_key): _redact_sensitive(item, str(item_key))
+            for item_key, item in items[:_MAX_ATTACHMENT_ITEMS]
+        }
+        if len(items) > _MAX_ATTACHMENT_ITEMS:
+            redacted["..."] = f"另有 {len(items) - _MAX_ATTACHMENT_ITEMS} 项已省略"
+        return redacted
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        redacted = [_redact_sensitive(item) for item in items[:_MAX_ATTACHMENT_ITEMS]]
+        if len(items) > _MAX_ATTACHMENT_ITEMS:
+            redacted.append(f"另有 {len(items) - _MAX_ATTACHMENT_ITEMS} 项已省略")
+        return redacted
+    if not isinstance(value, str):
+        return value
+
+    text = _BEARER_RE.sub("Bearer ***", value)
+    text = _COOKIE_VALUE_RE.sub(r"\1=***", text)
+    if len(text) > _MAX_ATTACHMENT_STRING:
+        return (
+            text[:_MAX_ATTACHMENT_STRING]
+            + f"\n……内容已截断，原始长度 {len(text)} 字符"
+        )
+    return text
+
+
+def _attach_script_details(result) -> None:
+    """为 script 步骤生成分区明确的 Allure 附件。"""
+    raw_input = result.input_data if isinstance(result.input_data, dict) else {
+        "input": result.input_data,
+    }
+    input_payload = raw_input.get("input")
+    execution_config = {
+        key: value
+        for key, value in raw_input.items()
+        if key != "input"
+    }
+    _attach_json("脚本执行配置", _redact_sensitive(execution_config))
+    _attach_json("脚本输入参数", _redact_sensitive(input_payload))
+
+    output = result.output_data
+    logs = output.get("logs") if isinstance(output, dict) else None
+    _attach_json("脚本输出结果", _redact_sensitive(output))
+    if result.extracted:
+        _attach_json("写回变量", _redact_sensitive(result.extracted))
+    if isinstance(logs, list) and logs:
+        log_lines = [
+            f"[{index}] {_redact_sensitive(str(message))}"
+            for index, message in enumerate(logs, start=1)
+        ]
+        _attach_text("脚本执行日志", "\n".join(log_lines))
+
+
 def _attach_image_file(name: str, path: str) -> None:
     allure = _try_import_allure()
     if allure is None or not path or not os.path.isfile(path):
@@ -77,7 +174,11 @@ def attach_step_details(result) -> None:
     if result is None:
         return
     # 概要：一条 KV 总览，方便不展开附件就能看出动作、定位器、状态、耗时。
-    summary_lines = []
+    summary_lines = [
+        f"name    : {result.step_name}",
+        f"type    : {result.step_type}",
+        f"order   : {result.step_order}",
+    ]
     if result.action:
         summary_lines.append(f"action  : {result.action}")
     if result.target:
@@ -87,6 +188,9 @@ def attach_step_details(result) -> None:
         summary_lines.append(f"duration: {result.duration_ms} ms")
     if summary_lines:
         _attach_text("step_summary", "\n".join(summary_lines))
+
+    if result.step_type == "script":
+        _attach_script_details(result)
 
     # 错误：失败 / 异常都把 message + traceback 挂上去
     if result.error_message:
