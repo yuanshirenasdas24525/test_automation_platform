@@ -34,6 +34,14 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { HighlightedTextarea } from "@/components/ui/highlighted-textarea";
+import {
+  JsonValidateButton,
+  checkAssertion,
+  checkExtract,
+  checkHeaders,
+  checkJson,
+  type JsonCheck,
+} from "@/lib/json-field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -77,6 +85,8 @@ interface FieldSpec {
   required?: boolean;
   options?: { value: string; label: string }[];
   platforms?: Array<"android" | "ios">;
+  /** highlight 字段：设了就在标题右侧显示「校验 JSON」按钮（格式化 ↔ 压缩一行） */
+  jsonCheck?: (text: string) => JsonCheck;
 }
 
 interface StepTypeSpec {
@@ -641,10 +651,10 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     defaultName: (c) => `运行脚本 ${String(c.script_name || "")}`.trim(),
     fields: [
       { key: "script_name", label: "项目逻辑脚本", kind: "workflow_script", required: true },
-      { key: "input", label: "输入 JSON", kind: "highlight", rows: 4,
+      { key: "input", label: "输入 JSON", kind: "highlight", rows: 4, jsonCheck: checkJson,
         placeholder: '{"username": "${username}"}',
         hint: <>支持嵌套 JSON、<code>$&#123;var&#125;</code> 和 <code>function:xxx()</code></> },
-      { key: "script_config", label: "脚本配置 JSON", kind: "highlight", rows: 3,
+      { key: "script_config", label: "脚本配置 JSON", kind: "highlight", rows: 3, jsonCheck: checkJson,
         placeholder: '{"base_url": "https://example.test"}' },
       { key: "export_variables", label: "写回 variables", kind: "bool",
         hint: <>脚本返回 <code>{'{"variables": {"token": "..."}}'}</code> 后可在后续步骤使用 <code>$&#123;token&#125;</code></> },
@@ -671,16 +681,16 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         placeholder: "/api/auth/login（相对路径会拼 base_url，也可填完整 URL）" },
       { key: "data_type", label: "Content-Type", kind: "text",
         placeholder: "application/json" },
-      { key: "headers", label: "请求头", kind: "highlight", rows: 2,
+      { key: "headers", label: "请求头", kind: "highlight", rows: 2, jsonCheck: checkHeaders,
         placeholder: '{"Authorization": "Bearer ${token1}"}',
         hint: <>JSON 对象。支持 <code>{"${var}"}</code></> },
-      { key: "params", label: "请求体 / 参数", kind: "highlight", rows: 3,
+      { key: "params", label: "请求体 / 参数", kind: "highlight", rows: 3, jsonCheck: checkJson,
         placeholder: '{"username": "${generate_account}", "password": "NewTest@123"}',
         hint: <>JSON 对象。支持 <code>{"${var}"}</code> 和 <code>function:xxx()</code></> },
-      { key: "extract_data", label: "提取参数", kind: "highlight", rows: 2,
+      { key: "extract_data", label: "提取参数", kind: "highlight", rows: 2, jsonCheck: checkExtract,
         placeholder: '{"token1": "$.data.token"}',
         hint: <>JSON 对象 <code>{"{ 变量名: $.json.path }"}</code>，提取出的变量后续步骤可 <code>{"${变量名}"}</code> 引用</> },
-      { key: "assertion", label: "断言", kind: "highlight", rows: 2,
+      { key: "assertion", label: "断言", kind: "highlight", rows: 2, jsonCheck: checkAssertion,
         placeholder: '{"status_code": 200, "$.data.token": "not_empty"}',
         hint: <>JSON 对象 <code>{"{ $.code: 0 }"}</code>；非空写 <code>not_empty</code></> },
       { key: "target_db_group", label: "数据库连接", kind: "select", options: [],
@@ -1460,10 +1470,19 @@ function FieldRenderer({
 
   return (
     <div className={wrapperClass}>
-      <Label htmlFor={id} className="text-xs">
-        {field.label}
-        {field.required ? <span className="ml-0.5 text-destructive">*</span> : null}
-      </Label>
+      <div className="flex items-center justify-between gap-2">
+        <Label htmlFor={id} className="text-xs">
+          {field.label}
+          {field.required ? <span className="ml-0.5 text-destructive">*</span> : null}
+        </Label>
+        {field.kind === "highlight" && field.jsonCheck ? (
+          <JsonValidateButton
+            value={stringify(value)}
+            onChange={onChange}
+            check={field.jsonCheck}
+          />
+        ) : null}
+      </div>
       {field.kind === "text" ? (
         <Input
           id={id}

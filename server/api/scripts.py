@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
 import pydantic
@@ -16,6 +17,12 @@ router = APIRouter(prefix="/scripts", tags=["scripts"])
 
 ScriptKind = Literal["function", "crypto_request", "crypto_response", "workflow"]
 ScriptScope = Literal["global", "project"]
+
+# 说明是纯文本短说明，长度上限与前端保持一致。历史上曾用富文本(HTML)写入，
+# 超长 HTML 会撑爆 description 列直接 500，这里统一去标签 + 限长兜底。
+DESCRIPTION_MAX_LEN = 120
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
 
 
 class ScriptPayload(pydantic.BaseModel):
@@ -79,7 +86,7 @@ def create_script(payload: ScriptPayload, db: DBDep):
         code=payload.code,
         enabled=payload.enabled,
         project_id=payload.project_id,
-        description=payload.description,
+        description=_normalize_description(payload.description),
         requirements=_normalize_requirements(payload.requirements),
     )
     db.session.add(row)
@@ -97,7 +104,7 @@ def update_script(script_id: int, payload: ScriptPayload, db: DBDep):
     row.code = payload.code
     row.enabled = payload.enabled
     row.project_id = payload.project_id
-    row.description = payload.description
+    row.description = _normalize_description(payload.description)
     row.requirements = _normalize_requirements(payload.requirements)
     db.session.flush()
     return {"status": "success", "data": row.to_dict()}
@@ -156,6 +163,18 @@ def _validate_payload(payload: ScriptPayload) -> None:
     if "def handler" not in payload.code:
         raise HTTPException(status_code=422, detail="脚本必须定义 handler 函数")
     _normalize_requirements(payload.requirements)
+
+
+def _normalize_description(raw: str | None) -> str | None:
+    """说明规整：去富文本标签 + 折叠空白，超过上限直接拒绝（返回 422 而非 500）。"""
+    if raw is None:
+        return None
+    text = _WS_RE.sub(" ", _TAG_RE.sub(" ", raw)).strip()
+    if not text:
+        return None
+    if len(text) > DESCRIPTION_MAX_LEN:
+        raise HTTPException(status_code=422, detail=f"说明最多 {DESCRIPTION_MAX_LEN} 个字")
+    return text
 
 
 def _normalize_requirements(raw: list[str] | None) -> list[str]:
