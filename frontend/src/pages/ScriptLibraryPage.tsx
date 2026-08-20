@@ -49,6 +49,9 @@ type CachedScriptDraft = {
 
 const SCRIPT_DRAFT_CACHE_PREFIX = "script_library.draft";
 
+// 说明字段长度上限（纯文本字数）。与后端 ScriptStore.description 列 / 校验保持一致。
+const DESCRIPTION_MAX_LEN = 120;
+
 const KIND_META: Record<ScriptKind, { label: string; icon: typeof Code2; reference: (name: string) => string }> = {
   function: {
     label: "动态函数",
@@ -336,7 +339,9 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
       code,
       enabled: current.enabled,
       project_id: current.scope === "project" ? projectId ?? current.project_id : null,
-      description: current.description,
+      // 说明是纯文本短说明：去掉历史富文本残留的标签，并硬截断到长度上限，
+      // 避免超出后端 description 列长度直接 500。
+      description: plainTextFromHtml(current.description ?? "").slice(0, DESCRIPTION_MAX_LEN),
       requirements: current.requirements ?? [],
     });
     setDraft({ ...current, code });
@@ -588,14 +593,18 @@ export function ScriptLibraryPanel({ projectId }: { projectId?: number }) {
                   </div>
                   <div>
                     <Label className="mb-2 block">说明</Label>
-                    <RichTextEditor
-                      key={`desc-${current.id ?? "draft"}`}
-                      value={current.description ?? ""}
-                      onChange={(value) => setDraft({ ...current, description: value })}
-                      height={180}
-                      toolbar="full"
-                      placeholder="支持表格、代码块、列表等富文本说明"
+                    <Textarea
+                      className="h-24 resize-none text-sm"
+                      maxLength={DESCRIPTION_MAX_LEN}
+                      value={plainTextFromHtml(current.description ?? "")}
+                      onChange={(event) =>
+                        setDraft({ ...current, description: event.target.value.slice(0, DESCRIPTION_MAX_LEN) })
+                      }
+                      placeholder="一句话说明脚本用途（纯文本，最多 120 字）"
                     />
+                    <div className="mt-1 text-right text-[11px] text-muted-foreground">
+                      {plainTextFromHtml(current.description ?? "").length}/{DESCRIPTION_MAX_LEN}
+                    </div>
                   </div>
                   <div>
                     <Label className="mb-2 block">独立依赖</Label>
@@ -790,6 +799,18 @@ function codeFromRichHtml(html: string): string {
   const codeNode = doc.querySelector("pre code") ?? doc.querySelector("pre");
   const text = codeNode?.textContent ?? doc.body.textContent ?? "";
   return text.trimEnd() + "\n";
+}
+
+// 说明历史上是富文本(HTML)，会残留 <p></p> 等标签。这里统一转成纯文本展示/保存，
+// 顺手把连续空白折叠成单空格，避免标签噪音泄漏到脚本简介。
+function plainTextFromHtml(value: string): string {
+  if (!value) return "";
+  if (!/[<&]/.test(value)) return value; // 已是纯文本，免解析
+  if (typeof DOMParser === "undefined") {
+    return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const doc = new DOMParser().parseFromString(value, "text/html");
+  return (doc.body.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
 function escapeHtml(value: string): string {
