@@ -1,4 +1,11 @@
-import { useCallback, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { toast } from "sonner";
 import { casesApi, functionalCasesApi } from "@/lib/api";
 import { copyClipboard, useCopyClipboard, type CaseSnapshot } from "@/lib/case-clipboard";
@@ -8,6 +15,7 @@ import {
   canPasteCase,
   dedupeCopyName,
 } from "@/lib/copy-clone";
+import { isInteractiveClickTarget } from "@/lib/utils";
 import type { CaseType, FunctionalCase, TestCaseDetail } from "@/types/domain";
 
 /** 列表页传进来的当前页用例（已按显示顺序）。 */
@@ -200,8 +208,12 @@ export function useCaseCopyPaste({
       tabIndex: -1,
       className: "outline-none",
       onKeyDown,
-      // preventScroll：聚焦容器不要把它滚进视口，否则点行/按钮时页面会跳动
-      onClick: () => containerRef.current?.focus({ preventScroll: true }),
+      onClick: (event: MouseEvent<HTMLDivElement>) => {
+        // 表单控件自己管理焦点；这里只在点击行空白区域时接管快捷键焦点。
+        if (isInteractiveClickTarget(event.target)) return;
+        // preventScroll：聚焦容器不要把它滚进视口，否则点行时页面会跳动
+        containerRef.current?.focus({ preventScroll: true });
+      },
     },
   };
 }

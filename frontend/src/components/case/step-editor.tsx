@@ -45,14 +45,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { cn, isInteractiveClickTarget } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { appPackagesApi, scriptsApi } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { copyClipboard, useCopyClipboard } from "@/lib/case-clipboard";
 import { canPasteStep, resolveCopyStepGroup } from "@/lib/copy-clone";
-import type { CaseType, TestStepDraft } from "@/types/domain";
+import type { CaseType, ScriptItem, TestStepDraft } from "@/types/domain";
 import { UiElementPickerDialog } from "./ui-element-picker-dialog";
 
 // ---------------------------------------------------------------------------
@@ -990,7 +990,11 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
       className="space-y-3 outline-none"
       tabIndex={-1}
       onKeyDown={onEditorKeyDown}
-      onClick={() => containerRef.current?.focus({ preventScroll: true })}
+      onClick={(event) => {
+        // 输入框、下拉和按钮必须保留自己的焦点；点击步骤空白处才激活复制快捷键。
+        if (isInteractiveClickTarget(event.target)) return;
+        containerRef.current?.focus({ preventScroll: true });
+      }}
     >
       <div className="flex items-center justify-between">
         <Label className="text-sm">
@@ -1044,10 +1048,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
               }}
               active={activeStepIndex === i}
               flash={copiedStepIndex === i}
-              onActivate={() => {
-                setActiveStepIndex(i);
-                containerRef.current?.focus({ preventScroll: true });
-              }}
+              onActivate={() => setActiveStepIndex(i)}
             />
           ))}
         </div>
@@ -1563,21 +1564,126 @@ function WorkflowScriptPicker({
     queryFn: () => scriptsApi.list({ project_id: projectId, scope: "available", kind: "workflow" }),
     staleTime: 30 * 1000,
   });
-  const scripts = (scriptsQuery.data ?? []).filter((script) => script.enabled);
+  // 运行时同名脚本遵循“项目脚本覆盖全局脚本”，选择器也保持相同语义，
+  // 避免下拉里出现两个 value 相同、但用户无法判断实际会执行哪一个的选项。
+  const scripts = Array.from(
+    (scriptsQuery.data ?? [])
+      .filter((script) => script.enabled)
+      .reduce((items, script) => {
+        const current = items.get(script.name);
+        if (!current || script.scope === "project") items.set(script.name, script);
+        return items;
+      }, new Map<string, ScriptItem>())
+      .values(),
+  ).sort((left, right) => {
+    if (left.scope !== right.scope) return left.scope === "project" ? -1 : 1;
+    return left.name.localeCompare(right.name, "zh-CN");
+  });
+  const selectedScript = scripts.find((script) => script.name === value);
+
   return (
-    <Select value={value || undefined} onValueChange={onChange}>
-      <SelectTrigger id={id} className="h-8 text-xs">
-        <SelectValue placeholder={scriptsQuery.isLoading ? "加载脚本中…" : "请选择脚本库中的项目逻辑"} />
-      </SelectTrigger>
-      <SelectContent>
-        {scripts.map((script) => (
-          <SelectItem key={script.id} value={script.name}>
-            {script.scope === "project" ? "[项目]" : "[全局]"} {script.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <div className="space-y-1.5">
+      <Select value={value || undefined} onValueChange={onChange}>
+        <SelectTrigger id={id} className="h-9 text-left text-xs">
+          <SelectValue
+            placeholder={scriptsQuery.isLoading ? "加载脚本中…" : "请选择脚本库中的项目逻辑"}
+          >
+            {selectedScript ? (
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  className={cn(
+                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                    selectedScript.scope === "project"
+                      ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                      : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+                  )}
+                >
+                  {selectedScript.scope === "project" ? "本项目" : "全局"}
+                </span>
+                <span className="truncate font-mono font-medium">{selectedScript.name}</span>
+              </span>
+            ) : value ? (
+              <span className="font-mono text-amber-700">{value}（当前不可用）</span>
+            ) : undefined}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent className="min-w-[28rem]">
+          {scriptsQuery.isError ? (
+            <div className="px-2 py-3 text-xs text-destructive">脚本列表加载失败，请稍后重试</div>
+          ) : scripts.length === 0 && !scriptsQuery.isLoading ? (
+            <div className="px-2 py-3 text-xs text-muted-foreground">
+              暂无已启用的项目逻辑脚本，请先到项目脚本库创建并保存
+            </div>
+          ) : (
+            scripts.map((script) => (
+              <SelectItem
+                key={script.id}
+                value={script.name}
+                className="items-start py-2.5"
+              >
+                <span className="block min-w-0 space-y-1 pr-2 text-left">
+                  <span className="flex items-center gap-2">
+                    <span
+                      className={cn(
+                        "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                        script.scope === "project"
+                          ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                          : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300",
+                      )}
+                    >
+                      {script.scope === "project" ? "本项目" : "全局共享"}
+                    </span>
+                    <span className="font-mono text-xs font-semibold">{script.name}</span>
+                  </span>
+                  <span className="block max-w-[34rem] truncate text-[11px] text-muted-foreground">
+                    {script.description?.trim() || "暂无脚本说明"}
+                  </span>
+                  <span className="block text-[10px] text-muted-foreground/80">
+                    {script.requirements.length > 0
+                      ? `依赖 ${script.requirements.join("、")}`
+                      : "无额外依赖"}
+                    {" · "}
+                    {formatScriptUpdatedAt(script.updated_at)}
+                  </span>
+                </span>
+              </SelectItem>
+            ))
+          )}
+        </SelectContent>
+      </Select>
+
+      {selectedScript ? (
+        <div className="rounded border bg-background/70 px-2.5 py-2 text-[11px] leading-relaxed">
+          <div className="text-foreground">
+            {selectedScript.description?.trim() || "该脚本暂未填写说明。"}
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            来源：{selectedScript.scope === "project" ? "当前项目脚本库" : "全局共享脚本库"}
+            {" · "}
+            {selectedScript.requirements.length > 0
+              ? `依赖：${selectedScript.requirements.join("、")}`
+              : "无额外依赖"}
+            {" · "}
+            {formatScriptUpdatedAt(selectedScript.updated_at)}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
+}
+
+function formatScriptUpdatedAt(value: string | null): string {
+  if (!value) return "未记录更新时间";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return `更新于 ${value}`;
+  return `更新于 ${new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date)}`;
 }
 
 function stringify(v: unknown): string {
