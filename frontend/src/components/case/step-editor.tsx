@@ -990,7 +990,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
       className="space-y-3 outline-none"
       tabIndex={-1}
       onKeyDown={onEditorKeyDown}
-      onClick={() => containerRef.current?.focus()}
+      onClick={() => containerRef.current?.focus({ preventScroll: true })}
     >
       <div className="flex items-center justify-between">
         <Label className="text-sm">
@@ -1046,7 +1046,7 @@ export function StepEditor({ projectId, category, value, onChange, error, databa
               flash={copiedStepIndex === i}
               onActivate={() => {
                 setActiveStepIndex(i);
-                containerRef.current?.focus();
+                containerRef.current?.focus({ preventScroll: true });
               }}
             />
           ))}

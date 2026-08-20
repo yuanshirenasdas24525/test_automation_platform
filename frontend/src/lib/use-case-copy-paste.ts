@@ -200,7 +200,8 @@ export function useCaseCopyPaste({
       tabIndex: -1,
       className: "outline-none",
       onKeyDown,
-      onClick: () => containerRef.current?.focus(),
+      // preventScroll：聚焦容器不要把它滚进视口，否则点行/按钮时页面会跳动
+      onClick: () => containerRef.current?.focus({ preventScroll: true }),
     },
   };
 }
