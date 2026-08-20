@@ -337,7 +337,7 @@ class RequestCryptoProcessor:
         )
         if dynamic_result is not None:
             result = dynamic_result
-            if isinstance(result, tuple) and len(result) == 2:
+            if isinstance(result, (tuple, list)) and len(result) == 2:
                 new_headers, new_body = result
             elif isinstance(result, dict) and ("headers" in result or "body" in result):
                 new_headers = result.get("headers", headers)
@@ -353,7 +353,7 @@ class RequestCryptoProcessor:
             }
         func = self._load_custom_handler(handler_name)
         result = func(deepcopy(headers), deepcopy(body), dict(self.config))
-        if isinstance(result, tuple) and len(result) == 2:
+        if isinstance(result, (tuple, list)) and len(result) == 2:
             new_headers, new_body = result
         elif isinstance(result, dict) and ("headers" in result or "body" in result):
             new_headers = result.get("headers", headers)
