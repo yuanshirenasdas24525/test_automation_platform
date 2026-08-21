@@ -53,7 +53,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { cn, isInteractiveClickTarget } from "@/lib/utils";
+import { cn, isInteractiveClickTarget, stripHtml } from "@/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { appPackagesApi, scriptsApi } from "@/lib/api";
@@ -1655,7 +1655,7 @@ function WorkflowScriptPicker({
                     <span className="font-mono text-xs font-semibold">{script.name}</span>
                   </span>
                   <span className="block max-w-[34rem] truncate text-[11px] text-muted-foreground">
-                    {script.description?.trim() || "暂无脚本说明"}
+                    {stripHtml(script.description) || "暂无脚本说明"}
                   </span>
                   <span className="block text-[10px] text-muted-foreground/80">
                     {script.requirements.length > 0
@@ -1674,7 +1674,7 @@ function WorkflowScriptPicker({
       {selectedScript ? (
         <div className="rounded border bg-background/70 px-2.5 py-2 text-[11px] leading-relaxed">
           <div className="text-foreground">
-            {selectedScript.description?.trim() || "该脚本暂未填写说明。"}
+            {stripHtml(selectedScript.description) || "该脚本暂未填写说明。"}
           </div>
           <div className="mt-1 text-muted-foreground">
             来源：{selectedScript.scope === "project" ? "当前项目脚本库" : "全局共享脚本库"}

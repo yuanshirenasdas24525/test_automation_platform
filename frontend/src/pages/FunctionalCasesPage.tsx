@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback, type PointerEvent as ReactPointerEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -1307,6 +1307,64 @@ function ModuleCard({
   );
 }
 
+// 功能用例表格四个内容列（用例名称/前置条件/操作步骤/预期结果）的可拖拽列宽。
+// 用「占比」而非绝对像素存储：四列占比之和恒为 1，乘以内容区预算(=容器可视宽度 -
+// 固定列宽)得到实际像素。拖分隔线时只在相邻两列间转移占比、总和不变 —— 因此整表
+// 宽度恒定、永不超框，相邻列缩到最小就不再让拖。
+const COL_FRACS_KEY = "functional_cases.col_fracs.v1";
+const DEFAULT_COL_FRACS = { name: 0.24, pre: 0.16, steps: 0.4, expected: 0.2 };
+type ContentFracs = { name: number; pre: number; steps: number; expected: number };
+// 每个内容列的最小像素宽，拖到这个宽度就不再让相邻列继续被压缩。
+const MIN_CONTENT_PX = 70;
+// 四列内容区在极窄屏下的最小总预算（低于此值整表横向滚动）。
+const MIN_CONTENT_BUDGET = 480;
+
+function normalizeFracs(f: ContentFracs): ContentFracs {
+  const sum = f.name + f.pre + f.steps + f.expected;
+  if (!(sum > 0)) return { ...DEFAULT_COL_FRACS };
+  return { name: f.name / sum, pre: f.pre / sum, steps: f.steps / sum, expected: f.expected / sum };
+}
+
+function readColFracs(): ContentFracs {
+  if (typeof window === "undefined") return { ...DEFAULT_COL_FRACS };
+  try {
+    const raw = window.localStorage.getItem(COL_FRACS_KEY);
+    if (!raw) return { ...DEFAULT_COL_FRACS };
+    const p = JSON.parse(raw) as Partial<ContentFracs>;
+    return normalizeFracs({
+      name: Number(p.name) || DEFAULT_COL_FRACS.name,
+      pre: Number(p.pre) || DEFAULT_COL_FRACS.pre,
+      steps: Number(p.steps) || DEFAULT_COL_FRACS.steps,
+      expected: Number(p.expected) || DEFAULT_COL_FRACS.expected,
+    });
+  } catch {
+    return { ...DEFAULT_COL_FRACS };
+  }
+}
+
+function writeColFracs(value: ContentFracs): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(COL_FRACS_KEY, JSON.stringify(value));
+  } catch {
+    // localStorage 满/禁用不影响正常使用
+  }
+}
+
+/** 列头右缘的拖拽把手：按住左右拖动，在相邻两列之间转移宽度。 */
+function ColResizeHandle({ onPointerDown }: { onPointerDown: (e: ReactPointerEvent) => void }) {
+  return (
+    <span
+      onPointerDown={onPointerDown}
+      onClick={(e) => e.stopPropagation()}
+      title="拖动调整列宽"
+      className="absolute right-0 top-0 z-10 flex h-full w-2 cursor-col-resize touch-none select-none items-center justify-center hover:bg-primary/30"
+    >
+      <span className="h-4 w-px bg-border" />
+    </span>
+  );
+}
+
 function CaseList({
   cases,
   testMode,
@@ -1366,9 +1424,65 @@ function CaseList({
   const [dragId, setDragId] = useState<number | null>(null);
   const [overId, setOverId] = useState<number | null>(null);
   const endDrag = () => { setDragId(null); setOverId(null); };
+  // 内容列宽（占比模型，table-fixed 下单元格文本自动换行）。
+  const tableWrapRef = useRef<HTMLDivElement>(null);
+  const [availWidth, setAvailWidth] = useState(0);
+  useEffect(() => {
+    const el = tableWrapRef.current;
+    if (!el) return;
+    const update = () => setAvailWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const [fracs, setFracs] = useState<ContentFracs>(() => readColFracs());
+  useEffect(() => { writeColFracs(fracs); }, [fracs]);
+
+  // 固定列（复选框/优先级/状态/操作）的像素宽随 testMode/quickEditMode 出现与否而变。
+  const fixedColsPx = (testMode || quickEditMode ? 40 : 0) + 80 + (!quickEditMode ? 112 : 0) + 144;
+  const budget = Math.max(MIN_CONTENT_BUDGET, availWidth - fixedColsPx);
+  const colW = {
+    name: Math.round(fracs.name * budget),
+    pre: Math.round(fracs.pre * budget),
+    steps: Math.round(fracs.steps * budget),
+    expected: Math.round(fracs.expected * budget),
+  };
+  const tableWidth = fixedColsPx + budget;
+
+  // 拖分隔线：只在相邻两列 (leftKey ↔ rightKey) 间转移占比，总和不变 → 整表宽度恒定。
+  const startColResize = (
+    leftKey: keyof ContentFracs,
+    rightKey: keyof ContentFracs,
+    e: ReactPointerEvent,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const b = budget;
+    const startLeft = fracs[leftKey];
+    const startRight = fracs[rightKey];
+    const minFrac = MIN_CONTENT_PX / b;
+    const onMove = (ev: PointerEvent) => {
+      let d = (ev.clientX - startX) / b;
+      // 夹紧：任一列都不得小于最小宽 → 到极限就不再变化（拉不动）。
+      d = Math.max(-(startLeft - minFrac), Math.min(startRight - minFrac, d));
+      setFracs((f) => ({ ...f, [leftKey]: startLeft + d, [rightKey]: startRight - d }));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+  };
   return (
-    <div className="overflow-hidden rounded-md border">
-      <table className="w-full text-sm border-collapse">
+    <div ref={tableWrapRef} className="overflow-x-auto rounded-md border">
+      <table style={{ width: tableWidth }} className="table-fixed text-sm border-collapse">
         <thead className="bg-muted/40 text-xs text-muted-foreground">
           <tr>
             {testMode || quickEditMode ? (
@@ -1376,10 +1490,21 @@ function CaseList({
                 <SelectToggle checked={allSelectedOnPage} onChange={onToggleSelectAll} ariaLabel="全选当前页" />
               </th>
             ) : null}
-            <th className="border border-border px-3 py-2 text-left font-medium">用例名称</th>
-            <th className="border border-border px-3 py-2 text-left font-medium w-[12%]">前置条件</th>
-            <th className="border border-border px-3 py-2 text-left font-medium w-[40%]">操作步骤</th>
-            <th className="border border-border px-3 py-2 text-left font-medium w-[12%]">预期结果</th>
+            <th style={{ width: colW.name }} className="relative border border-border px-3 py-2 text-left font-medium">
+              用例名称
+              <ColResizeHandle onPointerDown={(e) => startColResize("name", "pre", e)} />
+            </th>
+            <th style={{ width: colW.pre }} className="relative border border-border px-3 py-2 text-left font-medium">
+              前置条件
+              <ColResizeHandle onPointerDown={(e) => startColResize("pre", "steps", e)} />
+            </th>
+            <th style={{ width: colW.steps }} className="relative border border-border px-3 py-2 text-left font-medium">
+              操作步骤
+              <ColResizeHandle onPointerDown={(e) => startColResize("steps", "expected", e)} />
+            </th>
+            <th style={{ width: colW.expected }} className="border border-border px-3 py-2 text-left font-medium">
+              预期结果
+            </th>
             <th className="border border-border px-3 py-2 text-center font-medium w-20">优先级</th>
             {!quickEditMode ? (
               <th className="border border-border px-3 py-2 text-center font-medium w-28">{testMode ? "状态" : "最近状态"}</th>
@@ -1586,11 +1711,11 @@ function CaseRow({
         </td>
       ) : null}
       {/* 用例名称 */}
-      <td className={cn("border border-border px-3 py-2", hi("name"))} title={hiTitle("name")}>
+      <td className={cn("border border-border px-3 py-2 align-top break-words", hi("name"))} title={hiTitle("name")}>
         <NameCell name={row.name} onOpenDetail={onOpenDetail} onSave={(v) => saveField("name", v)} quickEditMode={quickEditMode} titleOverride={hiTitle("name")} />
       </td>
       {/* 前置条件 - 有序列表 */}
-      <td className={cn("border border-border px-3 py-2 align-top", hi("preconditions"))} title={hiTitle("preconditions")}>
+      <td className={cn("border border-border px-3 py-2 align-top break-words", hi("preconditions"))} title={hiTitle("preconditions")}>
         {quickEditMode ? (
           <OrderedInlineInput value={spec.preconditions.join("\n")} onSave={(v) => saveField("preconditions", v)} />
         ) : (
@@ -1598,7 +1723,7 @@ function CaseRow({
         )}
       </td>
       {/* 操作步骤 - 有序列表 */}
-      <td className={cn("border border-border px-3 py-2 align-top", hi("steps"))} title={hiTitle("steps")}>
+      <td className={cn("border border-border px-3 py-2 align-top break-words", hi("steps"))} title={hiTitle("steps")}>
         {quickEditMode ? (
           <OrderedInlineInput value={spec.steps.join("\n")} onSave={(v) => saveField("steps", v)} />
         ) : (
@@ -1606,7 +1731,7 @@ function CaseRow({
         )}
       </td>
       {/* 预期结果 - 有序列表 */}
-      <td className={cn("border border-border px-3 py-2 align-top", hi("expected"))} title={hiTitle("expected")}>
+      <td className={cn("border border-border px-3 py-2 align-top break-words", hi("expected"))} title={hiTitle("expected")}>
         {quickEditMode ? (
           <OrderedInlineInput value={spec.expected ?? ""} onSave={(v) => saveField("expected", v)} />
         ) : (
@@ -1721,7 +1846,7 @@ function NameCell({
 
   return (
     <div
-      className="truncate text-sm font-medium hover:text-primary cursor-pointer"
+      className="break-words text-sm font-medium hover:text-primary cursor-pointer"
       onClick={() => {
         // 快速编辑模式：单击用例名直接进入行内编辑，不弹详情框
         if (quickEditMode) {

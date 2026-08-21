@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
@@ -1534,7 +1535,9 @@ export function UiElementLibraryWorkspace({
     ? mobilePreflight?.platform_ready.android === true
     : platform === "ios" && mobilePreflight?.platform_ready.ios === true;
 
-  return (
+  // 全屏浮层挂到 document.body：否则它作为 AutomationCasesPage `space-y-4` 容器的
+  // 非首个子节点会被加上 margin-top:1rem，叠加 top:0 后顶部露出一条空隙，撑不满页面。
+  return createPortal(
     <div className="fixed inset-0 z-50 flex min-w-[980px] flex-col bg-background text-foreground">
       <header className="flex h-[72px] shrink-0 items-center justify-between border-b px-5">
         <div className="flex min-w-0 items-center gap-4">
@@ -2792,7 +2795,8 @@ export function UiElementLibraryWorkspace({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
