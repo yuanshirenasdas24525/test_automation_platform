@@ -2353,45 +2353,23 @@ def ai_generate_outline(
     # _filter_interface_outline_points，不走这里。
     scope_filter: dict[str, Any] | None = None
     if mode == "functional":
-        from server.services.functional_scope_filter import (
-            dedup_points,
-            filter_out_of_scope_points,
+        # B-1 关键词 + B-2 LLM 二判 + 去重（与查缺补漏共用同一套，见 _apply_functional_scope_filter）
+        points, scope_filter = _apply_functional_scope_filter(
+            db, cfg, module, points, requirement_text
         )
-
-        capability_context = "\n".join(
-            filter(None, [placeholders.get("PROJECT_CONTEXT", ""), requirement_text])
-        )
-        before_n = len(points)
-        # B-1 关键词黑名单 + 项目白名单
-        points, kw_dropped = filter_out_of_scope_points(
-            points, placeholders.get("PROJECT_CONTEXT", ""), requirement_text
-        )
-        # B-2 LLM 相关性二判（对残余点判定，剔除越界；含功能 vs 接口边界）
-        judge_out = _run_functional_scope_judge(cfg, module, points, capability_context)
-        llm_dropped = [p for i, p in enumerate(points) if (i + 1) in judge_out]
-        points = [p for i, p in enumerate(points) if (i + 1) not in judge_out]
-        # 批内近重复去重（同一点的"详细版 + 泛化版"只留一条）
-        points, dup_dropped = dedup_points(points)
-        # C 覆盖力度上限兜底（尾部裁剪）
+        # C 覆盖力度上限兜底（尾部裁剪）——只在首轮 outline 对单次总量兜底
         cap = _functional_outline_cap(coverage)
         cap_dropped = []
         if len(points) > cap:
             cap_dropped = points[cap:]
             points = points[:cap]
-        scope_filter = {
-            "before": before_n,
-            "kept": len(points),
-            "keyword_dropped": [d.get("title") for d in kw_dropped],
-            "llm_dropped": [d.get("title") for d in llm_dropped],
-            "dup_dropped": [d.get("title") for d in dup_dropped],
-            "cap_dropped": [d.get("title") for d in cap_dropped],
-            "cap": cap,
-        }
-        if kw_dropped or llm_dropped or dup_dropped or cap_dropped:
+        scope_filter["cap"] = cap
+        scope_filter["cap_dropped"] = [d.get("title") for d in cap_dropped]
+        scope_filter["kept"] = len(points)
+        if cap_dropped:
             logger.info(
-                "[functional-scope] module=%s coverage=%s %d→%d 剔除(关键词=%d LLM=%d 重复=%d 超上限=%d)",
-                module_id, coverage, before_n, len(points),
-                len(kw_dropped), len(llm_dropped), len(dup_dropped), len(cap_dropped),
+                "[functional-scope] module=%s coverage=%s 超上限尾裁 %d 条(cap=%d)",
+                module_id, coverage, len(cap_dropped), cap,
             )
         if not points:
             raise HTTPException(
@@ -2634,6 +2612,61 @@ def _run_functional_scope_judge(
     return out
 
 
+def _apply_functional_scope_filter(
+    db,
+    cfg,
+    module: "Module",
+    points: list[dict[str, Any]],
+    requirement_text: str,
+    *,
+    run_llm_judge: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """功能大纲测试点的接地过滤核心：B-1 关键词+白名单 → B-2 LLM 二判 → 去重。
+
+    首轮 ai_generate_outline 与查缺补漏 ai_outline_gaps(_cli) 共用这一套，杜绝任何
+    一条路径绕过过滤把注水/越界点灌回来。**不含**覆盖上限裁剪——那是首轮 outline 对
+    "单次总量"的兜底，补漏是增量补充，由调用方自行决定是否再限量。
+
+    run_llm_judge=False 用于 CLI Agent 路径（provider 不是 chat_markdown 模型，跑二判
+    没意义）——此时只做 B-1 + 去重。
+    """
+    from server.services.functional_scope_filter import (
+        dedup_points,
+        filter_out_of_scope_points,
+    )
+
+    project_ctx = _project_context_block(
+        module.project_id, f"{module.name}\n{requirement_text}"
+    )
+    capability_context = "\n".join(filter(None, [project_ctx, requirement_text]))
+    before_n = len(points)
+
+    points, kw_dropped = filter_out_of_scope_points(points, project_ctx, requirement_text)
+
+    llm_dropped: list[dict] = []
+    if run_llm_judge:
+        judge_out = _run_functional_scope_judge(cfg, module, points, capability_context)
+        llm_dropped = [p for i, p in enumerate(points) if (i + 1) in judge_out]
+        points = [p for i, p in enumerate(points) if (i + 1) not in judge_out]
+
+    points, dup_dropped = dedup_points(points)
+
+    stats = {
+        "before": before_n,
+        "kept": len(points),
+        "keyword_dropped": [d.get("title") for d in kw_dropped],
+        "llm_dropped": [d.get("title") for d in llm_dropped],
+        "dup_dropped": [d.get("title") for d in dup_dropped],
+    }
+    if kw_dropped or llm_dropped or dup_dropped:
+        logger.info(
+            "[functional-scope] module=%s %d→%d 剔除(关键词=%d LLM=%d 重复=%d)",
+            module.id, before_n, len(points),
+            len(kw_dropped), len(llm_dropped), len(dup_dropped),
+        )
+    return points, stats
+
+
 def _outline_gap_requirement_text(payload: OutlineGapRequest) -> str:
     """重建查漏所需的原始需求材料。"""
     req_parts: list[str] = []
@@ -2706,6 +2739,11 @@ def ai_outline_gaps(payload: OutlineGapRequest, db: DBDep):
             points,
             payload.api_contract,
             _variable_pool_keys(db, module.project_id),
+        )
+    elif payload.mode == "functional":
+        # 查缺补漏也必须过四层，否则注水会从这个口子灌回来
+        points, _ = _apply_functional_scope_filter(
+            db, cfg, module, points, requirement_text
         )
     return {"status": "success", "data": {"points": points}}
 
@@ -2782,6 +2820,13 @@ def ai_outline_gaps_cli(payload: OutlineGapRequest, db: DBDep, user: OptionalUse
                 points,
                 payload.api_contract,
                 _variable_pool_keys(db, module.project_id),
+            )
+        elif payload.mode == "functional":
+            # CLI Agent 补漏也过接地过滤；CLI provider 不走 chat_markdown，跳过 LLM 二判
+            points, _ = _apply_functional_scope_filter(
+                db, cfg, module, points,
+                _outline_gap_requirement_text(payload),
+                run_llm_judge=False,
             )
         output = {
             "points": points,
