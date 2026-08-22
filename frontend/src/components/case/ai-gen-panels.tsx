@@ -10,7 +10,9 @@ import { ClipboardCheck, Loader2, ScanSearch, ChevronRight } from "lucide-react"
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { functionalCasesApi, errorMessage } from "@/lib/api";
+import { functionalCasesApi } from "@/lib/api";
+
+const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 const COV_META: Record<string, { label: string; cls: string }> = {
   covered: { label: "已覆盖", cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" },
@@ -64,7 +66,7 @@ export function FeatureChecklistPanel({
       </div>
 
       {m.isError ? (
-        <p className="text-xs text-red-600 dark:text-red-400">分析失败：{errorMessage(m.error)}</p>
+        <p className="text-xs text-red-600 dark:text-red-400">分析失败：{errMsg(m.error)}</p>
       ) : null}
       {data?.warning ? <p className="text-xs text-amber-600 dark:text-amber-400">{data.warning}</p> : null}
 
@@ -148,7 +150,7 @@ export function PromptPreviewPanel({
       </div>
 
       {m.isError ? (
-        <p className="text-xs text-red-600 dark:text-red-400">预览失败：{errorMessage(m.error)}</p>
+        <p className="text-xs text-red-600 dark:text-red-400">预览失败：{errMsg(m.error)}</p>
       ) : null}
 
       {data ? (
