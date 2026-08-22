@@ -2461,9 +2461,19 @@ def _parse_outline_gap_response(raw: str) -> list[dict[str, str]]:
             except Exception:
                 obj = None
     if not isinstance(obj, dict) or not isinstance(obj.get("points"), list):
-        # None = 解析失败（与"模型确认没有遗漏、返回空数组"是两回事）。
-        # 以前这里静默返回 []，前端 toast"没找到遗漏，大纲已比较全面"，把故障伪装成结论。
-        return None
+        # 常规解析失败：先尝试"截断容错"——LLM 补漏点太多超 max_tokens 被截断时，
+        # 整段 JSON 缺尾，但前面的 point 对象是完整的，逐个抢救出来（复用批次同款逻辑）。
+        salvaged = _salvage_json_objects(raw or "")
+        if salvaged:
+            logger.warning(
+                "outline_gaps 输出疑似被截断，已抢救 %d 个完整测试点（原文 %d 字符）",
+                len(salvaged), len(raw or ""),
+            )
+            obj = {"points": salvaged}
+        else:
+            # None = 解析失败（与"模型确认没有遗漏、返回空数组"是两回事）。
+            # 以前这里静默返回 []，前端 toast"没找到遗漏，大纲已比较全面"，把故障伪装成结论。
+            return None
     points = []
     for p in obj.get("points") or []:
         if isinstance(p, dict):
