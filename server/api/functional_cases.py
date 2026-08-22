@@ -1789,6 +1789,16 @@ def _coverage_text(c: str) -> str:
     return _COVERAGE_TEXT.get((c or "standard").strip().lower(), _COVERAGE_TEXT["standard"])
 
 
+# 功能大纲每次输出的测试点数量上限（C 层兜底）：即使模型不听 prompt 的"宁缺毋滥"，
+# 也不让单次把某模块灌到几百条。上限按覆盖力度放宽；超出部分从**尾部**裁剪——大纲按
+# 执行依赖排序，正向/前置在前、探索性/边角在后，尾部正是最该砍的注水区。
+_FUNCTIONAL_OUTLINE_CAP = {"standard": 30, "full": 70, "exhaustive": 130}
+
+
+def _functional_outline_cap(coverage: str) -> int:
+    return _FUNCTIONAL_OUTLINE_CAP.get((coverage or "standard").strip().lower(), 70)
+
+
 _ALL_DIMENSIONS = ("正常", "参数校验", "边界", "鉴权", "越权", "响应校验", "安全", "场景", "关联")
 
 
@@ -2338,6 +2348,57 @@ def ai_generate_outline(
         )
         points = points[:target_max]
 
+    # 功能大纲「接地过滤」：把系统没有的能力 / 运维基建 / 合规 / 过程审计等越界测试点
+    # 在大纲阶段就剔除（B 层），再按覆盖力度上限兜底裁剪（C 层）。接口模式另有自己的
+    # _filter_interface_outline_points，不走这里。
+    scope_filter: dict[str, Any] | None = None
+    if mode == "functional":
+        from server.services.functional_scope_filter import (
+            dedup_points,
+            filter_out_of_scope_points,
+        )
+
+        capability_context = "\n".join(
+            filter(None, [placeholders.get("PROJECT_CONTEXT", ""), requirement_text])
+        )
+        before_n = len(points)
+        # B-1 关键词黑名单 + 项目白名单
+        points, kw_dropped = filter_out_of_scope_points(
+            points, placeholders.get("PROJECT_CONTEXT", ""), requirement_text
+        )
+        # B-2 LLM 相关性二判（对残余点判定，剔除越界；含功能 vs 接口边界）
+        judge_out = _run_functional_scope_judge(cfg, module, points, capability_context)
+        llm_dropped = [p for i, p in enumerate(points) if (i + 1) in judge_out]
+        points = [p for i, p in enumerate(points) if (i + 1) not in judge_out]
+        # 批内近重复去重（同一点的"详细版 + 泛化版"只留一条）
+        points, dup_dropped = dedup_points(points)
+        # C 覆盖力度上限兜底（尾部裁剪）
+        cap = _functional_outline_cap(coverage)
+        cap_dropped = []
+        if len(points) > cap:
+            cap_dropped = points[cap:]
+            points = points[:cap]
+        scope_filter = {
+            "before": before_n,
+            "kept": len(points),
+            "keyword_dropped": [d.get("title") for d in kw_dropped],
+            "llm_dropped": [d.get("title") for d in llm_dropped],
+            "dup_dropped": [d.get("title") for d in dup_dropped],
+            "cap_dropped": [d.get("title") for d in cap_dropped],
+            "cap": cap,
+        }
+        if kw_dropped or llm_dropped or dup_dropped or cap_dropped:
+            logger.info(
+                "[functional-scope] module=%s coverage=%s %d→%d 剔除(关键词=%d LLM=%d 重复=%d 超上限=%d)",
+                module_id, coverage, before_n, len(points),
+                len(kw_dropped), len(llm_dropped), len(dup_dropped), len(cap_dropped),
+            )
+        if not points:
+            raise HTTPException(
+                status_code=502,
+                detail="规划出的测试点均判定为越界（系统无对应能力），请调整需求描述或覆盖力度后重试",
+            )
+
     # 注意：这里**不再**自动把规划出的测试点落库 —— 否则每点一次“生成大纲”
     # 都会往大纲里灌一批还没有对应用例的 gap 点，积累成垃圾。大纲只保留“同步过的”
     # 数据：由「刷新对齐」按真实用例建立/更新，或用户在生成用例后由关联落库。
@@ -2359,6 +2420,7 @@ def ai_generate_outline(
             "digest": digest,
             "points": points,
             "api_contract": api_contract if mode == "interface" else None,
+            "scope_filter": scope_filter,
         },
         provider=cfg.provider,
         model=cfg.model,
@@ -2380,6 +2442,7 @@ def ai_generate_outline(
             "image_strategy": image_strategy,
             "api_contract": api_contract,
             "generation_run_id": run.id,
+            "scope_filter": scope_filter,
         },
     }
 
@@ -2488,6 +2551,87 @@ def _run_outline_gap_ai(
             module.id, mode, (raw or "")[:500],
         )
     return points
+
+
+def _run_functional_scope_judge(
+    cfg,
+    module: "Module",
+    points: list[dict[str, Any]],
+    capability_context: str,
+) -> set[int]:
+    """LLM 相关性二判（B 层第二道）：给定本系统真实能力，挑出**越界**测试点。
+
+    返回要剔除的 1-based 序号集合（相对传入的 points 列表）。
+    调用失败 / 解析失败 → 返回空集合（**不误删**，把不确定留给人工）。
+    """
+    if not points:
+        return set()
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+
+    points_list = "\n".join(
+        f"{i + 1}. [{p.get('category') or '未分类'}] {p.get('title')}"
+        for i, p in enumerate(points)
+    )
+    placeholders = {
+        "MODULE_NAME": module.name,
+        "CAPABILITY_CONTEXT": (capability_context or "").strip()
+        or "（未提供额外能力上下文，只能依据测试点本身与模块名判断，倾向保留）",
+        "POINTS_LIST": points_list,
+    }
+    template = _load_prompt("functional_scope_judge")
+    prompt = _render_prompt(template, placeholders)
+    call_options = model_task_options(cfg, "functional_outline")
+    try:
+        raw, _tin, _tout = chat_markdown(
+            prompt,
+            cfg,
+            timeout=call_options["timeout"],
+            system_prompt=(
+                "你是结构化 JSON 生成器。必须只输出一个合法 JSON 对象，"
+                "包含 out_of_scope 数组。"
+            ),
+            enable_thinking=call_options["enable_thinking"],
+            json_mode=call_options["json_mode"],
+            max_tokens=call_options["max_tokens"],
+            temperature=call_options["temperature"],
+            reasoning_effort=call_options.get("reasoning_effort"),
+        )
+    except Exception:  # noqa: BLE001 — 二判失败不阻断主流程
+        logger.warning("[functional-scope-judge] LLM 调用失败，跳过二判", exc_info=True)
+        return set()
+
+    obj = None
+    m = re.search(r"```json\s*(.+?)\s*```", raw or "", re.S)
+    for cand in ([m.group(1)] if m else []) + [raw or ""]:
+        try:
+            obj = json.loads(cand)
+            break
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        s, e = (raw or "").find("{"), (raw or "").rfind("}")
+        if 0 <= s < e:
+            try:
+                obj = json.loads((raw or "")[s : e + 1])
+            except Exception:
+                obj = None
+    if not isinstance(obj, dict) or not isinstance(obj.get("out_of_scope"), list):
+        logger.warning(
+            "[functional-scope-judge] 解析失败 module_id=%s raw_prefix=%r",
+            module.id, (raw or "")[:500],
+        )
+        return set()
+
+    out: set[int] = set()
+    for entry in obj.get("out_of_scope") or []:
+        idx = entry.get("index") if isinstance(entry, dict) else entry
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= i <= len(points):
+            out.add(i)
+    return out
 
 
 def _outline_gap_requirement_text(payload: OutlineGapRequest) -> str:
