@@ -2882,6 +2882,159 @@ def ai_outline_gaps_cli(payload: OutlineGapRequest, db: DBDep, user: OptionalUse
         }
 
 
+class FeatureChecklistRequest(pydantic.BaseModel):
+    module_id: int
+    model_name: str
+    # 需求 / 功能说明（可用大纲 digest 或用户填的需求文本）
+    requirement_text: str = ""
+
+
+@router.post("/ai_feature_checklist")
+def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: OptionalUserDep = None):
+    """功能测试要点 Checklist（#2）：针对当前被测功能列出「该测什么」+ 每个要点覆盖了几条。
+
+    一次轻量 AI 调用同时完成：归纳测试要点 + 把本模块已有用例映射到各要点；
+    再按阈值判定覆盖状态（none/thin/covered）。只读，不落库。
+    """
+    from ai_gateway.gateway import _load_prompt, _render_prompt, chat_markdown, model_task_options
+
+    from server.services.feature_checklist import build_checklist, checklist_summary
+
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+    cfg = _resolve_model(db, payload.model_name, module.project_id)
+
+    existing = _existing_case_names(db, payload.module_id, case_type=CASE_TYPE_FUNCTIONAL)
+    placeholders = {
+        "MODULE_NAME": module.name,
+        "REQUIREMENT_TEXT": (payload.requirement_text or "").strip()
+        or "（未提供额外需求文本，请基于模块名与已有用例归纳）",
+        "EXISTING_CASES": "\n".join(f"- {n}" for n in existing) if existing else "（本模块暂无已有用例）",
+    }
+    prompt = _render_prompt(_load_prompt("feature_checklist"), placeholders)
+    call_options = model_task_options(cfg, "functional_outline")
+    try:
+        raw, _tin, _tout = chat_markdown(
+            prompt, cfg,
+            timeout=call_options["timeout"],
+            system_prompt="你是结构化 JSON 生成器。必须只输出一个合法 JSON 对象，包含 aspects 数组。",
+            enable_thinking=call_options["enable_thinking"],
+            json_mode=call_options["json_mode"],
+            max_tokens=call_options["max_tokens"],
+            temperature=call_options["temperature"],
+            reasoning_effort=call_options.get("reasoning_effort"),
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"AI 调用失败：{e}")
+
+    obj = None
+    m = re.search(r"```json\s*(.+?)\s*```", raw or "", re.S)
+    for cand in ([m.group(1)] if m else []) + [raw or ""]:
+        try:
+            obj = json.loads(cand)
+            break
+        except Exception:
+            obj = None
+    if not isinstance(obj, dict):
+        s, e = (raw or "").find("{"), (raw or "").rfind("}")
+        if 0 <= s < e:
+            try:
+                obj = json.loads((raw or "")[s : e + 1])
+            except Exception:
+                obj = None
+    aspects_raw = obj.get("aspects") if isinstance(obj, dict) else None
+    if aspects_raw is None:
+        # 截断容错：抢救已完整的 aspect 对象
+        aspects_raw = _salvage_json_objects(raw or "")
+    if not aspects_raw:
+        logger.warning(
+            "ai_feature_checklist parse failed module_id=%s raw_prefix=%r",
+            payload.module_id, (raw or "")[:400],
+        )
+        return {"status": "success", "data": {"aspects": [], "summary": {"total": 0, "covered": 0, "gaps": 0},
+                                              "warning": "暂无法生成要点清单，请重试或更换模型"}}
+
+    aspects = build_checklist(aspects_raw, existing)
+    return {
+        "status": "success",
+        "data": {"aspects": aspects, "summary": checklist_summary(aspects)},
+    }
+
+
+class PromptPreviewRequest(pydantic.BaseModel):
+    module_id: int
+    mode: str = "functional"
+    coverage: str = "standard"
+    dimensions: str = ""
+    requirement_text: str = ""
+
+
+@router.post("/ai_prompt_preview")
+def ai_prompt_preview(payload: PromptPreviewRequest, db: DBDep, user: OptionalUserDep = None):
+    """提示词 / 流程预览（#1，只读，不调 LLM）：返回本次**已渲染**的大纲提示词
+    + 批次提示词（动态部分用占位说明）+ 生成流程步骤，让用户看清 AI 怎么生成。"""
+    from ai_gateway.gateway import _load_prompt, _render_prompt
+
+    module = db.session.query(Module).filter(Module.id == payload.module_id).first()
+    if module is None:
+        raise HTTPException(status_code=404, detail="模块不存在")
+
+    mode = "interface" if payload.mode == "interface" else "functional"
+    requirement_text = (payload.requirement_text or "").strip() or "（未提供需求文本，实际生成时以你填写的为准）"
+    existing = _existing_case_names(
+        db, payload.module_id,
+        case_type=CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL,
+    )
+    existing_block = "、".join(existing) if existing else "（本模块暂无已有用例）"
+
+    # 大纲提示词：用与真实生成同一套 helper 组装占位符（功能模式）
+    outline_ph = {
+        "MODULE_NAME": module.name,
+        "REQUIREMENT_TEXT": requirement_text,
+        "PROJECT_CONTEXT": _project_context_block(module.project_id, f"{module.name}\n{requirement_text}"),
+        "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
+        "EXISTING_CASES": existing_block,
+        "VARIABLE_POOL": "",
+        "COVERAGE_LEVEL": _coverage_text(payload.coverage),
+        "DIMENSIONS": _dimensions_block(payload.dimensions),
+    }
+    outline_tpl = "interface_case_outline" if mode == "interface" else "functional_case_outline"
+    outline_prompt = _render_prompt(_load_prompt(outline_tpl), outline_ph)
+
+    # 批次提示词：动态部分（digest / 本批测试点）用占位说明，其余按真实上下文渲染
+    batch_ph = {
+        "MODULE_NAME": module.name,
+        "DIGEST": "（生成大纲后，需求摘要会填入这里）",
+        "CROSS_MODULE_CONTEXT": _build_cross_module_context(db, module),
+        "BATCH_POINTS": "（你勾选的本批测试点会填入这里）",
+        "DONE_NAMES": existing_block,
+        "EXISTING_ORDERED": "（本模块现有用例按执行顺序编号会填入这里）",
+        "VARIABLE_POOL": "", "AVAILABLE_FUNCTIONS": "", "PROJECT_CONTEXT": "", "API_CONTRACT": "",
+    }
+    batch_tpl = "interface_case_batch" if mode == "interface" else "functional_case_batch"
+    batch_prompt = _render_prompt(_load_prompt(batch_tpl), batch_ph)
+
+    flow = [
+        {"step": "1 · 规划大纲", "desc": "通读需求/截图，规划该功能的测试点（title + 类别）"},
+        {"step": "2 · 接地过滤", "desc": "关键词黑名单 + LLM 相关性二判 + 去重 + 覆盖上限，剔除注水/越界/重复（仅功能模式）"}
+        if mode == "functional" else
+        {"step": "2 · 契约过滤", "desc": "按 OpenAPI 契约剔除平台无法可靠落成脚本的测试点（接口模式）"},
+        {"step": "3 · 生成用例", "desc": "对勾选的测试点生成控件级详细用例（步骤/预期/优先级）"},
+        {"step": "4 · 查缺补漏", "desc": "对已有大纲找遗漏，增量补充测试点（同样过接地过滤）"},
+    ]
+
+    return {
+        "status": "success",
+        "data": {
+            "mode": mode,
+            "outline": {"template": outline_tpl, "prompt": outline_prompt},
+            "batch": {"template": batch_tpl, "prompt": batch_prompt},
+            "flow": flow,
+        },
+    }
+
+
 class AiBatchRequest(pydantic.BaseModel):
     module_id: int
     model_name: str
