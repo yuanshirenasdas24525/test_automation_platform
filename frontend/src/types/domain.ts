@@ -738,6 +738,8 @@ export interface AiGeneratedCase {
   /** 变更调整专用：从对应测试点带过来的增/改/删理由，审阅行展示。 */
   reason?: string;
   category?: string;
+  /** AI 建议的优先级(0/1/2/3，0 最高)；缺省时前端回落到 3。 */
+  priority?: number;
   operation_id?: string;
   scenario_type?: string;
   field?: string;

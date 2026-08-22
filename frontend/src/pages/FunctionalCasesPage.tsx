@@ -3917,7 +3917,7 @@ export function AiGenerateDialog({
           const res = await functionalCasesApi.create({
             module_id: moduleId,
             name: stripAiCaseSequence(c.name),
-            priority: 3,
+            priority: c.priority ?? 3,
             functional_spec: {
               preconditions: c.preconditions,
               steps: c.steps,

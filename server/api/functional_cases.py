@@ -1226,8 +1226,29 @@ def _pre_hook_vars(case: dict) -> set[str]:
     return out
 
 
+# 类别→优先级兜底：模型没给 priority 时按测试点类别粗分（避免又全落一个档）。
+_CATEGORY_PRIORITY = {
+    "正向": 1, "正常": 1,
+    "异常": 1, "权限": 1, "鉴权": 1, "越权": 1, "安全": 1, "参数校验": 1,
+    "边界": 2, "响应校验": 2, "界面与交互": 2, "兼容": 2, "兼容/性能": 2,
+    "性能": 2, "跨模块": 2, "场景": 2, "关联": 2,
+    "其它": 3, "其他": 3,
+}
+
+
+def _case_priority(raw, category: str) -> int:
+    """归一化用例优先级(0/1/2/3)。模型给了合法值就用；否则按类别兜底，未知类别 2。"""
+    try:
+        p = int(raw)
+        if 0 <= p <= 3:
+            return p
+    except (TypeError, ValueError):
+        pass
+    return _CATEGORY_PRIORITY.get(str(category or "").strip(), 2)
+
+
 def _shape_cases(parsed) -> list[dict]:
-    """把 LLM 解析出的 list 规整成 {name, preconditions[], steps[], expected[], ...}。
+    """把 LLM 解析出的 list 规整成 {name, priority, preconditions[], steps[], expected[], ...}。
 
     透传接口模式结构化字段（含场景多步 requests、清理 teardown、data_safety）。
     """
@@ -1247,6 +1268,7 @@ def _shape_cases(parsed) -> list[dict]:
         item = {
             "name": name[:200],
             "category": cat,
+            "priority": _case_priority(it.get("priority"), cat),
             "preconditions": [str(x).strip() for x in (it.get("preconditions") or []) if str(x).strip()],
             "steps": [str(x).strip() for x in (it.get("steps") or []) if str(x).strip()],
             "expected": [str(x).strip() for x in (it.get("expected") or []) if str(x).strip()],
