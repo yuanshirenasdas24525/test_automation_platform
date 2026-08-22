@@ -1180,6 +1180,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         moduleId={currentParentId}
         projectId={projectId}
         initialMode="functional"
+        caseSignature={allCases.map((c) => c.id).join(",")}
         onClose={() => setAiGenOpen(false)}
         onInserted={() => { invalidateAll(); }}
         onFilterCaseNames={(names) => {
@@ -2919,6 +2920,7 @@ export function AiGenerateDialog({
   projectId,
   initialMode = "functional",
   allowModeSwitch = false,
+  caseSignature = "",
   onClose,
   onInserted,
   onFilterCaseNames,
@@ -2928,6 +2930,8 @@ export function AiGenerateDialog({
   projectId: number;
   initialMode?: "functional" | "interface";
   allowModeSwitch?: boolean;
+  /** 当前模块用例签名（增删会变），透传给功能要点面板判断缓存是否过期。 */
+  caseSignature?: string;
   onClose: () => void;
   onInserted: () => void;
   /** 点击功能要点 → 按该要点覆盖的用例名筛主列表（并关抽屉）。 */
@@ -4604,6 +4608,7 @@ export function AiGenerateDialog({
                   moduleId={moduleId}
                   modelName={modelName}
                   requirementText={text}
+                  caseSignature={caseSignature}
                   onFilterAspect={onFilterCaseNames}
                 />
               ) : null}

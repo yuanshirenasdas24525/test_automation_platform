@@ -20,19 +20,35 @@ const COV_META: Record<string, { label: string; cls: string }> = {
   none: { label: "缺", cls: "bg-red-500/15 text-red-600 dark:text-red-400" },
 };
 
-/** #2 功能测试要点 Checklist */
+type ChecklistAspect = {
+  aspect: string;
+  what_to_test: string;
+  covered_cases: string[];
+  covered_count: number;
+  coverage: "covered" | "thin" | "none";
+};
+type ChecklistData = { aspects: ChecklistAspect[]; summary: { total: number; covered: number; gaps: number } };
+const CK_KEY = (mid: number) => `feature-checklist:v1:${mid}`;
+
+/** #2 功能测试要点 Checklist —— 结果按模块缓存到 localStorage，打开即显示；
+ * 用例有增删（caseSignature 变化）时提示可重新分析，其余时间保留上次结果。 */
 export function FeatureChecklistPanel({
   moduleId,
   modelName,
   requirementText,
+  caseSignature,
   onFilterAspect,
 }: {
   moduleId: number | null;
   modelName: string;
   requirementText: string;
+  /** 当前模块用例的签名（增删会变），用于判断缓存的分析是否过期。 */
+  caseSignature: string;
   /** 点某个要点 → 用它覆盖的用例名去筛主列表。缺省则要点不可点。 */
   onFilterAspect?: (coveredCases: string[]) => void;
 }) {
+  const [data, setData] = useState<ChecklistData | null>(null);
+  const [savedSig, setSavedSig] = useState<string | null>(null);
   const m = useMutation({
     mutationFn: () =>
       functionalCasesApi.aiFeatureChecklist({
@@ -42,9 +58,46 @@ export function FeatureChecklistPanel({
       }),
   });
   const { reset } = m;
-  // 切换模块/项目时清掉上一个功能的要点，避免串数据（每个模块 id 全局唯一）
-  useEffect(() => reset(), [moduleId, reset]);
-  const data = m.data;
+
+  // 切模块：加载该模块的缓存结果（没有则空），不再每次都要重新点分析
+  useEffect(() => {
+    reset();
+    if (!moduleId) {
+      setData(null);
+      setSavedSig(null);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(CK_KEY(moduleId));
+      if (raw) {
+        const c = JSON.parse(raw) as ChecklistData & { signature?: string };
+        setData({ aspects: c.aspects ?? [], summary: c.summary });
+        setSavedSig(c.signature ?? null);
+        return;
+      }
+    } catch {
+      /* ignore */
+    }
+    setData(null);
+    setSavedSig(null);
+  }, [moduleId, reset]);
+
+  const analyze = () =>
+    m.mutate(undefined, {
+      onSuccess: (res) => {
+        const payload: ChecklistData = { aspects: res.aspects, summary: res.summary };
+        setData(payload);
+        setSavedSig(caseSignature);
+        try {
+          if (moduleId)
+            localStorage.setItem(CK_KEY(moduleId), JSON.stringify({ ...payload, signature: caseSignature, ts: Date.now() }));
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+
+  const stale = !!data && savedSig !== null && savedSig !== caseSignature;
 
   return (
     <div className="rounded-lg border bg-card p-3">
@@ -52,17 +105,27 @@ export function FeatureChecklistPanel({
         <ClipboardCheck className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium">该测什么 · 功能测试要点</span>
         {data ? (
-          <span className="ml-auto text-xs text-muted-foreground">
-            {data.summary.covered}/{data.summary.total} 已覆盖
-            {data.summary.gaps > 0 ? <span className="text-amber-600 dark:text-amber-400"> · {data.summary.gaps} 项有缺口</span> : null}
-          </span>
+          <>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {data.summary.covered}/{data.summary.total} 已覆盖
+              {data.summary.gaps > 0 ? <span className="text-amber-600 dark:text-amber-400"> · {data.summary.gaps} 项有缺口</span> : null}
+            </span>
+            <button
+              className="text-xs text-primary hover:underline disabled:opacity-50"
+              disabled={!moduleId || !modelName || m.isPending}
+              onClick={analyze}
+              title="重新分析要点与覆盖"
+            >
+              {m.isPending ? "分析中…" : "重新分析"}
+            </button>
+          </>
         ) : (
           <Button
             size="sm"
             variant="outline"
             className="ml-auto h-7"
             disabled={!moduleId || !modelName || m.isPending}
-            onClick={() => m.mutate()}
+            onClick={analyze}
             title={!modelName ? "先选一个 AI 模型" : "根据需求归纳该功能该测哪些方面 + 统计覆盖"}
           >
             {m.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ClipboardCheck className="h-3.5 w-3.5" />}
@@ -71,10 +134,14 @@ export function FeatureChecklistPanel({
         )}
       </div>
 
+      {stale ? (
+        <p className="mb-1.5 rounded bg-amber-500/10 px-2 py-1 text-[11px] text-amber-600 dark:text-amber-400">
+          用例有增删，覆盖统计可能已过期，建议「重新分析」。
+        </p>
+      ) : null}
       {m.isError ? (
         <p className="text-xs text-red-600 dark:text-red-400">分析失败：{errMsg(m.error)}</p>
       ) : null}
-      {data?.warning ? <p className="text-xs text-amber-600 dark:text-amber-400">{data.warning}</p> : null}
 
       {data && data.aspects.length > 0 ? (
         <ul className="flex flex-col gap-1.5">
@@ -108,7 +175,7 @@ export function FeatureChecklistPanel({
           })}
         </ul>
       ) : null}
-      {data && data.aspects.length === 0 && !data.warning ? (
+      {data && data.aspects.length === 0 ? (
         <p className="text-xs text-muted-foreground">未归纳出测试要点，可补充需求后重试。</p>
       ) : null}
     </div>
