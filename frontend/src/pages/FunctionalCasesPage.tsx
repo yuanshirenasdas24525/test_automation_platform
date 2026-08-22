@@ -4212,8 +4212,8 @@ export function AiGenerateDialog({
       open={open}
       onClose={onClose}
       storageKey="ai-gen-drawer-width"
-      defaultWidth={720}
-      minWidth={560}
+      defaultWidth={1040}
+      minWidth={820}
       footer={generateFooter}
       title={
         <>
@@ -4352,8 +4352,9 @@ export function AiGenerateDialog({
           </div>
         ) : null}
 
-        {stage === "input" ? (
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-1 gap-3">
+          {/* 左栏：需求/配置/透明度（常驻，不随生成阶段切换而消失） */}
+          <div className="flex w-[400px] shrink-0 flex-col gap-3 overflow-y-auto border-r pr-3">
             {allowModeSwitch ? (
               <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
                 {(["functional", "interface"] as const).map((mo) => (
@@ -4637,8 +4638,15 @@ export function AiGenerateDialog({
               </div>
             </details>
           </div>
-        ) : stage === "outline" ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-3">
+          {/* 右栏：大纲 + 用例 常驻同屏，整体滚动，不再翻页丢状态 */}
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+            {points.length === 0 && cases.length === 0 && !outlining && !batchRunning ? (
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                先在左侧填写需求 → 点「生成大纲」，规划出的测试点与生成的用例会显示在这里（无需翻页）
+              </div>
+            ) : null}
+            {points.length > 0 || outlining ? (
+            <div className="flex shrink-0 flex-col gap-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
@@ -4688,7 +4696,7 @@ export function AiGenerateDialog({
                 <div className="mt-1 whitespace-pre-wrap">{digest}</div>
               </details>
             ) : null}
-            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
+            <div className="max-h-[38vh] space-y-1 overflow-y-auto pr-1">
               {points.map((p, i) => (
                 <label
                   key={i}
@@ -4706,8 +4714,9 @@ export function AiGenerateDialog({
               ))}
             </div>
           </div>
-        ) : (
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            ) : null}
+            {cases.length > 0 || batchRunning ? (
+            <div className="shrink-0 space-y-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 已生成 {cases.length} 条 · 测试点 {cursor}/{genQueue.length}
@@ -5005,7 +5014,9 @@ export function AiGenerateDialog({
               ))}
             </div>
           </div>
-        )}
+            ) : null}
+          </div>
+        </div>
         </>
         )}
       </div>
