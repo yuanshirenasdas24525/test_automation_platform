@@ -1077,6 +1077,35 @@ export const functionalCasesApi = {
       { method: "POST", body },
     );
   },
+  /** 功能测试要点 Checklist：该功能该测哪些方面 + 每方面覆盖了几条（只读）。 */
+  aiFeatureChecklist(body: { module_id: number; model_name: string; requirement_text?: string }) {
+    return request<{
+      aspects: {
+        aspect: string;
+        what_to_test: string;
+        covered_cases: string[];
+        covered_count: number;
+        coverage: "covered" | "thin" | "none";
+      }[];
+      summary: { total: number; covered: number; gaps: number };
+      warning?: string;
+    }>("/api/functional_cases/ai_feature_checklist", { method: "POST", body });
+  },
+  /** 提示词 / 生成流程预览（只读，不调 LLM）。 */
+  aiPromptPreview(body: {
+    module_id: number;
+    mode: "functional" | "interface";
+    coverage: string;
+    dimensions?: string;
+    requirement_text?: string;
+  }) {
+    return request<{
+      mode: string;
+      outline: { template: string; prompt: string };
+      batch: { template: string; prompt: string };
+      flow: { step: string; desc: string }[];
+    }>("/api/functional_cases/ai_prompt_preview", { method: "POST", body });
+  },
   /** Excel 导入功能用例。 */
   importExcel(moduleId: number, file: File) {
     const form = new FormData();

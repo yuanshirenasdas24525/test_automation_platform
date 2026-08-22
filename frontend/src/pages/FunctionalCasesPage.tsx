@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { SideDrawer } from "@/components/ui/side-drawer";
 import { ModuleOutlinePanel } from "@/components/case/module-outline-drawer";
+import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -4581,6 +4582,19 @@ export function AiGenerateDialog({
               <p className="text-xs text-muted-foreground">
                 标准会明显减少数量；穷尽会显著增加测试点，适合最后补全覆盖。
               </p>
+            </div>
+            {/* 透明度面板（#1 提示词预览 / #2 功能测试要点）——按需触发，不影响生成 */}
+            <div className="space-y-2 pt-1">
+              {mode === "functional" ? (
+                <FeatureChecklistPanel moduleId={moduleId} modelName={modelName} requirementText={text} />
+              ) : null}
+              <PromptPreviewPanel
+                moduleId={moduleId}
+                mode={mode}
+                coverage={coverage}
+                dimensions={mode === "interface" ? [...dimensions].join(",") : ""}
+                requirementText={text}
+              />
             </div>
             {mode === "interface" ? (
               <div className="space-y-1">
