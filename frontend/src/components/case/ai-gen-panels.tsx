@@ -4,7 +4,7 @@
  *  - PromptPreviewPanel（#1）：本次已渲染的提示词 + 生成流程（只读）。
  * 都是按需触发（点按钮才请求），失败不阻断主流程。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ClipboardCheck, Loader2, ScanSearch, ChevronRight } from "lucide-react";
 
@@ -25,10 +25,13 @@ export function FeatureChecklistPanel({
   moduleId,
   modelName,
   requirementText,
+  onFilterAspect,
 }: {
   moduleId: number | null;
   modelName: string;
   requirementText: string;
+  /** 点某个要点 → 用它覆盖的用例名去筛主列表。缺省则要点不可点。 */
+  onFilterAspect?: (coveredCases: string[]) => void;
 }) {
   const m = useMutation({
     mutationFn: () =>
@@ -38,6 +41,9 @@ export function FeatureChecklistPanel({
         requirement_text: requirementText.trim(),
       }),
   });
+  const { reset } = m;
+  // 切换模块/项目时清掉上一个功能的要点，避免串数据（每个模块 id 全局唯一）
+  useEffect(() => reset(), [moduleId, reset]);
   const data = m.data;
 
   return (
@@ -74,6 +80,7 @@ export function FeatureChecklistPanel({
         <ul className="flex flex-col gap-1.5">
           {data.aspects.map((a) => {
             const meta = COV_META[a.coverage] ?? COV_META.none;
+            const clickable = !!onFilterAspect && a.covered_count > 0;
             return (
               <li
                 key={a.aspect}
@@ -81,11 +88,14 @@ export function FeatureChecklistPanel({
                   "rounded-md border px-2.5 py-1.5",
                   a.coverage === "none" && "border-red-500/30 bg-red-500/5",
                   a.coverage === "thin" && "border-amber-500/30 bg-amber-500/5",
+                  clickable && "cursor-pointer hover:border-primary/50 hover:bg-primary/5",
                 )}
-                title={a.what_to_test}
+                title={clickable ? `点击筛选该要点覆盖的 ${a.covered_count} 条用例` : a.what_to_test}
+                onClick={clickable ? () => onFilterAspect?.(a.covered_cases) : undefined}
               >
                 <div className="flex items-center gap-2">
                   <span className="flex-1 truncate text-xs font-medium">{a.aspect}</span>
+                  {clickable ? <span className="text-[10px] text-primary">筛选 ›</span> : null}
                   <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums", meta.cls)}>
                     {a.coverage === "none" ? "缺" : `${a.covered_count} 条 · ${meta.label}`}
                   </span>
@@ -130,6 +140,8 @@ export function PromptPreviewPanel({
         requirement_text: requirementText.trim(),
       }),
   });
+  const { reset } = m;
+  useEffect(() => reset(), [moduleId, reset]);
   const data = m.data;
 
   return (

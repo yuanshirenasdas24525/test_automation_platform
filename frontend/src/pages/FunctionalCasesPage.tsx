@@ -863,14 +863,14 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         {!quickEditMode ? (
           <ExportButton projectId={projectId} moduleId={currentParentId} />
         ) : null}
-        {/* 从编辑记录跳转过来时的筛选提示 */}
+        {/* 用例筛选提示（编辑记录跳转 / 功能要点点击）—— 点击即还原展示全部 */}
         {caseIdFilter ? (
           <button
             type="button"
             onClick={() => { setCaseIdFilter(null); setCaseDiff(null); setDeletedNames([]); }}
             className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs text-primary hover:bg-primary/20"
           >
-            已按编辑记录筛选 {caseIdFilter.size} 条 · 清除 ✕
+            已筛选 {caseIdFilter.size} 条用例 · 显示全部 ✕
           </button>
         ) : null}
 
@@ -1182,6 +1182,16 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         initialMode="functional"
         onClose={() => setAiGenOpen(false)}
         onInserted={() => { invalidateAll(); }}
+        onFilterCaseNames={(names) => {
+          const wanted = new Set(names.map(stripAiCaseSequence));
+          const ids = allCases.filter((c) => wanted.has(stripAiCaseSequence(c.name))).map((c) => c.id);
+          if (ids.length === 0) {
+            toast.info("该要点覆盖的用例还没入库，无法筛选");
+            return;
+          }
+          setCaseIdFilter(new Set(ids));
+          setAiGenOpen(false); // 关抽屉，露出被筛选的用例列表
+        }}
       />
     </div>
   );
@@ -2911,6 +2921,7 @@ export function AiGenerateDialog({
   allowModeSwitch = false,
   onClose,
   onInserted,
+  onFilterCaseNames,
 }: {
   open: boolean;
   moduleId: number | null;
@@ -2919,6 +2930,8 @@ export function AiGenerateDialog({
   allowModeSwitch?: boolean;
   onClose: () => void;
   onInserted: () => void;
+  /** 点击功能要点 → 按该要点覆盖的用例名筛主列表（并关抽屉）。 */
+  onFilterCaseNames?: (names: string[]) => void;
 }) {
   // 小批量先过契约编译和安全探测，再扩展后续批次；减少一次生成大量必挂用例。
   const BATCH_SIZE = 4;
@@ -4587,7 +4600,12 @@ export function AiGenerateDialog({
             {/* 透明度面板（#1 提示词预览 / #2 功能测试要点）——按需触发，不影响生成 */}
             <div className="space-y-2 pt-1">
               {mode === "functional" ? (
-                <FeatureChecklistPanel moduleId={moduleId} modelName={modelName} requirementText={text} />
+                <FeatureChecklistPanel
+                  moduleId={moduleId}
+                  modelName={modelName}
+                  requirementText={text}
+                  onFilterAspect={onFilterCaseNames}
+                />
               ) : null}
               <PromptPreviewPanel
                 moduleId={moduleId}
