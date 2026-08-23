@@ -874,6 +874,22 @@ def build_generation_context(
     return context, element_map, snapshot_map
 
 
+# 前端框架运行时自动生成、每次渲染都会变的 ID 片段（Radix / React useId /
+# HeadlessUI / MUI 等）。这类值当定位器会“录制时是 radix-_r_s_，回放时变成
+# radix-_r_f_”从而必然超时失效，必须排到稳定定位器（role/text/语义 css）之后。
+_UNSTABLE_ID_RE = re.compile(
+    r"(radix-|_r_[0-9a-z]+_|:r[0-9a-z]+:|«r[0-9a-z]+|headlessui-|\bmui-|ember\d)",
+    re.IGNORECASE,
+)
+
+
+def _is_unstable_locator(strategy: str, locator: str) -> bool:
+    """id/css/xpath 里含自动生成 ID 片段 → 判为不稳定。role/text 天然稳定。"""
+    if strategy not in ("id", "css", "xpath"):
+        return False
+    return bool(_UNSTABLE_ID_RE.search(locator or ""))
+
+
 def _preferred_locator(element: UiElement) -> tuple[str, str] | None:
     candidates = [
         item for item in (element.locators or [])
@@ -882,9 +898,27 @@ def _preferred_locator(element: UiElement) -> tuple[str, str] | None:
     ]
     if not candidates:
         return None
+    semantic = str(getattr(element, "semantic_name", "") or "").strip()
+
+    def _name_matches_semantic(item: "UiElementLocator") -> bool:
+        # 元素库偶发把 primary 标到了错的兄弟节点上（如“退出登录”的 primary
+        # 定位器 name 却是“修改密码”）。当某稳定定位器的取值里含元素语义名时，
+        # 优先它，纠正这类标注错误。
+        if not semantic:
+            return False
+        strat = str(item.strategy or "").lower()
+        if strat not in ("role", "text"):
+            return False
+        return semantic in str(item.locator or "")
+
     selected = max(
         candidates,
         key=lambda item: (
+            # 稳定性最高优先：任何稳定定位器都要压过不稳定的自动 ID，
+            # 即便后者被前端框架标成了 is_primary / 打了高分。
+            int(not _is_unstable_locator(str(item.strategy or "").lower(), str(item.locator or ""))),
+            # 其次纠正标注错位：取值命中元素语义名的稳定定位器优先。
+            int(_name_matches_semantic(item)),
             int(bool(item.is_primary)),
             int(item.is_unique is True),
             int(item.last_verified_at is not None),
