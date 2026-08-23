@@ -14,6 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -120,7 +121,8 @@ export function SideDrawer({
     };
   }, [open, closeOnOutside, onClose]);
 
-  return (
+  // 通过 portal 挂到 body，避免祖先的 transform/filter 把 fixed 变成相对定位（顶/底出现白缝）
+  return createPortal(
     <div
       ref={panelRef}
       role="dialog"
@@ -152,6 +154,7 @@ export function SideDrawer({
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{children}</div>
 
       {footer ? <div className="border-t px-4 pb-5 pt-3">{footer}</div> : null}
-    </div>
+    </div>,
+    document.body,
   );
 }
