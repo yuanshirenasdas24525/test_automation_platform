@@ -13,13 +13,6 @@ import {
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -40,6 +33,8 @@ import {
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { FeatureChecklistPanel } from "@/components/case/ai-gen-panels";
+import { SideDrawer } from "@/components/ui/side-drawer";
+import { Trash2 } from "lucide-react";
 import type {
   AiRun,
   WebUiCaseDraft,
@@ -115,13 +110,14 @@ export function WebUiCaseGenerationDialog({
   const initializedDraftBatchRef = useRef("");
   const [modelName, setModelName] = useState("");
   const [structureAssertions, setStructureAssertions] = useState(true);
-  const [visualAssertions, setVisualAssertions] = useState(false);
+  const [visualAssertions, setVisualAssertions] = useState(true);
   const [visualThreshold, setVisualThreshold] = useState(0.02);
   const [userPrompt, setUserPrompt] = useState("");
   const [runId, setRunId] = useState<number | null>(null);
   const [batchId, setBatchId] = useState("");
   const [selectedDraftIds, setSelectedDraftIds] = useState<number[]>([]);
   const [activeDraftId, setActiveDraftId] = useState<number | null>(null);
+  const [dismissedRestore, setDismissedRestore] = useState(false);
   const [moduleId, setModuleId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
   const [variablesJson, setVariablesJson] = useState("{}");
@@ -230,7 +226,7 @@ export function WebUiCaseGenerationDialog({
   }, [initialModuleId, open, projectId]);
 
   useEffect(() => {
-    if (!open || runId != null || initialModuleId == null || !recoveryQuery.data) return;
+    if (!open || runId != null || initialModuleId == null || !recoveryQuery.data || dismissedRestore) return;
     const restored = findRestorableRun(recoveryQuery.data, initialModuleId);
     if (!restored) return;
     const restoredBatchId = payloadString(restored, "batch_id");
@@ -385,23 +381,46 @@ export function WebUiCaseGenerationDialog({
     generateMutation.mutate();
   };
 
+  /** 清空生成缓存：不再恢复上一批草稿，并刷新用例列表/草稿/运行缓存。 */
+  const handleClearCache = () => {
+    setRunId(null);
+    setBatchId("");
+    initializedDraftBatchRef.current = "";
+    setSelectedDraftIds([]);
+    setActiveDraftId(null);
+    setDismissedRestore(true);
+    void queryClient.invalidateQueries({ queryKey: ["ai-runs", "web-ui-generation", "restore"] });
+    void queryClient.invalidateQueries({ queryKey: ["web-ui-case-drafts"] });
+    void queryClient.invalidateQueries({ queryKey: ["ai-run", "web-ui-generation"] });
+    void queryClient.invalidateQueries({ queryKey: ["automation-cases"] });
+    void queryClient.invalidateQueries({ queryKey: ["content"] });
+    toast.success("已清空生成缓存，不再恢复上一批草稿，列表已刷新");
+  };
+
   const toggleNumber = (items: number[], value: number, checked: boolean) => (
     checked ? [...items, value] : items.filter((item) => item !== value)
   );
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[92vh] max-w-[96vw] flex-col overflow-hidden p-0">
-        <DialogHeader className="shrink-0 border-b px-6 py-4">
-          <DialogTitle className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-violet-600" />
-            AI 一键生成 Web UI 自动化用例
-          </DialogTitle>
-          <DialogDescription>
-            AI 自动筛选适合 UI 自动化的功能用例并检索元素库；只保留通过可执行门禁的草稿。
-          </DialogDescription>
-        </DialogHeader>
-
+    <SideDrawer
+      open={open}
+      onClose={() => onOpenChange(false)}
+      storageKey="web-ui-gen-drawer-width"
+      defaultWidth={1120}
+      minWidth={900}
+      title={
+        <>
+          <Sparkles className="h-[17px] w-[17px] text-violet-600" />
+          AI 生成 Web UI 自动化用例
+        </>
+      }
+      headerExtra={
+        <Button variant="outline" size="sm" onClick={handleClearCache} title="不再恢复上一批草稿并刷新列表">
+          <Trash2 className="h-3.5 w-3.5" />清空缓存
+        </Button>
+      }
+    >
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="grid min-h-0 flex-1 grid-cols-[390px_minmax(0,1fr)]">
           <section className="min-h-0 overflow-y-auto border-r p-5">
             <div className="space-y-5">
@@ -686,7 +705,7 @@ export function WebUiCaseGenerationDialog({
             )}
           </section>
         </div>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </SideDrawer>
   );
 }
