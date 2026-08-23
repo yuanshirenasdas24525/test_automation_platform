@@ -219,11 +219,12 @@ export function PromptPreviewPanel({
   requirementText,
 }: {
   moduleId: number | null;
-  mode: "functional" | "interface";
+  mode: "functional" | "interface" | "web" | "android" | "ios";
   coverage: string;
   dimensions: string;
   requirementText: string;
 }) {
+  const isUi = mode === "web" || mode === "android" || mode === "ios";
   const [tab, setTab] = useState<"outline" | "batch">("outline");
   const m = useMutation({
     mutationFn: () =>
@@ -283,13 +284,13 @@ export function PromptPreviewPanel({
               onClick={() => setTab("outline")}
               className={cn("rounded px-2 py-0.5", tab === "outline" ? "bg-muted font-medium" : "text-muted-foreground")}
             >
-              大纲提示词
+              {isUi ? "生成提示词" : "大纲提示词"}
             </button>
             <button
               onClick={() => setTab("batch")}
               className={cn("rounded px-2 py-0.5", tab === "batch" ? "bg-muted font-medium" : "text-muted-foreground")}
             >
-              用例提示词
+              {isUi ? "源选择提示词" : "用例提示词"}
             </button>
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">
               {tab === "outline" ? data.outline.template : data.batch.template}
