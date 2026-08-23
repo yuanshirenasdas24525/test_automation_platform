@@ -2970,6 +2970,13 @@ export function AiGenerateDialog({
   const [panel, setPanel] = useState<"board" | "req" | "checklist" | "prompt" | "overview">("req");
   // 看板内「大纲 / 用例」子切换（#5，记住选择）
   const [boardTab, setBoardTab] = useState<"outline" | "cases">("outline");
+  // 四层接地过滤统计（生成大纲时后端返回）
+  const [scopeFilter, setScopeFilter] = useState<{
+    before: number; kept: number; keyword_dropped: string[]; llm_dropped: string[];
+    dup_dropped: string[]; cap_dropped: string[]; cap: number;
+  } | null>(null);
+  // 看板按类别筛选（正向/异常/边界…；null=全部）
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   // 抽屉顶部 Tab：模块大纲（长期保存）/ 生成用例（AI 向导）
   const [view, setView] = useState<"outline" | "generate" | "history">("generate");
   const [historyLoadingRunId, setHistoryLoadingRunId] = useState<number | null>(null);
@@ -3472,6 +3479,8 @@ export function AiGenerateDialog({
       setDigest(res.digest);
       setApiContract(res.api_contract ?? {});
       setGenerationRunId(res.generation_run_id ?? null);
+      setScopeFilter(res.scope_filter ?? null);
+      setCategoryFilter(null);
       setPoints(res.points);
       setPickedPoints(new Set(res.points.map((_, i) => i)));
       setStage("outline");
@@ -4749,6 +4758,34 @@ export function AiGenerateDialog({
                 </button>
               </div>
             ) : null}
+            {/* 四层接地过滤统计条 #1：本次规划 → 关键词/LLM/去重 → 保留 */}
+            {scopeFilter ? (
+              <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs">
+                <span className="text-muted-foreground">本次规划 <b className="font-medium text-foreground tabular-nums">{scopeFilter.before}</b></span>
+                <span className="text-muted-foreground">→</span>
+                {scopeFilter.keyword_dropped.length ? <span className="rounded bg-red-500/15 px-1.5 py-0.5 font-medium tabular-nums text-red-600 dark:text-red-400">关键词 −{scopeFilter.keyword_dropped.length}</span> : null}
+                {scopeFilter.llm_dropped.length ? <span className="rounded bg-red-500/15 px-1.5 py-0.5 font-medium tabular-nums text-red-600 dark:text-red-400">LLM −{scopeFilter.llm_dropped.length}</span> : null}
+                {scopeFilter.dup_dropped.length ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium tabular-nums text-amber-600 dark:text-amber-400">去重 −{scopeFilter.dup_dropped.length}</span> : null}
+                {scopeFilter.cap_dropped.length ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium tabular-nums text-amber-600 dark:text-amber-400">超上限 −{scopeFilter.cap_dropped.length}</span> : null}
+                <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">保留 {scopeFilter.kept}</span>
+                <span className="text-muted-foreground/70" title="已自动剔除注水/越界/重复的测试点">已过滤注水/越界</span>
+              </div>
+            ) : null}
+            {/* 类别筛选 #2：分块查看，正向/异常/边界… */}
+            {points.length > 0 ? (() => {
+              const counts = new Map<string, number>();
+              for (const p of points) { const c = (p.category || "其它").trim() || "其它"; counts.set(c, (counts.get(c) ?? 0) + 1); }
+              const cats = Array.from(counts.entries());
+              if (cats.length <= 1) return null;
+              return (
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  <button onClick={() => setCategoryFilter(null)} className={cn("rounded-full px-2.5 py-0.5 text-xs", categoryFilter === null ? "bg-primary/10 font-medium text-primary" : "bg-muted text-muted-foreground hover:bg-muted/70")}>全部（{points.length}）</button>
+                  {cats.map(([c, n]) => (
+                    <button key={c} onClick={() => setCategoryFilter(c)} className={cn("rounded-full px-2.5 py-0.5 text-xs", categoryFilter === c ? "bg-primary/10 font-medium text-primary" : "bg-muted text-muted-foreground hover:bg-muted/70")}>{c}（{n}）</button>
+                  ))}
+                </div>
+              );
+            })() : null}
             {/* 滚动内容区（大纲/用例各自占满并可滚动，修复底部截断） */}
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
             {points.length === 0 && cases.length === 0 && !outlining && !batchRunning ? (
@@ -4770,7 +4807,8 @@ export function AiGenerateDialog({
               </details>
             ) : null}
             <div className="space-y-1">
-              {points.map((p, i) => (
+              {points.map((p, i) =>
+                categoryFilter && (p.category || "其它") !== categoryFilter ? null : (
                 <label
                   key={i}
                   className={cn(
@@ -4974,7 +5012,8 @@ export function AiGenerateDialog({
                   <Loader2 className="h-4 w-4 animate-spin" /> 正在生成第一批…
                 </div>
               ) : null}
-              {cases.map((c, i) => (
+              {cases.map((c, i) =>
+                categoryFilter && (c.category || "其它") !== categoryFilter ? null : (
                 <div
                   key={i}
                   onDragOver={(e) => e.preventDefault()}
