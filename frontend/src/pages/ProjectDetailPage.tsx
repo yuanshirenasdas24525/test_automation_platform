@@ -2,13 +2,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { FunctionalCasesPage } from "./FunctionalCasesPage";
-import { AutomationCasesPage } from "./AutomationCasesPage";
+import { AutomationCasesPage, PerformancePoolWorkbench } from "./AutomationCasesPage";
 import {
   Apple,
   ArrowLeft,
   Braces,
   ClipboardList,
   FolderKanban,
+  Gauge,
   Globe,
   Smartphone,
 } from "lucide-react";
@@ -107,6 +108,7 @@ export function ProjectDetailPage() {
   useEffect(() => {
     if (enabledStacks.length === 0) return;
     if ((activeStack as string) === "management") return; // management is always valid
+    if (searchParams.get("stack") === "performance") return; // 压测 是特殊 tab，不参与 stack 校正
     if (!enabledStacks.includes(activeStack as ProjectStack)) {
       const next = new URLSearchParams(searchParams);
       next.set("stack", enabledStacks[0]);
@@ -148,6 +150,22 @@ export function ProjectDetailPage() {
         </div>
         <StackTabs projectId={projectId} enabledStacks={enabledStacks} counts={stackCountsQuery.data?.counts} active={activeStack} onChange={handleStackChange} loading={stackCountsQuery.isLoading} />
         <ProjectManagementPage />
+      </div>
+    );
+  }
+
+  // ------ 渲染：压测 Tab ------
+  if (searchParams.get("stack") === "performance") {
+    return (
+      <div className="space-y-4 p-6">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="shrink-0" onClick={() => navigate("/projects")}>
+            <ArrowLeft className="h-4 w-4" />
+          </Button>
+          <span className="font-medium truncate">{projectQuery.data?.name ?? "…"}</span>
+        </div>
+        <StackTabs projectId={projectId} enabledStacks={enabledStacks} counts={stackCountsQuery.data?.counts} active={activeStack} onChange={handleStackChange} loading={stackCountsQuery.isLoading} />
+        <PerformancePoolWorkbench projectId={projectId} />
       </div>
     );
   }
@@ -246,6 +264,7 @@ function StackTabs({
 }) {
   const [searchParams] = useSearchParams();
   const isManagementActive = searchParams.get("stack") === "management";
+  const isPerformanceActive = searchParams.get("stack") === "performance";
   if (loading && enabledStacks.length === 0) {
     return (
       <div className="flex items-center gap-2">
@@ -286,7 +305,7 @@ function StackTabs({
         <span>项目管理</span>
       </button>
       {enabledStacks.map((s) => {
-        const isActive = !isManagementActive && active === s;
+        const isActive = !isManagementActive && !isPerformanceActive && active === s;
         const badge = badgeOf(s);
         const visual = STACK_VISUAL[s] ?? STACK_VISUAL.api;
         const Icon = visual.icon;
@@ -325,6 +344,23 @@ function StackTabs({
           </button>
         );
       })}
+      {/* 压测 — 通过 URL ?stack=performance 内嵌（放在最后，iOS 之后） */}
+      <button
+        type="button"
+        role="tab"
+        aria-selected={isPerformanceActive}
+        onClick={() => onChange("performance")}
+        className={cn(
+          "group relative flex items-center gap-2 rounded-md px-4 py-2 text-sm transition-all",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          isPerformanceActive
+            ? "border-t-[3px] border-orange-500 bg-background font-semibold text-orange-700 shadow-sm"
+            : "border-t-[3px] border-transparent text-muted-foreground hover:bg-background/60 hover:text-foreground",
+        )}
+      >
+        <Gauge className="h-4 w-4" />
+        <span>压测</span>
+      </button>
     </div>
   );
 }
