@@ -942,6 +942,15 @@ export const functionalCasesApi = {
     return request<{
       digest: string;
       points: AiOutlinePoint[];
+      scope_filter?: {
+        before: number;
+        kept: number;
+        keyword_dropped: string[];
+        llm_dropped: string[];
+        dup_dropped: string[];
+        cap_dropped: string[];
+        cap: number;
+      } | null;
       model: string;
       image_strategy: string;
       api_contract: Record<string, unknown>;
