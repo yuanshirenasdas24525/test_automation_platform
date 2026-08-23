@@ -118,6 +118,8 @@ export function WebUiCaseGenerationDialog({
   const [selectedDraftIds, setSelectedDraftIds] = useState<number[]>([]);
   const [activeDraftId, setActiveDraftId] = useState<number | null>(null);
   const [dismissedRestore, setDismissedRestore] = useState(false);
+  // 左导航切换：用例(配置+草稿) / UI测试要点 / 提示词
+  const [wpanel, setWpanel] = useState<"cases" | "checklist" | "prompt">("cases");
   const [moduleId, setModuleId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
   const [variablesJson, setVariablesJson] = useState("{}");
@@ -420,7 +422,29 @@ export function WebUiCaseGenerationDialog({
         </Button>
       }
     >
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 左导航：用例 / UI测试要点 / 提示词，点谁右侧显示谁 */}
+        <nav className="flex w-28 shrink-0 flex-col gap-0.5 border-r p-2 text-sm">
+          {([["cases", "用例"], ["checklist", "UI测试要点"], ["prompt", "提示词"]] as const).map(([k, label]) => (
+            <button
+              key={k}
+              type="button"
+              onClick={() => setWpanel(k)}
+              className={cn("rounded px-2 py-1.5 text-left", wpanel === k ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted")}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        {wpanel === "checklist" ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode="web" />
+          </div>
+        ) : wpanel === "prompt" ? (
+          <div className="min-h-0 flex-1 p-5">
+            <PromptPreviewPanel moduleId={initialModuleId ?? null} mode="web" coverage="standard" dimensions="" requirementText={userPrompt} />
+          </div>
+        ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[390px_minmax(0,1fr)]">
           <section className="min-h-0 overflow-y-auto border-r p-5">
             <div className="space-y-5">
@@ -463,25 +487,6 @@ export function WebUiCaseGenerationDialog({
                 <Textarea id="web-ui-prompt" value={userPrompt} onChange={(event) => setUserPrompt(event.target.value)} placeholder="例如：优先项目创建、搜索和编辑；不要生成删除或停用流程。" className="mt-1.5 min-h-20" />
               </div>
 
-              {/* 该测什么：UI 自动化测试要点 + 覆盖 + 缺口（web） */}
-              <FeatureChecklistPanel
-                moduleId={initialModuleId ?? null}
-                modelName={modelName}
-                requirementText={userPrompt}
-                caseSignature=""
-                mode="web"
-              />
-
-              {/* 提示词预览（只读，自动加载，和 API 一致） */}
-              <div className="h-72">
-                <PromptPreviewPanel
-                  moduleId={initialModuleId ?? null}
-                  mode="web"
-                  coverage="standard"
-                  dimensions=""
-                  requirementText={userPrompt}
-                />
-              </div>
 
               <div className="flex gap-2">
                 <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>
@@ -716,6 +721,7 @@ export function WebUiCaseGenerationDialog({
             )}
           </section>
         </div>
+        )}
       </div>
     </SideDrawer>
   );
