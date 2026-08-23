@@ -39,6 +39,7 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
+import { FeatureChecklistPanel } from "@/components/case/ai-gen-panels";
 import type {
   AiRun,
   WebUiCaseDraft,
@@ -442,6 +443,15 @@ export function WebUiCaseGenerationDialog({
                 <Label htmlFor="web-ui-prompt">业务范围补充（可选）</Label>
                 <Textarea id="web-ui-prompt" value={userPrompt} onChange={(event) => setUserPrompt(event.target.value)} placeholder="例如：优先项目创建、搜索和编辑；不要生成删除或停用流程。" className="mt-1.5 min-h-20" />
               </div>
+
+              {/* 该测什么：UI 自动化测试要点 + 覆盖 + 缺口（web） */}
+              <FeatureChecklistPanel
+                moduleId={initialModuleId ?? null}
+                modelName={modelName}
+                requirementText={userPrompt}
+                caseSignature=""
+                mode="web"
+              />
 
               <div className="flex gap-2">
                 <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>

@@ -56,8 +56,11 @@ from database.models import (
     AI_RUN_STATUS_RUNNING,
     AI_RUN_STATUS_SUCCESS,
     AiRun,
+    CASE_TYPE_ANDROID,
     CASE_TYPE_API,
     CASE_TYPE_FUNCTIONAL,
+    CASE_TYPE_IOS,
+    CASE_TYPE_WEB,
     ConfigStore,
     EditOperationEvent,
     TestStepReport,
@@ -2925,9 +2928,16 @@ def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: Opti
         raise HTTPException(status_code=404, detail="模块不存在")
     cfg = _resolve_model(db, payload.model_name, module.project_id)
 
-    mode = "interface" if payload.mode == "interface" else "functional"
-    ck_case_type = CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL
-    ck_prompt = "interface_checklist" if mode == "interface" else "feature_checklist"
+    # mode → (被测用例类型, 归纳口径 prompt)
+    _CK_MAP = {
+        "functional": (CASE_TYPE_FUNCTIONAL, "feature_checklist"),
+        "interface": (CASE_TYPE_API, "interface_checklist"),
+        "web": (CASE_TYPE_WEB, "ui_checklist"),
+        "android": (CASE_TYPE_ANDROID, "ui_checklist"),
+        "ios": (CASE_TYPE_IOS, "ui_checklist"),
+    }
+    mode = payload.mode if payload.mode in _CK_MAP else "functional"
+    ck_case_type, ck_prompt = _CK_MAP[mode]
 
     # 取 id + name：name 喂 prompt，id 用于把覆盖用例解析成真实 id（前端按 id 精确筛选）
     existing_rows = (

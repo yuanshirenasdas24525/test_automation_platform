@@ -46,8 +46,8 @@ export function FeatureChecklistPanel({
   moduleId: number | null;
   modelName: string;
   requirementText: string;
-  /** functional=功能要点；interface=接口要点。 */
-  mode?: "functional" | "interface";
+  /** functional=功能要点；interface=接口要点；web/android/ios=UI 要点。 */
+  mode?: "functional" | "interface" | "web" | "android" | "ios";
   /** 当前模块用例的签名（增删会变），用于判断缓存的分析是否过期。 */
   caseSignature: string;
   /** 点某个要点 → 用它覆盖的用例 id 去筛主列表。缺省则要点不可点。 */
@@ -112,7 +112,7 @@ export function FeatureChecklistPanel({
     <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 flex items-center gap-2">
         <ClipboardCheck className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">该测什么 · {mode === "interface" ? "接口测试要点" : "功能测试要点"}</span>
+        <span className="text-sm font-medium">该测什么 · {mode === "interface" ? "接口测试要点" : mode === "functional" ? "功能测试要点" : "UI 测试要点"}</span>
         {data ? (
           <>
             <span className="ml-auto text-xs text-muted-foreground">
