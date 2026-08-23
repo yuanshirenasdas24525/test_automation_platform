@@ -235,8 +235,11 @@ export function PromptPreviewPanel({
         requirement_text: requirementText.trim(),
       }),
   });
-  const { reset } = m;
-  useEffect(() => reset(), [moduleId, reset]);
+  const { mutate } = m;
+  // 默认自动加载（选到该面板 / 换模块或配置即拉），不用点「查看」
+  useEffect(() => {
+    if (moduleId) mutate();
+  }, [moduleId, mode, coverage, dimensions, mutate]);
   const data = m.data;
 
   return (
@@ -297,6 +300,8 @@ export function PromptPreviewPanel({
           </pre>
           <p className="text-[10px] text-muted-foreground">只读预览——这是本次实际发给模型的提示词（动态部分如本批测试点会在生成时填入）。</p>
         </div>
+      ) : m.isPending ? (
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> 正在加载本次提示词与流程…</p>
       ) : (
         <p className="text-xs text-muted-foreground">点「查看」显示本次实际使用的提示词和生成流程，黑盒变白盒。</p>
       )}
