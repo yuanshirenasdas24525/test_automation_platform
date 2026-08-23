@@ -34,7 +34,7 @@ import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
 import { SideDrawer } from "@/components/ui/side-drawer";
-import { Trash2 } from "lucide-react";
+import { ChevronDown, Trash2 } from "lucide-react";
 import type {
   AiRun,
   WebUiCaseDraft,
@@ -423,30 +423,18 @@ export function WebUiCaseGenerationDialog({
       }
     >
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        {/* 左导航：用例 / UI测试要点 / 提示词，点谁右侧显示谁 */}
-        <nav className="flex w-28 shrink-0 flex-col gap-0.5 border-r p-2 text-sm">
-          {([["cases", "用例"], ["checklist", "UI测试要点"], ["prompt", "提示词"]] as const).map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => setWpanel(k)}
-              className={cn("rounded px-2 py-1.5 text-left", wpanel === k ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted")}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-        {wpanel === "checklist" ? (
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode="web" />
-          </div>
-        ) : wpanel === "prompt" ? (
-          <div className="min-h-0 flex-1 p-5">
-            <PromptPreviewPanel moduleId={initialModuleId ?? null} mode="web" coverage="standard" dimensions="" requirementText={userPrompt} />
-          </div>
-        ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[390px_minmax(0,1fr)]">
-          <section className="min-h-0 overflow-y-auto border-r p-5">
+        {/* 左栏：手风琴导航 —「用例」可向下展开配置，「UI测试要点/提示词」点了在右侧显示 */}
+        <div className="flex w-[340px] shrink-0 flex-col overflow-y-auto border-r">
+          <button
+            type="button"
+            onClick={() => setWpanel("cases")}
+            className={cn("flex items-center justify-between border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "cases" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+          >
+            用例
+            <ChevronDown className={cn("h-4 w-4 transition-transform", wpanel === "cases" ? "rotate-180" : "")} />
+          </button>
+          {wpanel === "cases" ? (
+          <section className="p-5">
             <div className="space-y-5">
               <div>
                 <Label>AI 模型</Label>
@@ -510,7 +498,34 @@ export function WebUiCaseGenerationDialog({
               </p>
             </div>
           </section>
-
+          ) : null}
+          {/* UI测试要点 / 提示词 —— 不展开，点了在右侧显示 */}
+          <button
+            type="button"
+            onClick={() => setWpanel("checklist")}
+            className={cn("border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "checklist" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+          >
+            UI 测试要点
+          </button>
+          <button
+            type="button"
+            onClick={() => setWpanel("prompt")}
+            className={cn("border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "prompt" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+          >
+            提示词
+          </button>
+        </div>
+        {/* 右栏内容区：用例=草稿列表 / UI测试要点 / 提示词 */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {wpanel === "checklist" ? (
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode="web" />
+            </div>
+          ) : wpanel === "prompt" ? (
+            <div className="min-h-0 flex-1 p-5">
+              <PromptPreviewPanel moduleId={initialModuleId ?? null} mode="web" coverage="standard" dimensions="" requirementText={userPrompt} />
+            </div>
+          ) : (
           <section className="flex min-h-0 flex-col">
             {!batchId ? (
               <div className="flex flex-1 flex-col items-center justify-center px-8 text-center text-muted-foreground">
@@ -720,8 +735,8 @@ export function WebUiCaseGenerationDialog({
               </>
             )}
           </section>
+          )}
         </div>
-        )}
       </div>
     </SideDrawer>
   );
