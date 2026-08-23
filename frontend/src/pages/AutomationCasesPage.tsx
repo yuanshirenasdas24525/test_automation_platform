@@ -372,6 +372,8 @@ export function AutomationCasesPage({
   const [flagDialogCase, setFlagDialogCase] = useState<ApiCase | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
+  // 点「测试要点」→ 按覆盖用例 id 筛列表（null=不筛）
+  const [caseIdFilter, setCaseIdFilter] = useState<Set<number> | null>(null);
   const [editor, setEditor] = useState<ApiCase | "new" | null>(null);
   const [editorSaving, setEditorSaving] = useState(false);
   const [recordsOpen, setRecordsOpen] = useState(false);
@@ -471,6 +473,7 @@ export function AutomationCasesPage({
 
   const modules = (contentQuery.data ?? []).filter((node) => node.type === "module");
   const cases = casesQuery.data?.items ?? [];
+  const displayedCases = caseIdFilter ? cases.filter((c) => caseIdFilter.has(c.id)) : cases;
   const total = casesQuery.data?.total ?? 0;
   // 用例名带 "0001 " / "12. " / "003、" 这类序号前缀 → 视为已编号；编号按钮据此在"加/去"间切换。
   const numbered = cases.length > 0 && cases.some((c) => /^\d{2,}[ .、]/.test(String(c.name ?? "")));
@@ -941,11 +944,22 @@ export function AutomationCasesPage({
           ) : null}
           {moduleId != null ? (
             <section className="space-y-2">
-              <h3 className="text-sm font-semibold">{caseLabel} 用例（{total}）</h3>
-              {casesQuery.isLoading ? <Loading /> : cases.length === 0 ? <Empty text={`当前模块还没有 ${caseLabel} 用例`} /> : (
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold">{caseLabel} 用例（{caseIdFilter ? `${displayedCases.length}/${total}` : total}）</h3>
+                {caseIdFilter ? (
+                  <button
+                    type="button"
+                    onClick={() => setCaseIdFilter(null)}
+                    className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-0.5 text-xs text-primary hover:bg-primary/20"
+                  >
+                    已按要点筛选 {displayedCases.length} 条 · 显示全部 ✕
+                  </button>
+                ) : null}
+              </div>
+              {casesQuery.isLoading ? <Loading /> : displayedCases.length === 0 ? <Empty text={caseIdFilter ? "该要点覆盖的用例不在当前列表(试试把每页条数设为全部)" : `当前模块还没有 ${caseLabel} 用例`} /> : (
                 <div {...copyPaste.containerProps}>
                   <ApiCaseTable
-                    cases={cases}
+                    cases={displayedCases}
                     moduleId={moduleId}
                     quickEdit={quickEdit}
                     caseType={caseType}
@@ -1066,7 +1080,23 @@ export function AutomationCasesPage({
       />
       {isApiWorkbench ? (
         <>
-          <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" moduleName={trail.at(-1)?.name ?? ""} caseSignature={cases.map((c) => c.id).join(",")} onClose={() => setAiOpen(false)} onInserted={invalidate} />
+          <AiGenerateDialog
+            open={aiOpen}
+            moduleId={moduleId}
+            projectId={projectId}
+            initialMode="interface"
+            moduleName={trail.at(-1)?.name ?? ""}
+            caseSignature={cases.map((c) => c.id).join(",")}
+            onClose={() => setAiOpen(false)}
+            onInserted={invalidate}
+            onFilterCaseIds={(ids) => {
+              if (!ids || ids.length === 0) { toast.info("该要点还没有已入库的用例可筛选"); return; }
+              setPageSize(0); // 显示全部，避免筛中的用例被分页藏在别页
+              setPage(1);
+              setCaseIdFilter(new Set(ids));
+              toast.success(`已按该要点筛选 ${ids.length} 条用例，点弹窗外空白处查看`);
+            }}
+          />
           <PerformanceCasePickerDialog
             open={performancePickerOpen}
             projectId={projectId}
