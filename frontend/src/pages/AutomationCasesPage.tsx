@@ -179,6 +179,44 @@ const STATUS_META: Record<ApiRunStatus, { label: string; className: string }> = 
   skipped: { label: "跳过", className: "bg-zinc-100 text-zinc-600" },
 };
 
+/** 压测工作台（独立「压测」页签）：接口池构建器 + 手动选择 + 去设计压测。 */
+export function PerformancePoolWorkbench({ projectId }: { projectId: number }) {
+  const navigate = useNavigate();
+  const [pool, setPool] = useState<PerformancePoolItem[]>(() => readPerformancePool(projectId));
+  const [pickerOpen, setPickerOpen] = useState(false);
+  useEffect(() => {
+    if (pool.length === 0) window.localStorage.removeItem(performancePoolKey(projectId));
+    else window.localStorage.setItem(performancePoolKey(projectId), JSON.stringify(pool));
+  }, [pool, projectId]);
+  return (
+    <div className="space-y-4 p-6">
+      <PerformancePoolPanel
+        items={pool}
+        onManualSelect={() => setPickerOpen(true)}
+        onMove={(fromIndex, toIndex) =>
+          setPool((current) => {
+            if (fromIndex < 0 || fromIndex >= current.length || toIndex < 0 || toIndex >= current.length || fromIndex === toIndex) return current;
+            const next = [...current];
+            const [moving] = next.splice(fromIndex, 1);
+            next.splice(toIndex, 0, moving);
+            return next;
+          })
+        }
+        onRemove={(caseId) => setPool((current) => current.filter((item) => item.caseId !== caseId))}
+        onClear={() => { setPool([]); toast.success("压测接口池已清空"); }}
+        onDesign={() => navigate(`/projects/${projectId}/performance?case_ids=${pool.map((item) => item.caseId).join(",")}`)}
+      />
+      <PerformanceCasePickerDialog
+        open={pickerOpen}
+        projectId={projectId}
+        poolItems={pool}
+        onAdd={(items) => setPool((current) => mergePerformancePool(current, items))}
+        onClose={() => setPickerOpen(false)}
+      />
+    </div>
+  );
+}
+
 // AI 诊断标记的展示元数据（docs/ai_case_flags_design.md §1）
 const FLAG_META: Record<AiFlagType, { label: string; className: string; Icon: typeof Wrench; hint: string }> = {
   manual_fix: {
@@ -357,7 +395,6 @@ export function AutomationCasesPage({
 } = {}) {
   const { id } = useParams<{ id: string }>();
   const projectId = Number(id);
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const caseLabel = CASE_LABELS[caseType];
   const isApiWorkbench = caseType === "api";
@@ -384,10 +421,6 @@ export function AutomationCasesPage({
   const [runDetailCase, setRunDetailCase] = useState<ApiCase | null>(null);
   const [lockNoteCase, setLockNoteCase] = useState<ApiCase | null>(null);
   const [renumbering, setRenumbering] = useState(false);
-  const [performancePool, setPerformancePool] = useState<PerformancePoolItem[]>(
-    () => readPerformancePool(projectId),
-  );
-  const [performancePickerOpen, setPerformancePickerOpen] = useState(false);
   const requestedUiPlatform = typeof window === "undefined"
     ? null
     : new URLSearchParams(window.location.search).get("uiElements");
@@ -409,17 +442,6 @@ export function AutomationCasesPage({
   const firstModel = (aiModelsQuery.data ?? []).find((m) => m.enabled)?.name ?? "";
   const enabledModels = (aiModelsQuery.data ?? []).filter((m) => m.enabled).map((m) => m.name);
 
-  useEffect(() => {
-    if (!Number.isFinite(projectId)) return;
-    if (performancePool.length === 0) {
-      window.localStorage.removeItem(performancePoolKey(projectId));
-      return;
-    }
-    window.localStorage.setItem(
-      performancePoolKey(projectId),
-      JSON.stringify(performancePool),
-    );
-  }, [performancePool, projectId]);
 
   const handleDiagnose = async (row: ApiCase) => {
     if (!firstModel) {
@@ -894,46 +916,6 @@ export function AutomationCasesPage({
         ) : null}
       </div>
 
-      {isApiWorkbench && moduleId == null ? (
-        <PerformancePoolPanel
-          items={performancePool}
-          onManualSelect={() => setPerformancePickerOpen(true)}
-          onMove={(fromIndex, toIndex) =>
-            setPerformancePool((current) => {
-              if (
-                fromIndex < 0 ||
-                fromIndex >= current.length ||
-                toIndex < 0 ||
-                toIndex >= current.length ||
-                fromIndex === toIndex
-              ) {
-                return current;
-              }
-              const next = [...current];
-              const [moving] = next.splice(fromIndex, 1);
-              next.splice(toIndex, 0, moving);
-              return next;
-            })
-          }
-          onRemove={(caseId) =>
-            setPerformancePool((current) =>
-              current.filter((item) => item.caseId !== caseId),
-            )
-          }
-          onClear={() => {
-            setPerformancePool([]);
-            toast.success("压测接口池已清空");
-          }}
-          onDesign={() =>
-            navigate(
-              `/projects/${projectId}/performance?case_ids=${performancePool
-                .map((item) => item.caseId)
-                .join(",")}`,
-            )
-          }
-        />
-      ) : null}
-
       {contentQuery.isLoading ? <Loading /> : (
         <div className="space-y-6">
           {moduleId == null || modules.length > 0 ? (
@@ -1096,17 +1078,6 @@ export function AutomationCasesPage({
               setCaseIdFilter(new Set(ids));
               toast.success(`已按该要点筛选 ${ids.length} 条用例，点弹窗外空白处查看`);
             }}
-          />
-          <PerformanceCasePickerDialog
-            open={performancePickerOpen}
-            projectId={projectId}
-            poolItems={performancePool}
-            onAdd={(items) =>
-              setPerformancePool((current) =>
-                mergePerformancePool(current, items),
-              )
-            }
-            onClose={() => setPerformancePickerOpen(false)}
           />
         </>
       ) : null}
