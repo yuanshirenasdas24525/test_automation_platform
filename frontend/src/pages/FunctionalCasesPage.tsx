@@ -4189,32 +4189,7 @@ export function AiGenerateDialog({
   ).length;
 
   const generateFooter = view === "generate" ? (
-    stage === "input" ? (
-      <DialogFooter>
-        <Button variant="outline" onClick={outlining ? stopOutline : onClose} disabled={stoppingGeneration}>
-          {outlining && stoppingGeneration ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" /> 停止中…
-            </>
-          ) : outlining ? (
-            "停止"
-          ) : (
-            "取消"
-          )}
-        </Button>
-        <Button onClick={makeOutline} disabled={outlining || !modelName}>
-          {outlining ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" /> 规划测试点…
-            </>
-          ) : (
-            <>
-              <Sparkles className="h-4 w-4" /> 生成大纲
-            </>
-          )}
-        </Button>
-      </DialogFooter>
-    ) : stage === "outline" ? (
+    stage === "input" ? null : stage === "outline" ? (
       <DialogFooter>
         <Button variant="outline" onClick={() => setStage("input")}>
           上一步
@@ -4446,7 +4421,8 @@ export function AiGenerateDialog({
           </nav>
           {/* 需求 & 素材 */}
           {panel === "req" ? (
-          <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="flex-1 space-y-3 overflow-y-auto pr-1">
             {allowModeSwitch ? (
               <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
                 {(["functional", "interface"] as const).map((mo) => (
@@ -4709,6 +4685,14 @@ export function AiGenerateDialog({
               </div>
             ) : null}
           </div>
+          {/* 底部固定操作：生成大纲（点后跳「大纲 & 用例」并开始生成） */}
+          <div className="flex shrink-0 items-center justify-end border-t pt-3">
+            <Button onClick={makeOutline} disabled={outlining || !modelName}>
+              {outlining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+              {outlining ? "规划测试点…" : points.length ? "重新生成大纲" : "生成大纲"}
+            </Button>
+          </div>
+          </div>
           ) : null}
           {/* 功能要点 #2（满屏） */}
           {panel === "checklist" ? (
@@ -4745,9 +4729,13 @@ export function AiGenerateDialog({
           <div className="flex min-h-0 flex-1 flex-col gap-3">
             {/* 工具条 #2：生成大纲 / 查缺补漏 / 生成选中 / 写入 */}
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b pb-2">
-              <Button size="sm" onClick={makeOutline} disabled={outlining || !modelName}>
+              <Button
+                size="sm"
+                onClick={outlining ? stopOutline : makeOutline}
+                disabled={!modelName || (outlining && stoppingGeneration)}
+              >
                 {outlining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                {points.length ? "重新生成大纲" : "生成大纲"}
+                {outlining ? (stoppingGeneration ? "停止中…" : "停止") : points.length ? "重新生成大纲" : "生成大纲"}
               </Button>
               {points.length > 0 ? (
                 <Button size="sm" variant="outline" onClick={fillGaps} disabled={gapFilling || batchRunning}>
