@@ -4253,24 +4253,25 @@ export function AiGenerateDialog({
       footer={generateFooter}
       title={
         <>
-          <Sparkles className="h-[17px] w-[17px] text-primary" />
+          <Sparkles className="h-[17px] w-[17px] shrink-0 text-primary" />
           AI 用例生成工作台
+          <span className="ml-1 truncate text-xs font-normal text-muted-foreground">
+            · {moduleName ? `${moduleName} 模块` : "未选模块"} · {mode === "interface" ? "接口用例" : "功能用例"}
+          </span>
+        </>
+      }
+      headerExtra={
+        <>
+          <span className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5 text-xs">
+            模型 <b className="font-medium text-foreground">{modelName || "未选"}</b>
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5 text-xs">
+            覆盖 <b className="font-medium text-foreground">{coverage === "standard" ? "标准" : coverage === "full" ? "全面" : "穷尽"}</b>
+          </span>
         </>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
-        {/* 顶栏 #4：模块 · 用例类型 + 模型/覆盖 pill */}
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">
-            {moduleName ? `${moduleName} 模块` : "未选模块"} · {mode === "interface" ? "接口用例" : "功能用例"}
-          </span>
-          <span className="ml-auto inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5">
-            模型 <b className="font-medium text-foreground">{modelName || "未选"}</b>
-          </span>
-          <span className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5">
-            覆盖 <b className="font-medium text-foreground">{coverage === "standard" ? "标准" : coverage === "full" ? "全面" : "穷尽"}</b>
-          </span>
-        </div>
         <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
           <button onClick={() => setView("generate")} className={cn("rounded px-3 py-1", view === "generate" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>生成用例</button>
           <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>变更调整</button>
