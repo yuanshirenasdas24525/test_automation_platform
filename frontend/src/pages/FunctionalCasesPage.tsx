@@ -4678,22 +4678,20 @@ export function AiGenerateDialog({
           </div>
           </div>
           ) : null}
-          {/* 功能要点 #2（满屏） */}
-          {panel === "checklist" ? (
-            <div className="flex-1 overflow-y-auto pr-1">
-              <FeatureChecklistPanel
-                moduleId={moduleId}
-                modelName={modelName}
-                requirementText={text}
-                caseSignature={caseSignature}
-                mode={mode}
-                onFilterAspect={onFilterCaseIds}
-                onSupplement={(aspect, hint) =>
-                  makeOutline(`请重点补充「${aspect}」这一方面的测试点：${hint}`)
-                }
-              />
-            </div>
-          ) : null}
+          {/* 功能要点 #2（满屏）—— 常驻挂载(仅隐藏)，分析中切走再回来不丢状态 */}
+          <div className={cn("min-h-0 flex-1 overflow-y-auto pr-1", panel !== "checklist" && "hidden")}>
+            <FeatureChecklistPanel
+              moduleId={moduleId}
+              modelName={modelName}
+              requirementText={text}
+              caseSignature={caseSignature}
+              mode={mode}
+              onFilterAspect={onFilterCaseIds}
+              onSupplement={(aspect, hint) =>
+                makeOutline(`请重点补充「${aspect}」这一方面的测试点：${hint}`)
+              }
+            />
+          </div>
           {/* 提示词预览 #1（满屏） */}
           {panel === "prompt" ? (
             <div className="flex min-h-0 flex-1 flex-col pr-1">
