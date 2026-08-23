@@ -2799,6 +2799,10 @@ type AiGenerateDraft = {
   digest: string;
   apiContract?: Record<string, unknown>;
   generationRunId?: number | null;
+  scopeFilter?: {
+    before: number; kept: number; keyword_dropped: string[]; llm_dropped: string[];
+    dup_dropped: string[]; cap_dropped: string[]; cap: number;
+  } | null;
   points: AiOutlinePoint[];
   pickedPoints: number[];
   genQueue: AiOutlinePoint[];
@@ -3259,6 +3263,7 @@ export function AiGenerateDialog({
     setDigest(draft?.digest ?? "");
     setApiContract(draft?.apiContract ?? {});
     setGenerationRunId(draft?.generationRunId ?? null);
+    setScopeFilter(draft?.scopeFilter ?? null);
     setPoints(draft?.points ?? []);
     setPickedPoints(new Set(draft?.pickedPoints ?? []));
     setGenQueue(draft?.genQueue ?? []);
@@ -3314,6 +3319,7 @@ export function AiGenerateDialog({
       digest,
       apiContract,
       generationRunId,
+      scopeFilter,
       points,
       pickedPoints: [...pickedPoints],
       genQueue,
@@ -3698,6 +3704,7 @@ export function AiGenerateDialog({
     setDigest(draft.digest ?? "");
     setApiContract(draft.apiContract ?? {});
     setGenerationRunId(draft.generationRunId ?? null);
+    setScopeFilter(draft.scopeFilter ?? null);
     setPoints(draft.points ?? []);
     setPickedPoints(new Set(draft.pickedPoints ?? []));
     setGenQueue(draft.genQueue ?? []);
