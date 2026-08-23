@@ -1192,7 +1192,8 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
             return;
           }
           setCaseIdFilter(new Set(ids));
-          setAiGenOpen(false); // 关抽屉，露出被筛选的用例列表
+          // 不关抽屉：筛选已应用到左侧列表，点抽屉外空白处即可收起查看（顶部「显示全部」还原）
+          toast.success(`已按该要点筛选 ${ids.length} 条用例，点此弹窗外空白处查看`);
         }}
       />
     </div>
@@ -2968,6 +2969,8 @@ export function AiGenerateDialog({
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
   // 左导航当前面板（#1 左导航+右内容切换）
   const [panel, setPanel] = useState<"board" | "req" | "checklist" | "prompt" | "overview">("req");
+  // 看板内「大纲 / 用例」子切换（#5，记住选择）
+  const [boardTab, setBoardTab] = useState<"outline" | "cases">("outline");
   // 抽屉顶部 Tab：模块大纲（长期保存）/ 生成用例（AI 向导）
   const [view, setView] = useState<"outline" | "generate" | "history">("generate");
   const [historyLoadingRunId, setHistoryLoadingRunId] = useState<number | null>(null);
@@ -3437,7 +3440,14 @@ export function AiGenerateDialog({
       toast.error("请先选择 AI 模型");
       return;
     }
+    if (!text.trim() && images.length === 0 && docs.length === 0) {
+      // #4 先引导填需求，别让空需求直接生成
+      setPanel("req");
+      toast.info("请先在「需求 & 素材」填写需求或上传素材，再生成大纲");
+      return;
+    }
     setPanel("board"); // 生成大纲即切到看板，结果就在眼前
+    setBoardTab("outline");
     outlineAbortRef.current?.abort();
     const controller = new AbortController();
     outlineAbortRef.current = controller;
@@ -3623,6 +3633,8 @@ export function AiGenerateDialog({
       toast.info("请至少选一个测试点");
       return;
     }
+    setPanel("board");
+    setBoardTab("cases"); // 生成用例即切到「用例」子页
     // delete 测试点不过 AI、不需要契约；纯删除计划即使没解析到 OpenAPI 契约也该放行。
     const needsContract = q.some((p) => (p.action ?? "add") !== "delete");
     if (mode === "interface" && needsContract && apiContractOperationCount === 0) {
@@ -4729,9 +4741,9 @@ export function AiGenerateDialog({
           ) : null}
           {/* 大纲 & 用例看板 #3：大纲+用例同屏常驻 */}
           {panel === "board" ? (
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
             {/* 工具条 #2：生成大纲 / 查缺补漏 / 生成选中 / 写入 */}
-            <div className="flex flex-wrap items-center gap-2 border-b pb-2">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b pb-2">
               <Button size="sm" onClick={makeOutline} disabled={outlining || !modelName}>
                 {outlining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                 {points.length ? "重新生成大纲" : "生成大纲"}
@@ -4760,13 +4772,32 @@ export function AiGenerateDialog({
                 </Button>
               ) : null}
             </div>
-            {points.length === 0 && cases.length === 0 && !outlining && !batchRunning ? (
-              <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                先在左侧填写需求 → 点「生成大纲」，规划出的测试点与生成的用例会显示在这里（无需翻页）
+            {/* 子切换 #5：大纲 / 用例 来回切，选择保留 */}
+            {points.length > 0 || cases.length > 0 ? (
+              <div className="flex shrink-0 items-center gap-1 text-xs">
+                <button
+                  onClick={() => setBoardTab("outline")}
+                  className={cn("rounded px-3 py-1", boardTab === "outline" ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted")}
+                >
+                  大纲{points.length ? `（${points.length}）` : ""}
+                </button>
+                <button
+                  onClick={() => setBoardTab("cases")}
+                  className={cn("rounded px-3 py-1", boardTab === "cases" ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted")}
+                >
+                  用例{cases.length ? `（${cases.length}）` : ""}
+                </button>
               </div>
             ) : null}
-            {points.length > 0 || outlining ? (
-            <div className="flex shrink-0 flex-col gap-3">
+            {/* 滚动内容区（大纲/用例各自占满并可滚动，修复底部截断） */}
+            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            {points.length === 0 && cases.length === 0 && !outlining && !batchRunning ? (
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                先在左侧「需求 & 素材」填写需求 → 点「生成大纲」，规划出的测试点会显示在这里
+              </div>
+            ) : null}
+            {boardTab === "outline" && (points.length > 0 || outlining) ? (
+            <div className="flex flex-col gap-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
@@ -4816,7 +4847,7 @@ export function AiGenerateDialog({
                 <div className="mt-1 whitespace-pre-wrap">{digest}</div>
               </details>
             ) : null}
-            <div className="max-h-[38vh] space-y-1 overflow-y-auto pr-1">
+            <div className="space-y-1">
               {points.map((p, i) => (
                 <label
                   key={i}
@@ -4835,8 +4866,8 @@ export function AiGenerateDialog({
             </div>
           </div>
             ) : null}
-            {cases.length > 0 || batchRunning ? (
-            <div className="shrink-0 space-y-3">
+            {boardTab === "cases" && (cases.length > 0 || batchRunning) ? (
+            <div className="space-y-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 已生成 {cases.length} 条 · 测试点 {cursor}/{genQueue.length}
@@ -5135,6 +5166,7 @@ export function AiGenerateDialog({
             </div>
           </div>
             ) : null}
+            </div>
           </div>
           ) : null}
         </div>
