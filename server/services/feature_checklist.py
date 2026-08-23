@@ -71,6 +71,20 @@ def build_checklist(
                 "coverage": _coverage_status(len(covered_ids)),
             }
         )
+    # 兜底：AI 未归入任何要点的已有用例，收进「其他（未归类）」，保证各要点覆盖数之和 = 总用例数
+    unclaimed = [c for c in (existing_cases or []) if isinstance((c or {}).get("id"), int) and c["id"] not in claimed]
+    if unclaimed:
+        out.append(
+            {
+                "aspect": "其他（未归类）",
+                "what_to_test": "AI 未归入上述任一要点的用例（可人工再分类或补充要点）",
+                "gap_hint": "",
+                "covered_cases": [str(c.get("name") or "") for c in unclaimed],
+                "covered_case_ids": [c["id"] for c in unclaimed],
+                "covered_count": len(unclaimed),
+                "coverage": _coverage_status(len(unclaimed)),
+            }
+        )
     return out
 
 
