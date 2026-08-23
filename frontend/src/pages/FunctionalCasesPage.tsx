@@ -4777,6 +4777,10 @@ export function AiGenerateDialog({
                 <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">保留 {scopeFilter.kept}</span>
                 <span className="text-muted-foreground/70" title="已自动剔除注水/越界/重复的测试点">已过滤注水/越界</span>
               </div>
+            ) : points.length > 0 ? (
+              <div className="shrink-0 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
+                过滤统计需点「重新生成大纲」后显示（当前大纲来自草稿恢复，无统计数据）
+              </div>
             ) : null}
             {/* 类别筛选 #2：分块查看，正向/异常/边界… */}
             {points.length > 0 ? (() => {
