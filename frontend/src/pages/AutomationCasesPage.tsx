@@ -1066,7 +1066,7 @@ export function AutomationCasesPage({
       />
       {isApiWorkbench ? (
         <>
-          <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" onClose={() => setAiOpen(false)} onInserted={invalidate} />
+          <AiGenerateDialog open={aiOpen} moduleId={moduleId} projectId={projectId} initialMode="interface" moduleName={trail.at(-1)?.name ?? ""} caseSignature={cases.map((c) => c.id).join(",")} onClose={() => setAiOpen(false)} onInserted={invalidate} />
           <PerformanceCasePickerDialog
             open={performancePickerOpen}
             projectId={projectId}

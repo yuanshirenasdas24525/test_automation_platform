@@ -30,7 +30,7 @@ type ChecklistAspect = {
   coverage: "covered" | "thin" | "none";
 };
 type ChecklistData = { aspects: ChecklistAspect[]; summary: { total: number; covered: number; gaps: number } };
-const CK_KEY = (mid: number) => `feature-checklist:v2:${mid}`;
+const CK_KEY = (mid: number, mode: string) => `feature-checklist:v2:${mode}:${mid}`;
 
 /** #2 功能测试要点 Checklist —— 结果按模块缓存到 localStorage，打开即显示；
  * 用例有增删（caseSignature 变化）时提示可重新分析，其余时间保留上次结果。 */
@@ -39,12 +39,15 @@ export function FeatureChecklistPanel({
   modelName,
   requirementText,
   caseSignature,
+  mode = "functional",
   onFilterAspect,
   onSupplement,
 }: {
   moduleId: number | null;
   modelName: string;
   requirementText: string;
+  /** functional=功能要点；interface=接口要点。 */
+  mode?: "functional" | "interface";
   /** 当前模块用例的签名（增删会变），用于判断缓存的分析是否过期。 */
   caseSignature: string;
   /** 点某个要点 → 用它覆盖的用例 id 去筛主列表。缺省则要点不可点。 */
@@ -60,6 +63,7 @@ export function FeatureChecklistPanel({
         module_id: moduleId as number,
         model_name: modelName,
         requirement_text: requirementText.trim(),
+        mode,
       }),
   });
   const { reset } = m;
@@ -73,7 +77,7 @@ export function FeatureChecklistPanel({
       return;
     }
     try {
-      const raw = localStorage.getItem(CK_KEY(moduleId));
+      const raw = localStorage.getItem(CK_KEY(moduleId, mode));
       if (raw) {
         const c = JSON.parse(raw) as ChecklistData & { signature?: string };
         setData({ aspects: c.aspects ?? [], summary: c.summary });
@@ -85,7 +89,7 @@ export function FeatureChecklistPanel({
     }
     setData(null);
     setSavedSig(null);
-  }, [moduleId, reset]);
+  }, [moduleId, mode, reset]);
 
   const analyze = () =>
     m.mutate(undefined, {
@@ -95,7 +99,7 @@ export function FeatureChecklistPanel({
         setSavedSig(caseSignature);
         try {
           if (moduleId)
-            localStorage.setItem(CK_KEY(moduleId), JSON.stringify({ ...payload, signature: caseSignature, ts: Date.now() }));
+            localStorage.setItem(CK_KEY(moduleId, mode), JSON.stringify({ ...payload, signature: caseSignature, ts: Date.now() }));
         } catch {
           /* ignore */
         }
@@ -108,7 +112,7 @@ export function FeatureChecklistPanel({
     <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 flex items-center gap-2">
         <ClipboardCheck className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">该测什么 · 功能测试要点</span>
+        <span className="text-sm font-medium">该测什么 · {mode === "interface" ? "接口测试要点" : "功能测试要点"}</span>
         {data ? (
           <>
             <span className="ml-auto text-xs text-muted-foreground">

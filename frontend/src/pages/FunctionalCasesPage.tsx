@@ -4386,7 +4386,7 @@ export function AiGenerateDialog({
             {([
               { key: "board", label: "大纲 & 用例", badge: points.length ? String(points.length) : "" },
               { key: "req", label: "需求 & 素材", badge: "" },
-              ...(mode === "functional" ? [{ key: "checklist", label: "功能要点", badge: "" }] : []),
+              { key: "checklist", label: mode === "interface" ? "接口要点" : "功能要点", badge: "" },
               { key: "prompt", label: "提示词预览", badge: "" },
               { key: "overview", label: "项目概览", badge: "" },
             ] as { key: typeof panel; label: string; badge: string }[]).map((it) => (
@@ -4686,6 +4686,7 @@ export function AiGenerateDialog({
                 modelName={modelName}
                 requirementText={text}
                 caseSignature={caseSignature}
+                mode={mode}
                 onFilterAspect={onFilterCaseIds}
                 onSupplement={(aspect, hint) =>
                   makeOutline(`请重点补充「${aspect}」这一方面的测试点：${hint}`)
