@@ -4184,39 +4184,8 @@ export function AiGenerateDialog({
   const pendingInsertCount = cases.filter(
     (c, i) => picked.has(i) && !writtenNames.has(c.name),
   ).length;
-  const pendingManualAdjustmentCount = cases.filter(
-    (c, i) => picked.has(i) && !writtenNames.has(c.name) && isAiCaseBlocked(c, mode),
-  ).length;
-
-  const generateFooter = view === "generate" ? (
-    stage === "input" ? null : stage === "outline" ? (
-      <DialogFooter>
-        <Button variant="outline" onClick={() => setStage("input")}>
-          上一步
-        </Button>
-        <Button onClick={startGeneration} disabled={pickedPoints.size === 0}>
-          <Sparkles className="h-4 w-4" /> 开始生成（{pickedPoints.size} 个点）
-        </Button>
-      </DialogFooter>
-    ) : (
-      <DialogFooter>
-        <Button variant="outline" onClick={onClose}>
-          关闭
-        </Button>
-        <Button
-          onClick={insert}
-          disabled={inserting || batchRunning || enhancing || revalidating || pendingInsertCount === 0}
-        >
-          {inserting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-          {pendingInsertCount === 0 && writtenNames.size > 0
-            ? "已全部写入"
-            : pendingManualAdjustmentCount > 0
-              ? `写入 ${pendingInsertCount} 条（待调整 ${pendingManualAdjustmentCount}）`
-              : `可写入 ${pendingInsertCount} 条`}
-        </Button>
-      </DialogFooter>
-    )
-  ) : null;
+  // 生成视图不再用底部 footer：所有操作都在看板顶部工具条 / 需求面板底部按钮里
+  const generateFooter = null;
 
   return (
     <SideDrawer
