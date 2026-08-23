@@ -1181,6 +1181,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         projectId={projectId}
         initialMode="functional"
         caseSignature={allCases.map((c) => c.id).join(",")}
+        moduleName={currentParent?.name ?? ""}
         onClose={() => setAiGenOpen(false)}
         onInserted={() => { invalidateAll(); }}
         onFilterCaseNames={(names) => {
@@ -2921,6 +2922,7 @@ export function AiGenerateDialog({
   initialMode = "functional",
   allowModeSwitch = false,
   caseSignature = "",
+  moduleName = "",
   onClose,
   onInserted,
   onFilterCaseNames,
@@ -2932,6 +2934,8 @@ export function AiGenerateDialog({
   allowModeSwitch?: boolean;
   /** 当前模块用例签名（增删会变），透传给功能要点面板判断缓存是否过期。 */
   caseSignature?: string;
+  /** 当前模块名（顶栏展示用）。 */
+  moduleName?: string;
   onClose: () => void;
   onInserted: () => void;
   /** 点击功能要点 → 按该要点覆盖的用例名筛主列表（并关抽屉）。 */
@@ -2962,6 +2966,8 @@ export function AiGenerateDialog({
   const [images, setImages] = useState<File[]>([]);
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
+  // 左导航当前面板（#1 左导航+右内容切换）
+  const [panel, setPanel] = useState<"board" | "req" | "checklist" | "prompt" | "overview">("req");
   // 抽屉顶部 Tab：模块大纲（长期保存）/ 生成用例（AI 向导）
   const [view, setView] = useState<"outline" | "generate" | "history">("generate");
   const [historyLoadingRunId, setHistoryLoadingRunId] = useState<number | null>(null);
@@ -3431,6 +3437,7 @@ export function AiGenerateDialog({
       toast.error("请先选择 AI 模型");
       return;
     }
+    setPanel("board"); // 生成大纲即切到看板，结果就在眼前
     outlineAbortRef.current?.abort();
     const controller = new AbortController();
     outlineAbortRef.current = controller;
@@ -4235,11 +4242,23 @@ export function AiGenerateDialog({
       title={
         <>
           <Sparkles className="h-[17px] w-[17px] text-primary" />
-          AI 生成{mode === "interface" ? "接口" : "功能"}用例
+          AI 用例生成工作台
         </>
       }
     >
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
+        {/* 顶栏 #4：模块 · 用例类型 + 模型/覆盖 pill */}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">
+            {moduleName ? `${moduleName} 模块` : "未选模块"} · {mode === "interface" ? "接口用例" : "功能用例"}
+          </span>
+          <span className="ml-auto inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5">
+            模型 <b className="font-medium text-foreground">{modelName || "未选"}</b>
+          </span>
+          <span className="inline-flex items-center gap-1 rounded-full border bg-muted/40 px-2.5 py-0.5">
+            覆盖 <b className="font-medium text-foreground">{coverage === "standard" ? "标准" : coverage === "full" ? "全面" : "穷尽"}</b>
+          </span>
+        </div>
         <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
           <button onClick={() => setView("generate")} className={cn("rounded px-3 py-1", view === "generate" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>生成用例</button>
           <button onClick={() => setView("outline")} className={cn("rounded px-3 py-1", view === "outline" ? "bg-background font-medium shadow-sm" : "text-muted-foreground")}>变更调整</button>
@@ -4351,9 +4370,29 @@ export function AiGenerateDialog({
           </div>
         ) : (
         <>
-        <p className="text-xs text-muted-foreground">
-          先出测试点大纲 → 你确认 → 逐批生成控件级详细用例（参考其它模块、保持连贯），审阅后写入当前模块
-        </p>
+        {/* 阶段进度条 #3：需求输入 → 大纲 → 生成&审阅 → 入库 */}
+        <div className="flex items-center gap-1.5 text-xs">
+          {([
+            { key: "input", label: "需求输入", done: points.length > 0 || cases.length > 0, count: "" },
+            { key: "outline", label: "大纲", done: points.length > 0, count: points.length ? `${points.length} 点` : "" },
+            { key: "cases", label: "生成 & 审阅", done: cases.length > 0, count: cases.length ? `已生成 ${cases.length}` : "" },
+            { key: "write", label: "入库", done: writtenNames.size > 0, count: writtenNames.size ? `已入 ${writtenNames.size}` : "" },
+          ] as const).map((s, i, arr) => (
+            <div key={s.key} className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-semibold",
+                  s.done ? "bg-emerald-500 text-white" : stage === s.key ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+                )}
+              >
+                {s.done ? "✓" : i + 1}
+              </span>
+              <span className={cn(stage === s.key ? "font-medium text-foreground" : "text-muted-foreground")}>{s.label}</span>
+              {s.count ? <span className="text-muted-foreground/70">{s.count}</span> : null}
+              {i < arr.length - 1 ? <span className="mx-1 h-px w-6 bg-border" /> : null}
+            </div>
+          ))}
+        </div>
         {draftNotice ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-primary">
             {savedDraft ? (
@@ -4370,8 +4409,31 @@ export function AiGenerateDialog({
         ) : null}
 
         <div className="flex min-h-0 flex-1 gap-3">
-          {/* 左栏：需求/配置/透明度（常驻，不随生成阶段切换而消失） */}
-          <div className="flex w-[400px] shrink-0 flex-col gap-3 overflow-y-auto border-r pr-3">
+          {/* 左导航 #1：点导航项 → 右侧满屏展示；看板/需求/要点/提示词/概览互切但状态保留 */}
+          <nav className="flex w-28 shrink-0 flex-col gap-0.5 border-r pr-2 text-xs">
+            {([
+              { key: "board", label: "大纲 & 用例", badge: points.length ? String(points.length) : "" },
+              { key: "req", label: "需求 & 素材", badge: "" },
+              ...(mode === "functional" ? [{ key: "checklist", label: "功能要点", badge: "" }] : []),
+              { key: "prompt", label: "提示词预览", badge: "" },
+              { key: "overview", label: "项目概览", badge: "" },
+            ] as { key: typeof panel; label: string; badge: string }[]).map((it) => (
+              <button
+                key={it.key}
+                onClick={() => setPanel(it.key)}
+                className={cn(
+                  "flex items-center justify-between rounded px-2 py-1.5 text-left",
+                  panel === it.key ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                <span>{it.label}</span>
+                {it.badge ? <span className="text-[10px] text-muted-foreground">{it.badge}</span> : null}
+              </button>
+            ))}
+          </nav>
+          {/* 需求 & 素材 */}
+          {panel === "req" ? (
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
             {allowModeSwitch ? (
               <div className="flex w-fit items-center gap-1 rounded-md border bg-muted/30 p-0.5 text-xs">
                 {(["functional", "interface"] as const).map((mo) => (
@@ -4601,25 +4663,6 @@ export function AiGenerateDialog({
                 标准会明显减少数量；穷尽会显著增加测试点，适合最后补全覆盖。
               </p>
             </div>
-            {/* 透明度面板（#1 提示词预览 / #2 功能测试要点）——按需触发，不影响生成 */}
-            <div className="space-y-2 pt-1">
-              {mode === "functional" ? (
-                <FeatureChecklistPanel
-                  moduleId={moduleId}
-                  modelName={modelName}
-                  requirementText={text}
-                  caseSignature={caseSignature}
-                  onFilterAspect={onFilterCaseNames}
-                />
-              ) : null}
-              <PromptPreviewPanel
-                moduleId={moduleId}
-                mode={mode}
-                coverage={coverage}
-                dimensions={mode === "interface" ? [...dimensions].join(",") : ""}
-                requirementText={text}
-              />
-            </div>
             {mode === "interface" ? (
               <div className="space-y-1">
                 <Label className="text-xs">测试维度（可选，不勾=全部）</Label>
@@ -4652,17 +4695,71 @@ export function AiGenerateDialog({
                 {outlineError}
               </div>
             ) : null}
-            <details className="rounded-md border bg-muted/20 p-2">
-              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
-                项目概览 · 模块关联（生成时会据此设计跨模块联动用例）
-              </summary>
-              <div className="mt-2">
-                <ProjectAiOverviewView projectId={projectId} />
-              </div>
-            </details>
           </div>
-          {/* 右栏：大纲 + 用例 常驻同屏，整体滚动，不再翻页丢状态 */}
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+          ) : null}
+          {/* 功能要点 #2（满屏） */}
+          {panel === "checklist" ? (
+            <div className="flex-1 overflow-y-auto pr-1">
+              <FeatureChecklistPanel
+                moduleId={moduleId}
+                modelName={modelName}
+                requirementText={text}
+                caseSignature={caseSignature}
+                onFilterAspect={onFilterCaseNames}
+              />
+            </div>
+          ) : null}
+          {/* 提示词预览 #1（满屏） */}
+          {panel === "prompt" ? (
+            <div className="flex-1 overflow-y-auto pr-1">
+              <PromptPreviewPanel
+                moduleId={moduleId}
+                mode={mode}
+                coverage={coverage}
+                dimensions={mode === "interface" ? [...dimensions].join(",") : ""}
+                requirementText={text}
+              />
+            </div>
+          ) : null}
+          {/* 项目概览（满屏） */}
+          {panel === "overview" ? (
+            <div className="flex-1 overflow-y-auto pr-1">
+              <ProjectAiOverviewView projectId={projectId} />
+            </div>
+          ) : null}
+          {/* 大纲 & 用例看板 #3：大纲+用例同屏常驻 */}
+          {panel === "board" ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            {/* 工具条 #2：生成大纲 / 查缺补漏 / 生成选中 / 写入 */}
+            <div className="flex flex-wrap items-center gap-2 border-b pb-2">
+              <Button size="sm" onClick={makeOutline} disabled={outlining || !modelName}>
+                {outlining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                {points.length ? "重新生成大纲" : "生成大纲"}
+              </Button>
+              {points.length > 0 ? (
+                <Button size="sm" variant="outline" onClick={fillGaps} disabled={gapFilling || batchRunning}>
+                  {gapFilling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                  查缺补漏
+                </Button>
+              ) : null}
+              {points.length > 0 ? (
+                <Button size="sm" variant="outline" onClick={startGeneration} disabled={pickedPoints.size === 0 || batchRunning}>
+                  <Sparkles className="h-3.5 w-3.5" /> 生成选中（{pickedPoints.size}）
+                </Button>
+              ) : null}
+              {cases.length > 0 ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto"
+                  onClick={insert}
+                  disabled={inserting || batchRunning || pendingInsertCount === 0}
+                >
+                  {inserting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                  写入（{pendingInsertCount}）
+                </Button>
+              ) : null}
+            </div>
             {points.length === 0 && cases.length === 0 && !outlining && !batchRunning ? (
               <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
                 先在左侧填写需求 → 点「生成大纲」，规划出的测试点与生成的用例会显示在这里（无需翻页）
@@ -5039,6 +5136,7 @@ export function AiGenerateDialog({
           </div>
             ) : null}
           </div>
+          ) : null}
         </div>
         </>
         )}
