@@ -26,16 +26,23 @@ def _coverage_status(n: int) -> str:
 
 def build_checklist(
     aspects_raw: Any,
-    existing_names: list[str],
+    existing_cases: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """把 AI 的 aspects 规整成 [{aspect, what_to_test, covered_cases, covered_count, coverage}]。
+    """把 AI 的 aspects 规整成 [{aspect, what_to_test, covered_cases, covered_case_ids, covered_count, coverage}]。
 
-    - 防御性：covered_cases 只保留**确实存在于本模块**的用例名（AI 偶尔会编名字）；
-    - 一条用例只应归一个要点，这里也做去重，避免两个要点都认领同一条把覆盖数灌水。
+    - existing_cases：本模块用例 [{id, name}, ...]；用于把 AI 给的用例名**解析成真实 id**，
+      前端直接按 id 筛选（避免名称匹配的各种坑：编号前缀 / 重命名 / 大小写空白）。
+    - 防御性：covered 只保留**确实存在于本模块**的用例（AI 偶尔会编名字）；
+    - 一条用例只归一个要点，去重避免两个要点都认领同一条把覆盖数灌水。
     """
-    existing_set = {str(n).strip() for n in (existing_names or []) if str(n).strip()}
+    name_to_id: dict[str, int] = {}
+    for c in existing_cases or []:
+        nm = str((c or {}).get("name") or "").strip()
+        cid = (c or {}).get("id")
+        if nm and isinstance(cid, int) and nm not in name_to_id:
+            name_to_id[nm] = cid
     out: list[dict[str, Any]] = []
-    claimed: set[str] = set()
+    claimed: set[int] = set()
     if not isinstance(aspects_raw, list):
         return out
     for a in aspects_raw:
@@ -45,18 +52,22 @@ def build_checklist(
         if not aspect:
             continue
         covered: list[str] = []
+        covered_ids: list[int] = []
         for name in a.get("covered_cases") or []:
             nm = str(name or "").strip()
-            if nm and nm in existing_set and nm not in claimed:
+            cid = name_to_id.get(nm)
+            if cid is not None and cid not in claimed:
                 covered.append(nm)
-                claimed.add(nm)
+                covered_ids.append(cid)
+                claimed.add(cid)
         out.append(
             {
                 "aspect": aspect[:80],
                 "what_to_test": str(a.get("what_to_test") or "").strip(),
                 "covered_cases": covered,
-                "covered_count": len(covered),
-                "coverage": _coverage_status(len(covered)),
+                "covered_case_ids": covered_ids,
+                "covered_count": len(covered_ids),
+                "coverage": _coverage_status(len(covered_ids)),
             }
         )
     return out

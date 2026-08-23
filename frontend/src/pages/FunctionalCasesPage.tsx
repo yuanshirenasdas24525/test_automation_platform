@@ -1184,16 +1184,14 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         moduleName={currentParent?.name ?? ""}
         onClose={() => setAiGenOpen(false)}
         onInserted={() => { invalidateAll(); }}
-        onFilterCaseNames={(names) => {
-          const wanted = new Set(names.map(stripAiCaseSequence));
-          const ids = allCases.filter((c) => wanted.has(stripAiCaseSequence(c.name))).map((c) => c.id);
-          if (ids.length === 0) {
-            toast.info("该要点覆盖的用例还没入库，无法筛选");
+        onFilterCaseIds={(ids) => {
+          if (!ids || ids.length === 0) {
+            toast.info("该要点还没有已入库的用例可筛选");
             return;
           }
           setCaseIdFilter(new Set(ids));
           // 不关抽屉：筛选已应用到左侧列表，点抽屉外空白处即可收起查看（顶部「显示全部」还原）
-          toast.success(`已按该要点筛选 ${ids.length} 条用例，点此弹窗外空白处查看`);
+          toast.success(`已按该要点筛选 ${ids.length} 条用例，点弹窗外空白处查看`);
         }}
       />
     </div>
@@ -2926,7 +2924,7 @@ export function AiGenerateDialog({
   moduleName = "",
   onClose,
   onInserted,
-  onFilterCaseNames,
+  onFilterCaseIds,
 }: {
   open: boolean;
   moduleId: number | null;
@@ -2939,8 +2937,8 @@ export function AiGenerateDialog({
   moduleName?: string;
   onClose: () => void;
   onInserted: () => void;
-  /** 点击功能要点 → 按该要点覆盖的用例名筛主列表（并关抽屉）。 */
-  onFilterCaseNames?: (names: string[]) => void;
+  /** 点击功能要点 → 按该要点覆盖的用例 id 筛主列表。 */
+  onFilterCaseIds?: (ids: number[]) => void;
 }) {
   // 小批量先过契约编译和安全探测，再扩展后续批次；减少一次生成大量必挂用例。
   const BATCH_SIZE = 4;
@@ -4671,7 +4669,7 @@ export function AiGenerateDialog({
                 modelName={modelName}
                 requirementText={text}
                 caseSignature={caseSignature}
-                onFilterAspect={onFilterCaseNames}
+                onFilterAspect={onFilterCaseIds}
               />
             </div>
           ) : null}
@@ -4760,44 +4758,6 @@ export function AiGenerateDialog({
               <span className="text-muted-foreground">
                 共 {points.length} 个测试点，已选 {pickedPoints.size} 个（可勾掉不想要的）
               </span>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <select
-                  value={gapModelName}
-                  onChange={(e) => setGapModelName(e.target.value)}
-                  disabled={gapFilling || batchRunning}
-                  className="h-8 max-w-[260px] rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60"
-                  title="查漏补缺使用的 AI 模型；Codex CLI / Claude Code 只用于查漏，不用于后续批量生成"
-                >
-                  {gapModels.length === 0 ? (
-                    <option value="">（无可用模型）</option>
-                  ) : null}
-                  {gapModels.map((m) => (
-                    <option key={m.name} value={m.name}>
-                      {m.name}（{m.provider}/{m.model}）
-                      {isCliProvider(String(m.provider)) ? " · CLI" : m.supports_vision ? " · 视觉" : ""}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline disabled:opacity-50"
-                  disabled={gapFilling || points.length === 0 || !gapModelName}
-                  onClick={fillGaps}
-                  title="让 AI 再查一遍遗漏的测试点并补上，可反复点"
-                >
-                  {gapFilling ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> 查漏中…
-                    </>
-                  ) : (
-                    <>
-                      <Search className="h-3.5 w-3.5" /> 查漏补缺
-                    </>
-                  )}
-                </button>
-                <button className="text-xs text-primary hover:underline" onClick={() => setStage("input")}>
-                  ← 改需求
-                </button>
-              </div>
             </div>
             {digest ? (
               <details className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
