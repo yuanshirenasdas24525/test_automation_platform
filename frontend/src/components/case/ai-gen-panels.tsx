@@ -29,7 +29,7 @@ type ChecklistAspect = {
   coverage: "covered" | "thin" | "none";
 };
 type ChecklistData = { aspects: ChecklistAspect[]; summary: { total: number; covered: number; gaps: number } };
-const CK_KEY = (mid: number) => `feature-checklist:v1:${mid}`;
+const CK_KEY = (mid: number) => `feature-checklist:v2:${mid}`;
 
 /** #2 功能测试要点 Checklist —— 结果按模块缓存到 localStorage，打开即显示；
  * 用例有增删（caseSignature 变化）时提示可重新分析，其余时间保留上次结果。 */

@@ -1189,6 +1189,7 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
             toast.info("该要点还没有已入库的用例可筛选");
             return;
           }
+          handlePageSizeChange("0"); // 显示全部，避免筛中的用例被分页藏在别的页
           setCaseIdFilter(new Set(ids));
           // 不关抽屉：筛选已应用到左侧列表，点抽屉外空白处即可收起查看（顶部「显示全部」还原）
           toast.success(`已按该要点筛选 ${ids.length} 条用例，点弹窗外空白处查看`);
