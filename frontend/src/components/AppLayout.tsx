@@ -39,9 +39,6 @@ export function AppLayout() {
   const navigate = useNavigate();
   const { pathname, search } = useLocation();
   const current = pathname + search;
-  const backendOrigin = import.meta.env.DEV
-    ? "http://127.0.0.1:54351"
-    : window.location.origin;
   const { user, setUser } = useCurrentUser();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("app-sidebar-collapsed") === "1");
   useEffect(() => {
@@ -122,11 +119,6 @@ export function AppLayout() {
           >
             {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <><PanelLeftClose className="h-4 w-4" /><span className="text-sm">收起</span></>}
           </button>
-          {!collapsed ? (
-            <div className="border-t p-3 text-xs text-muted-foreground">
-              后端：<code className="break-all font-mono">{backendOrigin}</code>
-            </div>
-          ) : null}
         </aside>
         <main className="flex flex-1 flex-col overflow-hidden">
           <header
