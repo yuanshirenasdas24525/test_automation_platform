@@ -66,7 +66,7 @@ export function AppLayout() {
         className="flex h-screen bg-muted/30"
         style={{ ["--app-sidebar-w" as string]: collapsed ? "3.5rem" : "14rem" }}
       >
-        <aside className={cn("flex shrink-0 flex-col overflow-hidden border-r bg-background transition-[width] duration-200", collapsed ? "w-14" : "w-56")}>
+        <aside className={cn("flex shrink-0 flex-col overflow-hidden border-r bg-background", collapsed ? "w-14" : "w-56")}>
           <div className={cn("flex h-14 items-center border-b", collapsed ? "justify-center px-0" : "gap-2 px-4")}>
             <img src="/brand-mark.svg" alt="" className="h-9 w-9 shrink-0 rounded-md" />
             {!collapsed ? (
