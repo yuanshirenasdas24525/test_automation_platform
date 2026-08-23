@@ -23,6 +23,7 @@ const COV_META: Record<string, { label: string; cls: string }> = {
 type ChecklistAspect = {
   aspect: string;
   what_to_test: string;
+  gap_hint: string;
   covered_cases: string[];
   covered_case_ids: number[];
   covered_count: number;
@@ -39,6 +40,7 @@ export function FeatureChecklistPanel({
   requirementText,
   caseSignature,
   onFilterAspect,
+  onSupplement,
 }: {
   moduleId: number | null;
   modelName: string;
@@ -47,6 +49,8 @@ export function FeatureChecklistPanel({
   caseSignature: string;
   /** 点某个要点 → 用它覆盖的用例 id 去筛主列表。缺省则要点不可点。 */
   onFilterAspect?: (caseIds: number[]) => void;
+  /** 一键补充：针对某个偏薄/缺的要点，聚焦生成补充大纲。 */
+  onSupplement?: (aspect: string, hint: string) => void;
 }) {
   const [data, setData] = useState<ChecklistData | null>(null);
   const [savedSig, setSavedSig] = useState<string | null>(null);
@@ -170,6 +174,25 @@ export function FeatureChecklistPanel({
                 </div>
                 {a.what_to_test ? (
                   <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{a.what_to_test}</p>
+                ) : null}
+                {a.coverage !== "covered" ? (
+                  <div className="mt-1.5 flex items-start gap-2 rounded bg-amber-500/10 px-2 py-1.5">
+                    <span className="flex-1 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                      <b className="font-medium">缺口：</b>
+                      {a.gap_hint || "该方面覆盖偏少，建议补充更多正/反/边界分支。"}
+                    </span>
+                    {onSupplement ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSupplement(a.aspect, a.gap_hint || a.what_to_test);
+                        }}
+                        className="shrink-0 rounded bg-primary px-2 py-0.5 text-[11px] font-medium text-primary-foreground hover:opacity-90"
+                      >
+                        一键补充 ›
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
               </li>
             );
