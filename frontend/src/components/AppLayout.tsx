@@ -89,7 +89,7 @@ export function AppLayout() {
                   to={item.to}
                   title={collapsed ? item.label : undefined}
                   className={cn(
-                    "flex items-center rounded-md py-2 transition-colors",
+                    "flex h-9 items-center rounded-md transition-colors",
                     collapsed ? "justify-center px-0" : "gap-3 px-3",
                     active
                       ? "bg-accent font-medium text-accent-foreground"
@@ -113,8 +113,8 @@ export function AppLayout() {
             onClick={() => setCollapsed((c) => !c)}
             title={collapsed ? "展开侧栏" : "收起侧栏"}
             className={cn(
-              "flex items-center py-2 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
-              collapsed ? "justify-center" : "gap-3 px-3",
+              "mx-3 mb-2 flex h-9 items-center rounded-md text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
+              collapsed ? "mx-2 justify-center" : "gap-3 px-3",
             )}
           >
             {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <><PanelLeftClose className="h-4 w-4" /><span className="text-sm">收起</span></>}
