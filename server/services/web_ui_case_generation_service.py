@@ -1002,13 +1002,16 @@ def _repair_successful_login_assertion(
         if _as_int(config.get("element_id")) == submit_element_id:
             removed += 1
             continue
-        expected = str(config.get("contains") or config.get("equals") or "").strip().lower()
-        if item.get("step_type") == "web_assert_text" and expected in {"登录成功", "login success", "login successful"}:
+        # 成功登录后顶部用户区显示的是“用户名 + 角色”这类动态内容，随账号（尤其
+        # dynamic_* 临时账号）而变，生成时模型只能猜（常见误猜“管理员”），跑起来
+        # 必然与真实文案不符。correct 登录成功场景下，post-submit 的任何文本断言都
+        # 不可信，一律移除，改由下方“目标工作台可见”这条确定性断言兜底。
+        if item.get("step_type") == "web_assert_text":
             removed += 1
             continue
         repaired.append(item)
     if removed:
-        warnings.append(f"已移除 {removed} 个与成功跳转冲突的登录页等待/文案断言")
+        warnings.append(f"已移除 {removed} 个登录成功后不可靠的文本断言/登录页残留步骤（改用工作台可见断言）")
 
     destination_name = "管理员工作台" if profile == "shared_admin" else "测试工作台"
     destination = next(
@@ -1630,7 +1633,9 @@ def commit_drafts(db: Session, *, draft_ids: list[int], module_id: int) -> tuple
         for index, item in enumerate(steps, start=1):
             db.add(TestStep(
                 case_id=case.id,
-                step_order=int(item.get("step_order") or index),
+                # 始终按列表顺序重排：草稿里可能带重复/断号的 step_order（历史草稿或
+                # 编辑残留），落库时以执行顺序为准，避免同序号导致排序不确定。
+                step_order=index,
                 step_name=str(item.get("step_name") or f"步骤 {index}")[:255],
                 step_type=str(item.get("step_type") or ""),
                 skip=bool(item.get("skip")),

@@ -321,13 +321,23 @@ class PlaywrightAdapter(WebDriverAdapter):
         state: Literal["visible", "attached", "hidden", "detached"] = "visible",
         timeout: float = 10,
     ) -> None:
-        self.page.locator(self._selector(by, locator)).wait_for(
+        # 收敛到 .first：定位器命中多个元素时（如页面上叠了多个 toast），
+        # Playwright 的 strict 模式会直接抛 "resolved to N elements"。等待/断言
+        # 可见性只需要有一个匹配即可，与 get_text/get_attribute 的取值口径保持一致。
+        self.page.locator(self._selector(by, locator)).first.wait_for(
             state=state, timeout=timeout * 1000,
         )
 
     def get_text(self, by: str, locator: str, timeout: float = 10) -> str:
         loc = self.page.locator(self._selector(by, locator)).first
         loc.wait_for(state="visible", timeout=timeout * 1000)
+        # 表单控件的“文本”是它的值，不是 innerText —— <input>/<textarea> 的
+        # inner_text() 恒为空，直接读会让所有“输入框文本断言”永远失败。
+        tag = str(loc.evaluate("el => el.tagName") or "").lower()
+        if tag in ("input", "textarea"):
+            return loc.input_value()
+        if tag == "select":
+            return str(loc.evaluate("el => el.value") or "") or loc.inner_text()
         return loc.inner_text()
 
     def get_attribute(self, by: str, locator: str, name: str, timeout: float = 10) -> str | None:
@@ -588,6 +598,10 @@ class SeleniumAdapter(WebDriverAdapter):
 
     def get_text(self, by: str, locator: str, timeout: float = 10) -> str:
         el = self._find(by, locator, timeout=timeout, condition="visible")
+        # 与 Playwright 口径一致：表单控件读 value，普通元素读文本。
+        tag = str(el.tag_name or "").lower()
+        if tag in ("input", "textarea", "select"):
+            return el.get_attribute("value") or ""
         return el.text
 
     def get_attribute(self, by: str, locator: str, name: str, timeout: float = 10) -> str | None:
