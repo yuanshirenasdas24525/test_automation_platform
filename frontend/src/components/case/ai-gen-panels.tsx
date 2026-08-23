@@ -213,7 +213,7 @@ export function PromptPreviewPanel({
   const data = m.data;
 
   return (
-    <div className="rounded-lg border bg-card p-3">
+    <div className="flex h-full min-h-0 flex-col rounded-lg border bg-card p-3">
       <div className="mb-2 flex items-center gap-2">
         <ScanSearch className="h-4 w-4 text-primary" />
         <span className="text-sm font-medium">AI 怎么生成 · 提示词与流程</span>
@@ -234,7 +234,7 @@ export function PromptPreviewPanel({
       ) : null}
 
       {data ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-2">
           {/* 流程 */}
           <ol className="flex flex-col gap-1">
             {data.flow.map((f) => (
@@ -265,7 +265,7 @@ export function PromptPreviewPanel({
               {tab === "outline" ? data.outline.template : data.batch.template}
             </span>
           </div>
-          <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-[10.5px] leading-relaxed text-muted-foreground">
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-[10.5px] leading-relaxed text-muted-foreground">
             {tab === "outline" ? data.outline.prompt : data.batch.prompt}
           </pre>
           <p className="text-[10px] text-muted-foreground">只读预览——这是本次实际发给模型的提示词（动态部分如本批测试点会在生成时填入）。</p>

@@ -4675,7 +4675,7 @@ export function AiGenerateDialog({
           ) : null}
           {/* 提示词预览 #1（满屏） */}
           {panel === "prompt" ? (
-            <div className="flex-1 overflow-y-auto pr-1">
+            <div className="flex min-h-0 flex-1 flex-col pr-1">
               <PromptPreviewPanel
                 moduleId={moduleId}
                 mode={mode}
