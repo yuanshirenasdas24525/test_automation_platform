@@ -66,11 +66,11 @@ export function AppLayout() {
         className="flex h-screen bg-muted/30"
         style={{ ["--app-sidebar-w" as string]: collapsed ? "3.5rem" : "14rem" }}
       >
-        <aside className={cn("flex shrink-0 flex-col border-r bg-background transition-[width] duration-200", collapsed ? "w-14" : "w-56")}>
+        <aside className={cn("flex shrink-0 flex-col overflow-hidden border-r bg-background transition-[width] duration-200", collapsed ? "w-14" : "w-56")}>
           <div className={cn("flex h-14 items-center border-b", collapsed ? "justify-center px-0" : "gap-2 px-4")}>
             <img src="/brand-mark.svg" alt="" className="h-9 w-9 shrink-0 rounded-md" />
             {!collapsed ? (
-              <div className="text-sm font-semibold leading-tight">
+              <div className="whitespace-nowrap text-sm font-semibold leading-tight">
                 自动化测试平台
                 <div className="text-xs font-normal text-muted-foreground">v2 · React</div>
               </div>
@@ -97,7 +97,7 @@ export function AppLayout() {
                   )}
                 >
                   <Icon className="h-4 w-4 shrink-0" />
-                  {!collapsed ? <span className="flex-1">{item.label}</span> : null}
+                  {!collapsed ? <span className="flex-1 whitespace-nowrap">{item.label}</span> : null}
                   {!collapsed && item.badge ? (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                       {item.badge}
