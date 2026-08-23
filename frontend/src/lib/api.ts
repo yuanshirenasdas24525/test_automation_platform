@@ -1087,7 +1087,7 @@ export const functionalCasesApi = {
     );
   },
   /** 功能测试要点 Checklist：该功能该测哪些方面 + 每方面覆盖了几条（只读）。 */
-  aiFeatureChecklist(body: { module_id: number; model_name: string; requirement_text?: string; mode?: "functional" | "interface" }) {
+  aiFeatureChecklist(body: { module_id: number; model_name: string; requirement_text?: string; mode?: "functional" | "interface" | "web" | "android" | "ios" }) {
     return request<{
       aspects: {
         aspect: string;
