@@ -24,6 +24,7 @@ type ChecklistAspect = {
   aspect: string;
   what_to_test: string;
   covered_cases: string[];
+  covered_case_ids: number[];
   covered_count: number;
   coverage: "covered" | "thin" | "none";
 };
@@ -44,8 +45,8 @@ export function FeatureChecklistPanel({
   requirementText: string;
   /** 当前模块用例的签名（增删会变），用于判断缓存的分析是否过期。 */
   caseSignature: string;
-  /** 点某个要点 → 用它覆盖的用例名去筛主列表。缺省则要点不可点。 */
-  onFilterAspect?: (coveredCases: string[]) => void;
+  /** 点某个要点 → 用它覆盖的用例 id 去筛主列表。缺省则要点不可点。 */
+  onFilterAspect?: (caseIds: number[]) => void;
 }) {
   const [data, setData] = useState<ChecklistData | null>(null);
   const [savedSig, setSavedSig] = useState<string | null>(null);
@@ -158,7 +159,7 @@ export function FeatureChecklistPanel({
                   clickable && "cursor-pointer hover:border-primary/50 hover:bg-primary/5",
                 )}
                 title={clickable ? `点击筛选该要点覆盖的 ${a.covered_count} 条用例` : a.what_to_test}
-                onClick={clickable ? () => onFilterAspect?.(a.covered_cases) : undefined}
+                onClick={clickable ? () => onFilterAspect?.(a.covered_case_ids) : undefined}
               >
                 <div className="flex items-center gap-2">
                   <span className="flex-1 truncate text-xs font-medium">{a.aspect}</span>

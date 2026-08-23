@@ -2905,7 +2905,16 @@ def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: Opti
         raise HTTPException(status_code=404, detail="模块不存在")
     cfg = _resolve_model(db, payload.model_name, module.project_id)
 
-    existing = _existing_case_names(db, payload.module_id, case_type=CASE_TYPE_FUNCTIONAL)
+    # 取 id + name：name 喂 prompt，id 用于把覆盖用例解析成真实 id（前端按 id 精确筛选）
+    existing_rows = (
+        db.session.query(TestCase.id, TestCase.name)
+        .filter(TestCase.module_id == payload.module_id, TestCase.case_type == CASE_TYPE_FUNCTIONAL)
+        .order_by(TestCase.sort_order)
+        .limit(500)
+        .all()
+    )
+    existing_cases = [{"id": r[0], "name": r[1]} for r in existing_rows if r[1]]
+    existing = [c["name"] for c in existing_cases]
     placeholders = {
         "MODULE_NAME": module.name,
         "REQUIREMENT_TEXT": (payload.requirement_text or "").strip()
@@ -2955,7 +2964,7 @@ def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: Opti
         return {"status": "success", "data": {"aspects": [], "summary": {"total": 0, "covered": 0, "gaps": 0},
                                               "warning": "暂无法生成要点清单，请重试或更换模型"}}
 
-    aspects = build_checklist(aspects_raw, existing)
+    aspects = build_checklist(aspects_raw, existing_cases)
     return {
         "status": "success",
         "data": {"aspects": aspects, "summary": checklist_summary(aspects)},

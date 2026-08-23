@@ -1084,6 +1084,7 @@ export const functionalCasesApi = {
         aspect: string;
         what_to_test: string;
         covered_cases: string[];
+        covered_case_ids: number[];
         covered_count: number;
         coverage: "covered" | "thin" | "none";
       }[];
