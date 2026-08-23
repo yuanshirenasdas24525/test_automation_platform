@@ -1276,7 +1276,7 @@ function ModuleCard({
     <div
       role="button"
       tabIndex={0}
-      className="flex cursor-pointer items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
+      className="flex h-[46px] cursor-pointer items-center gap-3 rounded-lg border bg-card px-4 text-left transition-colors hover:border-primary/40 hover:bg-accent/30"
       onClick={onOpen}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
