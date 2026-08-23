@@ -3432,14 +3432,14 @@ export function AiGenerateDialog({
   const selectedModel = apiModels.find((m) => m.name === modelName);
   const visionWarn = images.length > 0 && selectedModel && !selectedModel.supports_vision;
 
-  // 第一步：出测试点大纲 + 需求摘要
-  const makeOutline = async () => {
+  // 第一步：出测试点大纲 + 需求摘要。extraFocus：针对某功能要点的「一键补充」聚焦提示。
+  const makeOutline = async (extraFocus?: string) => {
     if (!moduleId) return;
     if (!modelName) {
       toast.error("请先选择 AI 模型");
       return;
     }
-    if (!text.trim() && images.length === 0 && docs.length === 0) {
+    if (!extraFocus && !text.trim() && images.length === 0 && docs.length === 0) {
       // #4 先引导填需求，别让空需求直接生成
       setPanel("req");
       toast.info("请先在「需求 & 素材」填写需求或上传素材，再生成大纲");
@@ -3459,7 +3459,7 @@ export function AiGenerateDialog({
     try {
       const res = await functionalCasesApi.aiGenerateOutline({
         module_id: moduleId,
-        text: text.trim(),
+        text: [text.trim(), extraFocus].filter(Boolean).join("\n\n"),
         model_name: modelName,
         mode,
         coverage,
@@ -4655,7 +4655,7 @@ export function AiGenerateDialog({
           </div>
           {/* 底部固定操作：生成大纲（点后跳「大纲 & 用例」并开始生成） */}
           <div className="flex shrink-0 items-center justify-end border-t pt-3">
-            <Button onClick={makeOutline} disabled={outlining || !modelName}>
+            <Button onClick={() => makeOutline()} disabled={outlining || !modelName}>
               {outlining ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
               {outlining ? "规划测试点…" : points.length ? "重新生成大纲" : "生成大纲"}
             </Button>
@@ -4671,6 +4671,9 @@ export function AiGenerateDialog({
                 requirementText={text}
                 caseSignature={caseSignature}
                 onFilterAspect={onFilterCaseIds}
+                onSupplement={(aspect, hint) =>
+                  makeOutline(`请重点补充「${aspect}」这一方面的测试点：${hint}`)
+                }
               />
             </div>
           ) : null}
@@ -4699,7 +4702,7 @@ export function AiGenerateDialog({
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b pb-2">
               <Button
                 size="sm"
-                onClick={outlining ? stopOutline : makeOutline}
+                onClick={outlining ? stopOutline : () => makeOutline()}
                 disabled={!modelName || (outlining && stoppingGeneration)}
               >
                 {outlining ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}

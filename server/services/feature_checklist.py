@@ -64,6 +64,7 @@ def build_checklist(
             {
                 "aspect": aspect[:80],
                 "what_to_test": str(a.get("what_to_test") or "").strip(),
+                "gap_hint": str(a.get("gap_hint") or "").strip(),
                 "covered_cases": covered,
                 "covered_case_ids": covered_ids,
                 "covered_count": len(covered_ids),
