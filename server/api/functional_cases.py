@@ -2887,6 +2887,8 @@ class FeatureChecklistRequest(pydantic.BaseModel):
     model_name: str
     # 需求 / 功能说明（可用大纲 digest 或用户填的需求文本）
     requirement_text: str = ""
+    # functional：按业务方面归纳；interface：按接口/维度归纳
+    mode: str = "functional"
 
 
 @router.post("/ai_feature_checklist")
@@ -2905,10 +2907,14 @@ def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: Opti
         raise HTTPException(status_code=404, detail="模块不存在")
     cfg = _resolve_model(db, payload.model_name, module.project_id)
 
+    mode = "interface" if payload.mode == "interface" else "functional"
+    ck_case_type = CASE_TYPE_API if mode == "interface" else CASE_TYPE_FUNCTIONAL
+    ck_prompt = "interface_checklist" if mode == "interface" else "feature_checklist"
+
     # 取 id + name：name 喂 prompt，id 用于把覆盖用例解析成真实 id（前端按 id 精确筛选）
     existing_rows = (
         db.session.query(TestCase.id, TestCase.name)
-        .filter(TestCase.module_id == payload.module_id, TestCase.case_type == CASE_TYPE_FUNCTIONAL)
+        .filter(TestCase.module_id == payload.module_id, TestCase.case_type == ck_case_type)
         .order_by(TestCase.sort_order)
         .limit(500)
         .all()
@@ -2921,7 +2927,7 @@ def ai_feature_checklist(payload: FeatureChecklistRequest, db: DBDep, user: Opti
         or "（未提供额外需求文本，请基于模块名与已有用例归纳）",
         "EXISTING_CASES": "\n".join(f"- {n}" for n in existing) if existing else "（本模块暂无已有用例）",
     }
-    prompt = _render_prompt(_load_prompt("feature_checklist"), placeholders)
+    prompt = _render_prompt(_load_prompt(ck_prompt), placeholders)
     call_options = model_task_options(cfg, "functional_outline")
     try:
         raw, _tin, _tout = chat_markdown(
