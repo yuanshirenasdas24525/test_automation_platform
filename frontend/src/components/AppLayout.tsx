@@ -1,10 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Code2,
   FolderKanban,
   LayoutDashboard,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
   PlayCircle,
   Smartphone,
 } from "lucide-react";
@@ -41,6 +43,10 @@ export function AppLayout() {
     ? "http://127.0.0.1:54351"
     : window.location.origin;
   const { user, setUser } = useCurrentUser();
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem("app-sidebar-collapsed") === "1");
+  useEffect(() => {
+    localStorage.setItem("app-sidebar-collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
 
   useEffect(() => {
     const handleAuthExpired = () => {
@@ -59,24 +65,23 @@ export function AppLayout() {
 
   return (
     <>
-      <div className="flex h-screen bg-muted/30">
-        <aside className="flex w-56 flex-col border-r bg-background">
-          <div className="flex h-14 items-center gap-2 border-b px-4">
-            <img
-              src="/brand-mark.svg"
-              alt=""
-              className="h-9 w-9 shrink-0 rounded-md"
-            />
-            <div className="text-sm font-semibold leading-tight">
-              自动化测试平台
-              <div className="text-xs font-normal text-muted-foreground">v2 · React</div>
-            </div>
+      <div
+        className="flex h-screen bg-muted/30"
+        style={{ ["--app-sidebar-w" as string]: collapsed ? "3.5rem" : "14rem" }}
+      >
+        <aside className={cn("flex shrink-0 flex-col border-r bg-background transition-[width] duration-200", collapsed ? "w-14" : "w-56")}>
+          <div className={cn("flex h-14 items-center border-b", collapsed ? "justify-center px-0" : "gap-2 px-4")}>
+            <img src="/brand-mark.svg" alt="" className="h-9 w-9 shrink-0 rounded-md" />
+            {!collapsed ? (
+              <div className="text-sm font-semibold leading-tight">
+                自动化测试平台
+                <div className="text-xs font-normal text-muted-foreground">v2 · React</div>
+              </div>
+            ) : null}
           </div>
           <nav className="flex-1 space-y-1 p-3 text-sm">
             {NAV.map((item) => {
               const Icon = item.icon;
-              // 同一 to 命中 pathname 即激活；带 query/hash 的访问也算同一节点。
-              // 子路由也算激活：/workspace/dev、/projects/12 都让对应顶级 NAV 高亮。
               const active =
                 current === item.to ||
                 pathname === item.to ||
@@ -85,16 +90,18 @@ export function AppLayout() {
                 <NavLink
                   key={item.to}
                   to={item.to}
+                  title={collapsed ? item.label : undefined}
                   className={cn(
-                    "flex items-center gap-3 rounded-md px-3 py-2 transition-colors",
+                    "flex items-center rounded-md py-2 transition-colors",
+                    collapsed ? "justify-center px-0" : "gap-3 px-3",
                     active
                       ? "bg-accent font-medium text-accent-foreground"
                       : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
                   )}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span className="flex-1">{item.label}</span>
-                  {item.badge ? (
+                  <Icon className="h-4 w-4 shrink-0" />
+                  {!collapsed ? <span className="flex-1">{item.label}</span> : null}
+                  {!collapsed && item.badge ? (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
                       {item.badge}
                     </span>
@@ -103,9 +110,23 @@ export function AppLayout() {
               );
             })}
           </nav>
-          <div className="border-t p-3 text-xs text-muted-foreground">
-            后端：<code className="break-all font-mono">{backendOrigin}</code>
-          </div>
+          {/* 收起 / 展开 */}
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            title={collapsed ? "展开侧栏" : "收起侧栏"}
+            className={cn(
+              "flex items-center py-2 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground",
+              collapsed ? "justify-center" : "gap-3 px-3",
+            )}
+          >
+            {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <><PanelLeftClose className="h-4 w-4" /><span className="text-sm">收起</span></>}
+          </button>
+          {!collapsed ? (
+            <div className="border-t p-3 text-xs text-muted-foreground">
+              后端：<code className="break-all font-mono">{backendOrigin}</code>
+            </div>
+          ) : null}
         </aside>
         <main className="flex flex-1 flex-col overflow-hidden">
           <header

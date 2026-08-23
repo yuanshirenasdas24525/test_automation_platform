@@ -1048,8 +1048,8 @@ export function FunctionalCasesPage({ embedded = false }: { embedded?: boolean }
         </div>
       )}
 
-      {/* 测试模式底栏 */}
-      {testMode ? (
+      {/* 测试模式底栏（根目录/模块列表下不显示） */}
+      {testMode && currentParentId !== null ? (
         <TestModeFooter
           batchId={batchId}
           moduleId={currentParentId}
@@ -5286,7 +5286,7 @@ function TestModeFooter({
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 px-6 py-3 shadow-lg backdrop-blur">
+    <div className="fixed bottom-0 right-0 left-[var(--app-sidebar-w,14rem)] z-30 border-t bg-background/95 px-6 py-3 shadow-lg backdrop-blur">
       <div className="flex flex-wrap items-center gap-3">
         <div className="text-sm">
           已选 <span className="font-semibold">{selected.size}</span> 条
