@@ -2327,12 +2327,18 @@ def ai_generate_outline(
                 points.append({"title": title[:200], "category": str(p.get("category") or "").strip()})
         elif isinstance(p, str) and p.strip():
             points.append({"title": p.strip()[:200], "category": ""})
+    _iface_planned = len(points)  # 契约过滤前的原始规划数
+    _iface_contract_dropped: list[str] = []
+    _iface_cap_dropped: list[str] = []
     if mode == "interface":
+        _before = points
         points = _filter_interface_outline_points(
             points,
             api_contract,
             _variable_pool_keys(db, module.project_id),
         )
+        _kept_titles = {p["title"] for p in points}
+        _iface_contract_dropped = [p["title"] for p in _before if p["title"] not in _kept_titles]
     if not points:
         raise HTTPException(status_code=502, detail="未规划出测试点，请补充需求或更换模型")
 
@@ -2368,12 +2374,24 @@ def ai_generate_outline(
             len(points),
             target_max,
         )
+        _iface_cap_dropped = [p["title"] for p in points[target_max:]]
         points = points[:target_max]
 
     # 功能大纲「接地过滤」：把系统没有的能力 / 运维基建 / 合规 / 过程审计等越界测试点
     # 在大纲阶段就剔除（B 层），再按覆盖力度上限兜底裁剪（C 层）。接口模式另有自己的
     # _filter_interface_outline_points，不走这里。
     scope_filter: dict[str, Any] | None = None
+    if mode == "interface":
+        # 接口模式统计条：本次规划 → 契约剔除 / 预算裁剪 → 保留（复用同一结构，前端按 mode 换标签）
+        scope_filter = {
+            "before": _iface_planned,
+            "kept": len(points),
+            "keyword_dropped": [],
+            "llm_dropped": _iface_contract_dropped,  # 接口=契约剔除
+            "dup_dropped": [],
+            "cap_dropped": _iface_cap_dropped,       # 接口=预算裁剪
+            "cap": target_max,
+        }
     if mode == "functional":
         # B-1 关键词 + B-2 LLM 二判 + 去重（与查缺补漏共用同一套，见 _apply_functional_scope_filter）
         points, scope_filter = _apply_functional_scope_filter(

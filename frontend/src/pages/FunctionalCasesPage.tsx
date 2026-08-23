@@ -4772,11 +4772,11 @@ export function AiGenerateDialog({
                 <span className="text-muted-foreground">本次规划 <b className="font-medium text-foreground tabular-nums">{scopeFilter.before}</b></span>
                 <span className="text-muted-foreground">→</span>
                 {scopeFilter.keyword_dropped.length ? <span className="rounded bg-red-500/15 px-1.5 py-0.5 font-medium tabular-nums text-red-600 dark:text-red-400">关键词 −{scopeFilter.keyword_dropped.length}</span> : null}
-                {scopeFilter.llm_dropped.length ? <span className="rounded bg-red-500/15 px-1.5 py-0.5 font-medium tabular-nums text-red-600 dark:text-red-400">LLM −{scopeFilter.llm_dropped.length}</span> : null}
+                {scopeFilter.llm_dropped.length ? <span className="rounded bg-red-500/15 px-1.5 py-0.5 font-medium tabular-nums text-red-600 dark:text-red-400">{mode === "interface" ? "契约剔除" : "LLM"} −{scopeFilter.llm_dropped.length}</span> : null}
                 {scopeFilter.dup_dropped.length ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium tabular-nums text-amber-600 dark:text-amber-400">去重 −{scopeFilter.dup_dropped.length}</span> : null}
-                {scopeFilter.cap_dropped.length ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium tabular-nums text-amber-600 dark:text-amber-400">超上限 −{scopeFilter.cap_dropped.length}</span> : null}
+                {scopeFilter.cap_dropped.length ? <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-medium tabular-nums text-amber-600 dark:text-amber-400">{mode === "interface" ? "预算裁剪" : "超上限"} −{scopeFilter.cap_dropped.length}</span> : null}
                 <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 font-medium tabular-nums text-emerald-600 dark:text-emerald-400">保留 {scopeFilter.kept}</span>
-                <span className="text-muted-foreground/70" title="已自动剔除注水/越界/重复的测试点">已过滤注水/越界</span>
+                <span className="text-muted-foreground/70">{mode === "interface" ? "已按 OpenAPI 契约过滤" : "已过滤注水/越界"}</span>
               </div>
             ) : points.length > 0 ? (
               <div className="shrink-0 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground">
