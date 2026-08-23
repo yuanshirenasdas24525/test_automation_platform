@@ -1105,7 +1105,7 @@ export const functionalCasesApi = {
   /** 提示词 / 生成流程预览（只读，不调 LLM）。 */
   aiPromptPreview(body: {
     module_id: number;
-    mode: "functional" | "interface";
+    mode: "functional" | "interface" | "web" | "android" | "ios";
     coverage: string;
     dimensions?: string;
     requirement_text?: string;

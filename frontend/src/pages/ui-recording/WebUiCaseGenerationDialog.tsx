@@ -32,7 +32,7 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
-import { FeatureChecklistPanel } from "@/components/case/ai-gen-panels";
+import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
 import { SideDrawer } from "@/components/ui/side-drawer";
 import { Trash2 } from "lucide-react";
 import type {
@@ -471,6 +471,17 @@ export function WebUiCaseGenerationDialog({
                 caseSignature=""
                 mode="web"
               />
+
+              {/* 提示词预览（只读，自动加载，和 API 一致） */}
+              <div className="h-72">
+                <PromptPreviewPanel
+                  moduleId={initialModuleId ?? null}
+                  mode="web"
+                  coverage="standard"
+                  dimensions=""
+                  requirementText={userPrompt}
+                />
+              </div>
 
               <div className="flex gap-2">
                 <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>

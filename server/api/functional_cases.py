@@ -3023,6 +3023,24 @@ def ai_prompt_preview(payload: PromptPreviewRequest, db: DBDep, user: OptionalUs
     if module is None:
         raise HTTPException(status_code=404, detail="模块不存在")
 
+    # web / android / ios：单阶段生成(web_ui_case_gen)，动态证据在生成时注入，这里展示模板 + 流程
+    if payload.mode in ("web", "android", "ios"):
+        from ai_gateway.gateway import _load_prompt
+        return {
+            "status": "success",
+            "data": {
+                "mode": payload.mode,
+                "outline": {"template": "web_ui_case_gen", "prompt": _load_prompt("web_ui_case_gen")},
+                "batch": {"template": "web_ui_source_select", "prompt": _load_prompt("web_ui_source_select")},
+                "flow": [
+                    {"step": "1 · 源选择", "desc": "本地先过滤纯接口/安全/性能类功能用例，AI 从候选中挑适合 UI 自动化的页面与业务流程"},
+                    {"step": "2 · 检索元素", "desc": "按所选用例检索元素库，取真实定位器 + 页面事实 / 录制动作 / 截图基线作为证据"},
+                    {"step": "3 · 生成脚本", "desc": "生成控件级 UI 动作计划（定位/操作/断言），覆盖主流程 + 反向/边界/交互/状态维度"},
+                    {"step": "4 · 编译门禁", "desc": "缺定位器 / 需验证码 / 缺断言的结果不进可执行草稿，进入待评审"},
+                ],
+            },
+        }
+
     mode = "interface" if payload.mode == "interface" else "functional"
     requirement_text = (payload.requirement_text or "").strip() or "（未提供需求文本，实际生成时以你填写的为准）"
     existing = _existing_case_names(
