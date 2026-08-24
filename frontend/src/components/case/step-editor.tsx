@@ -114,6 +114,17 @@ const BY_OPTIONS: FieldSpec["options"] = [
   { value: "role", label: "ARIA 角色" },
 ];
 
+// web_press 常用按键（Playwright key 名）
+const KEY_OPTIONS: FieldSpec["options"] = [
+  { value: "Escape", label: "Escape（关闭弹层/菜单）" },
+  { value: "Enter", label: "Enter（提交/确认）" },
+  { value: "Tab", label: "Tab（下一个焦点）" },
+  { value: "ArrowDown", label: "↓ ArrowDown" },
+  { value: "ArrowUp", label: "↑ ArrowUp" },
+  { value: "Backspace", label: "Backspace" },
+  { value: " ", label: "Space（空格）" },
+];
+
 // 后端 _AppiumBy.LOCATORS 注册了 14 种定位方式（见 core/mobile/finder/finder.py）。
 // 这里一一对应，并按"最常用 → Android 专属 → iOS 专属 → 通用"的顺序排，方便用户找。
 // ⚠️ value 必须与后端 key 一致 —— 历史上前端用过 'class' 而后端是 'class_name'，
@@ -210,6 +221,22 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
       { key: "by", label: "定位方式", kind: "select", options: BY_OPTIONS, required: true },
       { key: "locator", label: "定位表达式", kind: "highlight", rows: 1, required: true,
         placeholder: "button.login", hint: <>支持 <code>$&#123;var&#125;</code> 变量</> },
+      { key: "timeout", label: "超时(秒)", kind: "number" },
+    ],
+  },
+  {
+    value: "web_press",
+    group: "web",
+    label: "按键 (web_press)",
+    desc: "按键盘按键，如 Escape 关闭下拉/弹层；定位表达式留空则对整页按",
+    defaultConfig: { key: "Escape", timeout: 10 },
+    defaultName: (c) => `按 ${c.key || "Escape"}`,
+    fields: [
+      { key: "key", label: "按键", kind: "select", options: KEY_OPTIONS, required: true },
+      { key: "by", label: "定位方式(可选)", kind: "select", options: BY_OPTIONS },
+      { key: "locator", label: "定位表达式(可选)", kind: "highlight", rows: 1,
+        placeholder: "（留空则对整页按键，关弹层通常留空即可）",
+        hint: <>填了则先聚焦该元素再按键</> },
       { key: "timeout", label: "超时(秒)", kind: "number" },
     ],
   },

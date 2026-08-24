@@ -135,6 +135,28 @@ class WebClickStepRunner(BaseStepRunner):
 
 
 # ============================================================
+# 2.5 web_press —— 按键盘按键（Escape 关弹层 / Enter 提交 / Tab 切焦点等）
+# ============================================================
+class WebPressStepRunner(BaseStepRunner):
+    step_types = ("web_press",)
+
+    def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
+        session = WebSession.require(ctx)
+        config = _cfg(step)
+        key = _resolve_str(config.get("key") or "Escape", ctx)
+        by = config.get("by")
+        locator = config.get("locator")
+        timeout = float(config.get("timeout") or 10)
+        if by and locator:
+            session.adapter.press(str(key), by=str(by), locator=str(_resolve_str(locator, ctx)), timeout=timeout)
+            result.target = f"{by}={locator}"
+        else:
+            session.adapter.press(str(key))
+            result.target = "keyboard"
+        result.action = f"press {key}"
+
+
+# ============================================================
 # 3. web_input
 # ============================================================
 class WebInputStepRunner(BaseStepRunner):
@@ -409,6 +431,7 @@ def build_web_runners() -> list[BaseStepRunner]:
     return [
         WebGotoStepRunner(),
         WebClickStepRunner(),
+        WebPressStepRunner(),
         WebInputStepRunner(),
         WebSelectStepRunner(),
         WebWaitStepRunner(),
