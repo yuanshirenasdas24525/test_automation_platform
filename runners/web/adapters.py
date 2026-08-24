@@ -145,6 +145,14 @@ class WebDriverAdapter(ABC):
     @abstractmethod
     def get_attribute(self, by: str, locator: str, name: str, timeout: float = 10) -> str | None: ...
 
+    @abstractmethod
+    def press(
+        self, key: str, by: str | None = None, locator: str | None = None,
+        timeout: float = 10,
+    ) -> None:
+        """按键盘按键。指定 by/locator 则先聚焦该元素再按，否则对整页按（如 Escape 关弹层）。"""
+        ...
+
     # ------------------------ 其它 ------------------------
     @abstractmethod
     def screenshot(self, path: str) -> None: ...
@@ -461,6 +469,12 @@ class PlaywrightAdapter(WebDriverAdapter):
         loc.wait_for(state="attached", timeout=timeout * 1000)
         return loc.get_attribute(name)
 
+    def press(self, key: str, by: str | None = None, locator: str | None = None, timeout: float = 10) -> None:
+        if by and locator:
+            self.page.locator(self._selector(by, locator)).first.press(key, timeout=timeout * 1000)
+        else:
+            self.page.keyboard.press(key)
+
     def screenshot(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.page.screenshot(path=path, full_page=True)
@@ -731,6 +745,16 @@ class SeleniumAdapter(WebDriverAdapter):
     def get_attribute(self, by: str, locator: str, name: str, timeout: float = 10) -> str | None:
         el = self._find(by, locator, timeout=timeout)
         return el.get_attribute(name)
+
+    def press(self, key: str, by: str | None = None, locator: str | None = None, timeout: float = 10) -> None:
+        from selenium.webdriver.common.keys import Keys
+        # "Escape"→Keys.ESCAPE / "Enter"→Keys.ENTER / "Tab"→Keys.TAB；单字符原样发送
+        k = getattr(Keys, str(key).upper(), str(key))
+        if by and locator:
+            self._find(by, locator, timeout=timeout).send_keys(k)
+        else:
+            from selenium.webdriver.common.action_chains import ActionChains
+            ActionChains(self.driver).send_keys(k).perform()
 
     def screenshot(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
