@@ -1246,13 +1246,53 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     selection_completed_count = 0
     selection_total_count = 0
     prompt_hashes: list[str] = []
+    gap_only = bool(payload.get("gap_only"))
     if source_mode == "auto":
+        exclude_ids: set[int] = set()
+        if gap_only:
+            from server.services.web_ui_case_generation_service import covered_functional_case_ids
+            exclude_ids = covered_functional_case_ids(
+                session, project_id=project_id, module_id=target_module_id
+            )
         catalog = build_auto_source_catalog(
             session,
             project_id=project_id,
             target_module_id=target_module_id,
             user_prompt=str(payload.get("user_prompt") or ""),
+            exclude_functional_case_ids=exclude_ids,
         )
+        if gap_only and not catalog["functional_candidates"]:
+            # 查缺补漏：没有未覆盖的功能用例就直接收尾，不退化成元素级冒烟，
+            # 以免对已全覆盖的模块重复灌一批 smoke 草稿。
+            covered_n = len(exclude_ids)
+            msg = (
+                f"查缺补漏：本模块 {covered_n} 条功能用例都已生成过 Web 用例，未发现缺口"
+                if covered_n
+                else "查缺补漏：当前模块没有可自动化的未覆盖功能用例"
+            )
+            _write_web_ui_progress(
+                run, session, batch_id=batch_id, stage="completed",
+                message=msg, draft_ids=draft_ids,
+            )
+            return {
+                "output": {
+                    "batch_id": batch_id,
+                    "draft_ids": [],
+                    "draft_count": 0,
+                    "dropped_count": 0,
+                    "gap_only": True,
+                    "no_gap": True,
+                    "target_module": {"id": target_module.id, "name": target_module.name},
+                    "source_mode": "auto",
+                    "budget": catalog["budget"],
+                    "progress": {
+                        "stage": "completed",
+                        "message": msg,
+                        "draft_count": 0,
+                        "updated_at": datetime.now().isoformat(),
+                    },
+                },
+            }
         selection_options = model_task_options(cfg, "web_ui_source_select")
         candidate_batches: list[list[dict[str, Any]]] = []
         candidate_batch: list[dict[str, Any]] = []

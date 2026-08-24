@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from database.models import (
     CASE_TYPE_FUNCTIONAL,
+    CASE_TYPE_WEB,
     Module,
     TestCase,
     TestStep,
@@ -297,14 +298,43 @@ def _locator_payload(element: UiElement) -> list[dict[str, Any]]:
     return candidates[:2]
 
 
+def covered_functional_case_ids(db: Session, *, project_id: int, module_id: int) -> set[int]:
+    """本模块内已有 Web 自动化用例覆盖到的功能用例 id 集合（查缺补漏用）。
+
+    覆盖关系来自提交时写入的 ``generation_metadata.functional_case_id``。
+    含被 skip 的用例——它们已经存在，只是暂时阻塞，不该被查缺补漏重复生成。
+    """
+    rows = (
+        db.query(TestCase.generation_metadata)
+        .filter(
+            TestCase.module_id == module_id,
+            TestCase.case_type == CASE_TYPE_WEB,
+        )
+        .all()
+    )
+    covered: set[int] = set()
+    for (metadata,) in rows:
+        if isinstance(metadata, dict):
+            fid = metadata.get("functional_case_id")
+            if isinstance(fid, int):
+                covered.add(fid)
+    return covered
+
+
 def build_auto_source_catalog(
     db: Session,
     *,
     project_id: int,
     target_module_id: int,
     user_prompt: str = "",
+    exclude_functional_case_ids: set[int] | None = None,
 ) -> dict[str, Any]:
-    """仅在当前模块内构建功能用例和强相关页面目录，供 AI 自动筛选。"""
+    """仅在当前模块内构建功能用例和强相关页面目录，供 AI 自动筛选。
+
+    exclude_functional_case_ids：查缺补漏模式下，已被现有 Web 用例覆盖的功能
+    用例 id 集合，从候选里剔除，只对未覆盖的功能用例生成。
+    """
+    excluded_ids = set(exclude_functional_case_ids or ())
     target_module = (
         db.query(Module)
         .filter(Module.id == target_module_id, Module.project_id == project_id)
@@ -413,6 +443,11 @@ def build_auto_source_catalog(
         .limit(1000)
         .all()
     )
+    already_covered = 0
+    if excluded_ids:
+        kept = [case for case in cases if case.id not in excluded_ids]
+        already_covered = len(cases) - len(kept)
+        cases = kept
     prompt_text = user_prompt.strip().lower()
     module_name = target_module.name.strip().lower()
     page_semantics = " ".join(
@@ -515,8 +550,9 @@ def build_auto_source_catalog(
         "fallback_page_keys": fallback_pages[:_AUTO_SELECTED_PAGE_LIMIT],
         "budget": {
             "functional_total": functional_total,
+            "functional_already_covered": already_covered,
             "functional_included": len(functional_candidates),
-            "functional_filtered": functional_total - len(ranked_cases),
+            "functional_filtered": functional_total - len(ranked_cases) - already_covered,
             "functional_filter_reasons": dict(
                 sorted(filtered_reasons.items(), key=lambda item: (-item[1], item[0]))
             ),
