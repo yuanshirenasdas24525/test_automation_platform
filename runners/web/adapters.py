@@ -166,6 +166,11 @@ class PlaywrightAdapter(WebDriverAdapter):
         self._context = None
         self._page = None
         self._started = False
+        # 有头模式下在点击/输入处画一个水波纹圆圈，便于人眼看清"点了哪里"。
+        # 无头(CI)自动关闭：既看不见也不该拖慢。这两个值在 _ensure_started 里按
+        # 最终 headless 结果定稿。
+        self._highlight = False
+        self._highlight_pause = 0.0
 
     # ---------- 懒启动 ----------
     def _ensure_started(self) -> None:
@@ -201,9 +206,20 @@ class PlaywrightAdapter(WebDriverAdapter):
             )
             headless = True
 
+        # 点击可视化：仅在有头模式生效，默认开启；可用 highlight_actions=false 关闭。
+        # highlight_pause_ms 是圈出后停顿多久（默认 350ms，顺带把"太快"放慢一点）。
+        # config 值可能来自配置中心的字符串（"false"/"350"），这里做健壮解析。
+        raw_hl = self.config.get("highlight_actions", True)
+        highlight_on = raw_hl if isinstance(raw_hl, bool) else str(raw_hl).strip().lower() in ("1", "true", "yes", "on")
+        self._highlight = (not headless) and highlight_on
+        try:
+            self._highlight_pause = max(0.0, float(self.config.get("highlight_pause_ms", 350)))
+        except (TypeError, ValueError):
+            self._highlight_pause = 350.0
+
         print(
             f"[PlaywrightAdapter] 启动浏览器 browser={browser_type} "
-            f"headless={headless} slow_mo={slow_mo}ms"
+            f"headless={headless} slow_mo={slow_mo}ms highlight={self._highlight}"
         )
 
         try:
@@ -286,14 +302,48 @@ class PlaywrightAdapter(WebDriverAdapter):
     def get_title(self) -> str:
         return self.page.title()
 
+    # 点击/输入前在目标元素中心画一个红色水波纹，纯视觉、不影响断言（pointer-events
+    # 关闭、fixed 定位、~0.5s 后自动移除、带唯一 data 标记）。任何异常都吞掉，绝不
+    # 因为"画圈"失败而让真实操作失败。
+    _RIPPLE_JS = """(pt) => {
+      const d = document.createElement('div');
+      d.setAttribute('data-tap-ripple','1');
+      d.style.cssText = 'position:fixed;left:'+pt.x+'px;top:'+pt.y+'px;width:14px;height:14px;'
+        + 'margin:-7px 0 0 -7px;border:3px solid rgba(239,68,68,.95);border-radius:50%;'
+        + 'background:rgba(239,68,68,.18);pointer-events:none;z-index:2147483647;'
+        + 'box-shadow:0 0 0 3px rgba(239,68,68,.25);opacity:1;'
+        + 'transition:transform .45s ease-out, opacity .45s ease-out;';
+      document.documentElement.appendChild(d);
+      requestAnimationFrame(() => { d.style.transform='scale(3.2)'; d.style.opacity='0'; });
+      setTimeout(() => d.remove(), 520);
+    }"""
+
+    def _highlight_action(self, sel: str, timeout: float) -> None:
+        if not self._highlight:
+            return
+        try:
+            loc = self.page.locator(sel).first
+            box = loc.bounding_box(timeout=timeout * 1000)
+            if not box:
+                return
+            center = {"x": box["x"] + box["width"] / 2, "y": box["y"] + box["height"] / 2}
+            self.page.evaluate(self._RIPPLE_JS, center)
+            if self._highlight_pause > 0:
+                self.page.wait_for_timeout(self._highlight_pause)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("点击可视化失败(忽略)：%s", exc)
+
     def click(self, by: str, locator: str, timeout: float = 10) -> None:
-        self.page.click(self._selector(by, locator), timeout=timeout * 1000)
+        sel = self._selector(by, locator)
+        self._highlight_action(sel, timeout)
+        self.page.click(sel, timeout=timeout * 1000)
 
     def input(
         self, by: str, locator: str, text: str,
         clear_first: bool = True, timeout: float = 10,
     ) -> None:
         sel = self._selector(by, locator)
+        self._highlight_action(sel, timeout)
         if clear_first:
             # fill 本身就会 clear；但有些富文本需要先 click() 让 focus 落下
             self.page.fill(sel, text, timeout=timeout * 1000)
@@ -307,6 +357,7 @@ class PlaywrightAdapter(WebDriverAdapter):
         timeout: float = 10,
     ) -> None:
         sel = self._selector(by, locator)
+        self._highlight_action(sel, timeout)
         if value is not None:
             self.page.select_option(sel, value=value, timeout=timeout * 1000)
         elif label is not None:

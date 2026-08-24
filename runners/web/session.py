@@ -97,6 +97,22 @@ WEB_CONFIG_SCHEMA: list[dict[str, Any]] = [
         "applies_to": ["playwright"],
     },
     {
+        "key": "highlight_actions",
+        "type": "bool",
+        "default": "true",
+        "description": "有头模式下在点击/输入处画一个红色水波纹圆圈，看清「点了哪里」。无头(CI)自动忽略。",
+        "example": "true",
+        "applies_to": ["playwright"],
+    },
+    {
+        "key": "highlight_pause_ms",
+        "type": "int",
+        "default": "350",
+        "description": "画出水波纹后停顿多少毫秒再执行动作（顺带把过快的执行放慢一点看清）。设 0 则只画不停。",
+        "example": "350",
+        "applies_to": ["playwright"],
+    },
+    {
         "key": "default_timeout",
         "type": "float",
         "default": "30",
