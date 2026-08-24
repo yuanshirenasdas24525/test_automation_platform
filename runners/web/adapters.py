@@ -117,7 +117,14 @@ class WebDriverAdapter(ABC):
 
     # ------------------------ 元素操作 ------------------------
     @abstractmethod
-    def click(self, by: str, locator: str, timeout: float = 10) -> None: ...
+    def click(self, by: str, locator: str, timeout: float = 10, force: bool = False) -> None:
+        """force=True 跳过可操作性检查（可见/稳定/命中测试），照样点——更接近“手点坐标”。"""
+        ...
+
+    @abstractmethod
+    def click_at(self, x: float, y: float) -> None:
+        """按视口坐标(x,y)点一下：不认元素，落给该坐标最上面的东西（和手点一样）。"""
+        ...
 
     @abstractmethod
     def input(
@@ -402,10 +409,14 @@ class PlaywrightAdapter(WebDriverAdapter):
         except Exception as exc:  # noqa: BLE001
             logger.debug("断言可视化失败(忽略)：%s", exc)
 
-    def click(self, by: str, locator: str, timeout: float = 10) -> None:
+    def click(self, by: str, locator: str, timeout: float = 10, force: bool = False) -> None:
         sel = self._selector(by, locator)
         self._highlight_action(sel, timeout)
-        self.page.click(sel, timeout=timeout * 1000)
+        # force=True：跳过 visible/stable/命中测试直接点（用于被遮挡但确实要点的元素）。
+        self.page.click(sel, timeout=timeout * 1000, force=force)
+
+    def click_at(self, x: float, y: float) -> None:
+        self.page.mouse.click(float(x), float(y))
 
     def input(
         self, by: str, locator: str, text: str,
@@ -672,9 +683,20 @@ class SeleniumAdapter(WebDriverAdapter):
     def get_title(self) -> str:
         return self.driver.title
 
-    def click(self, by: str, locator: str, timeout: float = 10) -> None:
+    def click(self, by: str, locator: str, timeout: float = 10, force: bool = False) -> None:
+        if force:
+            # 跳过原生可点检查：用 JS 直接触发点击（元素存在即可）。
+            el = self._find(by, locator, timeout=timeout, condition="presence")
+            self.driver.execute_script("arguments[0].click()", el)
+            return
         el = self._find(by, locator, timeout=timeout, condition="clickable")
         el.click()
+
+    def click_at(self, x: float, y: float) -> None:
+        from selenium.webdriver.common.action_chains import ActionChains
+        # Selenium 只能相对元素/当前位置移动；这里以 <body> 左上角为基准偏移到 (x,y)。
+        body = self.driver.find_element("tag name", "body")
+        ActionChains(self.driver).move_to_element_with_offset(body, int(x), int(y)).click().perform()
 
     def input(
         self, by: str, locator: str, text: str,
