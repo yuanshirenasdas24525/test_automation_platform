@@ -1005,6 +1005,8 @@ export interface WebUiCaseGenerationPayload {
   include_visual_assertions: boolean;
   visual_threshold: number;
   user_prompt?: string;
+  /** 查缺补漏：只对本模块内还没有对应 Web 用例的功能用例生成。 */
+  gap_only?: boolean;
 }
 
 export interface WebUiCaseGenerationResponse {

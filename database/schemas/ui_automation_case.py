@@ -22,6 +22,8 @@ class WebUiCaseGenerationRequest(BaseModel):
     include_visual_assertions: bool = False
     visual_threshold: float = Field(default=0.02, ge=0, le=1)
     user_prompt: str = Field(default="", max_length=2000)
+    # 查缺补漏：只对本模块内“还没有对应 Web 用例”的功能用例生成，跳过已覆盖的。
+    gap_only: bool = False
 
     @model_validator(mode="after")
     def validate_source(self):

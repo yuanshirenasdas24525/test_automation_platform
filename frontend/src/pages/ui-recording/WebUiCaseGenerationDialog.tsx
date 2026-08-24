@@ -34,7 +34,7 @@ import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
 import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
 import { SideDrawer } from "@/components/ui/side-drawer";
-import { ChevronDown, Trash2 } from "lucide-react";
+import { ChevronDown, ScanSearch, Trash2 } from "lucide-react";
 import type {
   AiRun,
   WebUiCaseDraft,
@@ -283,7 +283,7 @@ export function WebUiCaseGenerationDialog({
   }, [runQuery.data?.error, runStatus]);
 
   const generateMutation = useMutation({
-    mutationFn: () => webUiCasesApi.generate({
+    mutationFn: (gapOnly: boolean) => webUiCasesApi.generate({
       project_id: projectId,
       target_module_id: Number(initialModuleId),
       model_name: modelName,
@@ -295,15 +295,20 @@ export function WebUiCaseGenerationDialog({
       include_visual_assertions: visualAssertions,
       visual_threshold: visualThreshold,
       user_prompt: userPrompt,
+      gap_only: gapOnly,
     }),
-    onSuccess: (result) => {
+    onSuccess: (result, gapOnly) => {
       setRunId(result.ai_run_id);
       setBatchId(result.batch_id);
       initializedDraftBatchRef.current = "";
       void queryClient.invalidateQueries({
         queryKey: ["ai-runs", "web-ui-generation", "restore", projectId, initialModuleId],
       });
-      toast.success("生成任务已提交，结果会先进入待评审草稿");
+      toast.success(
+        gapOnly
+          ? "查缺补漏任务已提交，仅对未覆盖的功能用例生成草稿"
+          : "生成任务已提交，结果会先进入待评审草稿",
+      );
     },
     onError: (error) => toast.error(messageOf(error)),
   });
@@ -377,10 +382,10 @@ export function WebUiCaseGenerationDialog({
     onError: (error) => toast.error(messageOf(error)),
   });
 
-  const submitGeneration = () => {
+  const submitGeneration = (gapOnly = false) => {
     if (!modelName) return toast.error("请先配置并选择一个可用 AI 模型");
     if (!initialModuleId) return toast.error("请先进入要生成用例的具体模块");
-    generateMutation.mutate();
+    generateMutation.mutate(gapOnly);
   };
 
   /** 清空生成缓存：不再恢复上一批草稿，并刷新用例列表/草稿/运行缓存。 */
@@ -477,7 +482,7 @@ export function WebUiCaseGenerationDialog({
 
 
               <div className="flex gap-2">
-                <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={submitGeneration}>
+                <Button className="min-w-0 flex-1" disabled={generateMutation.isPending || generating} onClick={() => submitGeneration(false)}>
                   {generateMutation.isPending || generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                   {generating ? "AI 正在分批生成…" : "一键生成可执行草稿"}
                 </Button>
@@ -491,7 +496,18 @@ export function WebUiCaseGenerationDialog({
                     {cancelMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-3.5 w-3.5" />}
                     终止
                   </Button>
-                ) : null}
+                ) : (
+                  <Button
+                    variant="outline"
+                    className="shrink-0"
+                    disabled={generateMutation.isPending}
+                    onClick={() => submitGeneration(true)}
+                    title="只对本模块内还没有对应 Web 用例的功能用例生成，跳过已覆盖的"
+                  >
+                    <ScanSearch className="h-3.5 w-3.5" />
+                    查缺补漏
+                  </Button>
+                )}
               </div>
               <p className="text-[11px] leading-5 text-muted-foreground">
                 任务会在后台持续运行，可以关闭弹窗或切换页面；再次进入当前模块时会自动恢复任务状态和最近一批草稿。
