@@ -936,30 +936,33 @@ def _is_simple_css(loc: str) -> bool:
 
 
 def _locator_quality(item: "UiElementLocator", semantic: str) -> float:
-    """给单个定位器打质量分，越高越该选。核心排序：
-    稳定直接 id/testid > ARIA role+name > 唯一 text/link > 结构化 css/xpath > radix 自动 ID。"""
+    """给单个定位器打质量分，越高越该选。排序偏向“人也能看懂能手写”：
+    稳定 id/[data-testid] > 唯一 text > ARIA role+name > 结构化 css/xpath > radix 自动 ID。
+    role 只在文本不唯一（如页面多处出现“测试”的角色 tab）时才会胜出，其余尽量用
+    大家熟悉的 id/text/css，方便手工维护。"""
     strat = str(item.strategy or "").lower()
     loc = str(item.locator or "")
     q = 0.0
     if _is_unstable_locator(strat, loc):
         q -= 1000  # radix/useId 等运行时自动 ID → 垫底
     if strat in ("id", "name"):
-        q += 500
+        q += 550
     elif strat == "css":
-        q += 480 if _is_simple_css(loc) else 150  # #id/.class/[testid] 高，结构化 nth 链低
+        q += 520 if _is_simple_css(loc) else 150  # #id/.class/[testid] 高，结构化 nth 链低
+    elif strat == "text":
+        q += 480 if item.is_unique is True else 60  # 唯一 text 优先（人友好）；不唯一才让位给 role
     elif strat == "role":
-        q += 400
+        q += 400  # ARIA role+name：稳但 Playwright 专有，仅在 text 不唯一时取胜
     elif strat == "link":
         q += 300
-    elif strat == "text":
-        q += 220 if item.is_unique is True else 60  # 只有唯一的 text 才靠谱
     elif strat == "class":
-        q += 180
+        q += 200
     elif strat == "xpath":
         q += 120
     # 取值命中元素语义名：纠正元素库 primary 标注错位（“退出登录”的 primary
-    # 定位器 name 却是“修改密码”这类），只对 role/text 生效。
-    if semantic and strat in ("role", "text") and semantic in loc:
+    # 定位器 name 却是“修改密码”这类），只对 role 生效（text 本身就含自己的名字，
+    # 不再加权，避免 text 反超 [data-testid]）。
+    if semantic and strat == "role" and semantic in loc:
         q += 70
     if item.is_unique is True:
         q += 40
