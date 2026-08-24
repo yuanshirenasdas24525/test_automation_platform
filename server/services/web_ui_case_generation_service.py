@@ -35,7 +35,7 @@ from server.services.test_accounts import (
 )
 
 
-_SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link"}
+_SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link", "role"}
 _CAPTCHA_MARKERS = {
     "captcha", "slider", "verification", "verify", "puzzle",
     "验证码", "滑块", "人机验证", "安全验证", "拼图",

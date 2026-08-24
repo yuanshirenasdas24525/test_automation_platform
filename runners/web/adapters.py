@@ -32,8 +32,26 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # 定位方式：统一字符串常量
 # ---------------------------------------------------------------------------
-BY_TYPES = ("css", "xpath", "id", "name", "class", "text", "link")
-ByType = Literal["css", "xpath", "id", "name", "class", "text", "link"]
+BY_TYPES = ("css", "xpath", "id", "name", "class", "text", "link", "role")
+ByType = Literal["css", "xpath", "id", "name", "class", "text", "link", "role"]
+
+
+def _parse_role_locator(locator: str) -> tuple[str, dict[str, str]]:
+    """解析 ARIA role 定位器：``role=tab;name=测试`` / ``tab;name=测试`` →
+    (role, {name: "测试", ...})。是 Radix/无障碍组件最稳且唯一的定位方式。"""
+    val = str(locator or "").strip()
+    if val.lower().startswith("role="):
+        val = val[5:]
+    parts = [p for p in val.split(";") if p.strip()]
+    if not parts:
+        return "", {}
+    role = parts[0].strip()
+    attrs: dict[str, str] = {}
+    for piece in parts[1:]:
+        if "=" in piece:
+            key, value = piece.split("=", 1)
+            attrs[key.strip().lower()] = value.strip().strip("'\"")
+    return role, attrs
 
 
 def _must_force_headless(
@@ -290,6 +308,18 @@ class PlaywrightAdapter(WebDriverAdapter):
             return f"text={locator}"
         if by == "link":
             return f"a:has-text({locator!r})"
+        if by == "role":
+            # ARIA role 引擎：role=tab;name=测试 → role=tab[name="测试"]
+            role, attrs = _parse_role_locator(locator)
+            sel = f"role={role}"
+            name = attrs.get("name")
+            if name:
+                esc = name.replace("\\", "\\\\").replace('"', '\\"')
+                sel += f'[name="{esc}"]'
+            for flag in ("exact", "checked", "pressed", "selected", "expanded", "disabled"):
+                if flag in attrs:
+                    sel += f"[{flag}={attrs[flag]}]"
+            return sel
         raise ValueError(f"unsupported by: {by}")
 
     # ---------- 实现 ----------
@@ -593,6 +623,14 @@ class SeleniumAdapter(WebDriverAdapter):
             return (By.XPATH, f"//*[contains(normalize-space(text()), {locator!r})]")
         if b == "link":
             return (By.LINK_TEXT, locator)
+        if b == "role":
+            # Selenium 无原生 ARIA 引擎，用 xpath 近似：匹配 role 属性 + 可见文本。
+            # （无障碍名不总等于文本，属尽力而为；Web 主引擎是 Playwright，精确匹配走那边。）
+            role, attrs = _parse_role_locator(locator)
+            name = attrs.get("name")
+            if name:
+                return (By.XPATH, f"//*[@role={role!r} and normalize-space()={name!r}]")
+            return (By.XPATH, f"//*[@role={role!r}]")
         raise ValueError(f"unsupported by: {b}")
 
     def _find(self, by: str, locator: str, timeout: float = 10,
