@@ -21,8 +21,8 @@ const CATEGORIES: { value: ConfigCategory; label: string; icon: React.ComponentT
   { value: "other", label: "其他", icon: Settings },
 ];
 
-export function ProjectConfigTab({ projectId }: { projectId: number }) {
-  const [active, setActive] = useState<ConfigCategory>("api");
+export function ProjectConfigTab({ projectId, initialCategory }: { projectId: number; initialCategory?: ConfigCategory }) {
+  const [active, setActive] = useState<ConfigCategory>(initialCategory ?? "api");
 
   return (
     <Tabs value={active} onValueChange={(v) => setActive(v as ConfigCategory)}>

@@ -42,7 +42,7 @@ import {
 } from "@/components/ui/dialog";
 import { SideDrawer } from "@/components/ui/side-drawer";
 import { ModuleOutlinePanel } from "@/components/case/module-outline-drawer";
-import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
+import { FeatureChecklistPanel, PromptPreviewPanel, ConfigPreviewPanel } from "@/components/case/ai-gen-panels";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2971,7 +2971,7 @@ export function AiGenerateDialog({
   const [docs, setDocs] = useState<File[]>([]);
   const [stage, setStage] = useState<"input" | "outline" | "cases">("input");
   // 左导航当前面板（#1 左导航+右内容切换）
-  const [panel, setPanel] = useState<"board" | "req" | "checklist" | "prompt" | "overview">("req");
+  const [panel, setPanel] = useState<"board" | "req" | "checklist" | "prompt" | "overview" | "config">("req");
   // 看板内「大纲 / 用例」子切换（#5，记住选择）
   const [boardTab, setBoardTab] = useState<"outline" | "cases">("outline");
   // 四层接地过滤统计（生成大纲时后端返回）
@@ -4386,8 +4386,9 @@ export function AiGenerateDialog({
             {([
               { key: "board", label: "大纲 & 用例", badge: points.length ? String(points.length) : "" },
               { key: "req", label: "需求 & 素材", badge: "" },
-              { key: "checklist", label: mode === "interface" ? "接口要点" : "功能要点", badge: "" },
+              { key: "checklist", label: "用例分类预览", badge: "" },
               { key: "prompt", label: "提示词预览", badge: "" },
+              ...(mode === "interface" ? [{ key: "config" as typeof panel, label: "配置预览", badge: "" }] : []),
               { key: "overview", label: "项目概览", badge: "" },
             ] as { key: typeof panel; label: string; badge: string }[]).map((it) => (
               <button
@@ -4708,6 +4709,12 @@ export function AiGenerateDialog({
           {panel === "overview" ? (
             <div className="flex-1 overflow-y-auto pr-1">
               <ProjectAiOverviewView projectId={projectId} />
+            </div>
+          ) : null}
+          {/* 配置预览（仅 API/接口）：只读展示项目 API 配置 + 跳转按钮 */}
+          {panel === "config" ? (
+            <div className="min-h-0 flex-1">
+              <ConfigPreviewPanel projectId={projectId} category="api" modelName={modelName} />
             </div>
           ) : null}
           {/* 大纲 & 用例看板 #3：大纲+用例同屏常驻 */}

@@ -32,9 +32,9 @@ import {
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query";
 import { cn } from "@/lib/utils";
-import { FeatureChecklistPanel, PromptPreviewPanel } from "@/components/case/ai-gen-panels";
+import { FeatureChecklistPanel, PromptPreviewPanel, ConfigPreviewPanel } from "@/components/case/ai-gen-panels";
 import { SideDrawer } from "@/components/ui/side-drawer";
-import { ChevronDown, ScanSearch, Trash2 } from "lucide-react";
+import { ChevronDown, ScanSearch, Trash2, LayoutList, ClipboardList, FileText, SlidersHorizontal } from "lucide-react";
 import type {
   AiRun,
   WebUiCaseDraft,
@@ -119,7 +119,7 @@ export function WebUiCaseGenerationDialog({
   const [activeDraftId, setActiveDraftId] = useState<number | null>(null);
   const [dismissedRestore, setDismissedRestore] = useState(false);
   // 左导航切换：用例(配置+草稿) / UI测试要点 / 提示词
-  const [wpanel, setWpanel] = useState<"cases" | "checklist" | "prompt">("cases");
+  const [wpanel, setWpanel] = useState<"cases" | "checklist" | "prompt" | "config">("cases");
   const [moduleId, setModuleId] = useState("");
   const [draftTitle, setDraftTitle] = useState("");
   const [variablesJson, setVariablesJson] = useState("{}");
@@ -431,17 +431,23 @@ export function WebUiCaseGenerationDialog({
     >
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {/* 左栏：手风琴导航 —「用例」可向下展开配置，「UI测试要点/提示词」点了在右侧显示 */}
-        <div className="flex w-[340px] shrink-0 flex-col overflow-y-auto border-r">
+        <div className="flex w-[340px] shrink-0 flex-col overflow-y-auto border-r bg-muted/20">
           <button
             type="button"
             onClick={() => setWpanel("cases")}
-            className={cn("flex items-center justify-between border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "cases" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+            className={cn(
+              "flex items-center gap-2.5 border-b border-l-2 px-4 py-3 text-left text-sm font-medium transition-colors",
+              wpanel === "cases"
+                ? "border-l-primary bg-primary/5 text-primary"
+                : "border-l-transparent text-muted-foreground hover:bg-muted/60",
+            )}
           >
-            用例
-            <ChevronDown className={cn("h-4 w-4 transition-transform", wpanel === "cases" ? "rotate-180" : "")} />
+            <LayoutList className="h-4 w-4 shrink-0" />
+            <span className="flex-1">用例</span>
+            <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform", wpanel === "cases" ? "rotate-180" : "")} />
           </button>
           {wpanel === "cases" ? (
-          <section className="p-5">
+          <section className="border-b bg-background p-5">
             <div className="space-y-5">
               <div>
                 <Label>AI 模型</Label>
@@ -517,25 +523,54 @@ export function WebUiCaseGenerationDialog({
             </div>
           </section>
           ) : null}
-          {/* UI测试要点 / 提示词 —— 不展开，点了在右侧显示 */}
+          {/* 用例分类预览 / 提示词 —— 不展开，点了在右侧显示 */}
           <button
             type="button"
             onClick={() => setWpanel("checklist")}
-            className={cn("border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "checklist" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+            className={cn(
+              "flex items-center gap-2.5 border-b border-l-2 px-4 py-3 text-left text-sm font-medium transition-colors",
+              wpanel === "checklist"
+                ? "border-l-primary bg-primary/5 text-primary"
+                : "border-l-transparent text-muted-foreground hover:bg-muted/60",
+            )}
           >
-            UI 测试要点
+            <ClipboardList className="h-4 w-4 shrink-0" />
+            <span className="flex-1">用例分类预览</span>
           </button>
           <button
             type="button"
             onClick={() => setWpanel("prompt")}
-            className={cn("border-b px-4 py-2.5 text-left text-sm font-medium", wpanel === "prompt" ? "bg-primary/5 text-primary" : "text-muted-foreground hover:bg-muted/60")}
+            className={cn(
+              "flex items-center gap-2.5 border-b border-l-2 px-4 py-3 text-left text-sm font-medium transition-colors",
+              wpanel === "prompt"
+                ? "border-l-primary bg-primary/5 text-primary"
+                : "border-l-transparent text-muted-foreground hover:bg-muted/60",
+            )}
           >
-            提示词
+            <FileText className="h-4 w-4 shrink-0" />
+            <span className="flex-1">提示词</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setWpanel("config")}
+            className={cn(
+              "flex items-center gap-2.5 border-b border-l-2 px-4 py-3 text-left text-sm font-medium transition-colors",
+              wpanel === "config"
+                ? "border-l-primary bg-primary/5 text-primary"
+                : "border-l-transparent text-muted-foreground hover:bg-muted/60",
+            )}
+          >
+            <SlidersHorizontal className="h-4 w-4 shrink-0" />
+            <span className="flex-1">配置预览</span>
           </button>
         </div>
         {/* 右栏内容区：用例=草稿列表 / UI测试要点 / 提示词 */}
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {wpanel === "checklist" ? (
+          {wpanel === "config" ? (
+            <div className="min-h-0 flex-1 p-5">
+              <ConfigPreviewPanel projectId={projectId} category="web" modelName={modelName} />
+            </div>
+          ) : wpanel === "checklist" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
               <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode="web" />
             </div>

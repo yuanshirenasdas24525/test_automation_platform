@@ -1,6 +1,6 @@
 /** 项目管理主页：需求池 / 版本迭代 标签页 + 左侧模块树。 */
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -61,7 +61,14 @@ export function ProjectManagementPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState("pool");
+  // 支持 ?tab=config 深链（供“AI 生成”里的“去项目配置”按钮直达）。
+  const [searchParams] = useSearchParams();
+  const _initTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState(
+    _initTab && ["pool", "knowledge", "versions", "overview", "config", "scripts"].includes(_initTab)
+      ? _initTab
+      : "pool",
+  );
   const [expandedModules, setExpandedModules] = useState<Set<number>>(new Set());
   const [editingModule, setEditingModule] = useState<
     { mode: "create"; parentId?: number | null } | { mode: "rename"; mod: ModulePickerNode } | null
@@ -513,7 +520,15 @@ export function ProjectManagementPage() {
             </div>
           )}
           {activeTab === "config" && (
-            <ProjectConfigTab projectId={projectId} />
+            <ProjectConfigTab
+              projectId={projectId}
+              initialCategory={(() => {
+                const c = searchParams.get("cfg");
+                return c && ["api", "web", "app", "ai", "other"].includes(c)
+                  ? (c as "api" | "web" | "app" | "ai" | "other")
+                  : undefined;
+              })()}
+            />
           )}
           {activeTab === "scripts" && (
             <div className="flex-1 overflow-hidden">
