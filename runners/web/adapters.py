@@ -318,6 +318,20 @@ class PlaywrightAdapter(WebDriverAdapter):
       setTimeout(() => d.remove(), 520);
     }"""
 
+    # 断言/等待用绿色方框圈出被检查的元素（区别于点击的红色水波纹），让人看清
+    # "在断言哪里"。同样纯视觉、不影响断言本身。
+    _BOX_JS = """(r) => {
+      const d = document.createElement('div');
+      d.setAttribute('data-tap-ripple','1');
+      d.style.cssText = 'position:fixed;left:'+r.x+'px;top:'+r.y+'px;width:'+r.w+'px;height:'+r.h+'px;'
+        + 'box-sizing:border-box;border:3px solid rgba(34,197,94,.95);border-radius:6px;'
+        + 'background:rgba(34,197,94,.12);pointer-events:none;z-index:2147483647;'
+        + 'box-shadow:0 0 0 3px rgba(34,197,94,.22);opacity:1;transition:opacity .5s ease-out .35s;';
+      document.documentElement.appendChild(d);
+      requestAnimationFrame(() => { d.style.opacity='0'; });
+      setTimeout(() => d.remove(), 900);
+    }"""
+
     def _highlight_action(self, sel: str, timeout: float) -> None:
         if not self._highlight:
             return
@@ -332,6 +346,23 @@ class PlaywrightAdapter(WebDriverAdapter):
                 self.page.wait_for_timeout(self._highlight_pause)
         except Exception as exc:  # noqa: BLE001
             logger.debug("点击可视化失败(忽略)：%s", exc)
+
+    def _highlight_assert(self, sel: str, timeout: float) -> None:
+        """断言/可见性等待命中元素后，用绿框圈出它。元素须已存在（调用方保证）。"""
+        if not self._highlight:
+            return
+        try:
+            box = self.page.locator(sel).first.bounding_box(timeout=max(0.5, timeout) * 1000)
+            if not box:
+                return
+            self.page.evaluate(
+                self._BOX_JS,
+                {"x": box["x"], "y": box["y"], "w": box["width"], "h": box["height"]},
+            )
+            if self._highlight_pause > 0:
+                self.page.wait_for_timeout(self._highlight_pause)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("断言可视化失败(忽略)：%s", exc)
 
     def click(self, by: str, locator: str, timeout: float = 10) -> None:
         sel = self._selector(by, locator)
@@ -375,13 +406,17 @@ class PlaywrightAdapter(WebDriverAdapter):
         # 收敛到 .first：定位器命中多个元素时（如页面上叠了多个 toast），
         # Playwright 的 strict 模式会直接抛 "resolved to N elements"。等待/断言
         # 可见性只需要有一个匹配即可，与 get_text/get_attribute 的取值口径保持一致。
-        self.page.locator(self._selector(by, locator)).first.wait_for(
-            state=state, timeout=timeout * 1000,
-        )
+        sel = self._selector(by, locator)
+        self.page.locator(sel).first.wait_for(state=state, timeout=timeout * 1000)
+        # 命中后圈出被断言/等待的元素（hidden/detached 时元素已不在，跳过）。
+        if state in ("visible", "attached"):
+            self._highlight_assert(sel, timeout)
 
     def get_text(self, by: str, locator: str, timeout: float = 10) -> str:
-        loc = self.page.locator(self._selector(by, locator)).first
+        sel = self._selector(by, locator)
+        loc = self.page.locator(sel).first
         loc.wait_for(state="visible", timeout=timeout * 1000)
+        self._highlight_assert(sel, timeout)
         # 表单控件的“文本”是它的值，不是 innerText —— <input>/<textarea> 的
         # inner_text() 恒为空，直接读会让所有“输入框文本断言”永远失败。
         tag = str(loc.evaluate("el => el.tagName") or "").lower()
