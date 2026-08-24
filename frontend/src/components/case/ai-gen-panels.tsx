@@ -4,13 +4,14 @@
  *  - PromptPreviewPanel（#1）：本次已渲染的提示词 + 生成流程（只读）。
  * 都是按需触发（点按钮才请求），失败不阻断主流程。
  */
-import { useEffect, useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { ClipboardCheck, Loader2, ScanSearch, ChevronRight } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
+import { ClipboardCheck, Loader2, ScanSearch, ChevronRight, SlidersHorizontal, ExternalLink } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { functionalCasesApi } from "@/lib/api";
+import { functionalCasesApi, configApi, type ConfigItem } from "@/lib/api";
 
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -112,7 +113,7 @@ export function FeatureChecklistPanel({
     <div className="rounded-lg border bg-card p-3">
       <div className="mb-2 flex items-center gap-2">
         <ClipboardCheck className="h-4 w-4 text-primary" />
-        <span className="text-sm font-medium">该测什么 · {mode === "interface" ? "接口测试要点" : mode === "functional" ? "功能测试要点" : "UI 测试要点"}</span>
+        <span className="text-sm font-medium">用例分类预览 · {mode === "interface" ? "接口" : mode === "functional" ? "功能" : "UI"}</span>
         {data ? (
           <>
             <span className="ml-auto text-xs text-muted-foreground">
@@ -306,6 +307,96 @@ export function PromptPreviewPanel({
       ) : (
         <p className="text-xs text-muted-foreground">点「查看」显示本次实际使用的提示词和生成流程，黑盒变白盒。</p>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 配置预览面板 —— 只读展示本次生成会用到的项目配置，并给出跳转到项目配置页的按钮。
+// ---------------------------------------------------------------------------
+const SECRET_KEYS = new Set(["shared_password", "password_admin", "password"]);
+
+function fmtConfigValue(key: string, value: string): string {
+  if (SECRET_KEYS.has(key) || /password|secret|token/i.test(key)) return "••••••••";
+  const v = String(value ?? "");
+  return v.length > 80 ? v.slice(0, 80) + "…" : v || "（空）";
+}
+
+export function ConfigPreviewPanel({
+  projectId, category, modelName,
+}: {
+  projectId: number | null;
+  category: "web" | "api";
+  modelName?: string;
+}) {
+  const navigate = useNavigate();
+  const q = useQuery({
+    queryKey: ["project-config", projectId, category],
+    queryFn: () => configApi.list(category, projectId as number),
+    enabled: projectId != null,
+  });
+
+  const groups = useMemo(() => {
+    const map = new Map<string, ConfigItem[]>();
+    for (const it of q.data ?? []) {
+      const arr = map.get(it.config_group);
+      if (arr) arr.push(it); else map.set(it.config_group, [it]);
+    }
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [q.data]);
+
+  const goConfig = () => {
+    if (projectId == null) return;
+    navigate(`/projects/${projectId}?stack=management&tab=config&cfg=${category}`);
+  };
+
+  return (
+    <div className="flex h-full flex-col rounded-lg border bg-card">
+      <div className="flex items-center justify-between gap-3 border-b px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          <SlidersHorizontal className="h-4 w-4 text-primary" />
+          <span className="text-sm font-medium">配置预览 · {category === "web" ? "Web 浏览器/账号" : "API 参数/账号"}</span>
+        </div>
+        <Button size="sm" variant="outline" onClick={goConfig} disabled={projectId == null}>
+          <ExternalLink className="h-3.5 w-3.5" />
+          去项目配置调整
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <p className="mb-3 text-[11px] leading-5 text-muted-foreground">
+          以下是本次生成/执行会读取的项目配置（{category === "web" ? "浏览器 headless、base_url、可视化开关、测试账号等" : "默认参数、鉴权、测试账号等"}）。只读；要改点右上角按钮跳到项目配置页。
+        </p>
+        {modelName ? (
+          <div className="mb-3 flex items-center justify-between rounded border bg-background px-3 py-2 text-xs">
+            <span className="text-muted-foreground">AI 模型</span>
+            <code className="font-semibold">{modelName}</code>
+          </div>
+        ) : null}
+        {q.isLoading ? (
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> 读取配置…</p>
+        ) : groups.length === 0 ? (
+          <div className="rounded border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+            当前项目还没有 {category === "web" ? "Web" : "API"} 配置。
+            <button className="ml-1 text-primary underline" onClick={goConfig}>去添加</button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {groups.map(([group, rows]) => (
+              <div key={group} className="overflow-hidden rounded border">
+                <div className="border-b bg-muted/40 px-3 py-1.5 font-mono text-[11px] font-semibold">{group}</div>
+                <div className="divide-y">
+                  {rows.map((it) => (
+                    <div key={`${it.config_group}.${it.config_key}`} className="flex items-start justify-between gap-3 px-3 py-1.5 text-xs">
+                      <code className="shrink-0 text-muted-foreground">{it.config_key}</code>
+                      <span className="min-w-0 break-all text-right font-mono">{fmtConfigValue(it.config_key, it.config_value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

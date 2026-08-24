@@ -43,6 +43,19 @@ function isSensitiveConfig(group: string, key: string) {
   return group === "test_accounts" && key === "shared_password";
 }
 
+/** 推荐配置项的 default/example 可能是对象/数组（如账号列表），渲染前统一转成字符串，
+ *  否则直接塞进 JSX 会触发 React #31「Objects are not valid as a React child」。 */
+function fmtSchemaValue(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 主组件
 // ---------------------------------------------------------------------------
@@ -121,7 +134,7 @@ export function ProjectConfigSubTab({ projectId, category }: { projectId: number
           onFill={(schemaItem) => {
             setCreating({
               id: 0, config_group: schemaItem.config_group, config_key: schemaItem.key,
-              config_value: schemaItem.example || schemaItem.default || "", category, project_id: projectId,
+              config_value: fmtSchemaValue(schemaItem.example) || fmtSchemaValue(schemaItem.default) || "", category, project_id: projectId,
             });
             setCreateOpen(true);
           }}
@@ -252,8 +265,8 @@ function RecommendedPanel({
                     {already ? <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] text-emerald-700">已配置</span> : null}
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">{it.description}</div>
-                  <div className="mt-1 font-mono text-[11px] text-muted-foreground">
-                    默认: {it.default || "（空）"} · 示例: {it.example || "—"}
+                  <div className="mt-1 font-mono text-[11px] break-all text-muted-foreground">
+                    默认: {fmtSchemaValue(it.default) || "（空）"} · 示例: {fmtSchemaValue(it.example) || "—"}
                   </div>
                 </div>
                 <Button size="sm" variant="secondary" disabled={already} onClick={() => onFill(it)}>
