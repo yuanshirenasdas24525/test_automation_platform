@@ -61,6 +61,8 @@ START_RECORDER_AGENT="${START_RECORDER_AGENT:-1}"
 START_WORKER="${START_WORKER:-1}"
 START_BEAT="${START_BEAT:-1}"
 START_WEB="${START_WEB:-1}"
+START_APPIUM="${START_APPIUM:-1}"      # 原生 Appium server（移动端设备池探活/执行；iOS 必须原生）
+APPIUM_PORT="${APPIUM_PORT:-4723}"
 API_RELOAD="${API_RELOAD:-1}"          # uvicorn --reload
 CLEAN_STALE="${CLEAN_STALE:-1}"        # 启动前清理上一轮遗留的本项目进程（孤儿 worker 等）
 
@@ -96,6 +98,7 @@ kill_stale() {
     "celery -A celery_app"          # celery worker + beat(核心:防跑旧代码)
     "uvicorn server.main"           # 后端 API
     "uvicorn recorder_agent.main"   # 录制 agent
+    "appium --address 127.0.0.1 --port ${APPIUM_PORT}"  # 本脚本起的原生 appium(具体特征,不误杀别的 appium)
   )
   local hit=0 pids
   for pat in "${patterns[@]}"; do
@@ -244,6 +247,18 @@ if [[ "$START_BEAT" == "1" ]]; then
   PIDS+=($!)
 fi
 
+# ---- 7.5 Appium server（原生；移动端设备池探活/执行需要它在 4723） ----
+if [[ "$START_APPIUM" == "1" ]]; then
+  if command -v appium >/dev/null 2>&1; then
+    log "Appium server → http://127.0.0.1:$APPIUM_PORT   日志 $LOG_DIR/appium.log"
+    appium --address 127.0.0.1 --port "$APPIUM_PORT" --relaxed-security \
+      > "$LOG_DIR/appium.log" 2>&1 &
+    PIDS+=($!)
+  else
+    warn "未找到 appium 命令 —— 移动端设备池会一直显示离线。装：npm i -g appium && appium driver install uiautomator2（iOS 再加 xcuitest）。本次跳过。"
+  fi
+fi
+
 # ---- 8. 前端 dev ----
 if [[ "$START_WEB" == "1" ]]; then
   if [[ -d frontend/node_modules ]]; then
@@ -260,6 +275,7 @@ log "全部启动完成。Ctrl+C 停止全部。"
 echo "    API   : http://$API_HOST:$API_PORT"
 echo "    Agent : http://127.0.0.1:$RECORDER_AGENT_PORT"
 echo "    前端  : http://localhost:$WEB_PORT  （/api 代理到后端）"
+[[ "$START_APPIUM" == "1" ]] && echo "    Appium: http://127.0.0.1:$APPIUM_PORT  （移动端设备池）"
 echo "    日志  : $LOG_DIR/"
 printf "\n"
 log "实时日志（tail -F，Ctrl+C 退出并停服）："
