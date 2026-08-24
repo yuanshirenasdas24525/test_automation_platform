@@ -111,7 +111,7 @@ const BY_OPTIONS: FieldSpec["options"] = [
   { value: "class", label: "class name" },
   { value: "text", label: "文本包含" },
   { value: "link", label: "链接文本" },
-  { value: "role", label: "ARIA 角色 (role=tab;name=测试)" },
+  { value: "role", label: "ARIA 角色" },
 ];
 
 // 后端 _AppiumBy.LOCATORS 注册了 14 种定位方式（见 core/mobile/finder/finder.py）。
