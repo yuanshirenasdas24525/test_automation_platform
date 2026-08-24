@@ -124,13 +124,24 @@ class WebClickStepRunner(BaseStepRunner):
     def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
         session = WebSession.require(ctx)
         config = _cfg(step)
-        by, locator = _require_by_locator(config)
-        locator = _resolve_str(locator, ctx)
         timeout = float(config.get("timeout") or 10)
 
-        session.adapter.click(by, str(locator), timeout=timeout)
+        # 坐标点击：填了 x/y 就按视口坐标点（不认元素，和手点一样落给最上层的东西）。
+        x = config.get("x")
+        y = config.get("y")
+        if x is not None and str(x) != "" and y is not None and str(y) != "":
+            cx, cy = float(x), float(y)
+            session.adapter.click_at(cx, cy)
+            result.action = f"click at ({cx:.0f},{cy:.0f})"
+            result.target = f"({cx:.0f},{cy:.0f})"
+            return
 
-        result.action = f"click {by}={locator}"
+        by, locator = _require_by_locator(config)
+        locator = _resolve_str(locator, ctx)
+        force = bool(config.get("force"))
+        session.adapter.click(by, str(locator), timeout=timeout, force=force)
+
+        result.action = f"click{' (force)' if force else ''} {by}={locator}"
         result.target = f"{by}={locator}"
 
 

@@ -215,12 +215,20 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     value: "web_click",
     group: "web",
     label: "点击 (web_click)",
+    desc: "常规按定位器点；也可填坐标(x,y)按屏幕位置点(像手点、不认元素)，或勾强制点击跳过检查",
     defaultConfig: { by: "css", locator: "", timeout: 10 },
-    defaultName: (c) => `点击 ${c.locator || "元素"}`,
+    defaultName: (c) =>
+      c.x !== undefined && c.x !== "" && c.y !== undefined && c.y !== ""
+        ? `点击坐标 (${c.x},${c.y})`
+        : `点击 ${c.locator || "元素"}`,
     fields: [
-      { key: "by", label: "定位方式", kind: "select", options: BY_OPTIONS, required: true },
-      { key: "locator", label: "定位表达式", kind: "highlight", rows: 1, required: true,
-        placeholder: "button.login", hint: <>支持 <code>$&#123;var&#125;</code> 变量</> },
+      { key: "by", label: "定位方式", kind: "select", options: BY_OPTIONS },
+      { key: "locator", label: "定位表达式", kind: "highlight", rows: 1,
+        placeholder: "button.login（与坐标二选一）",
+        hint: <>支持 <code>$&#123;var&#125;</code> 变量；填了下方坐标则忽略此项</> },
+      { key: "force", label: "强制点击（跳过可见/稳定/命中检查）", kind: "bool" },
+      { key: "x", label: "坐标 X（可选）", kind: "number", placeholder: "留空=用定位器" },
+      { key: "y", label: "坐标 Y（可选）", kind: "number" },
       { key: "timeout", label: "超时(秒)", kind: "number" },
     ],
   },
