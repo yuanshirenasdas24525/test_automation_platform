@@ -168,6 +168,47 @@ class WebPressStepRunner(BaseStepRunner):
 
 
 # ============================================================
+# 2.6 web_drag —— 拖动（进度条/滑块/拖拽排序/滑块验证）
+# ============================================================
+class WebDragStepRunner(BaseStepRunner):
+    step_types = ("web_drag",)
+
+    @staticmethod
+    def _num(v):
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _run(self, step: dict, ctx: ExecutionContext, result: StepResult) -> None:
+        session = WebSession.require(ctx)
+        config = _cfg(step)
+        by, locator = _require_by_locator(config)  # 拖动起点：源元素
+        locator = _resolve_str(locator, ctx)
+        timeout = float(config.get("timeout") or 10)
+        to_by = config.get("to_by") or None
+        to_locator = config.get("to_locator")
+        to_locator = str(_resolve_str(to_locator, ctx)) if to_locator else None
+        session.adapter.drag(
+            by, str(locator), timeout=timeout,
+            to_by=to_by, to_locator=to_locator,
+            dx=self._num(config.get("dx")), dy=self._num(config.get("dy")),
+            tx=self._num(config.get("tx")), ty=self._num(config.get("ty")),
+            steps=int(config.get("steps") or 10),
+        )
+        if to_locator:
+            dest = f"→ {to_by}={to_locator}"
+        elif self._num(config.get("tx")) is not None:
+            dest = f"→ 坐标({config.get('tx')},{config.get('ty')})"
+        else:
+            dest = f"偏移({config.get('dx') or 0},{config.get('dy') or 0})"
+        result.action = f"drag {by}={locator} {dest}"
+        result.target = f"{by}={locator}"
+
+
+# ============================================================
 # 3. web_input
 # ============================================================
 class WebInputStepRunner(BaseStepRunner):
@@ -443,6 +484,7 @@ def build_web_runners() -> list[BaseStepRunner]:
         WebGotoStepRunner(),
         WebClickStepRunner(),
         WebPressStepRunner(),
+        WebDragStepRunner(),
         WebInputStepRunner(),
         WebSelectStepRunner(),
         WebWaitStepRunner(),

@@ -160,6 +160,19 @@ class WebDriverAdapter(ABC):
         """按键盘按键。指定 by/locator 则先聚焦该元素再按，否则对整页按（如 Escape 关弹层）。"""
         ...
 
+    @abstractmethod
+    def drag(
+        self, by: str, locator: str, *, timeout: float = 10,
+        to_by: str | None = None, to_locator: str | None = None,
+        dx: float | None = None, dy: float | None = None,
+        tx: float | None = None, ty: float | None = None,
+        steps: int = 10,
+    ) -> None:
+        """从源元素中心按住拖动到：目标元素(to_by/to_locator) / 目标坐标(tx,ty) /
+        偏移(dx,dy) 三选一。steps 是中途移动步数（越大越平滑，滑块/轨迹校验更像人手）。
+        用于进度条、滑块、拖拽排序、滑块验证等。"""
+        ...
+
     # ------------------------ 其它 ------------------------
     @abstractmethod
     def screenshot(self, path: str) -> None: ...
@@ -417,6 +430,35 @@ class PlaywrightAdapter(WebDriverAdapter):
 
     def click_at(self, x: float, y: float) -> None:
         self.page.mouse.click(float(x), float(y))
+
+    def drag(
+        self, by: str, locator: str, *, timeout: float = 10,
+        to_by: str | None = None, to_locator: str | None = None,
+        dx: float | None = None, dy: float | None = None,
+        tx: float | None = None, ty: float | None = None,
+        steps: int = 10,
+    ) -> None:
+        src = self.page.locator(self._selector(by, locator)).first
+        box = src.bounding_box(timeout=timeout * 1000)
+        if not box:
+            raise ValueError(f"拖动源元素不可见/无边界：{by}={locator}")
+        sx = box["x"] + box["width"] / 2
+        sy = box["y"] + box["height"] / 2
+        if to_by and to_locator:
+            tb = self.page.locator(self._selector(to_by, to_locator)).first.bounding_box(timeout=timeout * 1000)
+            if not tb:
+                raise ValueError(f"拖动目标元素不可见/无边界：{to_by}={to_locator}")
+            ex, ey = tb["x"] + tb["width"] / 2, tb["y"] + tb["height"] / 2
+        elif tx is not None and ty is not None:
+            ex, ey = float(tx), float(ty)
+        elif dx is not None or dy is not None:
+            ex, ey = sx + float(dx or 0), sy + float(dy or 0)
+        else:
+            raise ValueError("拖动需指定 目标元素 / 目标坐标(tx,ty) / 偏移(dx,dy) 之一")
+        self.page.mouse.move(sx, sy)
+        self.page.mouse.down()
+        self.page.mouse.move(ex, ey, steps=max(1, int(steps or 1)))
+        self.page.mouse.up()
 
     def input(
         self, by: str, locator: str, text: str,
@@ -697,6 +739,27 @@ class SeleniumAdapter(WebDriverAdapter):
         # Selenium 只能相对元素/当前位置移动；这里以 <body> 左上角为基准偏移到 (x,y)。
         body = self.driver.find_element("tag name", "body")
         ActionChains(self.driver).move_to_element_with_offset(body, int(x), int(y)).click().perform()
+
+    def drag(
+        self, by: str, locator: str, *, timeout: float = 10,
+        to_by: str | None = None, to_locator: str | None = None,
+        dx: float | None = None, dy: float | None = None,
+        tx: float | None = None, ty: float | None = None,
+        steps: int = 10,
+    ) -> None:
+        from selenium.webdriver.common.action_chains import ActionChains
+        src = self._find(by, locator, timeout=timeout, condition="visible")
+        ac = ActionChains(self.driver)
+        if to_by and to_locator:
+            tgt = self._find(to_by, to_locator, timeout=timeout, condition="visible")
+            ac.drag_and_drop(src, tgt).perform()
+        elif dx is not None or dy is not None:
+            ac.click_and_hold(src).move_by_offset(int(dx or 0), int(dy or 0)).release().perform()
+        elif tx is not None and ty is not None:
+            body = self.driver.find_element("tag name", "body")
+            ac.click_and_hold(src).move_to_element_with_offset(body, int(tx), int(ty)).release().perform()
+        else:
+            raise ValueError("拖动需指定 目标元素 / 目标坐标(tx,ty) / 偏移(dx,dy) 之一")
 
     def input(
         self, by: str, locator: str, text: str,
