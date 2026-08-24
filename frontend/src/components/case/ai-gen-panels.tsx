@@ -326,10 +326,16 @@ export function ConfigPreviewPanel({
   projectId, category, modelName,
 }: {
   projectId: number | null;
-  category: "web" | "api";
+  category: "web" | "api" | "app";
   modelName?: string;
 }) {
   const navigate = useNavigate();
+  const catLabel = category === "web" ? "Web 浏览器/账号" : category === "app" ? "移动端 设备/App/会话" : "API 参数/账号";
+  const catHint = category === "web"
+    ? "浏览器 headless、base_url、可视化开关、测试账号等"
+    : category === "app"
+      ? "设备黑名单、会话复用/超时、Appium 探活、失败截图等"
+      : "默认参数、鉴权、测试账号等";
   const q = useQuery({
     queryKey: ["project-config", projectId, category],
     queryFn: () => configApi.list(category, projectId as number),
@@ -355,7 +361,7 @@ export function ConfigPreviewPanel({
       <div className="flex items-center justify-between gap-3 border-b px-3 py-2.5">
         <div className="flex items-center gap-2">
           <SlidersHorizontal className="h-4 w-4 text-primary" />
-          <span className="text-sm font-medium">配置预览 · {category === "web" ? "Web 浏览器/账号" : "API 参数/账号"}</span>
+          <span className="text-sm font-medium">配置预览 · {catLabel}</span>
         </div>
         <Button size="sm" variant="outline" onClick={goConfig} disabled={projectId == null}>
           <ExternalLink className="h-3.5 w-3.5" />
@@ -364,7 +370,7 @@ export function ConfigPreviewPanel({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <p className="mb-3 text-[11px] leading-5 text-muted-foreground">
-          以下是本次生成/执行会读取的项目配置（{category === "web" ? "浏览器 headless、base_url、可视化开关、测试账号等" : "默认参数、鉴权、测试账号等"}）。只读；要改点右上角按钮跳到项目配置页。
+          以下是本次生成/执行会读取的项目配置（{catHint}）。只读；要改点右上角按钮跳到项目配置页。
         </p>
         {modelName ? (
           <div className="mb-3 flex items-center justify-between rounded border bg-background px-3 py-2 text-xs">
@@ -376,7 +382,7 @@ export function ConfigPreviewPanel({
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground"><Loader2 className="h-3.5 w-3.5 animate-spin" /> 读取配置…</p>
         ) : groups.length === 0 ? (
           <div className="rounded border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-            当前项目还没有 {category === "web" ? "Web" : "API"} 配置。
+            当前项目还没有 {category === "web" ? "Web" : category === "app" ? "移动端" : "API"} 配置。
             <button className="ml-1 text-primary underline" onClick={goConfig}>去添加</button>
           </div>
         ) : (

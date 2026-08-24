@@ -93,6 +93,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
 import { WebUiCaseGenerationDialog } from "./ui-recording/WebUiCaseGenerationDialog";
+import { MobileUiCaseGenerationDialog } from "./ui-recording/MobileUiCaseGenerationDialog";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 import { useCaseCopyPaste } from "@/lib/use-case-copy-paste";
 
@@ -1019,32 +1020,13 @@ export function AutomationCasesPage({
           onOpenChange={setUiAiOpen}
         />
       ) : caseType === "android" || caseType === "ios" ? (
-        <Dialog open={uiAiOpen} onOpenChange={setUiAiOpen}>
-          <DialogContent className="sm:max-w-[520px]">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-violet-600" />
-                AI 生成 {caseLabel} UI 用例
-              </DialogTitle>
-              <DialogDescription>
-                入口已按 Web、Android、iOS 统一放在“新建用例”后面；移动端自动生成能力将在模拟器证据链完成后开放。
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-3 text-sm">
-              <div className="rounded-lg border bg-muted/30 p-3">
-                Android/iOS 不能直接复用 Web 的 CSS/XPath，需要基于模拟器页面树、Accessibility ID、资源 ID、坐标稳定性和 App 版本重新建立事实门禁。
-              </div>
-              <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                <li>首期仅支持模拟器，不连接真实设备。</li>
-                <li>需要先确认 App 包、启动 Activity/Bundle、登录状态和测试数据。</li>
-                <li>系统权限弹窗、WebView、手势和软键盘需要独立 Runner 支持。</li>
-              </ul>
-            </div>
-            <DialogFooter>
-              <Button onClick={() => setUiAiOpen(false)}>知道了</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <MobileUiCaseGenerationDialog
+          open={uiAiOpen}
+          projectId={projectId}
+          initialModuleId={moduleId}
+          platform={caseType}
+          onOpenChange={setUiAiOpen}
+        />
       ) : null}
       <RecordsDialog
         open={recordsOpen}
