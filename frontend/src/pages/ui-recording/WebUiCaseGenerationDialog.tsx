@@ -375,6 +375,8 @@ export function WebUiCaseGenerationDialog({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["web-ui-case-drafts", projectId, batchId] }),
         queryClient.invalidateQueries({ queryKey: ["content", projectId] }),
+        // 写入后刷新父页面的用例列表，否则「Web 用例(N)」要手动刷新浏览器才更新。
+        queryClient.invalidateQueries({ queryKey: ["automation-cases"] }),
       ]);
       toast.success(`已写入 ${result.created_case_ids.length} 条 Web UI 用例${result.skipped.length ? `，跳过 ${result.skipped.length} 条` : ""}`);
       setSelectedDraftIds([]);
