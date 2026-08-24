@@ -926,6 +926,49 @@ def _is_unstable_locator(strategy: str, locator: str) -> bool:
     return bool(_UNSTABLE_ID_RE.search(locator or ""))
 
 
+def _is_simple_css(loc: str) -> bool:
+    """简单直接的 css：#id / .class / [attr=..] / [data-testid]，无组合子/层级/nth。
+    这类稳定；带 `>`/空格/`nth-of-type` 的结构化选择器脆，另算。"""
+    loc = str(loc or "").strip()
+    if not loc or any(c in loc for c in (" ", ">", "+", "~")) or "nth" in loc:
+        return False
+    return bool(re.match(r"^(#[\w-]+|\.[\w-]+|\[[\w-]+([~|^$*]?=[^\]]+)?\])$", loc))
+
+
+def _locator_quality(item: "UiElementLocator", semantic: str) -> float:
+    """给单个定位器打质量分，越高越该选。核心排序：
+    稳定直接 id/testid > ARIA role+name > 唯一 text/link > 结构化 css/xpath > radix 自动 ID。"""
+    strat = str(item.strategy or "").lower()
+    loc = str(item.locator or "")
+    q = 0.0
+    if _is_unstable_locator(strat, loc):
+        q -= 1000  # radix/useId 等运行时自动 ID → 垫底
+    if strat in ("id", "name"):
+        q += 500
+    elif strat == "css":
+        q += 480 if _is_simple_css(loc) else 150  # #id/.class/[testid] 高，结构化 nth 链低
+    elif strat == "role":
+        q += 400
+    elif strat == "link":
+        q += 300
+    elif strat == "text":
+        q += 220 if item.is_unique is True else 60  # 只有唯一的 text 才靠谱
+    elif strat == "class":
+        q += 180
+    elif strat == "xpath":
+        q += 120
+    # 取值命中元素语义名：纠正元素库 primary 标注错位（“退出登录”的 primary
+    # 定位器 name 却是“修改密码”这类），只对 role/text 生效。
+    if semantic and strat in ("role", "text") and semantic in loc:
+        q += 70
+    if item.is_unique is True:
+        q += 40
+    if item.last_verified_at is not None:
+        q += 15
+    q += min(int(item.score or 0), 100) * 0.2
+    return q
+
+
 def _preferred_locator(element: UiElement) -> tuple[str, str] | None:
     candidates = [
         item for item in (element.locators or [])
@@ -935,32 +978,7 @@ def _preferred_locator(element: UiElement) -> tuple[str, str] | None:
     if not candidates:
         return None
     semantic = str(getattr(element, "semantic_name", "") or "").strip()
-
-    def _name_matches_semantic(item: "UiElementLocator") -> bool:
-        # 元素库偶发把 primary 标到了错的兄弟节点上（如“退出登录”的 primary
-        # 定位器 name 却是“修改密码”）。当某稳定定位器的取值里含元素语义名时，
-        # 优先它，纠正这类标注错误。
-        if not semantic:
-            return False
-        strat = str(item.strategy or "").lower()
-        if strat not in ("role", "text"):
-            return False
-        return semantic in str(item.locator or "")
-
-    selected = max(
-        candidates,
-        key=lambda item: (
-            # 稳定性最高优先：任何稳定定位器都要压过不稳定的自动 ID，
-            # 即便后者被前端框架标成了 is_primary / 打了高分。
-            int(not _is_unstable_locator(str(item.strategy or "").lower(), str(item.locator or ""))),
-            # 其次纠正标注错位：取值命中元素语义名的稳定定位器优先。
-            int(_name_matches_semantic(item)),
-            int(bool(item.is_primary)),
-            int(item.is_unique is True),
-            int(item.last_verified_at is not None),
-            int(item.score or 0),
-        ),
-    )
+    selected = max(candidates, key=lambda item: _locator_quality(item, semantic))
     return str(selected.strategy).lower(), str(selected.locator)
 
 
