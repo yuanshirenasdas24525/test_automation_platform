@@ -1518,6 +1518,18 @@ export function UiElementLibraryWorkspace({
     setReplayInputDirty(false);
   };
 
+  // 移动录制中每 1.2s 刷新镜像实时帧（画面变了但页面树没变也能跟上）。必须在任何
+  // 提前 return 之前调用，条件内联，保证每次渲染 Hook 数量一致(React #310)。
+  const mobileLiveActive =
+    (platform === "android" || platform === "ios")
+    && session != null
+    && ACTIVE_STATUSES.includes(session.status);
+  useEffect(() => {
+    if (!mobileLiveActive) return;
+    const timer = window.setInterval(() => setMobileLiveRevision((r) => r + 1), 1200);
+    return () => window.clearInterval(timer);
+  }, [mobileLiveActive]);
+
   if (!open) return null;
 
   const sessionBusy = startMutation.isPending
@@ -1533,14 +1545,9 @@ export function UiElementLibraryWorkspace({
     && ["starting", "waiting_for_login", "running"].includes(effectiveAiExploration.status);
   const statusMeta = session ? STATUS_META[session.status] : null;
   const mobileSessionActive = session != null && ACTIVE_STATUSES.includes(session.status);
-  // 移动录制中定时刷新镜像实时帧（覆盖"手点真机/画面变了但页面树没变"的情况，
-  // 让镜像大致跟着真机走，不用老点刷新）。仅移动端 + 会话活跃时开。
+  // 供镜像 JSX 用：仅移动端 + 会话活跃时走实时帧。定时刷新的 useEffect 放在
+  // `if (!open) return null` 之前（见上方），避免 Hook 数量在关闭时变化(React #310)。
   const mobileLive = (platform === "android" || platform === "ios") && mobileSessionActive;
-  useEffect(() => {
-    if (!mobileLive) return;
-    const timer = window.setInterval(() => setMobileLiveRevision((r) => r + 1), 1200);
-    return () => window.clearInterval(timer);
-  }, [mobileLive]);
   const mobilePreflight = mobilePreflightQuery.data;
   const mobilePreflightReady = platform === "android"
     ? mobilePreflight?.platform_ready.android === true
