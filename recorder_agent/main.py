@@ -2194,6 +2194,87 @@ def _mobile_element_from_source(
     }
 
 
+def _mobile_locators_for(attrs: dict[str, str], element_type: str, xpath: str, platform: str) -> list[dict[str, Any]]:
+    """按控件属性生成移动定位器（与单元素抽取同口径）。"""
+    resource_id = attrs.get("resource-id") or attrs.get("resourceId") or ""
+    accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
+    text = attrs.get("text") or attrs.get("value") or ""
+    locators: list[dict[str, Any]] = []
+    if platform == "android":
+        if resource_id:
+            locators.append({"strategy": "id", "locator": resource_id, "score": 98})
+        if accessibility:
+            locators.append({"strategy": "accessibility_id", "locator": accessibility, "score": 96})
+        if text:
+            escaped = text.replace('"', '\\"')
+            locators.append({"strategy": "android_uiautomator", "locator": f'new UiSelector().text("{escaped}")', "score": 82})
+    else:
+        if accessibility:
+            locators.append({"strategy": "accessibility_id", "locator": accessibility, "score": 96})
+            predicate_value = accessibility.replace("'", "\\'")
+            locators.append({"strategy": "ios_predicate", "locator": f"name == '{predicate_value}'", "score": 90})
+            locators.append({"strategy": "ios_class_chain", "locator": f"**/{element_type}[`name == '{predicate_value}'`]", "score": 86})
+    if text and not any(item["locator"] == text for item in locators):
+        locators.append({"strategy": "text", "locator": text, "score": 76})
+    locators.append({"strategy": "xpath", "locator": xpath, "score": 62})
+    return locators
+
+
+def _mobile_elements_from_source(source: str, platform: str, *, limit: int = 800) -> list[dict[str, Any]]:
+    """遍历整棵 UI Tree，抽出所有"有身份/可交互"的控件（含 bounds + 定位器 + fingerprint）。
+
+    与 Web 的整页 visible_elements 对齐：一抓一屏，整页控件自动进元素库，也让离线拾取
+    有据可依。判定"值得收"：有 resource-id / content-desc / 文本 / clickable，或本身是叶子。
+    """
+    try:
+        root = ET.fromstring(source)
+    except ET.ParseError:
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _worth(attrs: dict[str, str], has_children: bool) -> bool:
+        rid = attrs.get("resource-id") or attrs.get("resourceId") or ""
+        acc = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
+        txt = (attrs.get("text") or attrs.get("value") or "").strip()
+        clickable = str(attrs.get("clickable") or "").lower() == "true"
+        return bool(rid or acc or txt or clickable or not has_children)
+
+    def walk(node: ET.Element, path: str) -> None:
+        if len(out) >= limit:
+            return
+        attrs = {str(k): str(v) for k, v in node.attrib.items()}
+        bounds = _mobile_node_bounds(attrs)
+        children = list(node)
+        if bounds and _worth(attrs, bool(children)):
+            node_tag = str(node.tag).split("}")[-1]
+            element_type = attrs.get("class") or attrs.get("type") or node_tag
+            resource_id = attrs.get("resource-id") or attrs.get("resourceId") or ""
+            accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
+            text = attrs.get("text") or attrs.get("value") or ""
+            semantic_name = accessibility or text or resource_id.rsplit("/", 1)[-1] or element_type
+            seed = "|".join([platform, element_type, resource_id, accessibility, text, path])
+            fingerprint = hashlib.sha256(seed.encode("utf-8")).hexdigest()
+            if fingerprint not in seen:
+                seen.add(fingerprint)
+                out.append({
+                    "semantic_name": semantic_name[:200],
+                    "element_type": element_type[:100],
+                    "fingerprint": fingerprint,
+                    "attributes": {**attrs, "bounds": bounds},
+                    "locators": _mobile_locators_for(attrs, element_type, path, platform),
+                })
+        tag_counts: dict[str, int] = {}
+        for child in children:
+            child_tag = str(child.tag).split("}")[-1]
+            tag_counts[child_tag] = tag_counts.get(child_tag, 0) + 1
+            walk(child, f"{path}/{child_tag}[{tag_counts[child_tag]}]")
+
+    root_tag = str(root.tag).split("}")[-1]
+    walk(root, f"/{root_tag}[1]")
+    return out
+
+
 def _mobile_options(body: MobileRecorderStartRequest):
     """构建严格 W3C 的 Appium Options。"""
     caps: dict[str, Any] = {
@@ -2371,6 +2452,13 @@ class MobileRecorderRuntime:
         document_path.write_text(source, encoding="utf-8")
         screenshot_path.write_bytes(screenshot)
         self.snapshot_fingerprints.add(fingerprint)
+        # 整页控件：解析 UI Tree 抽出全部有身份/可交互的元素（含 bounds + 定位器），
+        # 让服务端 _materialize_elements 一次把整页控件落库（对齐 Web），也支撑离线拾取。
+        try:
+            visible_elements = _mobile_elements_from_source(source, self.platform)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("移动整页元素抽取失败(忽略)：%s", exc)
+            visible_elements = []
         payload = {
             "url": f"appium://{self.udid}/{state['context']}",
             "title": state["page_name"],
@@ -2385,6 +2473,7 @@ class MobileRecorderRuntime:
             "context": state["context"],
             "contexts": state["contexts"],
             "viewport": state["rect"],
+            "visible_elements": visible_elements,
         }
         await self.emit("page.snapshot", "device", payload)
         return payload
