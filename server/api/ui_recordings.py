@@ -621,7 +621,22 @@ def _pull_agent_events(
     *,
     strict: bool,
 ) -> int:
-    """分批排空宿主机 Agent 的增量事件并落库。"""
+    """分批排空宿主机 Agent 的增量事件并落库。
+
+    串行化并发拉取：前端会高频并发轮询 GET /events，每次都会走到这里往
+    ui_recording_events 落库。多个 pull 同时 append 同一批 Agent 事件会造成唯一键
+    冲突 / 死锁（psycopg2 DeadlockDetected → 500）。这里先用 `FOR UPDATE SKIP LOCKED`
+    抢会话行：抢不到说明已有一个 pull 在落库，本次直接跳过（事件会由那个 pull 或
+    下一次轮询取回），既避免死锁也不排队堆积。
+    """
+    locked = (
+        db.session.query(UiRecordingSession.id)
+        .filter(UiRecordingSession.id == session.id)
+        .with_for_update(skip_locked=True)
+        .first()
+    )
+    if locked is None:
+        return 0
     after_sequence = int(
         db.session.query(func.coalesce(func.max(UiRecordingEvent.sequence_no), 0))
         .filter(UiRecordingEvent.session_id == session.id)
