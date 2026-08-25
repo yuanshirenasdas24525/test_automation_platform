@@ -2123,6 +2123,9 @@ export function UiElementLibraryWorkspace({
                         snapshot={activeSnapshot}
                         liveSessionId={mobileLive && session ? session.id : null}
                         liveRevision={mobileLiveRevision}
+                        staticPick={!mobileLive}
+                        elements={visibleElements}
+                        onSelectElement={setSelectedElementId}
                         disabled={
                           !mobileSessionActive
                           || !hasControl
@@ -2926,6 +2929,9 @@ function MobileSnapshotStage({
   onGesture,
   liveSessionId = null,
   liveRevision = 0,
+  staticPick = false,
+  elements = [],
+  onSelectElement,
 }: {
   snapshot: UiPageSnapshot;
   disabled: boolean;
@@ -2937,6 +2943,10 @@ function MobileSnapshotStage({
   /** 录制进行中时传会话 id：镜像改取实时截图，随 liveRevision 变化刷新。 */
   liveSessionId?: number | null;
   liveRevision?: number;
+  /** 离线静态拾取：无 live 会话时，点截图按 bounds 命中元素并选中（看定位器）。 */
+  staticPick?: boolean;
+  elements?: UiElement[];
+  onSelectElement?: (id: number) => void;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -2981,6 +2991,9 @@ function MobileSnapshotStage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot.id, liveSessionId, liveRevision]);
 
+  // 可交互：live 会话有控制权时能驱动 Appium；离线静态拾取时也可点（只选元素不驱动）。
+  const interactive = !disabled || staticPick;
+
   const imagePoint = (clientX: number, clientY: number) => {
     const image = imageRef.current;
     if (!image) return null;
@@ -3014,10 +3027,10 @@ function MobileSnapshotStage({
         draggable={false}
         className={cn(
           "max-h-full max-w-full select-none object-contain",
-          disabled ? "cursor-not-allowed opacity-80" : pickMode ? "cursor-crosshair" : "cursor-pointer",
+          !interactive ? "cursor-not-allowed opacity-80" : (pickMode || staticPick) ? "cursor-crosshair" : "cursor-pointer",
         )}
         onPointerDown={(event) => {
-          if (disabled) return;
+          if (!interactive) return;
           const point = imagePoint(event.clientX, event.clientY);
           if (!point) return;
           event.currentTarget.setPointerCapture(event.pointerId);
@@ -3030,10 +3043,27 @@ function MobileSnapshotStage({
           });
         }}
         onPointerUp={(event) => {
-          if (!gestureStart || disabled) return;
+          if (!gestureStart || !interactive) return;
           const end = imagePoint(event.clientX, event.clientY);
           setGestureStart(null);
           if (!end) return;
+          // 离线静态拾取：不驱动 Appium，按 bounds 命中最小元素并选中（看定位器）。
+          if (staticPick) {
+            const px = gestureStart.x;
+            const py = gestureStart.y;
+            let best: UiElement | null = null;
+            let bestArea = Infinity;
+            for (const el of elements) {
+              const b = el.attributes?.bounds as { x: number; y: number; width: number; height: number } | undefined;
+              if (!b) continue;
+              if (px >= b.x && px <= b.x + b.width && py >= b.y && py <= b.y + b.height) {
+                const area = b.width * b.height;
+                if (area < bestArea) { bestArea = area; best = el; }
+              }
+            }
+            if (best) onSelectElement?.(best.id);
+            return;
+          }
           const distance = Math.hypot(
             event.clientX - gestureStart.clientX,
             event.clientY - gestureStart.clientY,
@@ -3057,7 +3087,7 @@ function MobileSnapshotStage({
         onPointerCancel={() => setGestureStart(null)}
       />
       <div className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[9px] text-white">
-        {disabled ? "等待录制控制权" : pickMode ? "拾取模式：点击不会执行" : "点击操作 · 拖动滑屏"}
+        {staticPick ? "离线拾取：点截图选中元素看定位器" : disabled ? "等待录制控制权" : pickMode ? "拾取模式：点击不会执行" : "点击操作 · 拖动滑屏"}
       </div>
     </div>
   );
