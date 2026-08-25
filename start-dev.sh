@@ -253,21 +253,23 @@ if [[ "$START_APPIUM" == "1" ]]; then
     # Android 会话必须能读到 SDK，否则 uiautomator2 报「Neither ANDROID_HOME nor
     # ANDROID_SDK_ROOT ...」。自动探测：已导出则用；否则用 macOS 默认位置，
     # 再退而用 adb 反推 SDK 根。同时把 platform-tools/emulator 加进 PATH。
-    if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
+    # 用局部变量全程 :- 保护，绝不在 set -u 下引用未定义变量；只有探到 SDK 才 export。
+    _android_home="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+    if [[ -z "$_android_home" ]]; then
       if [[ -d "$HOME/Library/Android/sdk" ]]; then
-        export ANDROID_HOME="$HOME/Library/Android/sdk"
+        _android_home="$HOME/Library/Android/sdk"
       elif command -v adb >/dev/null 2>&1; then
-        export ANDROID_HOME="$(cd "$(dirname "$(command -v adb)")/.." && pwd)"
+        _android_home="$(cd "$(dirname "$(command -v adb)")/.." && pwd)"
       fi
     fi
-    export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-    export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
-    if [[ -n "${ANDROID_HOME:-}" ]]; then
-      export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
-      log "Appium server → http://127.0.0.1:$APPIUM_PORT   （ANDROID_HOME=$ANDROID_HOME）  日志 $LOG_DIR/appium.log"
+    if [[ -n "$_android_home" ]]; then
+      export ANDROID_HOME="$_android_home"
+      export ANDROID_SDK_ROOT="$_android_home"
+      export PATH="$_android_home/platform-tools:$_android_home/emulator:$_android_home/cmdline-tools/latest/bin:$PATH"
+      log "Appium server -> http://127.0.0.1:$APPIUM_PORT  [ANDROID_HOME=$_android_home]  日志 $LOG_DIR/appium.log"
     else
-      warn "没探测到 Android SDK（ANDROID_HOME 未设、默认位置不存在）—— Android 录制/执行会报 ANDROID_HOME 未导出。iOS 不受影响。"
-      log "Appium server → http://127.0.0.1:$APPIUM_PORT   日志 $LOG_DIR/appium.log"
+      warn "没探测到 Android SDK (ANDROID_HOME 未设、默认位置不存在) —— Android 录制/执行会报 ANDROID_HOME 未导出，iOS 不受影响。"
+      log "Appium server -> http://127.0.0.1:$APPIUM_PORT  日志 $LOG_DIR/appium.log"
     fi
     appium --address 127.0.0.1 --port "$APPIUM_PORT" --relaxed-security \
       > "$LOG_DIR/appium.log" 2>&1 &
