@@ -299,8 +299,20 @@ echo "    前端  : http://localhost:$WEB_PORT  （/api 代理到后端）"
 echo "    日志  : $LOG_DIR/"
 printf "\n"
 log "实时日志（tail -F，Ctrl+C 退出并停服）："
+log "  （Appium 日志太啰嗦不在此刷屏，需要时： tail -f $LOG_DIR/appium.log）"
 
-# 跟随所有日志，直到 Ctrl+C
-tail -n +1 -F "$LOG_DIR"/*.log &
+# 跟随日志，直到 Ctrl+C —— 排除 appium.log：Appium 每个 HTTP 请求都打日志，
+# 混进前台会把 api/worker 的日志淹没。它仍写文件，需要时单独 tail。
+_follow_logs=()
+for _f in "$LOG_DIR"/*.log; do
+  [[ "$_f" == *"/appium.log" ]] && continue
+  _follow_logs+=("$_f")
+done
+# bash 3.2 下空数组的 "${arr[@]}" 在 set -u 会报 unbound，用长度守卫。
+if [[ ${#_follow_logs[@]} -gt 0 ]]; then
+  tail -n +1 -F "${_follow_logs[@]}" &
+else
+  tail -n +1 -F "$LOG_DIR"/*.log &
+fi
 PIDS+=($!)
 wait
