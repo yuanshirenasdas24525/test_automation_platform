@@ -919,6 +919,8 @@ export function UiElementLibraryWorkspace({
     onError: (error) => toast.error(messageOf(error)),
   });
 
+  // 移动镜像实时帧版本号：自增即触发 MobileSnapshotStage 重新拉实时截图。
+  const [mobileLiveRevision, setMobileLiveRevision] = useState(0);
   const mobileActionMutation = useMutation({
     mutationFn: ({
       sessionId,
@@ -941,6 +943,7 @@ export function UiElementLibraryWorkspace({
     }),
     onSuccess: async (next) => {
       setSessionOverride(next);
+      setMobileLiveRevision((r) => r + 1);  // 每步操作后立即刷新镜像实时帧
       await Promise.all([
         refresh(),
         queryClient.invalidateQueries({ queryKey: ["ui-recording-events", next.id] }),
@@ -1530,6 +1533,14 @@ export function UiElementLibraryWorkspace({
     && ["starting", "waiting_for_login", "running"].includes(effectiveAiExploration.status);
   const statusMeta = session ? STATUS_META[session.status] : null;
   const mobileSessionActive = session != null && ACTIVE_STATUSES.includes(session.status);
+  // 移动录制中定时刷新镜像实时帧（覆盖"手点真机/画面变了但页面树没变"的情况，
+  // 让镜像大致跟着真机走，不用老点刷新）。仅移动端 + 会话活跃时开。
+  const mobileLive = (platform === "android" || platform === "ios") && mobileSessionActive;
+  useEffect(() => {
+    if (!mobileLive) return;
+    const timer = window.setInterval(() => setMobileLiveRevision((r) => r + 1), 1200);
+    return () => window.clearInterval(timer);
+  }, [mobileLive]);
   const mobilePreflight = mobilePreflightQuery.data;
   const mobilePreflightReady = platform === "android"
     ? mobilePreflight?.platform_ready.android === true
@@ -2103,6 +2114,8 @@ export function UiElementLibraryWorkspace({
                     {activeSnapshot?.has_screenshot ? (
                       <MobileSnapshotStage
                         snapshot={activeSnapshot}
+                        liveSessionId={mobileLive && session ? session.id : null}
+                        liveRevision={mobileLiveRevision}
                         disabled={
                           !mobileSessionActive
                           || !hasControl
@@ -2904,6 +2917,8 @@ function MobileSnapshotStage({
   disabled,
   pickMode,
   onGesture,
+  liveSessionId = null,
+  liveRevision = 0,
 }: {
   snapshot: UiPageSnapshot;
   disabled: boolean;
@@ -2912,6 +2927,9 @@ function MobileSnapshotStage({
     | { action: "tap"; x: number; y: number }
     | { action: "swipe"; x: number; y: number; end_x: number; end_y: number; duration_ms: number }
   ) => void;
+  /** 录制进行中时传会话 id：镜像改取实时截图，随 liveRevision 变化刷新。 */
+  liveSessionId?: number | null;
+  liveRevision?: number;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -2927,25 +2945,34 @@ function MobileSnapshotStage({
   useEffect(() => {
     let disposed = false;
     let objectUrl: string | null = null;
-    setImageUrl(null);
-    setImageError(null);
-    void uiRecordingsApi.snapshotImage(snapshot.id)
+    // 录制中优先实时截图（绕过去重存档，排序下拉等画面变化也能立刻反映）；
+    // 失败时回退到存档快照图，保证至少有画面。
+    const loader = liveSessionId != null
+      ? uiRecordingsApi.liveScreenshot(liveSessionId).catch(() => uiRecordingsApi.snapshotImage(snapshot.id))
+      : uiRecordingsApi.snapshotImage(snapshot.id);
+    // 首帧才清空（避免每次刷新都闪一下 loading）；后续帧原地替换。
+    if (imageUrl == null) setImageError(null);
+    void loader
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob);
         if (disposed) {
           URL.revokeObjectURL(objectUrl);
           return;
         }
-        setImageUrl(objectUrl);
+        setImageError(null);
+        setImageUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return objectUrl;
+        });
       })
       .catch((error: unknown) => {
-        if (!disposed) setImageError(messageOf(error));
+        if (!disposed && imageUrl == null) setImageError(messageOf(error));
       });
     return () => {
       disposed = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [snapshot.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.id, liveSessionId, liveRevision]);
 
   const imagePoint = (clientX: number, clientY: number) => {
     const image = imageRef.current;

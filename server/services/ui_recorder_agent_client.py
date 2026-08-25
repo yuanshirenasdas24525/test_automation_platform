@@ -75,6 +75,11 @@ def _request_bytes(method: str, path: str, *, read_timeout: float = 75.0) -> byt
     return response.content
 
 
+def get_mobile_live_screenshot(session_id: int) -> bytes:
+    """拉取移动录制会话的实时截图（PNG 字节），供镜像实时刷新。"""
+    return _request_bytes("GET", f"/sessions/{session_id}/screenshot", read_timeout=15.0)
+
+
 def start_web_session(session: UiRecordingSession) -> dict[str, Any]:
     """启动可见 Playwright 浏览器；成功返回 Agent 能力。"""
     if not session.source_url:
