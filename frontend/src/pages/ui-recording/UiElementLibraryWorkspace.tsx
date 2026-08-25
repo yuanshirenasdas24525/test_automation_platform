@@ -2125,6 +2125,7 @@ export function UiElementLibraryWorkspace({
                         liveRevision={mobileLiveRevision}
                         staticPick={!mobileLive}
                         elements={visibleElements}
+                        selectedElementId={selectedElement?.id ?? null}
                         onSelectElement={setSelectedElementId}
                         disabled={
                           !mobileSessionActive
@@ -2931,6 +2932,7 @@ function MobileSnapshotStage({
   liveRevision = 0,
   staticPick = false,
   elements = [],
+  selectedElementId = null,
   onSelectElement,
 }: {
   snapshot: UiPageSnapshot;
@@ -2946,6 +2948,7 @@ function MobileSnapshotStage({
   /** 离线静态拾取：无 live 会话时，点截图按 bounds 命中元素并选中（看定位器）。 */
   staticPick?: boolean;
   elements?: UiElement[];
+  selectedElementId?: number | null;
   onSelectElement?: (id: number) => void;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -2994,6 +2997,29 @@ function MobileSnapshotStage({
   // 可交互：live 会话有控制权时能驱动 Appium；离线静态拾取时也可点（只选元素不驱动）。
   const interactive = !disabled || staticPick;
 
+  // 覆盖层几何：把设备像素 bounds 映射到截图在容器里的实际渲染位置（object-contain 居中）。
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [geom, setGeom] = useState<{ scale: number; offX: number; offY: number } | null>(null);
+  const measureGeom = () => {
+    const img = imageRef.current;
+    const stage = stageRef.current;
+    if (!img || !stage || !img.naturalWidth) return;
+    const ir = img.getBoundingClientRect();
+    const sr = stage.getBoundingClientRect();
+    if (ir.width <= 0) return;
+    setGeom({ scale: ir.width / img.naturalWidth, offX: ir.left - sr.left, offY: ir.top - sr.top });
+  };
+  useEffect(() => {
+    measureGeom();
+    const stage = stageRef.current;
+    if (!stage || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => measureGeom());
+    ro.observe(stage);
+    window.addEventListener("resize", measureGeom);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measureGeom); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageUrl]);
+
   const imagePoint = (clientX: number, clientY: number) => {
     const image = imageRef.current;
     if (!image) return null;
@@ -3019,12 +3045,38 @@ function MobileSnapshotStage({
   }
 
   return (
-    <div className="relative mt-2 flex h-[515px] touch-none items-center justify-center overflow-hidden bg-black">
+    <div ref={stageRef} className="relative mt-2 flex h-[515px] touch-none items-center justify-center overflow-hidden bg-black">
+      {/* 离线拾取：把所有可点控件框出来，选中的高亮，让"拾取"看得见 */}
+      {staticPick && geom ? (
+        <div className="pointer-events-none absolute inset-0 z-10">
+          {elements.map((el) => {
+            const b = el.attributes?.bounds as { x: number; y: number; width: number; height: number } | undefined;
+            if (!b || !b.width || !b.height) return null;
+            const sel = el.id === selectedElementId;
+            return (
+              <div
+                key={el.id}
+                className={cn(
+                  "absolute rounded-[2px]",
+                  sel ? "border-2 border-emerald-400 bg-emerald-400/25" : "border border-sky-400/35 hover:border-sky-400",
+                )}
+                style={{
+                  left: geom.offX + b.x * geom.scale,
+                  top: geom.offY + b.y * geom.scale,
+                  width: Math.max(2, b.width * geom.scale),
+                  height: Math.max(2, b.height * geom.scale),
+                }}
+              />
+            );
+          })}
+        </div>
+      ) : null}
       <img
         ref={imageRef}
         src={imageUrl}
         alt={snapshot.page_name}
         draggable={false}
+        onLoad={measureGeom}
         className={cn(
           "max-h-full max-w-full select-none object-contain",
           !interactive ? "cursor-not-allowed opacity-80" : (pickMode || staticPick) ? "cursor-crosshair" : "cursor-pointer",
