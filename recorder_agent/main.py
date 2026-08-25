@@ -2219,6 +2219,28 @@ def _mobile_options(body: MobileRecorderStartRequest):
             continue
         normalized = key if key == "platformName" or ":" in key else f"appium:{key}"
         caps[normalized] = value
+    # —— 提速：uiautomator2 默认每个命令前等 UI idle（waitForIdleTimeout 默认 10s），
+    # RN/动画类 App 几乎从不 idle → 每点一下都干等到超时，表现就是"点一下半天才响应"。
+    # 用 settings[...] 前缀在建会话时直接把这些超时压到最小；用 setdefault 让用户显式
+    # 传入的同名 cap 仍可覆盖。这些是纯性能项，不改变录到的控件事实。
+    if body.platform == "android":
+        speed_defaults = {
+            "appium:disableWindowAnimation": True,          # 关系统动画，交互与截图都快
+            "appium:settings[waitForIdleTimeout]": 100,     # 10s → 100ms（核心）
+            "appium:settings[waitForSelectorTimeout]": 0,
+            "appium:settings[actionAcknowledgmentTimeout]": 50,
+            "appium:settings[ignoreUnimportantViews]": True,  # 页面树更小，dump 更快
+            "appium:settings[allowInvisibleElements]": False,
+        }
+    else:
+        speed_defaults = {
+            "appium:waitForQuiescence": False,              # 不等应用"静止"
+            "appium:reduceMotion": True,
+            "appium:settings[useJSONSource]": True,          # iOS page source 显著变快
+            "appium:settings[snapshotMaxDepth]": 40,
+        }
+    for k, v in speed_defaults.items():
+        caps.setdefault(k, v)
     if body.platform == "android":
         from appium.options.android import UiAutomator2Options
 
@@ -3228,6 +3250,23 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
             command_executor=body.appium_url,
             options=options,
         )
+        # 兜底：caps 里的 settings[...] 前缀在个别 Appium 版本不生效，连上后再 update 一次。
+        # 纯性能设置，失败也不影响录制事实，忽略异常。
+        try:
+            _speed_settings = (
+                {
+                    "waitForIdleTimeout": 100,
+                    "waitForSelectorTimeout": 0,
+                    "actionAcknowledgmentTimeout": 50,
+                    "ignoreUnimportantViews": True,
+                    "allowInvisibleElements": False,
+                }
+                if body.platform == "android"
+                else {"useJSONSource": True, "snapshotMaxDepth": 40}
+            )
+            await asyncio.to_thread(driver.update_settings, _speed_settings)
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("update_settings 提速设置失败(忽略): %s", _exc)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(
             status_code=503,
