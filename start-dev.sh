@@ -250,7 +250,25 @@ fi
 # ---- 7.5 Appium server（原生；移动端设备池探活/执行需要它在 4723） ----
 if [[ "$START_APPIUM" == "1" ]]; then
   if command -v appium >/dev/null 2>&1; then
-    log "Appium server → http://127.0.0.1:$APPIUM_PORT   日志 $LOG_DIR/appium.log"
+    # Android 会话必须能读到 SDK，否则 uiautomator2 报「Neither ANDROID_HOME nor
+    # ANDROID_SDK_ROOT ...」。自动探测：已导出则用；否则用 macOS 默认位置，
+    # 再退而用 adb 反推 SDK 根。同时把 platform-tools/emulator 加进 PATH。
+    if [[ -z "${ANDROID_HOME:-}" && -z "${ANDROID_SDK_ROOT:-}" ]]; then
+      if [[ -d "$HOME/Library/Android/sdk" ]]; then
+        export ANDROID_HOME="$HOME/Library/Android/sdk"
+      elif command -v adb >/dev/null 2>&1; then
+        export ANDROID_HOME="$(cd "$(dirname "$(command -v adb)")/.." && pwd)"
+      fi
+    fi
+    export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+    export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+    if [[ -n "${ANDROID_HOME:-}" ]]; then
+      export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+      log "Appium server → http://127.0.0.1:$APPIUM_PORT   （ANDROID_HOME=$ANDROID_HOME）  日志 $LOG_DIR/appium.log"
+    else
+      warn "没探测到 Android SDK（ANDROID_HOME 未设、默认位置不存在）—— Android 录制/执行会报 ANDROID_HOME 未导出。iOS 不受影响。"
+      log "Appium server → http://127.0.0.1:$APPIUM_PORT   日志 $LOG_DIR/appium.log"
+    fi
     appium --address 127.0.0.1 --port "$APPIUM_PORT" --relaxed-security \
       > "$LOG_DIR/appium.log" 2>&1 &
     PIDS+=($!)
