@@ -94,6 +94,7 @@ from server.services.ui_recorder_agent_client import (
     get_web_replay,
     get_web_exploration,
     get_web_replay_screenshot,
+    get_mobile_live_screenshot,
     perform_mobile_action as perform_mobile_agent_action,
     perform_web_action as perform_web_agent_action,
     perform_web_replay_action,
@@ -1481,6 +1482,28 @@ def list_recording_events(
         "status": "success",
         "data": [serialize_event(event) for event in events],
     }
+
+
+@router.get("/ui-recordings/{session_id}/screenshot")
+def get_recording_live_screenshot(
+    session_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """移动录制会话的实时截图（镜像实时刷新用）——绕过去重存档，直接取当前画面。"""
+    session = _get_session_or_404(db, session_id)
+    assert_project_access(db, current_user, session.project_id)
+    if session.platform not in {"android", "ios"}:
+        raise HTTPException(status_code=422, detail="仅移动端录制支持实时截图")
+    try:
+        content = get_mobile_live_screenshot(session.id)
+    except RecorderAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return Response(
+        content=content,
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/ui-recordings/{session_id}/actions")

@@ -2749,6 +2749,17 @@ export const uiRecordingsApi = {
     }
     return response.blob();
   },
+  /** 移动录制会话的实时截图（镜像实时刷新用，绕过去重存档）。 */
+  async liveScreenshot(sessionId: number): Promise<Blob> {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`/api/ui-recordings/${sessionId}/screenshot`, { headers, cache: "no-store" });
+    if (!response.ok) {
+      throw new ApiError("实时截图加载失败", response.status);
+    }
+    return response.blob();
+  },
 };
 
 // ---------------------------------------------------------------------------

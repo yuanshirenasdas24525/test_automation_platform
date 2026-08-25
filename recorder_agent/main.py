@@ -2389,6 +2389,12 @@ class MobileRecorderRuntime:
         await self.emit("page.snapshot", "device", payload)
         return payload
 
+    async def live_screenshot(self) -> bytes:
+        """当前模拟器实时截图（PNG）。给镜像做实时刷新用——不走去重存档快照，
+        所以像排序下拉这种"页面树没变但画面变了"的状态也能被镜像立即反映。"""
+        async with self.driver_lock:
+            return await asyncio.to_thread(self.driver.get_screenshot_as_png)
+
     async def set_pick_mode(self, enabled: bool) -> None:
         self.pick_mode = enabled
         await self.emit("agent.pick_mode", "agent", {"enabled": enabled})
@@ -3778,6 +3784,19 @@ async def perform_web_action(session_id: int, body: WebActionRequest):
             "event_count": len(runtime.events),
         },
     }
+
+
+@app.get("/sessions/{session_id}/screenshot", dependencies=[Depends(_authorize)])
+async def get_mobile_live_screenshot(session_id: int):
+    """移动录制会话的实时截图（镜像实时刷新用）。"""
+    runtime = _SESSIONS.get(session_id)
+    if not isinstance(runtime, MobileRecorderRuntime) or runtime.stopped:
+        raise HTTPException(status_code=404, detail="移动录制会话不存在或已停止")
+    try:
+        content = await runtime.live_screenshot()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"实时截图获取失败：{exc}") from exc
+    return FastAPIResponse(content=content, media_type="image/png")
 
 
 @app.post("/sessions/{session_id}/actions", dependencies=[Depends(_authorize)])
