@@ -502,8 +502,10 @@ export function UiElementLibraryWorkspace({
   const visibleElements = Array.isArray(visibleFingerprints)
     ? (activePage?.elements ?? []).filter((element) => visibleFingerprints.includes(element.fingerprint))
     : activePage?.elements ?? [];
+  // 从整页元素里找选中项（不止 visibleElements）：移动离线拾取可能选到未列入
+  // 快照 visible_element_fingerprints 的元素，也要能高亮 + 显示定位器。
   const selectedElement =
-    visibleElements.find((element) => element.id === selectedElementId) ?? null;
+    (activePage?.elements ?? []).find((element) => element.id === selectedElementId) ?? null;
 
   useEffect(() => {
     setElementNameDraft(selectedElement?.semantic_name ?? "");
@@ -2124,7 +2126,11 @@ export function UiElementLibraryWorkspace({
                         liveSessionId={mobileLive && session ? session.id : null}
                         liveRevision={mobileLiveRevision}
                         staticPick={!mobileLive}
-                        elements={visibleElements}
+                        elements={
+                          /* 离线拾取用整页元素(都带 bounds)，不受快照 visible_element_fingerprints
+                             为空的影响；live 时该 prop 不参与(走 onGesture)。 */
+                          (activePage?.elements ?? []).length > 0 ? (activePage?.elements ?? []) : visibleElements
+                        }
                         selectedElementId={selectedElement?.id ?? null}
                         onSelectElement={setSelectedElementId}
                         disabled={
