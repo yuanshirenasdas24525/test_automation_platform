@@ -3064,7 +3064,9 @@ function MobileSnapshotStage({
                 key={el.id}
                 className={cn(
                   "absolute rounded-[2px]",
-                  sel ? "border-2 border-emerald-400 bg-emerald-400/25" : "border border-sky-400/35 hover:border-sky-400",
+                  sel
+                    ? "border-2 border-emerald-400 bg-emerald-400/30 ring-1 ring-emerald-300"
+                    : "border border-sky-400/60 bg-sky-400/5",
                 )}
                 style={{
                   left: geom.offX + b.x * geom.scale,
