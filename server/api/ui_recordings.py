@@ -784,7 +784,8 @@ def create_recording(
         name=body.name.strip(),
         recording_role=recording_role,
         baseline_session_id=baseline.id if baseline is not None else None,
-        baseline_included=recording_role == UI_RECORDING_ROLE_PRIMARY,
+        # 单一主线：补充录制默认即合入主线，无需人工"合并"（历史仍可在主线卡片里回看）
+        baseline_included=recording_role in (UI_RECORDING_ROLE_PRIMARY, UI_RECORDING_ROLE_SUPPLEMENT),
         baseline_version=baseline.baseline_version if baseline is not None else 1,
         environment_id=body.environment_id,
         device_id=body.device_id,
