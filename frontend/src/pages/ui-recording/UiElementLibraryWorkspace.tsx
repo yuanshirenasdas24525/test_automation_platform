@@ -1907,38 +1907,53 @@ export function UiElementLibraryWorkspace({
               </div>
             </div>
             <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              {activePage && activePage.snapshots.length > 1 ? (
-                <Select
-                  value={String(activeSnapshot?.id ?? "")}
-                  onValueChange={(value) => {
-                    const nextSnapshot = activePage.snapshots.find((item) => item.id === Number(value)) ?? null;
-                    setSnapshotId(Number(value));
-                    setSelectedElementId(null);
-                    if (embeddedReplay && session) {
-                      replayMutation.mutate({ sessionId: session.id, snapshot: nextSnapshot });
-                    }
-                  }}
-                >
-                  <SelectTrigger className="h-8 w-[230px] text-[11px]">
-                    <SelectValue placeholder="选择页面状态" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {activePage.snapshots.map((item) => {
-                      const owner = recordingSessions.find((candidate) => candidate.id === item.session_id);
-                      const sourceLabel = owner?.recording_role === "primary"
-                        ? `主基线 V${owner.baseline_version}`
-                        : owner?.recording_role === "supplement"
-                          ? owner.baseline_included ? "已合并补充" : "待合并补充"
-                          : "历史录制";
-                      return (
-                        <SelectItem key={item.id} value={String(item.id)}>
-                          {item.state_name || `状态 #${item.snapshot_version}`} · {sourceLabel}
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-              ) : null}
+              {activePage && activePage.snapshots.length > 1 ? (() => {
+                const snaps = activePage.snapshots;
+                const curIdx = snaps.findIndex((item) => item.id === activeSnapshot?.id);
+                const goTo = (idx: number) => {
+                  const target = snaps[idx];
+                  if (!target) return;
+                  const nextSnapshot = target;
+                  setSnapshotId(target.id);
+                  setSelectedElementId(null);
+                  if (embeddedReplay && session) {
+                    replayMutation.mutate({ sessionId: session.id, snapshot: nextSnapshot });
+                  }
+                };
+                return (
+                  <div className="inline-flex items-center gap-1">
+                    {/* 上/下一张：离线翻画面，不驱动设备 */}
+                    <Button size="icon" variant="outline" className="h-8 w-8" title="上一张画面"
+                      disabled={curIdx <= 0} onClick={() => goTo(curIdx - 1)}>‹</Button>
+                    <Select
+                      value={String(activeSnapshot?.id ?? "")}
+                      onValueChange={(value) => goTo(snaps.findIndex((item) => item.id === Number(value)))}
+                    >
+                      <SelectTrigger className="h-8 w-[230px] text-[11px]">
+                        <SelectValue placeholder="选择页面状态" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {snaps.map((item, idx) => {
+                          const owner = recordingSessions.find((candidate) => candidate.id === item.session_id);
+                          const sourceLabel = owner?.recording_role === "primary"
+                            ? `主基线 V${owner.baseline_version}`
+                            : owner?.recording_role === "supplement"
+                              ? owner.baseline_included ? "已合并补充" : "待合并补充"
+                              : "历史录制";
+                          return (
+                            <SelectItem key={item.id} value={String(item.id)}>
+                              画面 {idx + 1}/{snaps.length} · {item.page_name || item.state_name || `状态 #${item.snapshot_version}`} · {sourceLabel}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                    <Button size="icon" variant="outline" className="h-8 w-8" title="下一张画面"
+                      disabled={curIdx < 0 || curIdx >= snaps.length - 1} onClick={() => goTo(curIdx + 1)}>›</Button>
+                    <span className="tabular-nums">{curIdx >= 0 ? curIdx + 1 : "–"}/{snaps.length}</span>
+                  </div>
+                );
+              })() : null}
               {platform === "web" ? (
                 <div className="inline-flex items-center gap-1 rounded-md border bg-muted/40 p-0.5 pr-2">
                   <Button
