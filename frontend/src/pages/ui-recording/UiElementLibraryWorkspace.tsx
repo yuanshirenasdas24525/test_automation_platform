@@ -256,35 +256,6 @@ function groupPages(elements: UiElement[], snapshots: UiPageSnapshot[]) {
     });
 }
 
-function eventLabel(event: UiRecordingEvent): string {
-  const labels: Record<string, string> = {
-    "agent.connected": "Recorder Agent 已连接",
-    "agent.paused": "录制已暂停",
-    "agent.resumed": "录制已继续",
-    "agent.disconnected": "Recorder Agent 已停止",
-    "agent.pick_mode": "拾取模式已切换",
-    "page.navigation": "页面跳转",
-    "page.ready": "页面加载完成",
-    "page.snapshot": "页面快照已归档",
-    "offline.package": "离线业务包已生成",
-    "ai.exploration.progress": "AI 探索进度",
-    "environment.snapshot": "运行环境已采集",
-    "user.click": "点击元素",
-    "user.pick": "拾取元素",
-    "user.input": "输入内容",
-    "user.change": "修改选项",
-    "user.submit": "提交表单",
-    "user.scroll": "滚动页面",
-    "console.message": "Console",
-    "console.pageerror": "页面异常",
-    "network.request": "发送请求",
-    "network.response": "收到响应",
-    "network.failed": "请求失败",
-    "screen.capture": "采集画面",
-  };
-  return labels[event.event_type] ?? event.event_type;
-}
-
 type DeleteTarget =
   | { kind: "element"; id: number; name: string; detail: string }
   | { kind: "page"; pageKey: string; name: string; detail: string }
@@ -923,6 +894,9 @@ export function UiElementLibraryWorkspace({
 
   // 移动镜像实时帧版本号：自增即触发 MobileSnapshotStage 重新拉实时截图。
   const [mobileLiveRevision, setMobileLiveRevision] = useState(0);
+  // 手机镜像缩放（可动态调整大小）。transform:scale 不影响点击/框的坐标映射
+  // （imagePoint/geom 都用 getBoundingClientRect，已含缩放）。
+  const [phoneScale, setPhoneScale] = useState(1);
   const mobileActionMutation = useMutation({
     mutationFn: ({
       sessionId,
@@ -2132,8 +2106,23 @@ export function UiElementLibraryWorkspace({
                   )}
                 </div>
               ) : (
-                <div className="flex w-full items-center justify-center gap-8 p-5">
-                  <div className="h-[560px] w-[300px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700">
+                <div className="flex w-full items-start justify-center gap-8 p-5">
+                  <div className="flex flex-col items-center gap-2">
+                  {/* 手机尺寸缩放条 */}
+                  <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <button type="button" className="rounded border px-1.5 leading-5 hover:bg-muted"
+                      onClick={() => setPhoneScale((s) => Math.max(0.6, Math.round((s - 0.1) * 10) / 10))}>－</button>
+                    <input type="range" min={0.6} max={1.6} step={0.1} value={phoneScale}
+                      onChange={(e) => setPhoneScale(Number(e.target.value))} className="h-1 w-28 accent-primary" />
+                    <button type="button" className="rounded border px-1.5 leading-5 hover:bg-muted"
+                      onClick={() => setPhoneScale((s) => Math.min(1.6, Math.round((s + 0.1) * 10) / 10))}>＋</button>
+                    <span className="tabular-nums">{Math.round(phoneScale * 100)}%</span>
+                    <button type="button" className="rounded border px-1.5 leading-5 hover:bg-muted" onClick={() => setPhoneScale(1)}>复位</button>
+                  </div>
+                  <div
+                    className="h-[560px] w-[300px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700"
+                    style={{ transform: `scale(${phoneScale})`, transformOrigin: "top center" }}
+                  >
                     <div className="mx-auto mt-2 h-5 w-24 rounded-full bg-slate-800 dark:bg-slate-700" />
                     {activeSnapshot?.has_screenshot ? (
                       <MobileSnapshotStage
@@ -2167,6 +2156,7 @@ export function UiElementLibraryWorkspace({
                         onSelect={setSelectedElementId}
                       />
                     )}
+                  </div>
                   </div>
                   <div className="w-64 space-y-3">
                     <div className="rounded-xl border bg-background p-4">
@@ -2244,28 +2234,7 @@ export function UiElementLibraryWorkspace({
             </div>
           </div>
 
-          {events.length > 0 ? (
-            <div className="shrink-0 border-t bg-background px-4 py-2">
-              <div className="mb-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                <span>实时事件时间线</span>
-                <span>{events.length} 个事件</span>
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {events.slice(-8).map((event) => (
-                  <div
-                    key={event.id}
-                    className={cn(
-                      "min-w-[138px] rounded-md border px-2.5 py-2 text-[10px]",
-                      event.severity === "error" ? "border-red-200 bg-red-50 text-red-700" : "bg-muted/30",
-                    )}
-                  >
-                    <div className="truncate font-medium">{eventLabel(event)}</div>
-                    <div className="mt-1 truncate text-muted-foreground">{event.page_key ?? event.source}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          {/* 实时事件时间线已按需求移除 */}
 
           <div className="flex h-11 shrink-0 items-center justify-between border-t bg-background px-4 text-[11px] text-muted-foreground">
             <div className="flex items-center gap-4">
@@ -3021,6 +2990,21 @@ function MobileSnapshotStage({
   // 覆盖层几何：把设备像素 bounds 映射到截图在容器里的实际渲染位置（object-contain 居中）。
   const stageRef = useRef<HTMLDivElement | null>(null);
   const [geom, setGeom] = useState<{ scale: number; offX: number; offY: number } | null>(null);
+  // 默认不显示框，鼠标悬停到哪个控件才高亮哪个（+ 已选中的常亮）。
+  const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const elementAt = (px: number, py: number): UiElement | null => {
+    let best: UiElement | null = null;
+    let bestArea = Infinity;
+    for (const el of elements) {
+      const b = el.attributes?.bounds as { x: number; y: number; width: number; height: number } | undefined;
+      if (!b || !b.width || !b.height) continue;
+      if (px >= b.x && px <= b.x + b.width && py >= b.y && py <= b.y + b.height) {
+        const area = b.width * b.height;
+        if (area < bestArea) { bestArea = area; best = el; }
+      }
+    }
+    return best;
+  };
   const measureGeom = () => {
     const img = imageRef.current;
     const stage = stageRef.current;
@@ -3070,18 +3054,21 @@ function MobileSnapshotStage({
       {/* 离线拾取：把所有可点控件框出来，选中的高亮，让"拾取"看得见 */}
       {staticPick && geom ? (
         <div className="pointer-events-none absolute inset-0 z-10">
+          {/* 默认不显示框；只画悬停中的 + 已选中的 */}
           {elements.map((el) => {
+            const sel = el.id === selectedElementId;
+            const hov = el.id === hoveredId;
+            if (!sel && !hov) return null;
             const b = el.attributes?.bounds as { x: number; y: number; width: number; height: number } | undefined;
             if (!b || !b.width || !b.height) return null;
-            const sel = el.id === selectedElementId;
             return (
               <div
                 key={el.id}
                 className={cn(
-                  "absolute rounded-[2px]",
+                  "absolute rounded-[2px] border-2",
                   sel
-                    ? "border-2 border-emerald-400 bg-emerald-400/30 ring-1 ring-emerald-300"
-                    : "border border-sky-400/60 bg-sky-400/5",
+                    ? "border-emerald-400 bg-emerald-400/25 ring-1 ring-emerald-300"
+                    : "border-sky-400 bg-sky-400/15",
                 )}
                 style={{
                   left: geom.offX + b.x * geom.scale,
@@ -3100,6 +3087,12 @@ function MobileSnapshotStage({
         alt={snapshot.page_name}
         draggable={false}
         onLoad={measureGeom}
+        onPointerMove={staticPick ? (event) => {
+          const p = imagePoint(event.clientX, event.clientY);
+          const hit = p ? elementAt(p.x, p.y) : null;
+          setHoveredId((prev) => (prev === (hit?.id ?? null) ? prev : hit?.id ?? null));
+        } : undefined}
+        onPointerLeave={staticPick ? () => setHoveredId(null) : undefined}
         className={cn(
           "max-h-full max-w-full select-none object-contain",
           !interactive ? "cursor-not-allowed opacity-80" : (pickMode || staticPick) ? "cursor-crosshair" : "cursor-pointer",
