@@ -261,6 +261,91 @@ type DeleteTarget =
   | { kind: "page"; pageKey: string; name: string; detail: string }
   | { kind: "recording"; id: number; name: string; detail: string };
 
+/** 判定一个快照是否是弹框/对话框状态（而非整页）。 */
+function isDialogSnapshot(snapshot: UiPageSnapshot): boolean {
+  const manifest = snapshot.resource_manifest ?? {};
+  if (manifest.modal_open === true || manifest.is_dialog === true) return true;
+  const name = snapshot.state_name ?? "";
+  return /^(弹窗|弹框|对话框|dialog|modal|popup)/i.test(name);
+}
+
+/** 页面导航里单个状态/弹框的缩略图卡片，按需懒加载截图。 */
+function SnapshotThumb({
+  snapshot,
+  active,
+  label,
+  dialog,
+  onClick,
+}: {
+  snapshot: UiPageSnapshot;
+  active: boolean;
+  label: string;
+  dialog: boolean;
+  onClick: () => void;
+}) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (!snapshot.has_screenshot) return;
+    let disposed = false;
+    let obj: string | null = null;
+    void uiRecordingsApi
+      .snapshotImage(snapshot.id)
+      .then((blob) => {
+        if (disposed) return;
+        obj = URL.createObjectURL(blob);
+        setUrl(obj);
+      })
+      .catch(() => {
+        if (!disposed) setFailed(true);
+      });
+    return () => {
+      disposed = true;
+      if (obj) URL.revokeObjectURL(obj);
+    };
+  }, [snapshot.id, snapshot.has_screenshot]);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      className={cn(
+        "group flex flex-col overflow-hidden rounded-md border text-left transition",
+        active
+          ? "border-primary ring-1 ring-primary"
+          : "border-border/60 hover:border-primary/50",
+      )}
+    >
+      <div className="relative aspect-[9/16] w-full overflow-hidden bg-muted/40">
+        {url ? (
+          <img src={url} alt={label} className="h-full w-full object-cover object-top" />
+        ) : (
+          <div className="grid h-full place-items-center text-muted-foreground">
+            {failed || !snapshot.has_screenshot ? (
+              <Smartphone className="h-4 w-4 opacity-40" />
+            ) : (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            )}
+          </div>
+        )}
+        {dialog ? (
+          <span className="absolute left-1 top-1 rounded bg-amber-500/90 px-1 text-[9px] font-medium text-white">
+            弹框
+          </span>
+        ) : null}
+      </div>
+      <span
+        className={cn(
+          "truncate px-1.5 py-1 text-[10px]",
+          active ? "text-primary" : "text-muted-foreground",
+        )}
+      >
+        {label}
+      </span>
+    </button>
+  );
+}
+
 export function UiElementLibraryWorkspace({
   open,
   projectId,
@@ -312,6 +397,8 @@ export function UiElementLibraryWorkspace({
   const [editingLocatorValue, setEditingLocatorValue] = useState("");
   const [pageNameEditing, setPageNameEditing] = useState(false);
   const [pageNameDraft, setPageNameDraft] = useState("");
+  const [expandedNavPages, setExpandedNavPages] = useState<Set<string>>(new Set());
+  const [showSupplementHistory, setShowSupplementHistory] = useState(false);
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -607,6 +694,10 @@ export function UiElementLibraryWorkspace({
     { pages: 0, resources: 0, mocks: 0 },
   );
   const secondarySessions = recordingSessions.filter((item) => item.id !== primarySession?.id);
+  // 单一主线：补录历史 = 已并入主线的补充录制（供主线卡片点击展开回看）
+  const supplementHistory = secondarySessions.filter(
+    (item) => item.recording_role === "supplement",
+  );
   const replayMobileScenario = (replaySession?.capabilities.mobile_scenario ?? null) as {
     ready?: boolean;
     snapshot_count?: number;
@@ -1029,27 +1120,6 @@ export function UiElementLibraryWorkspace({
     replayMutation,
     replaySession,
   ]);
-
-  const baselineMutation = useMutation({
-    mutationFn: ({
-      sessionId,
-      action,
-    }: {
-      sessionId: number;
-      action: "include" | "exclude" | "promote";
-    }) => uiRecordingsApi.updateBaseline(sessionId, action),
-    onSuccess: async (_next, variables) => {
-      await refresh();
-      toast.success(
-        variables.action === "promote"
-          ? "已发布为新的主录制基线"
-          : variables.action === "include"
-            ? "补充录制已合并到主基线"
-            : "补充录制已移出主基线",
-      );
-    },
-    onError: (error) => toast.error(messageOf(error)),
-  });
 
   const applyPickedElement = (element: UiElement, targetSnapshotId: number | null) => {
     queryClient.setQueryData<UiElement[]>(
@@ -1711,134 +1781,190 @@ export function UiElementLibraryWorkspace({
                 <div className="mt-1">完成首次录制后自动按页面归档</div>
               </div>
             ) : (
-              pages.map((page) => (
-                <button
-                  type="button"
-                  key={page.pageKey}
-                  onClick={() => {
-                    setPageKey(page.pageKey);
-                    setSnapshotId(null);
-                    setSelectedElementId(null);
-                    if (embeddedReplay && session) {
-                      replayMutation.mutate({
-                        sessionId: session.id,
-                        snapshot: page.snapshots[0] ?? null,
-                      });
-                    }
-                  }}
-                  className={cn(
-                    "mb-1 flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm",
-                    activePageKey === page.pageKey ? "bg-primary/10 text-primary" : "hover:bg-muted",
-                  )}
-                >
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{page.displayName}</span>
-                    <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
-                      {page.route}
-                    </span>
-                  </span>
-                  <span className="shrink-0 rounded bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    {page.elements.length} 元素 · {page.snapshots.length} 状态
-                  </span>
-                </button>
-              ))
+              pages.map((page) => {
+                // 按 fingerprint 去重成"不同状态"，避免同一屏的多次重录塞满导航
+                const distinct: UiPageSnapshot[] = [];
+                const seen = new Set<string>();
+                for (const snap of page.snapshots) {
+                  const key = snap.fingerprint || String(snap.id);
+                  if (seen.has(key)) continue;
+                  seen.add(key);
+                  distinct.push(snap);
+                }
+                const screens = distinct.filter((snap) => !isDialogSnapshot(snap));
+                const dialogs = distinct.filter((snap) => isDialogSnapshot(snap));
+                const ordered = [...screens, ...dialogs];
+                const isExpanded =
+                  expandedNavPages.has(page.pageKey)
+                  || (expandedNavPages.size === 0 && page.pageKey === activePageKey);
+                const toggleExpand = () =>
+                  setExpandedNavPages((prev) => {
+                    const next = new Set(prev);
+                    // 首次交互时把"隐式展开的当前页"物化进集合，保证 toggle 语义正确
+                    if (next.size === 0 && page.pageKey === activePageKey) next.add(page.pageKey);
+                    if (next.has(page.pageKey)) next.delete(page.pageKey);
+                    else next.add(page.pageKey);
+                    return next;
+                  });
+                return (
+                  <div key={page.pageKey} className="mb-1">
+                    <div
+                      className={cn(
+                        "flex w-full items-center gap-1 rounded-lg px-2 py-2 text-left text-sm",
+                        activePageKey === page.pageKey ? "bg-primary/10 text-primary" : "hover:bg-muted",
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={toggleExpand}
+                        className="grid h-5 w-5 shrink-0 place-items-center rounded hover:bg-background/60"
+                        aria-label={isExpanded ? "收起" : "展开"}
+                      >
+                        <ChevronRight
+                          className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")}
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPageKey(page.pageKey);
+                          setSnapshotId(null);
+                          setSelectedElementId(null);
+                          if (embeddedReplay && session) {
+                            replayMutation.mutate({
+                              sessionId: session.id,
+                              snapshot: page.snapshots[0] ?? null,
+                            });
+                          }
+                        }}
+                        className="min-w-0 flex-1"
+                      >
+                        <span className="block truncate font-medium">{page.displayName}</span>
+                        <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                          {screens.length} 画面{dialogs.length > 0 ? ` · ${dialogs.length} 弹框` : ""} · {page.elements.length} 元素
+                        </span>
+                      </button>
+                    </div>
+                    {isExpanded ? (
+                      ordered.length === 0 ? (
+                        <div className="ml-6 mb-2 rounded border border-dashed px-2 py-3 text-center text-[10px] text-muted-foreground">
+                          暂无页面状态
+                        </div>
+                      ) : (
+                        <div className="ml-5 mb-2 grid grid-cols-3 gap-1.5 border-l pl-2 pt-1">
+                          {ordered.map((snap, idx) => {
+                            const dialog = isDialogSnapshot(snap);
+                            const label = snap.state_name
+                              || (dialog ? `弹框 ${idx + 1}` : `画面 ${idx + 1}`);
+                            const active = activePageKey === page.pageKey && activeSnapshot?.id === snap.id;
+                            return (
+                              <SnapshotThumb
+                                key={snap.id}
+                                snapshot={snap}
+                                active={active}
+                                dialog={dialog}
+                                label={label}
+                                onClick={() => {
+                                  setPageKey(page.pageKey);
+                                  setSnapshotId(snap.id);
+                                  setSelectedElementId(null);
+                                  if (embeddedReplay && session) {
+                                    replayMutation.mutate({ sessionId: session.id, snapshot: snap });
+                                  }
+                                }}
+                              />
+                            );
+                          })}
+                        </div>
+                      )
+                    ) : null}
+                  </div>
+                );
+              })
             )}
           </div>
           <div className="border-t p-3">
             <div className="mb-2 flex items-center justify-between text-[11px] text-muted-foreground">
-              <span>主录制基线</span>
+              <span>主录制线</span>
               {primarySession ? <span>V{primarySession.baseline_version}</span> : null}
             </div>
             {recordingsQuery.isLoading ? (
               <div className="text-xs text-muted-foreground">加载中…</div>
             ) : primarySession ? (
-              <div className="rounded-lg border bg-background p-3">
-                <div className="flex items-center gap-2">
-                  <Star className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500" />
-                  <div className="min-w-0 flex-1 truncate text-xs font-medium">{primarySession.name}</div>
-                </div>
-                <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
-                  <span>{baselineSources.length} 次录制已合并</span>
-                  <span>{formatTime(primarySession.updated_at)}</span>
-                </div>
-                <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
-                  {platform === "web"
-                    ? `${baselineStats.pages} 页 · ${baselineStats.resources} 资源 · ${baselineStats.mocks} Mock`
-                    : `${baselineStats.pages} 个模拟器场景状态`}
-                </div>
-              </div>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowSupplementHistory((prev) => !prev)}
+                  className="w-full rounded-lg border bg-background p-3 text-left transition hover:border-primary/50"
+                  title="点击查看历次补录内容"
+                >
+                  <div className="flex items-center gap-2">
+                    <Star className="h-3.5 w-3.5 shrink-0 fill-amber-400 text-amber-500" />
+                    <div className="min-w-0 flex-1 truncate text-xs font-medium">{primarySession.name}</div>
+                    <ChevronRight
+                      className={cn(
+                        "h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform",
+                        showSupplementHistory && "rotate-90",
+                      )}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                    <span>已自动合并 {supplementHistory.length} 次补录</span>
+                    <span>{formatTime(primarySession.updated_at)}</span>
+                  </div>
+                  <div className="mt-2 rounded-md bg-emerald-50 px-2 py-1.5 text-[10px] text-emerald-700">
+                    {platform === "web"
+                      ? `${baselineStats.pages} 页 · ${baselineStats.resources} 资源 · ${baselineStats.mocks} Mock`
+                      : `${baselineStats.pages} 个模拟器场景状态`}
+                  </div>
+                </button>
+                {showSupplementHistory ? (
+                  <div className="mt-2 max-h-[240px] space-y-1.5 overflow-y-auto pr-1">
+                    <div className="text-[11px] text-muted-foreground">补录历史（已并入主线）</div>
+                    {supplementHistory.length === 0 ? (
+                      <div className="rounded-md border border-dashed px-2 py-3 text-center text-[10px] text-muted-foreground">
+                        还没有补录，后续每次补充录制都会自动并入主线。
+                      </div>
+                    ) : (
+                      supplementHistory.map((item) => (
+                        <div key={item.id} className="rounded-md border bg-background px-2 py-2 text-[10px]">
+                          <div className="flex items-center gap-1.5">
+                            <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+                            <span className="rounded bg-blue-50 px-1 py-0.5 text-blue-700">已并入</span>
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-muted-foreground">
+                            <span>{item.snapshot_count} 状态 · {item.event_count} 事件</span>
+                            <span>{formatTime(item.updated_at)}</span>
+                          </div>
+                          {item.status === "completed" ? (
+                            <div className="mt-1.5 flex justify-end">
+                              <Button
+                                size="icon"
+                                variant="ghost"
+                                className="h-6 w-6 text-red-600"
+                                title="删除这次补录记录"
+                                onClick={() => setDeleteTarget({
+                                  kind: "recording",
+                                  id: item.id,
+                                  name: item.name,
+                                  detail: `将删除 ${item.event_count} 个事件、${item.snapshot_count} 个页面状态、离线包和技术上下文；已沉淀到项目元素库的元素会保留。`,
+                                })}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+              </>
             ) : (
               <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-                尚无主录制，首次录制将自动成为主基线。
+                尚无主录制，首次录制将自动成为主线，之后的补充录制都会自动并入。
               </div>
             )}
-            {secondarySessions.length > 0 ? (
-              <div className="mt-3 max-h-[240px] space-y-1.5 overflow-y-auto pr-1">
-                <div className="text-[11px] text-muted-foreground">其他录制</div>
-                {secondarySessions.slice(0, 5).map((item) => (
-                  <div key={item.id} className="rounded-md border bg-background px-2 py-2 text-[10px]">
-                    <div className="flex items-center gap-1.5">
-                      <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
-                      <span className={cn(
-                        "rounded px-1 py-0.5",
-                        item.recording_role === "supplement" && item.baseline_included
-                          ? "bg-blue-50 text-blue-700"
-                          : "bg-muted text-muted-foreground",
-                      )}>
-                        {item.recording_role === "supplement"
-                          ? item.baseline_included ? "已合并" : "未合并"
-                          : "历史"}
-                      </span>
-                    </div>
-                    <div className="mt-1 flex items-center justify-between text-muted-foreground">
-                      <span>{item.snapshot_count} 状态 · {item.event_count} 事件</span>
-                      <span>{formatTime(item.updated_at)}</span>
-                    </div>
-                    {item.status === "completed" ? (
-                      <div className="mt-1.5 flex justify-end gap-1">
-                        {item.recording_role === "supplement" ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-[10px]"
-                            disabled={baselineMutation.isPending}
-                            onClick={() => baselineMutation.mutate({
-                              sessionId: item.id,
-                              action: item.baseline_included ? "exclude" : "include",
-                            })}
-                          >
-                            {item.baseline_included ? "移出主基线" : "合并到主基线"}
-                          </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 px-1.5 text-[10px]"
-                          disabled={baselineMutation.isPending}
-                          onClick={() => baselineMutation.mutate({ sessionId: item.id, action: "promote" })}
-                        >
-                          设为主录制
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-6 w-6 text-red-600"
-                          title="删除录制记录"
-                          onClick={() => setDeleteTarget({
-                            kind: "recording",
-                            id: item.id,
-                            name: item.name,
-                            detail: `将删除 ${item.event_count} 个事件、${item.snapshot_count} 个页面状态、离线包和技术上下文；已沉淀到项目元素库的元素会保留。`,
-                          })}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
           </div>
         </aside>
 
