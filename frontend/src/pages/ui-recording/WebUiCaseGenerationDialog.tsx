@@ -56,10 +56,12 @@ function payloadModuleId(run: AiRun): number | null {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
-function findRestorableRun(runs: AiRun[], moduleId: number): AiRun | null {
+function findRestorableRun(runs: AiRun[], moduleId: number, platform: UiPlatform): AiRun | null {
   const scoped = runs.filter((run) => (
     run.feature === "web_ui_case_gen"
     && payloadModuleId(run) === moduleId
+    // 按平台隔离：Android 抽屉不要恢复上一批 Web 的草稿（老任务无 platform 视为 web）
+    && (payloadString(run, "platform") || "web") === platform
     && Boolean(payloadString(run, "batch_id"))
   ));
   return scoped.find((run) => run.status === "pending" || run.status === "running")
@@ -220,7 +222,8 @@ export function WebUiCaseGenerationDialog({
 
   useEffect(() => {
     if (!open) return;
-    const scopeKey = `${projectId}:${initialModuleId ?? ""}`;
+    // platform 纳入 scope：web/android/ios 切换时清空上一平台的批次与草稿，互不串台
+    const scopeKey = `${projectId}:${initialModuleId ?? ""}:${platform}`;
     if (initializedScopeRef.current === scopeKey) return;
     initializedScopeRef.current = scopeKey;
     setModelName("");
@@ -230,11 +233,12 @@ export function WebUiCaseGenerationDialog({
     initializedDraftBatchRef.current = "";
     setSelectedDraftIds([]);
     setActiveDraftId(null);
-  }, [initialModuleId, open, projectId]);
+    setDismissedRestore(false);
+  }, [initialModuleId, open, projectId, platform]);
 
   useEffect(() => {
     if (!open || runId != null || initialModuleId == null || !recoveryQuery.data || dismissedRestore) return;
-    const restored = findRestorableRun(recoveryQuery.data, initialModuleId);
+    const restored = findRestorableRun(recoveryQuery.data, initialModuleId, platform);
     if (!restored) return;
     const restoredBatchId = payloadString(restored, "batch_id");
     if (!restoredBatchId) return;
@@ -255,7 +259,7 @@ export function WebUiCaseGenerationDialog({
     }
     const restoredThreshold = Number(restored.input_payload?.visual_threshold);
     if (Number.isFinite(restoredThreshold)) setVisualThreshold(restoredThreshold);
-  }, [initialModuleId, open, recoveryQuery.data, runId]);
+  }, [initialModuleId, open, recoveryQuery.data, runId, platform]);
 
   useEffect(() => {
     if (modelName || enabledModels.length === 0) return;
