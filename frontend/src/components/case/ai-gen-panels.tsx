@@ -11,6 +11,7 @@ import { ClipboardCheck, Loader2, ScanSearch, ChevronRight, SlidersHorizontal, E
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { MarkdownView } from "@/components/editor/MarkdownView";
 import { functionalCasesApi, configApi, type ConfigItem } from "@/lib/api";
 
 const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -227,6 +228,8 @@ export function PromptPreviewPanel({
 }) {
   const isUi = mode === "web" || mode === "android" || mode === "ios";
   const [tab, setTab] = useState<"outline" | "batch">("outline");
+  // 提示词默认渲染 markdown；可切「原文」查看含 {{占位符}} 的原始文本
+  const [rawPrompt, setRawPrompt] = useState(false);
   const m = useMutation({
     mutationFn: () =>
       functionalCasesApi.aiPromptPreview({
@@ -296,10 +299,23 @@ export function PromptPreviewPanel({
             <span className="ml-auto font-mono text-[10px] text-muted-foreground">
               {tab === "outline" ? data.outline.template : data.batch.template}
             </span>
+            <button
+              onClick={() => setRawPrompt((v) => !v)}
+              className="rounded px-2 py-0.5 text-[10px] text-muted-foreground hover:bg-muted"
+              title="在 Markdown 渲染与原始文本（含 {{占位符}}）之间切换"
+            >
+              {rawPrompt ? "格式化" : "原文"}
+            </button>
           </div>
-          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-[10.5px] leading-relaxed text-muted-foreground">
-            {tab === "outline" ? data.outline.prompt : data.batch.prompt}
-          </pre>
+          {rawPrompt ? (
+            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap rounded-md border bg-muted/40 p-2 text-[10.5px] leading-relaxed text-muted-foreground">
+              {tab === "outline" ? data.outline.prompt : data.batch.prompt}
+            </pre>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto rounded-md border bg-muted/40 px-3 py-2">
+              <MarkdownView source={tab === "outline" ? data.outline.prompt : data.batch.prompt} />
+            </div>
+          )}
           <p className="text-[10px] text-muted-foreground">只读预览——这是本次实际发给模型的提示词（动态部分如本批测试点会在生成时填入）。</p>
         </div>
       ) : m.isPending ? (
