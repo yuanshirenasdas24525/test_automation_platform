@@ -27,6 +27,8 @@ from database.models import (
     UI_AUTO_DRAFT_PENDING,
     UI_AUTO_DRAFT_REJECTED,
     UI_ELEMENT_ARCHIVED,
+    UI_PLATFORM_ANDROID,
+    UI_PLATFORM_IOS,
     UI_PLATFORM_WEB,
 )
 from server.services.test_accounts import (
@@ -36,6 +38,39 @@ from server.services.test_accounts import (
 
 
 _SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link", "role"}
+# 移动端 Appium 定位策略（Android/iOS 共用一套编译期白名单）
+_SUPPORTED_LOCATORS_APP = {
+    "id", "accessibility_id", "android_uiautomator",
+    "ios_predicate", "ios_class_chain", "class", "name", "xpath",
+}
+
+
+def _is_mobile_platform(platform: str) -> bool:
+    return platform in (UI_PLATFORM_ANDROID, UI_PLATFORM_IOS)
+
+
+def _supported_locators_for(platform: str) -> set[str]:
+    return _SUPPORTED_LOCATORS_APP if _is_mobile_platform(platform) else _SUPPORTED_LOCATORS
+
+
+def _safe_step_types_for(platform: str) -> set[str]:
+    return _SAFE_GENERATED_STEP_TYPES_APP if _is_mobile_platform(platform) else _SAFE_GENERATED_STEP_TYPES
+
+
+def _locator_step_types_for(platform: str) -> set[str]:
+    return _LOCATOR_STEP_TYPES_APP if _is_mobile_platform(platform) else _LOCATOR_STEP_TYPES
+
+
+def _manual_wait_step_for(platform: str) -> str:
+    """人工接管 / 待补录占位步骤用的 step_type（被 skip，不实际执行）。"""
+    return "app_wait" if _is_mobile_platform(platform) else "web_wait"
+
+
+def _draft_platform(draft: "UiAutomationCaseDraft") -> str:
+    """草稿平台存在 evidence.platform（免加列迁移）；老草稿默认 web。"""
+    evidence = draft.evidence if isinstance(draft.evidence, dict) else {}
+    value = str(evidence.get("platform") or UI_PLATFORM_WEB)
+    return value if value in (UI_PLATFORM_WEB, UI_PLATFORM_ANDROID, UI_PLATFORM_IOS) else UI_PLATFORM_WEB
 _CAPTCHA_MARKERS = {
     "captcha", "slider", "verification", "verify", "puzzle",
     "验证码", "滑块", "人机验证", "安全验证", "拼图",
@@ -61,6 +96,24 @@ _LOCATOR_STEP_TYPES = {
     "web_select",
     "web_wait",
     "web_assert_text",
+}
+# 移动端可执行步骤白名单：无 goto/URL、无 select、无视觉基线；导航靠 app_launch
+_SAFE_GENERATED_STEP_TYPES_APP = {
+    "app_launch",
+    "app_tap",
+    "app_input",
+    "app_swipe",
+    "app_wait",
+    "app_back",
+    "app_assert",
+    "app_assert_text",
+}
+_LOCATOR_STEP_TYPES_APP = {
+    "app_tap",
+    "app_input",
+    "app_wait",
+    "app_assert",
+    "app_assert_text",
 }
 _AUTO_FUNCTIONAL_CANDIDATE_LIMIT = 80
 _AUTO_PAGE_CANDIDATE_LIMIT = 60
@@ -282,11 +335,12 @@ def _functional_payload(case: TestCase) -> dict[str, Any]:
     }
 
 
-def _locator_payload(element: UiElement) -> list[dict[str, Any]]:
+def _locator_payload(element: UiElement, platform: str = UI_PLATFORM_WEB) -> list[dict[str, Any]]:
+    supported = _supported_locators_for(platform)
     candidates = []
     for locator in element.locators or []:
         strategy = str(locator.strategy or "").lower()
-        if strategy not in _SUPPORTED_LOCATORS or not str(locator.locator or "").strip():
+        if strategy not in supported or not str(locator.locator or "").strip():
             continue
         candidates.append({
             "strategy": strategy,
@@ -298,17 +352,20 @@ def _locator_payload(element: UiElement) -> list[dict[str, Any]]:
     return candidates[:2]
 
 
-def covered_functional_case_ids(db: Session, *, project_id: int, module_id: int) -> set[int]:
-    """本模块内已有 Web 自动化用例覆盖到的功能用例 id 集合（查缺补漏用）。
+def covered_functional_case_ids(
+    db: Session, *, project_id: int, module_id: int, platform: str = UI_PLATFORM_WEB
+) -> set[int]:
+    """本模块内已有 UI 自动化用例覆盖到的功能用例 id 集合（查缺补漏用）。
 
     覆盖关系来自提交时写入的 ``generation_metadata.functional_case_id``。
     含被 skip 的用例——它们已经存在，只是暂时阻塞，不该被查缺补漏重复生成。
+    平台字符串与用例 case_type 同值（web/android/ios），直接按平台过滤。
     """
     rows = (
         db.query(TestCase.generation_metadata)
         .filter(
             TestCase.module_id == module_id,
-            TestCase.case_type == CASE_TYPE_WEB,
+            TestCase.case_type == platform,
         )
         .all()
     )
@@ -328,6 +385,7 @@ def build_auto_source_catalog(
     target_module_id: int,
     user_prompt: str = "",
     exclude_functional_case_ids: set[int] | None = None,
+    platform: str = UI_PLATFORM_WEB,
 ) -> dict[str, Any]:
     """仅在当前模块内构建功能用例和强相关页面目录，供 AI 自动筛选。
 
@@ -344,7 +402,7 @@ def build_auto_source_catalog(
         raise ValueError("当前用例模块不存在或不属于该项目")
     page_base_filters = (
         UiElement.project_id == project_id,
-        UiElement.platform == UI_PLATFORM_WEB,
+        UiElement.platform == platform,
         UiElement.status != UI_ELEMENT_ARCHIVED,
     )
     page_total = db.query(func.count(func.distinct(UiElement.page_key))).filter(*page_base_filters).scalar() or 0
@@ -361,14 +419,14 @@ def build_auto_source_catalog(
         .all()
     )
     if not page_rows:
-        raise ValueError("当前项目没有 Web 元素，无法自动检索；请先完成录制或 AI 探索录制")
+        raise ValueError("当前项目没有该平台的 UI 元素，无法自动检索；请先完成录制或 AI 探索录制")
 
     page_keys = [str(row[0]) for row in page_rows]
     snapshots = (
         db.query(UiPageSnapshot)
         .filter(
             UiPageSnapshot.project_id == project_id,
-            UiPageSnapshot.platform == UI_PLATFORM_WEB,
+            UiPageSnapshot.platform == platform,
             UiPageSnapshot.page_key.in_(page_keys),
         )
         .order_by(UiPageSnapshot.snapshot_version.desc(), UiPageSnapshot.id.desc())
@@ -386,7 +444,7 @@ def build_auto_source_catalog(
         )
         .filter(
             UiElement.project_id == project_id,
-            UiElement.platform == UI_PLATFORM_WEB,
+            UiElement.platform == platform,
             UiElement.status != UI_ELEMENT_ARCHIVED,
             UiElement.page_key.in_(page_keys),
         )
@@ -649,6 +707,7 @@ def build_generation_context(
     project_id: int,
     functional_case_ids: list[int],
     page_keys: list[str],
+    platform: str = UI_PLATFORM_WEB,
 ) -> tuple[dict[str, Any], dict[int, UiElement], dict[int, UiPageSnapshot]]:
     """构建脱敏、限量的元素证据图，同时返回编译期 ORM 映射。"""
     functional_cases: list[TestCase] = []
@@ -671,7 +730,12 @@ def build_generation_context(
 
     relevance_text = " ".join(_functional_text(item) for item in functional_cases)
     page_keys = list(dict.fromkeys(page_keys))
-    if any("/login" in page_key.lower() for page_key in page_keys) and "工作台" in relevance_text:
+    # /workspace 登录终态补全是 Web 平台特有的路由语义，移动端不适用
+    if (
+        platform == UI_PLATFORM_WEB
+        and any("/login" in page_key.lower() for page_key in page_keys)
+        and "工作台" in relevance_text
+    ):
         # 登录成功会先进入 /workspace 再按账号角色重定向。录制事实中的中间路由通常
         # 没有快照，因此把两种账号工厂会到达的终态一并带入编译上下文：临时账号
         # 使用测试角色，共享管理员使用管理员角色。这样 AI 只能引用真实目标页元素，
@@ -700,13 +764,13 @@ def build_generation_context(
         .options(selectinload(UiElement.locators))
         .filter(
             UiElement.project_id == project_id,
-            UiElement.platform == UI_PLATFORM_WEB,
+            UiElement.platform == platform,
             UiElement.status != UI_ELEMENT_ARCHIVED,
         )
     )
     snapshot_query = db.query(UiPageSnapshot).filter(
         UiPageSnapshot.project_id == project_id,
-        UiPageSnapshot.platform == UI_PLATFORM_WEB,
+        UiPageSnapshot.platform == platform,
     )
     if page_keys:
         element_query = element_query.filter(UiElement.page_key.in_(page_keys))
@@ -715,7 +779,7 @@ def build_generation_context(
     element_total = element_query.count()
     available_elements = element_query.order_by(UiElement.page_key, UiElement.id).limit(2000).all()
     if not available_elements:
-        raise ValueError("当前范围没有可用于生成的 Web 元素，请先完成录制或 AI 探索录制")
+        raise ValueError("当前范围没有可用于生成的该平台 UI 元素，请先完成录制或 AI 探索录制")
     grouped_elements: dict[str, list[UiElement]] = defaultdict(list)
     for element in available_elements:
         grouped_elements[element.page_key].append(element)
@@ -751,7 +815,7 @@ def build_generation_context(
 
     sessions = db.query(UiRecordingSession).filter(
         UiRecordingSession.project_id == project_id,
-        UiRecordingSession.platform == UI_PLATFORM_WEB,
+        UiRecordingSession.platform == platform,
         UiRecordingSession.status == "completed",
     ).all()
     source_session_ids = [
@@ -769,7 +833,7 @@ def build_generation_context(
         )
         transition_query = db.query(UiPageTransition).filter(
             UiPageTransition.project_id == project_id,
-            UiPageTransition.platform == UI_PLATFORM_WEB,
+            UiPageTransition.platform == platform,
             UiPageTransition.session_id.in_(source_session_ids),
         )
         exchange_query = db.query(UiMockExchange).filter(
@@ -805,7 +869,7 @@ def build_generation_context(
             "role": attrs.get("role"),
             "placeholder": attrs.get("placeholder"),
             "input_type": attrs.get("type"),
-            "locator_candidates": _locator_payload(element),
+            "locator_candidates": _locator_payload(element, platform),
         })
 
     pages = []
@@ -972,10 +1036,11 @@ def _locator_quality(item: "UiElementLocator", semantic: str) -> float:
     return q
 
 
-def _preferred_locator(element: UiElement) -> tuple[str, str] | None:
+def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> tuple[str, str] | None:
+    supported = _supported_locators_for(platform)
     candidates = [
         item for item in (element.locators or [])
-        if str(item.strategy or "").lower() in _SUPPORTED_LOCATORS
+        if str(item.strategy or "").lower() in supported
         and str(item.locator or "").strip()
     ]
     if not candidates:
@@ -1217,12 +1282,18 @@ def _repair_form_validation_assertions(
         warnings.append(f"已把 {repaired_count} 个动态表单校验文案改为同页根元素断言")
 
 
-def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
+def validate_draft_steps(steps: Any, *, allow_manual: bool, platform: str = UI_PLATFORM_WEB) -> list[str]:
     """验证待入库步骤仍在 AI 安全白名单内，防止评审 JSON 绕过编译器。"""
     if not isinstance(steps, list) or not steps:
         return ["草稿至少需要一个执行步骤"]
     if len(steps) > 100:
         return ["单条草稿最多允许 100 个步骤"]
+
+    is_mobile = _is_mobile_platform(platform)
+    safe_types = _safe_step_types_for(platform)
+    locator_types = _locator_step_types_for(platform)
+    supported_locators = _supported_locators_for(platform)
+    manual_step = _manual_wait_step_for(platform)
 
     errors: list[str] = []
     has_assertion = False
@@ -1232,8 +1303,8 @@ def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
             continue
         step_type = str(item.get("step_type") or "")
         config = item.get("config")
-        if step_type not in _SAFE_GENERATED_STEP_TYPES:
-            errors.append(f"步骤 {index} 类型 {step_type!r} 不在 AI Web 安全白名单")
+        if step_type not in safe_types:
+            errors.append(f"步骤 {index} 类型 {step_type!r} 不在 AI UI 安全白名单")
             continue
         if not isinstance(config, dict):
             errors.append(f"步骤 {index} 的 config 必须是对象")
@@ -1241,14 +1312,14 @@ def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
 
         manual = bool(config.get("manual_intervention"))
         if manual:
-            if not allow_manual or step_type != "web_wait" or not bool(item.get("skip")):
+            if not allow_manual or step_type != manual_step or not bool(item.get("skip")):
                 errors.append(f"步骤 {index} 的人工接管标记不合法")
             continue
 
-        if step_type in _LOCATOR_STEP_TYPES:
+        if step_type in locator_types:
             by = str(config.get("by") or "").lower()
             locator = str(config.get("locator") or "").strip()
-            if by not in _SUPPORTED_LOCATORS or not locator:
+            if by not in supported_locators or not locator:
                 errors.append(f"步骤 {index} 缺少可执行的元素库定位器")
             try:
                 element_id = int(config.get("element_id") or 0)
@@ -1256,6 +1327,17 @@ def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
                 element_id = 0
             if element_id <= 0:
                 errors.append(f"步骤 {index} 缺少元素库 element_id 证据")
+
+        if is_mobile:
+            if step_type == "app_assert_text":
+                if not any(config.get(key) is not None for key in ("equals", "contains", "regex", "not_contains")):
+                    errors.append(f"步骤 {index} 的文本断言缺少期望值")
+                has_assertion = True
+            elif step_type == "app_assert":
+                has_assertion = True
+            elif step_type == "app_input" and config.get("value") is None:
+                errors.append(f"步骤 {index} 的输入值不能为空")
+            continue
 
         if step_type == "web_goto":
             parsed = urlsplit(str(config.get("url") or ""))
@@ -1280,12 +1362,15 @@ def validate_draft_steps(steps: Any, *, allow_manual: bool) -> list[str]:
             has_assertion = True
 
     if not has_assertion and not allow_manual:
-        errors.append("可执行草稿至少需要一个功能、结构或视觉断言")
+        errors.append("可执行草稿至少需要一个功能或结构断言")
     return errors
 
 
-def validate_draft_step_edit(existing_steps: Any, next_steps: Any) -> list[str]:
+def validate_draft_step_edit(
+    existing_steps: Any, next_steps: Any, platform: str = UI_PLATFORM_WEB
+) -> list[str]:
     """评审可调业务值和断言，但不能在 JSON 中手改元素定位或视觉证据。"""
+    locator_types = _locator_step_types_for(platform)
     trusted_locators = {
         (
             _as_int(config.get("element_id")),
@@ -1318,7 +1403,7 @@ def validate_draft_step_edit(existing_steps: Any, next_steps: Any) -> list[str]:
             continue
         config = item.get("config") or {}
         step_type = str(item.get("step_type") or "")
-        if step_type in _LOCATOR_STEP_TYPES and not config.get("manual_intervention"):
+        if step_type in locator_types and not config.get("manual_intervention"):
             try:
                 element_id = int(config.get("element_id") or 0)
             except (TypeError, ValueError):
@@ -1344,6 +1429,8 @@ def validate_draft_step_edit(existing_steps: Any, next_steps: Any) -> list[str]:
 
 def validate_draft_evidence(db: Session, draft: UiAutomationCaseDraft) -> list[str]:
     """入库前重新确认元素和快照仍属于当前项目且定位器证据仍存在。"""
+    platform = _draft_platform(draft)
+    locator_types = _locator_step_types_for(platform)
     steps = list(draft.steps or [])
     element_ids = {
         _as_int((item.get("config") or {}).get("element_id"))
@@ -1356,7 +1443,7 @@ def validate_draft_evidence(db: Session, draft: UiAutomationCaseDraft) -> list[s
         .filter(
             UiElement.id.in_(element_ids),
             UiElement.project_id == draft.project_id,
-            UiElement.platform == UI_PLATFORM_WEB,
+            UiElement.platform == platform,
             UiElement.status != UI_ELEMENT_ARCHIVED,
         )
         .all()
@@ -1368,7 +1455,7 @@ def validate_draft_evidence(db: Session, draft: UiAutomationCaseDraft) -> list[s
         if not isinstance(item, dict):
             continue
         config = item.get("config") or {}
-        if item.get("step_type") in _LOCATOR_STEP_TYPES and not config.get("manual_intervention"):
+        if item.get("step_type") in locator_types and not config.get("manual_intervention"):
             element_id = _as_int(config.get("element_id"))
             element = element_map.get(element_id)
             if element is None:
@@ -1402,8 +1489,15 @@ def compile_ai_case(
     include_structure_assertions: bool,
     include_visual_assertions: bool,
     visual_threshold: float,
+    platform: str = UI_PLATFORM_WEB,
 ) -> dict[str, Any] | None:
-    """把 AI 的 element_id 动作计划编译成 Runner 步骤，拒绝原始定位器。"""
+    """把 AI 的 element_id 动作计划编译成 Runner 步骤，拒绝原始定位器。
+
+    platform=web 走 web_* 步骤（含 goto/select/视觉基线与登录/表单修复）；
+    platform=android/ios 走 app_* 步骤（导航=app_launch，无 select/视觉，跳过 Web 专属修复）。
+    """
+    is_mobile = _is_mobile_platform(platform)
+    manual_wait_step = _manual_wait_step_for(platform)
     title = str(raw.get("title") or "").strip()
     raw_steps = raw.get("steps") or []
     if not title or not isinstance(raw_steps, list):
@@ -1440,6 +1534,17 @@ def compile_ai_case(
 
         if action == "goto":
             page_key = str(item.get("page_key") or "")
+            if is_mobile:
+                # 移动端没有 URL 导航：入口 = 冷启动/激活 App，页面切换靠后续 app_tap。
+                # 有录制到的 activity（page_key 形如 .MainActivity）时带上，帮助 start_activity。
+                launch_config: dict[str, Any] = {}
+                activity = page_key.strip()
+                if activity and (activity.startswith(".") or "/" in activity or "Activity" in activity):
+                    launch_config["appActivity"] = activity
+                if page_key:
+                    evidence_pages.add(page_key)
+                append(f"启动 {item.get('name') or page_key or '应用'}", "app_launch", launch_config)
+                continue
             url = next(
                 (_safe_url(snapshot.url) for snapshot in snapshot_map.values() if snapshot.page_key == page_key and snapshot.url),
                 None,
@@ -1452,7 +1557,8 @@ def compile_ai_case(
             continue
 
         if action == "visual_assert":
-            if not include_visual_assertions:
+            # 移动端没有像素级视觉基线步骤，忽略（提示词里也不会要求）
+            if is_mobile or not include_visual_assertions:
                 continue
             snapshot_id = _as_int(item.get("snapshot_id"))
             snapshot = snapshot_map.get(snapshot_id)
@@ -1476,7 +1582,7 @@ def compile_ai_case(
         if action == "manual":
             reason = str(item.get("reason") or "需要人工处理").strip()
             manual_reasons.append(reason)
-            append(f"人工接管：{reason}", "web_wait", {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
+            append(f"人工接管：{reason}", manual_wait_step, {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
             continue
 
         try:
@@ -1488,7 +1594,7 @@ def compile_ai_case(
             reason = f"AI 步骤 {index} 引用了元素库中不存在的 element_id={element_id or '?'}"
             warnings.append(reason)
             manual_reasons.append(reason)
-            append("待补录元素", "web_wait", {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
+            append("待补录元素", manual_wait_step, {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
             continue
         evidence_elements.add(element.id)
         evidence_pages.add(element.page_key)
@@ -1496,21 +1602,25 @@ def compile_ai_case(
         if _looks_like_captcha(element, str(item.get("reason") or "")):
             reason = f"{element.semantic_name} 属于验证码/滑块验证，需配置测试绕过或人工接管"
             manual_reasons.append(reason)
-            append(f"人工接管：{element.semantic_name}", "web_wait", {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
+            append(f"人工接管：{element.semantic_name}", manual_wait_step, {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
             continue
 
-        locator = _preferred_locator(element)
+        locator = _preferred_locator(element, platform)
         if locator is None:
             reason = f"元素“{element.semantic_name}”没有可执行定位器，需返回元素库补录"
             warnings.append(reason)
             manual_reasons.append(reason)
-            append("待补录元素", "web_wait", {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
+            append("待补录元素", manual_wait_step, {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
             continue
         by, locator_value = locator
         config = {"by": by, "locator": locator_value, "element_id": element.id}
 
         if action == "click":
-            append(f"点击 {element.semantic_name}", "web_click", config)
+            append(
+                f"点击 {element.semantic_name}",
+                "app_tap" if is_mobile else "web_click",
+                config,
+            )
         elif action == "input":
             value = item.get("value")
             if not isinstance(value, str) or not re.fullmatch(r"\$\{[a-zA-Z_][a-zA-Z0-9_.-]*}", value):
@@ -1521,19 +1631,34 @@ def compile_ai_case(
             else:
                 variable = value[2:-1]
                 variables.setdefault(variable, "")
-            append(f"输入 {element.semantic_name}", "web_input", {**config, "value": value, "clear_first": True})
+            append(
+                f"输入 {element.semantic_name}",
+                "app_input" if is_mobile else "web_input",
+                {**config, "value": value, "clear_first": True},
+            )
         elif action == "select":
-            value = item.get("value")
-            append(f"选择 {element.semantic_name}", "web_select", {**config, "value": value})
+            # 移动端没有 HTML <select>；模型不应产出，兜底转为点击该控件
+            if is_mobile:
+                append(f"点击 {element.semantic_name}", "app_tap", config)
+            else:
+                value = item.get("value")
+                append(f"选择 {element.semantic_name}", "web_select", {**config, "value": value})
         elif action == "wait":
-            append(f"等待 {element.semantic_name}", "web_wait", {**config, "state": str(item.get("state") or "visible")})
+            append(
+                f"等待 {element.semantic_name}",
+                "app_wait" if is_mobile else "web_wait",
+                {**config, "state": str(item.get("state") or "visible")},
+            )
         elif action == "assert_visible":
             if include_structure_assertions:
-                append(
-                    f"断言 {element.semantic_name} 可见",
-                    "web_wait",
-                    {**config, "state": "visible", "assertion_kind": "visible"},
-                )
+                if is_mobile:
+                    append(f"断言 {element.semantic_name} 可见", "app_assert", config)
+                else:
+                    append(
+                        f"断言 {element.semantic_name} 可见",
+                        "web_wait",
+                        {**config, "state": "visible", "assertion_kind": "visible"},
+                    )
         elif action == "assert_text":
             expected = item.get("equals")
             contains = item.get("contains")
@@ -1548,46 +1673,58 @@ def compile_ai_case(
             else:
                 warnings.append(f"文本断言“{element.semantic_name}”没有期望值，已忽略")
                 continue
-            append(f"断言 {element.semantic_name} 文本", "web_assert_text", assertion_config)
+            append(
+                f"断言 {element.semantic_name} 文本",
+                "app_assert_text" if is_mobile else "web_assert_text",
+                assertion_config,
+            )
 
     test_data_requirement = infer_account_requirement(
         title,
         str(raw.get("description") or ""),
         variables,
     )
-    _repair_form_validation_assertions(
-        steps,
-        element_map=element_map,
-        warnings=warnings,
-        evidence_elements=evidence_elements,
-        evidence_pages=evidence_pages,
-    )
-    _repair_successful_login_assertion(
-        steps,
-        requirement=test_data_requirement,
-        element_map=element_map,
-        warnings=warnings,
-        manual_reasons=manual_reasons,
-        evidence_elements=evidence_elements,
-        evidence_pages=evidence_pages,
-    )
+    # 表单校验修复 / 登录终态修复是 Web 路由与 DOM 文案语义特有的，移动端跳过
+    if not is_mobile:
+        _repair_form_validation_assertions(
+            steps,
+            element_map=element_map,
+            warnings=warnings,
+            evidence_elements=evidence_elements,
+            evidence_pages=evidence_pages,
+        )
+        _repair_successful_login_assertion(
+            steps,
+            requirement=test_data_requirement,
+            element_map=element_map,
+            warnings=warnings,
+            manual_reasons=manual_reasons,
+            evidence_elements=evidence_elements,
+            evidence_pages=evidence_pages,
+        )
     if not steps:
         return None
-    has_assertion = any(
-        item["step_type"] in {"web_assert_text", "web_assert_visual"}
-        or (
-            item["step_type"] == "web_wait"
-            and (item.get("config") or {}).get("assertion_kind") == "visible"
+    if is_mobile:
+        has_assertion = any(
+            item["step_type"] in {"app_assert", "app_assert_text"}
+            for item in steps
         )
-        for item in steps
-    )
+    else:
+        has_assertion = any(
+            item["step_type"] in {"web_assert_text", "web_assert_visual"}
+            or (
+                item["step_type"] == "web_wait"
+                and (item.get("config") or {}).get("assertion_kind") == "visible"
+            )
+            for item in steps
+        )
     if not has_assertion and not manual_reasons:
-        reason = "AI 动作计划缺少可验证预期，请人工补充功能、结构或视觉断言"
+        reason = "AI 动作计划缺少可验证预期，请人工补充功能或结构断言"
         warnings.append(reason)
         manual_reasons.append(reason)
         append(
             "待补充断言",
-            "web_wait",
+            manual_wait_step,
             {"seconds": 0, "manual_intervention": True, "reason": reason},
             skip=True,
         )
@@ -1608,15 +1745,19 @@ def compile_ai_case(
         "title": title[:200],
         "description": str(raw.get("description") or "").strip() or None,
         "priority": max(0, min(3, priority)),
-        "tags": list(dict.fromkeys(["ai-web-ui", *[str(item)[:50] for item in raw_tags]]))[:20],
+        "tags": list(dict.fromkeys([
+            "ai-app-ui" if is_mobile else "ai-web-ui",
+            *[str(item)[:50] for item in raw_tags],
+        ]))[:20],
         "variables": variables,
         "steps": steps,
         "warnings": list(dict.fromkeys(warnings)),
         "manual_reasons": list(dict.fromkeys(manual_reasons)),
         "confidence": round(confidence, 3),
         "functional_case_id": functional_case_id,
-        "visual_assertion": any(item["step_type"] == "web_assert_visual" for item in steps),
+        "visual_assertion": (not is_mobile) and any(item["step_type"] == "web_assert_visual" for item in steps),
         "evidence": {
+            "platform": platform,
             "element_ids": sorted(evidence_elements),
             "page_keys": sorted(evidence_pages),
             "snapshot_ids": sorted(evidence_snapshots),
@@ -1657,9 +1798,11 @@ def commit_drafts(db: Session, *, draft_ids: list[int], module_id: int) -> tuple
         if not steps:
             skipped.append({"draft_id": draft_id, "reason": "草稿没有可执行步骤"})
             continue
+        draft_platform = _draft_platform(draft)
         validation_errors = validate_draft_steps(
             steps,
             allow_manual=bool(draft.manual_reasons),
+            platform=draft_platform,
         )
         if validation_errors:
             skipped.append({"draft_id": draft_id, "reason": "；".join(validation_errors[:5])})
@@ -1711,12 +1854,12 @@ def commit_drafts(db: Session, *, draft_ids: list[int], module_id: int) -> tuple
             name=draft.title,
             description=draft.description,
             sort_order=max_order,
-            case_type="web",
+            case_type=draft_platform,
             tags=case_tags,
             skip=bool(manual_reasons),
             priority=draft.priority,
             variables=dict(draft.variables or {}),
-            source="ai_m8_web",
+            source=f"ai_m8_{draft_platform}",
             generation_metadata=generation_metadata,
         )
         db.add(case)

@@ -126,17 +126,20 @@ def update_web_ui_case_draft(
     patch = payload.model_dump(exclude_unset=True)
     if "steps" in patch:
         from server.services.web_ui_case_generation_service import (
+            _draft_platform,
             validate_draft_step_edit,
             validate_draft_steps,
         )
 
+        draft_platform = _draft_platform(draft)
         errors = validate_draft_steps(
             patch["steps"],
             allow_manual=bool(draft.manual_reasons),
+            platform=draft_platform,
         )
         if errors:
             raise HTTPException(status_code=422, detail="；".join(errors[:10]))
-        edit_errors = validate_draft_step_edit(draft.steps, patch["steps"])
+        edit_errors = validate_draft_step_edit(draft.steps, patch["steps"], draft_platform)
         if edit_errors:
             raise HTTPException(status_code=422, detail="；".join(edit_errors[:10]))
     for key, value in patch.items():

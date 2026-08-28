@@ -14,6 +14,8 @@ class WebUiCaseGenerationRequest(BaseModel):
     project_id: int
     target_module_id: int
     model_name: str = Field(..., min_length=1, max_length=120)
+    # 目标平台：web 走 web_* 步骤；android/ios 走 app_* 步骤（导航=启动应用）
+    platform: Literal["web", "android", "ios"] = "web"
     source_mode: Literal["auto", "functional_and_elements", "elements_only"] = "auto"
     functional_case_ids: list[int] = Field(default_factory=list, max_length=50)
     page_keys: list[str] = Field(default_factory=list, max_length=20)
