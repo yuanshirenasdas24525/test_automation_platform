@@ -38,10 +38,16 @@ from server.services.test_accounts import (
 
 
 _SUPPORTED_LOCATORS = {"css", "xpath", "id", "name", "class", "text", "link", "role"}
-# 移动端 Appium 定位策略（Android/iOS 共用一套编译期白名单）
-_SUPPORTED_LOCATORS_APP = {
-    "id", "accessibility_id", "android_uiautomator",
-    "ios_predicate", "ios_class_chain", "class", "name", "xpath",
+# 移动端 Appium 定位策略：**按平台彻底分开**，Android 绝不用 iOS 专属策略
+# （ios_predicate/ios_class_chain），iOS 也不用 Android 专属（android_uiautomator）。
+# accessibility_id 是两端共用的（Android=content-desc，iOS=accessibilityIdentifier）。
+# 注意 strategy key 用 class_name（与 runners/app/finder.py 的 _AppiumBy.LOCATORS 一致，
+# 历史上误用过 'class' 会导致 find 时 KeyError）。
+_SUPPORTED_LOCATORS_ANDROID = {
+    "id", "accessibility_id", "android_uiautomator", "class_name", "name", "xpath",
+}
+_SUPPORTED_LOCATORS_IOS = {
+    "accessibility_id", "ios_predicate", "ios_class_chain", "id", "class_name", "name", "xpath",
 }
 
 
@@ -50,7 +56,11 @@ def _is_mobile_platform(platform: str) -> bool:
 
 
 def _supported_locators_for(platform: str) -> set[str]:
-    return _SUPPORTED_LOCATORS_APP if _is_mobile_platform(platform) else _SUPPORTED_LOCATORS
+    if platform == UI_PLATFORM_ANDROID:
+        return _SUPPORTED_LOCATORS_ANDROID
+    if platform == UI_PLATFORM_IOS:
+        return _SUPPORTED_LOCATORS_IOS
+    return _SUPPORTED_LOCATORS
 
 
 def _safe_step_types_for(platform: str) -> set[str]:
@@ -1036,26 +1046,38 @@ def _locator_quality(item: "UiElementLocator", semantic: str) -> float:
     return q
 
 
-# 移动端定位策略优先级：accessibility-id / resource-id / 平台谓词 最稳，
-# 下标式 xpath 最脆（换布局即失配），排最后。Web 的 _locator_quality 里
-# accessibility_id/uiautomator 不在表内会得 0 分、xpath 反而 +120，会把好定位器丢掉。
-_APP_STRATEGY_RANK = {
+# 移动端定位策略优先级：**按平台各排各的**，下标式 xpath 一律垫底。
+# - Android：resource-id > android_uiautomator > accessibility-id(content-desc) > class/name > xpath
+# - iOS：accessibility-id(identifier) > iOS Predicate > iOS ClassChain > id > class/name > xpath
+# accessibility_id 两端都在（Android 常常只录到它，见 SauceLabs 这类 RN app）。
+_APP_STRATEGY_RANK_ANDROID = {
+    "id": 100,
+    "android_uiautomator": 92,
+    "accessibility_id": 88,
+    "class_name": 40,
+    "name": 35,
+    "xpath": 10,
+}
+_APP_STRATEGY_RANK_IOS = {
     "accessibility_id": 100,
-    "id": 95,
-    "ios_predicate": 90,
-    "ios_class_chain": 85,
-    "android_uiautomator": 80,
-    "name": 60,
-    "class": 40,
+    "ios_predicate": 92,
+    "ios_class_chain": 88,
+    "id": 70,
+    "class_name": 40,
+    "name": 35,
     "xpath": 10,
 }
 
 
-def _locator_quality_app(item: "UiElementLocator", semantic: str) -> float:
-    """移动端定位器打分：策略优先级 + 元素库自身 primary/score，下标式 xpath 额外降权。"""
+def _app_strategy_rank(platform: str) -> dict[str, int]:
+    return _APP_STRATEGY_RANK_IOS if platform == UI_PLATFORM_IOS else _APP_STRATEGY_RANK_ANDROID
+
+
+def _locator_quality_app(item: "UiElementLocator", rank: dict[str, int]) -> float:
+    """移动端定位器打分：平台策略优先级 + 元素库自身 primary/score，下标式 xpath 额外降权。"""
     strat = str(item.strategy or "").lower()
     loc = str(item.locator or "")
-    q = float(_APP_STRATEGY_RANK.get(strat, 20))
+    q = float(rank.get(strat, 20))
     if strat == "xpath" and re.search(r"\[\d+\]", loc):
         q -= 5  # /hierarchy/...[4]/... 这类下标 xpath 更脆
     if getattr(item, "is_primary", False):
@@ -1077,9 +1099,12 @@ def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> t
     ]
     if not candidates:
         return None
-    semantic = str(getattr(element, "semantic_name", "") or "").strip()
-    quality = _locator_quality_app if _is_mobile_platform(platform) else _locator_quality
-    selected = max(candidates, key=lambda item: quality(item, semantic))
+    if _is_mobile_platform(platform):
+        rank = _app_strategy_rank(platform)
+        selected = max(candidates, key=lambda item: _locator_quality_app(item, rank))
+    else:
+        semantic = str(getattr(element, "semantic_name", "") or "").strip()
+        selected = max(candidates, key=lambda item: _locator_quality(item, semantic))
     return str(selected.strategy).lower(), str(selected.locator)
 
 
