@@ -1036,6 +1036,38 @@ def _locator_quality(item: "UiElementLocator", semantic: str) -> float:
     return q
 
 
+# 移动端定位策略优先级：accessibility-id / resource-id / 平台谓词 最稳，
+# 下标式 xpath 最脆（换布局即失配），排最后。Web 的 _locator_quality 里
+# accessibility_id/uiautomator 不在表内会得 0 分、xpath 反而 +120，会把好定位器丢掉。
+_APP_STRATEGY_RANK = {
+    "accessibility_id": 100,
+    "id": 95,
+    "ios_predicate": 90,
+    "ios_class_chain": 85,
+    "android_uiautomator": 80,
+    "name": 60,
+    "class": 40,
+    "xpath": 10,
+}
+
+
+def _locator_quality_app(item: "UiElementLocator", semantic: str) -> float:
+    """移动端定位器打分：策略优先级 + 元素库自身 primary/score，下标式 xpath 额外降权。"""
+    strat = str(item.strategy or "").lower()
+    loc = str(item.locator or "")
+    q = float(_APP_STRATEGY_RANK.get(strat, 20))
+    if strat == "xpath" and re.search(r"\[\d+\]", loc):
+        q -= 5  # /hierarchy/...[4]/... 这类下标 xpath 更脆
+    if getattr(item, "is_primary", False):
+        q += 30
+    if item.is_unique is True:
+        q += 5
+    if item.last_verified_at is not None:
+        q += 3
+    q += min(int(item.score or 0), 100) * 0.5
+    return q
+
+
 def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> tuple[str, str] | None:
     supported = _supported_locators_for(platform)
     candidates = [
@@ -1046,7 +1078,8 @@ def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> t
     if not candidates:
         return None
     semantic = str(getattr(element, "semantic_name", "") or "").strip()
-    selected = max(candidates, key=lambda item: _locator_quality(item, semantic))
+    quality = _locator_quality_app if _is_mobile_platform(platform) else _locator_quality
+    selected = max(candidates, key=lambda item: quality(item, semantic))
     return str(selected.strategy).lower(), str(selected.locator)
 
 
