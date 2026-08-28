@@ -1206,6 +1206,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     is_mobile = platform in ("android", "ios")
     # 移动端走 app_* 提示词与步骤；无像素视觉基线
     gen_prompt_name = "app_ui_case_gen" if is_mobile else "web_ui_case_gen"
+    select_prompt_name = "app_ui_source_select" if is_mobile else "web_ui_source_select"
     visual_enabled = (not is_mobile) and bool(payload.get("include_visual_assertions", False))
     if project_id <= 0:
         raise ValueError("project_id 必填")
@@ -1355,7 +1356,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 },
             }
             selection_prompt = _render_prompt(
-                _load_prompt("web_ui_source_select"),
+                _load_prompt(select_prompt_name),
                 selection_placeholders,
             )
             selection_prompt_hash = hashlib.sha256(selection_prompt.encode("utf-8")).hexdigest()
