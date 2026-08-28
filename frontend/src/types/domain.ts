@@ -997,6 +997,8 @@ export interface WebUiCaseGenerationPayload {
   project_id: number;
   target_module_id: number;
   model_name: string;
+  /** 目标平台：web 走 web_* 步骤；android/ios 走 app_* 步骤。默认 web。 */
+  platform?: UiPlatform;
   source_mode: WebUiCaseSourceMode;
   functional_case_ids: number[];
   page_keys: string[];

@@ -3023,14 +3023,16 @@ def ai_prompt_preview(payload: PromptPreviewRequest, db: DBDep, user: OptionalUs
     if module is None:
         raise HTTPException(status_code=404, detail="模块不存在")
 
-    # web / android / ios：单阶段生成(web_ui_case_gen)，动态证据在生成时注入，这里展示模板 + 流程
+    # web / android / ios：单阶段生成，动态证据在生成时注入，这里展示模板 + 流程
     if payload.mode in ("web", "android", "ios"):
         from ai_gateway.gateway import _load_prompt
+        # 移动端用 app_* 提示词（导航=启动应用、无 URL/select/视觉断言），web 用 web_* 提示词
+        gen_template = "app_ui_case_gen" if payload.mode in ("android", "ios") else "web_ui_case_gen"
         return {
             "status": "success",
             "data": {
                 "mode": payload.mode,
-                "outline": {"template": "web_ui_case_gen", "prompt": _load_prompt("web_ui_case_gen")},
+                "outline": {"template": gen_template, "prompt": _load_prompt(gen_template)},
                 "batch": {"template": "web_ui_source_select", "prompt": _load_prompt("web_ui_source_select")},
                 "flow": [
                     {"step": "1 · 源选择", "desc": "本地先过滤纯接口/安全/性能类功能用例，AI 从候选中挑适合 UI 自动化的页面与业务流程"},

@@ -1200,6 +1200,13 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
     target_module_id = int(payload.get("target_module_id") or 0)
     model_name = str(payload.get("model_name") or "").strip()
     batch_id = str(payload.get("batch_id") or "").strip()
+    platform = str(payload.get("platform") or "web").strip().lower()
+    if platform not in ("web", "android", "ios"):
+        platform = "web"
+    is_mobile = platform in ("android", "ios")
+    # 移动端走 app_* 提示词与步骤；无像素视觉基线
+    gen_prompt_name = "app_ui_case_gen" if is_mobile else "web_ui_case_gen"
+    visual_enabled = (not is_mobile) and bool(payload.get("include_visual_assertions", False))
     if project_id <= 0:
         raise ValueError("project_id 必填")
     if target_module_id <= 0:
@@ -1252,7 +1259,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         if gap_only:
             from server.services.web_ui_case_generation_service import covered_functional_case_ids
             exclude_ids = covered_functional_case_ids(
-                session, project_id=project_id, module_id=target_module_id
+                session, project_id=project_id, module_id=target_module_id, platform=platform
             )
         catalog = build_auto_source_catalog(
             session,
@@ -1260,6 +1267,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             target_module_id=target_module_id,
             user_prompt=str(payload.get("user_prompt") or ""),
             exclude_functional_case_ids=exclude_ids,
+            platform=platform,
         )
         if gap_only and not catalog["functional_candidates"]:
             # 查缺补漏：没有未覆盖的功能用例就直接收尾，不退化成元素级冒烟，
@@ -1530,6 +1538,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             project_id=project_id,
             functional_case_ids=current_case_ids,
             page_keys=page_keys,
+            platform=platform,
         )
         batch_scope = (
             f"当前模块“{target_module.name}”；功能用例 ID：{current_case_ids}。"
@@ -1538,6 +1547,7 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             else f"当前模块“{target_module.name}”；本批仅按匹配页面元素生成基础可执行场景"
         )
         placeholders = {
+            "PLATFORM": platform,
             "BATCH_SCOPE": batch_scope,
             "SOURCE_MODE": (
                 "auto_functional_and_elements" if source_mode == "auto" and current_case_ids
@@ -1545,11 +1555,11 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 else source_mode
             ),
             "INCLUDE_STRUCTURE_ASSERTIONS": bool(payload.get("include_structure_assertions", True)),
-            "INCLUDE_VISUAL_ASSERTIONS": bool(payload.get("include_visual_assertions", False)),
+            "INCLUDE_VISUAL_ASSERTIONS": visual_enabled,
             "USER_PROMPT": str(payload.get("user_prompt") or "") or "（无）",
             "EVIDENCE_CONTEXT": context,
         }
-        prompt = _render_prompt(_load_prompt("web_ui_case_gen"), placeholders)
+        prompt = _render_prompt(_load_prompt(gen_prompt_name), placeholders)
         prompt_hashes.append(hashlib.sha256(prompt.encode("utf-8")).hexdigest())
         LOGGER.info(
             "[web_ui_case_gen] run=%s generation batch=%s cases=%s queued=%s",
@@ -1632,8 +1642,9 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
                 element_map=element_map,
                 snapshot_map=snapshot_map,
                 include_structure_assertions=bool(payload.get("include_structure_assertions", True)),
-                include_visual_assertions=bool(payload.get("include_visual_assertions", False)),
+                include_visual_assertions=visual_enabled,
                 visual_threshold=float(payload.get("visual_threshold") or 0.02),
+                platform=platform,
             )
             if compiled is None:
                 dropped += 1

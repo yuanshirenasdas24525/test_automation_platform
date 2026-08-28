@@ -93,7 +93,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
 import { WebUiCaseGenerationDialog } from "./ui-recording/WebUiCaseGenerationDialog";
-import { MobileUiCaseGenerationDialog } from "./ui-recording/MobileUiCaseGenerationDialog";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 import { useCaseCopyPaste } from "@/lib/use-case-copy-paste";
 
@@ -1012,15 +1011,8 @@ export function AutomationCasesPage({
           onRequestOpen={() => setElementLibraryOpen(true)}
         />
       ) : null}
-      {caseType === "web" ? (
+      {caseType === "web" || caseType === "android" || caseType === "ios" ? (
         <WebUiCaseGenerationDialog
-          open={uiAiOpen}
-          projectId={projectId}
-          initialModuleId={moduleId}
-          onOpenChange={setUiAiOpen}
-        />
-      ) : caseType === "android" || caseType === "ios" ? (
-        <MobileUiCaseGenerationDialog
           open={uiAiOpen}
           projectId={projectId}
           initialModuleId={moduleId}

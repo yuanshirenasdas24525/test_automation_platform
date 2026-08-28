@@ -37,6 +37,7 @@ import { SideDrawer } from "@/components/ui/side-drawer";
 import { ChevronDown, ScanSearch, Trash2, LayoutList, ClipboardList, FileText, SlidersHorizontal } from "lucide-react";
 import type {
   AiRun,
+  UiPlatform,
   WebUiCaseDraft,
 } from "@/types/domain";
 
@@ -99,12 +100,16 @@ export function WebUiCaseGenerationDialog({
   projectId,
   initialModuleId,
   onOpenChange,
+  platform = "web",
 }: {
   open: boolean;
   projectId: number;
   initialModuleId?: number | null;
   onOpenChange: (open: boolean) => void;
+  platform?: UiPlatform;
 }) {
+  const isMobile = platform === "android" || platform === "ios";
+  const platformLabel = platform === "android" ? "Android" : platform === "ios" ? "iOS" : "Web";
   const queryClient = useQueryClient();
   const initializedScopeRef = useRef("");
   const initializedDraftBatchRef = useRef("");
@@ -279,7 +284,7 @@ export function WebUiCaseGenerationDialog({
 
   useEffect(() => {
     if (runStatus !== "failed") return;
-    toast.error(runQuery.data?.error || "Web UI 用例生成失败");
+    toast.error(runQuery.data?.error || `${platformLabel} UI 用例生成失败`);
   }, [runQuery.data?.error, runStatus]);
 
   const generateMutation = useMutation({
@@ -287,12 +292,14 @@ export function WebUiCaseGenerationDialog({
       project_id: projectId,
       target_module_id: Number(initialModuleId),
       model_name: modelName,
+      platform,
       source_mode: "auto",
       functional_case_ids: [],
       page_keys: [],
       executable_only: true,
       include_structure_assertions: structureAssertions,
-      include_visual_assertions: visualAssertions,
+      // 移动端没有像素视觉基线断言
+      include_visual_assertions: isMobile ? false : visualAssertions,
       visual_threshold: visualThreshold,
       user_prompt: userPrompt,
       gap_only: gapOnly,
@@ -378,7 +385,7 @@ export function WebUiCaseGenerationDialog({
         // 写入后刷新父页面的用例列表，否则「Web 用例(N)」要手动刷新浏览器才更新。
         queryClient.invalidateQueries({ queryKey: ["automation-cases"] }),
       ]);
-      toast.success(`已写入 ${result.created_case_ids.length} 条 Web UI 用例${result.skipped.length ? `，跳过 ${result.skipped.length} 条` : ""}`);
+      toast.success(`已写入 ${result.created_case_ids.length} 条 ${platformLabel} UI 用例${result.skipped.length ? `，跳过 ${result.skipped.length} 条` : ""}`);
       setSelectedDraftIds([]);
     },
     onError: (error) => toast.error(messageOf(error)),
@@ -420,7 +427,7 @@ export function WebUiCaseGenerationDialog({
       title={
         <>
           <Sparkles className="h-[17px] w-[17px] text-violet-600" />
-          AI 生成 Web UI 自动化用例
+          AI 生成 {platformLabel} UI 自动化用例
         </>
       }
       headerExtra={
@@ -473,15 +480,30 @@ export function WebUiCaseGenerationDialog({
                 </ol>
               </div>
 
-              <div>
-                <Label htmlFor="visual-threshold">视觉差异阈值</Label>
-                <Input id="visual-threshold" type="number" min={0} max={1} step={0.01} disabled={!visualAssertions} value={visualThreshold} onChange={(event) => setVisualThreshold(Number(event.target.value))} className="mt-1.5" />
-              </div>
+              {!isMobile ? (
+                <div>
+                  <Label htmlFor="visual-threshold">视觉差异阈值</Label>
+                  <Input id="visual-threshold" type="number" min={0} max={1} step={0.01} disabled={!visualAssertions} value={visualThreshold} onChange={(event) => setVisualThreshold(Number(event.target.value))} className="mt-1.5" />
+                </div>
+              ) : null}
 
               <div className="space-y-2">
                 <ToggleRow checked={structureAssertions} onChange={setStructureAssertions} title="生成关键结构断言" description="对页面标题、关键区域或操作结果生成可见性/文本断言。" />
-                <ToggleRow checked={visualAssertions} onChange={setVisualAssertions} title="生成视觉回归断言（可选）" description="使用已录制截图做基线；需固定视口，动态区域后续可编辑 masks。" />
+                {!isMobile ? (
+                  <ToggleRow checked={visualAssertions} onChange={setVisualAssertions} title="生成视觉回归断言（可选）" description="使用已录制截图做基线；需固定视口，动态区域后续可编辑 masks。" />
+                ) : null}
               </div>
+              {isMobile ? (
+                <div className="rounded-lg border border-violet-200 bg-violet-50/70 p-3 text-[11px] leading-5 text-violet-950">
+                  <p className="font-medium">{platformLabel} 与 Web 的差异</p>
+                  <ul className="mt-1.5 space-y-1 pl-1">
+                    <li>· 导航：启动 App / Activity（非页面 URL）</li>
+                    <li>· 步骤：app_tap / app_input / app_assert（非 web_*）</li>
+                    <li>· 定位器：resource-id / accessibility-id / xpath</li>
+                    <li>· 无像素级视觉回归断言</li>
+                  </ul>
+                </div>
+              ) : null}
 
               <div>
                 <Label htmlFor="web-ui-prompt">业务范围补充（可选）</Label>
@@ -568,15 +590,15 @@ export function WebUiCaseGenerationDialog({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {wpanel === "config" ? (
             <div className="min-h-0 flex-1 p-5">
-              <ConfigPreviewPanel projectId={projectId} category="web" modelName={modelName} />
+              <ConfigPreviewPanel projectId={projectId} category={isMobile ? "app" : "web"} modelName={modelName} />
             </div>
           ) : wpanel === "checklist" ? (
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode="web" />
+              <FeatureChecklistPanel moduleId={initialModuleId ?? null} modelName={modelName} requirementText={userPrompt} caseSignature="" mode={platform} />
             </div>
           ) : wpanel === "prompt" ? (
             <div className="min-h-0 flex-1 p-5">
-              <PromptPreviewPanel moduleId={initialModuleId ?? null} mode="web" coverage="standard" dimensions="" requirementText={userPrompt} />
+              <PromptPreviewPanel moduleId={initialModuleId ?? null} mode={platform} coverage="standard" dimensions="" requirementText={userPrompt} />
             </div>
           ) : (
           <section className="flex min-h-0 flex-col">
