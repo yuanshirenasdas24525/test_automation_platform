@@ -3027,13 +3027,15 @@ def ai_prompt_preview(payload: PromptPreviewRequest, db: DBDep, user: OptionalUs
     if payload.mode in ("web", "android", "ios"):
         from ai_gateway.gateway import _load_prompt
         # 移动端用 app_* 提示词（导航=启动应用、无 URL/select/视觉断言），web 用 web_* 提示词
-        gen_template = "app_ui_case_gen" if payload.mode in ("android", "ios") else "web_ui_case_gen"
+        is_mobile_mode = payload.mode in ("android", "ios")
+        gen_template = "app_ui_case_gen" if is_mobile_mode else "web_ui_case_gen"
+        select_template = "app_ui_source_select" if is_mobile_mode else "web_ui_source_select"
         return {
             "status": "success",
             "data": {
                 "mode": payload.mode,
                 "outline": {"template": gen_template, "prompt": _load_prompt(gen_template)},
-                "batch": {"template": "web_ui_source_select", "prompt": _load_prompt("web_ui_source_select")},
+                "batch": {"template": select_template, "prompt": _load_prompt(select_template)},
                 "flow": [
                     {"step": "1 · 源选择", "desc": "本地先过滤纯接口/安全/性能类功能用例，AI 从候选中挑适合 UI 自动化的页面与业务流程"},
                     {"step": "2 · 检索元素", "desc": "按所选用例检索元素库，取真实定位器 + 页面事实 / 录制动作 / 截图基线作为证据"},
