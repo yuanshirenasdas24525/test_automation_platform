@@ -1535,15 +1535,26 @@ def compile_ai_case(
         if action == "goto":
             page_key = str(item.get("page_key") or "")
             if is_mobile:
-                # 移动端没有 URL 导航：入口 = 冷启动/激活 App，页面切换靠后续 app_tap。
-                # 有录制到的 activity（page_key 形如 .MainActivity）时带上，帮助 start_activity。
+                # 移动端没有 URL 导航：入口 = 冷启动 App，页面切换靠后续 app_tap。
+                # 录制快照的 page_key 是"包名:Activity"复合键（recorder_agent 里
+                # Android=f"{package}:{activity}"、iOS=f"{bundleId}:{context}"），需要按第一个
+                # ":" 拆开：整串塞给 appActivity 会让 Appium 用畸形 activity 启动失败。
                 launch_config: dict[str, Any] = {}
-                activity = page_key.strip()
-                if activity and (activity.startswith(".") or "/" in activity or "Activity" in activity):
-                    launch_config["appActivity"] = activity
+                pkg, sep, activity = page_key.partition(":")
+                pkg = pkg.strip()
+                activity = activity.strip()
+                if pkg:
+                    if platform == UI_PLATFORM_IOS:
+                        launch_config["bundleId"] = pkg
+                    else:
+                        launch_config["appPackage"] = pkg
+                        # 只在拆出的 activity 像合法 Android Activity（以 . 开头或含 Activity）
+                        # 时带上；否则省略，让 Appium 用包的默认启动 Activity，避免"activity 不可启动"。
+                        if activity and (activity.startswith(".") or "Activity" in activity):
+                            launch_config["appActivity"] = activity
                 if page_key:
                     evidence_pages.add(page_key)
-                append(f"启动 {item.get('name') or page_key or '应用'}", "app_launch", launch_config)
+                append(f"启动 {item.get('name') or '应用'}", "app_launch", launch_config)
                 continue
             url = next(
                 (_safe_url(snapshot.url) for snapshot in snapshot_map.values() if snapshot.page_key == page_key and snapshot.url),
