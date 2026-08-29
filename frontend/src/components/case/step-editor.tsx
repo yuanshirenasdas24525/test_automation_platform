@@ -437,8 +437,8 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
     value: "app_launch",
     group: "app",
     label: "启动 App (app_launch)",
-    desc: "按当前用例平台填写启动目标；automationName 留空则按设备平台默认",
-    defaultConfig: { appPackage: "", appActivity: "" },
+    desc: "启动目标已集中到项目「启动配置」，这里通常留空即可；仅需覆盖时才填。",
+    defaultConfig: {},
     defaultName: (c) =>
       `启动 ${c.bundleId || c.appPackage || "App"}`,
     fields: [
@@ -447,15 +447,15 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         key: "appPackage",
         label: "appPackage (Android)",
         kind: "text",
-        placeholder: "com.example.app",
+        placeholder: "留空 = 用项目启动配置",
         platforms: ["android"],
-        hint: <>Android 必填</>,
+        hint: <>留空即可，启动包名来自项目「启动配置」；仅需为这条用例覆盖时才填。</>,
       },
       {
         key: "appActivity",
         label: "appActivity (Android)",
         kind: "text",
-        placeholder: ".MainActivity",
+        placeholder: "留空 = 用项目启动配置",
         platforms: ["android"],
       },
       // iOS
@@ -463,9 +463,9 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         key: "bundleId",
         label: "bundleId (iOS)",
         kind: "text",
-        placeholder: "com.apple.mobilesafari",
+        placeholder: "留空 = 用项目启动配置",
         platforms: ["ios"],
-        hint: <>iOS 必填</>,
+        hint: <>留空即可，Bundle ID 来自项目「启动配置」；仅需为这条用例覆盖时才填。</>,
       },
       // 共用
       {
@@ -839,14 +839,8 @@ export function validateStepsForCategory(category: CaseType, steps: TestStepDraf
   steps.forEach((step, index) => {
     const order = index + 1;
     const config = (step.config ?? {}) as Record<string, unknown>;
-    if (step.step_type === "app_launch") {
-      if (platform === "android" && !hasText(config.appPackage)) {
-        errors.push(`步骤 ${order}「启动 App」缺少 appPackage`);
-      }
-      if (platform === "ios" && !hasText(config.bundleId)) {
-        errors.push(`步骤 ${order}「启动 App」缺少 bundleId`);
-      }
-    }
+    // app_launch 不再强制填 appPackage/bundleId：启动 caps 已集中到项目「启动配置」，
+    // 步骤留空即可（冷启动时用项目/设备 caps 拉起）。
     if (
       step.step_type === "app_uninstall" ||
       step.step_type === "app_activate" ||
