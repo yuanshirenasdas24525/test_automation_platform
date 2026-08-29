@@ -158,15 +158,39 @@ class AppAssertStepRunner(BaseStepRunner):
         from runners.app.assertions.assertion import AssertionEngine
 
         config = step.get("config") or {}
+
+        # —— 可见性断言：只给了 by/locator、没给 assert_type 也没给 expected/value ——
+        # 语义就是"断言这个元素可见/存在"（生成器的 assert_visible 就是这么产出的）。
+        # 不能退化成默认 equal 拿元素 text 去比 None —— open menu 这类无文本控件必挂。
+        # 找得到元素本身就证明存在；再用 is_displayed() 确认可见。
+        by = config.get("by")
+        locator_raw = config.get("locator")
+        if (
+            by and locator_raw
+            and not config.get("assert_type")
+            and "expected" not in config
+            and "value" not in config
+        ):
+            session = AppSession.require(ctx)
+            locator = resolve_value(locator_raw, ctx)
+            element = _find_element(session, {**config, "locator": locator})  # 找不到会抛 → FAILED
+            try:
+                displayed = element.is_displayed() if hasattr(element, "is_displayed") else True
+            except Exception:  # noqa: BLE001
+                displayed = True  # 取不到就以"找到即存在"为准
+            result.action = f"app_assert visible actual={displayed}"
+            result.target = f"{by}={locator}"
+            result.output_data = displayed
+            if not displayed:
+                raise AssertionError(f"元素 {by}={locator} 存在但不可见")
+            return
+
         assert_type = config.get("assert_type") or "equal"
         if assert_type not in self._SUPPORTED:
             raise ValueError(
                 f"app_assert 未知 assert_type={assert_type!r}，可选：{list(self._SUPPORTED)}"
             )
 
-        # actual 来源：A) 元素属性  B) 直接 value
-        by = config.get("by")
-        locator_raw = config.get("locator")
         if by and locator_raw:
             session = AppSession.require(ctx)
             locator = resolve_value(locator_raw, ctx)
