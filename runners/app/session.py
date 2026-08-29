@@ -344,6 +344,10 @@ def acquire_session_for_case(
     # 指定设备：前端让用户在 RunCaseDialog 手选某台；传了就走 acquire_by_id，
     # 忽略 pool/platform 过滤。这里不做"平台一致性校验"—— runs.py 入口已经拒了
     # 非 idle 的设备，而 platform 不一致大概率是调用方错配，让底层 Appium 自己报。
+    # 项目「启动配置」（含可选的指定设备 udid）一次读出，既用于选设备也并入 caps
+    launch_caps = _project_launch_caps(case_dict.get("project_id"))
+    launch_udid = str(launch_caps.get("udid") or "").strip() or None
+
     device_id = case_dict.get("device_id")
     if device_id is not None:
         device = pool.acquire_by_id(int(device_id), execution_id=execution_id)
@@ -351,6 +355,14 @@ def acquire_session_for_case(
             raise RuntimeError(
                 f"无法锁定指定设备 device_id={device_id}："
                 "设备可能已离线 / 被别的任务占用 / 不存在。"
+            )
+    elif launch_udid:
+        # 项目启动配置里指定了设备：锁定这一台，保证池租借和 Appium 目标是同一台
+        device = pool.acquire_by_udid(launch_udid, execution_id=execution_id)
+        if device is None:
+            raise RuntimeError(
+                f"无法锁定启动配置指定的设备 udid={launch_udid}："
+                "设备可能已离线 / 被别的任务占用 / 不存在。可在「启动配置」改设备或清空为自动挑。"
             )
     else:
         device = pool.acquire(
@@ -362,7 +374,7 @@ def acquire_session_for_case(
                 f"请检查 devices 表里是否有 status=idle 的记录。"
             )
 
-    caps = _collect_caps(case_dict, env)
+    caps = _collect_caps(case_dict, env, launch_caps)
     return AppSession(
         device=device,
         caps=caps,
@@ -412,7 +424,10 @@ def _project_launch_caps(project_id) -> dict:
     if not isinstance(vals, dict):
         return {}
     caps: dict = {}
-    for key in ("appPackage", "appActivity", "bundleId", "automationName", "platformVersion"):
+    for key in (
+        "appPackage", "appActivity", "bundleId", "automationName",
+        "platformVersion", "udid", "deviceName", "app",
+    ):
         v = str(vals.get(key) or "").strip()
         if v:
             caps[key] = v
@@ -434,11 +449,14 @@ def _project_launch_caps(project_id) -> dict:
     return caps
 
 
-def _collect_caps(case_dict: dict, env: dict) -> dict:
-    """合并 caps，优先级：项目 launch 配置 < 环境 browser_config < 用例 cap.* 变量。"""
+def _collect_caps(case_dict: dict, env: dict, launch_caps: dict | None = None) -> dict:
+    """合并 caps，优先级：项目 launch 配置 < 环境 browser_config < 用例 cap.* 变量。
+
+    launch_caps 可由调用方预取（避免重复 reload）；未传则自己读。
+    """
     caps: dict = {}
     # 项目级启动配置（前端「启动配置」）作为共享基线
-    caps.update(_project_launch_caps(case_dict.get("project_id")))
+    caps.update(launch_caps if launch_caps is not None else _project_launch_caps(case_dict.get("project_id")))
 
     env_caps = (env or {}).get("browser_config") or {}
     if isinstance(env_caps, dict):
