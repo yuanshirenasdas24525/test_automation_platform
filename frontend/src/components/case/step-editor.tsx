@@ -482,6 +482,12 @@ export const STEP_TYPE_SPECS: StepTypeSpec[] = [
         kind: "bool",
         hint: <>勾上后 Appium 不会清缓存，适合复用设备已有登录</>,
       },
+      {
+        key: "force_relaunch",
+        label: "强制重启（force_relaunch）",
+        kind: "bool",
+        hint: <>默认关：App 跨用例复用，只首次启动一次（一条用例=一个测试点）。勾上后本步每次都把 App 重启回启动态——登录这类每条都要从登录页开始的用例建议勾上。</>,
+      },
     ],
   },
   { value: "app_close", group: "app", label: "关闭 App (app_close)", defaultName: "关闭 App", fields: [] },

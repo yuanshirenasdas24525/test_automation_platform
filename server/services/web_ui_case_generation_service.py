@@ -1557,6 +1557,12 @@ def compile_ai_case(
     is_mobile = _is_mobile_platform(platform)
     manual_wait_step = _manual_wait_step_for(platform)
     title = str(raw.get("title") or "").strip()
+    # 登录/鉴权类移动用例：每条都要从登录页开始，App 需回到干净启动态 →
+    # 给 app_launch 打开 force_relaunch（其它用例默认复用运行中的 App，不重启）。
+    _login_text = (title + " " + str(raw.get("description") or "")).lower()
+    is_login_case = is_mobile and any(
+        kw in _login_text for kw in ("登录", "登入", "鉴权", "login", "log in", "sign in", "signin")
+    )
     raw_steps = raw.get("steps") or []
     if not title or not isinstance(raw_steps, list):
         return None
@@ -1599,7 +1605,8 @@ def compile_ai_case(
                 # 会用设备 caps 把应用拉起来。（要换被测 App，改设备 caps 一处即可。）
                 if page_key:
                     evidence_pages.add(page_key)
-                append(f"启动 {item.get('name') or '应用'}", "app_launch", {})
+                launch_cfg: dict[str, Any] = {"force_relaunch": True} if is_login_case else {}
+                append(f"启动 {item.get('name') or '应用'}", "app_launch", launch_cfg)
                 continue
             url = next(
                 (_safe_url(snapshot.url) for snapshot in snapshot_map.values() if snapshot.page_key == page_key and snapshot.url),
