@@ -373,8 +373,9 @@ function UploadDialog({
     if (!f) return;
     const lower = f.name.toLowerCase();
     if (lower.endsWith(".apk")) setPlatform("android");
-    else if (lower.endsWith(".ipa")) setPlatform("ios");
-    if (!name.trim()) setName(f.name.replace(/\.(apk|ipa)$/i, ""));
+    // .ipa 真机 / .app 模拟器 bundle / .app.zip / .zip 打包的模拟器 app → iOS
+    else if (lower.endsWith(".ipa") || lower.endsWith(".app") || lower.endsWith(".zip")) setPlatform("ios");
+    if (!name.trim()) setName(f.name.replace(/\.(apk|ipa|app|zip|app\.zip)$/i, ""));
   };
 
   return (
@@ -391,7 +392,7 @@ function UploadDialog({
         <DialogHeader>
           <DialogTitle>上传安装包</DialogTitle>
           <DialogDescription>
-            支持 .apk / .ipa，单个文件 ≤ 1GB。上传完成后即可在 App 用例的「安装 App」步骤里选用。
+            支持 .apk（Android）/ .ipa（iOS 真机）/ .app · .zip（iOS 模拟器包，用 .app.zip / .zip），单个文件 ≤ 1GB。上传完成后即可在 App 用例的「安装 App」步骤或「启动配置」里选用。
           </DialogDescription>
         </DialogHeader>
 
@@ -401,7 +402,7 @@ function UploadDialog({
             <Input
               ref={fileInputRef}
               type="file"
-              accept=".apk,.ipa"
+              accept=".apk,.ipa,.app,.zip"
               onChange={(e) => handleFile(e.target.files?.[0] ?? null)}
               className="text-xs"
             />

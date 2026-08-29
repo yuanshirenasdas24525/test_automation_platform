@@ -96,17 +96,24 @@ def _abs_path(p: Optional[str]) -> str:
 
 
 def _sniff_platform(file_name: str, override: Optional[str]) -> str:
-    """优先用用户传的 platform，否则按扩展名猜：.apk → android，.ipa → ios。"""
+    """优先用用户传的 platform，否则按扩展名猜：
+    .apk → android；.ipa / .app / .zip → ios。
+    （iOS 模拟器包是 .app 目录，通常打包成 .app.zip / .zip 上传；Appium 能直接吃 zip。）"""
     if override:
         v = override.strip().lower()
         if v in ("android", "ios"):
             return v
+    name = file_name.lower()
     suffix = Path(file_name).suffix.lower()
     if suffix == ".apk":
         return "android"
-    if suffix == ".ipa":
+    # .ipa 真机包；.app（模拟器 bundle）；.zip / .app.zip（打包后的模拟器 app）
+    if suffix in (".ipa", ".app", ".zip") or name.endswith(".app.zip"):
         return "ios"
-    raise HTTPException(status_code=400, detail="只允许上传 .apk 或 .ipa 文件")
+    raise HTTPException(
+        status_code=400,
+        detail="只允许上传 .apk（Android）或 .ipa / .app / .zip（iOS，模拟器包用 .app.zip / .zip）",
+    )
 
 
 def _serialize(pkg: AppPackage) -> dict:
