@@ -91,6 +91,8 @@ export function LaunchConfigDialog({
 }) {
   const queryClient = useQueryClient();
   const isAndroid = platform === "android";
+  // 启动配置按平台隔离：launch_android / launch_ios（udid/app 等两端不同，不能共用一组）
+  const launchGroup = `launch_${platform}`;
 
   const listQuery = useQuery({
     queryKey: ["project-config", projectId, "app"],
@@ -111,10 +113,10 @@ export function LaunchConfigDialog({
   const current = useMemo(() => {
     const map: Record<string, string> = {};
     for (const it of listQuery.data ?? []) {
-      if (it.config_group === "launch") map[it.config_key] = it.config_value ?? "";
+      if (it.config_group === launchGroup) map[it.config_key] = it.config_value ?? "";
     }
     return map;
-  }, [listQuery.data]);
+  }, [listQuery.data, launchGroup]);
 
   const [form, setForm] = useState<Record<string, string>>({});
   const [showCheatsheet, setShowCheatsheet] = useState(false);
@@ -188,7 +190,7 @@ export function LaunchConfigDialog({
       ];
       for (const key of keys) {
         const body: Omit<ConfigItem, "id"> = {
-          config_group: "launch",
+          config_group: launchGroup,
           config_key: key,
           config_value: key === "extra_caps" ? extra : (form[key] ?? ""),
           category: "app",

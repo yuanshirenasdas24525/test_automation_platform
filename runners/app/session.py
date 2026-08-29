@@ -344,8 +344,9 @@ def acquire_session_for_case(
     # 指定设备：前端让用户在 RunCaseDialog 手选某台；传了就走 acquire_by_id，
     # 忽略 pool/platform 过滤。这里不做"平台一致性校验"—— runs.py 入口已经拒了
     # 非 idle 的设备，而 platform 不一致大概率是调用方错配，让底层 Appium 自己报。
-    # 项目「启动配置」（含可选的指定设备 udid）一次读出，既用于选设备也并入 caps
-    launch_caps = _project_launch_caps(case_dict.get("project_id"))
+    # 项目「启动配置」（按平台隔离，含可选的指定设备 udid）一次读出，既用于选设备也并入 caps
+    _case_plat = str(case_dict.get("case_type") or platform or "").strip().lower()
+    launch_caps = _project_launch_caps(case_dict.get("project_id"), _case_plat)
     launch_udid = str(launch_caps.get("udid") or "").strip() or None
 
     device_id = case_dict.get("device_id")
@@ -396,7 +397,7 @@ def _infer_platform(case_dict: dict) -> str | None:
     return None
 
 
-def _project_launch_caps(project_id) -> dict:
+def _project_launch_caps(project_id, platform=None) -> dict:
     """读【项目配置 · app · launch 组】（前端「启动配置」按钮写入），拼成启动 caps。
 
     这是全用例共享的 App 启动 capabilities 集中点：appPackage/appActivity/bundleId/
@@ -418,7 +419,13 @@ def _project_launch_caps(project_id) -> dict:
                 _db.close()
         except Exception:  # noqa: BLE001
             pass
-        vals = config_center.get("launch", project_id=int(project_id)) or {}
+        # 启动配置按平台隔离：launch_android / launch_ios（udid/app 等 Android 与 iOS 不同）。
+        # 兼容旧的单一 "launch" 组（迁移前/未区分平台时）。
+        plat = str(platform or "").strip().lower()
+        group = f"launch_{plat}" if plat in ("android", "ios") else "launch"
+        vals = config_center.get(group, project_id=int(project_id)) or {}
+        if not vals and group != "launch":
+            vals = config_center.get("launch", project_id=int(project_id)) or {}
     except Exception:  # noqa: BLE001
         return {}
     if not isinstance(vals, dict):
