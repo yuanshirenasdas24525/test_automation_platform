@@ -165,9 +165,12 @@ class AppAssertStepRunner(BaseStepRunner):
         # 找得到元素本身就证明存在；再用 is_displayed() 确认可见。
         by = config.get("by")
         locator_raw = config.get("locator")
+        # assert_type 为空或 equal，且没给 expected/value —— "equal 一个 None"没有意义，
+        # 就是可见性意图（生成器/历史用例都可能这么产出，有的还带了 assert_type=equal）。
+        _atype = str(config.get("assert_type") or "").strip().lower()
         if (
             by and locator_raw
-            and not config.get("assert_type")
+            and _atype in ("", "equal")
             and "expected" not in config
             and "value" not in config
         ):
