@@ -209,7 +209,7 @@ export function LaunchConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[88vh] max-w-lg overflow-y-auto">
+      <DialogContent className="max-h-[88vh] w-full max-w-lg overflow-y-auto overflow-x-hidden">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Rocket className="h-4 w-4 text-violet-600" />
@@ -222,7 +222,7 @@ export function LaunchConfigDialog({
             <Loader2 className="h-5 w-5 animate-spin" />
           </div>
         ) : (
-          <div className="space-y-3 py-1 text-sm">
+          <div className="min-w-0 space-y-3 py-1 text-sm">
             <p className="rounded-md bg-muted/50 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
               这些 capabilities 全项目用例共享——换设备 / 换 App 改这一处即可，用例的
               app_launch 步骤无需再各带一份。
@@ -260,7 +260,7 @@ export function LaunchConfigDialog({
                   ))}
                 </SelectContent>
               </Select>
-              {form.app ? <p className="mt-1 truncate font-mono text-[10px] text-muted-foreground">当前：{form.app}</p> : null}
+              {form.app ? <p className="mt-1 break-all font-mono text-[10px] text-muted-foreground">当前：{form.app}</p> : null}
             </div>
 
             {isAndroid ? (
@@ -308,13 +308,13 @@ export function LaunchConfigDialog({
                       <div className="mb-1 text-[10px] font-medium text-muted-foreground">{sec.group}</div>
                       <div className="space-y-0.5">
                         {sec.items.map((it) => (
-                          <div key={sec.group + it.key} className="flex items-center gap-1.5 text-[11px]">
+                          <div key={sec.group + it.key} className="flex min-w-0 items-center gap-1.5 text-[11px]">
                             <button type="button" title="插入到额外 caps"
                               className="grid h-4 w-4 shrink-0 place-items-center rounded border hover:bg-background"
                               onClick={() => insertCap(it.key, it.value)}>
                               <Plus className="h-3 w-3" />
                             </button>
-                            <code className="font-mono text-[10px]">{it.key}</code>
+                            <code className="min-w-0 flex-1 truncate font-mono text-[10px]">{it.key}</code>
                             <InfoTip text={it.desc} />
                           </div>
                         ))}
