@@ -349,6 +349,20 @@ class AppLaunchStepRunner(BaseStepRunner):
                 # 解决方案：Android 优先用 ActivityManager 直接拉 activity（最可靠），
                 # 兜底再回到 activate_app；iOS 没这套，直接 activate_app。
                 platform = str(session.caps.get("platformName") or "").lower()
+
+                # —— 幂等：一条用例=一个测试点，App 只需首次启动，后续用例复用同一个运行中的 App ——
+                # 若 App 已在前台且未要求强制重启，就跳过，避免每条用例都 start_activity 重启 App。
+                # 需要每条用例回到干净启动态的场景，在该 step.config 里设 force_relaunch=true。
+                _force_relaunch = str(resolved.get("force_relaunch") or "").strip().lower() in ("1", "true", "yes", "on")
+                if not _force_relaunch and platform == "android":
+                    try:
+                        _cur = getattr(session.driver, "current_package", None)
+                    except Exception:  # noqa: BLE001
+                        _cur = None
+                    if _cur and str(_cur) == app_id:
+                        result.action = f"already running {app_id} (skip relaunch)"
+                        return
+
                 launched = False
 
                 if platform == "android" and app_activity:
