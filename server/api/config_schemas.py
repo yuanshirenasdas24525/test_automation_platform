@@ -485,6 +485,82 @@ API_CONFIG_SCHEMA: list[dict[str, Any]] = [
 # 重点：黑名单（哪些 udid / bundleId 不参与自动化）+ 几个常用的执行期开关。
 # =============================================================================
 APP_CONFIG_SCHEMA: list[dict[str, Any]] = [
+    # —— 启动配置（项目级，全用例共享的 App 启动 capabilities）——
+    # 生成的 app_launch 步骤留空，冷启动时从这里 + 设备/环境合并出 caps。
+    # 换被测 App / Activity 只改这一处；想"不带 App 进入"把 autoLaunch 关掉并清空 appPackage。
+    {
+        "config_group": "launch",
+        "key": "appPackage",
+        "type": "text",
+        "default": "",
+        "description": "Android 被测应用包名（如 com.saucelabs.mydemoapp.rn）。留空+autoLaunch=false 则不自动拉起 App。",
+        "example": "com.saucelabs.mydemoapp.rn",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "appActivity",
+        "type": "text",
+        "default": "",
+        "description": "Android 启动 Activity（如 .MainActivity）。留空则用包默认启动 Activity。",
+        "example": ".MainActivity",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "bundleId",
+        "type": "text",
+        "default": "",
+        "description": "iOS 被测应用 Bundle ID（如 com.example.MyApp）。",
+        "example": "com.saucelabs.mydemoapp.rn",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "automationName",
+        "type": "text",
+        "default": "",
+        "description": "自动化引擎，留空按平台默认（Android→UiAutomator2，iOS→XCUITest）。",
+        "example": "UiAutomator2",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "platformVersion",
+        "type": "text",
+        "default": "",
+        "description": "系统版本（可选，多设备时用来精确选设备）。",
+        "example": "13",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "noReset",
+        "type": "bool",
+        "default": "true",
+        "description": "会话结束不 reset/卸载 App（推荐 true：quit 快、App 不被反复卸装）。需要每次干净状态设 false。",
+        "example": "true",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "autoLaunch",
+        "type": "bool",
+        "default": "true",
+        "description": "会话建立时是否自动拉起 App。想\"首次进入不带 App\"的状态设 false 并清空 appPackage/bundleId。",
+        "example": "true",
+        "applies_to": ["app"],
+    },
+    {
+        "config_group": "launch",
+        "key": "extra_caps",
+        "type": "json",
+        "default": "{}",
+        "description": "额外 Appium capabilities（JSON）。key 会自动加 appium: 前缀；用来补任何这里没列的 cap。",
+        "example": '{"appium:dontStopAppOnReset": true}',
+        "applies_to": ["app"],
+    },
+
     # —— 黑名单 ——
     {
         "config_group": "blacklist",
