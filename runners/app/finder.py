@@ -42,7 +42,10 @@ class Finder:
         self._error_count = 0
         self._error_max = 10
 
-    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1))
+    # reraise=True：重试耗尽后抛「最后一次真实异常」（如元素找不到的 TimeoutException），
+    # 而不是 tenacity 的 RetryError —— 否则报告里只会看到
+    # "RetryError[<Future ... raised AttributeError>]"，真因被吞掉、无法排查。
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(1), reraise=True)
     def find(self, by, value, timeout=5):
         try:
             el = WebDriverWait(self.driver, timeout).until(
@@ -51,6 +54,7 @@ class Finder:
             self._error_count = 0
             return el
         except Exception as e:
+            # 错误处理路径（黑名单/截图/allure）本身绝不能再抛异常盖住真因，全部兜住
             try:
                 self.handle_blacklist()
             except Exception:
@@ -60,14 +64,17 @@ class Finder:
                 return "whitelist"
 
             self._error_count += 1
-            LOGGER.error(f"定位失败: {by}_{value}")
+            LOGGER.error(f"定位失败: {by}={value}（{type(e).__name__}）")
 
             if self._error_count % 3 == 0 and self.device_action:
-                self.device_action.take_screenshot("find_error.png")
-                add_allure_attachment("定位失败", str(e))
+                try:
+                    self.device_action.take_screenshot("find_error.png")
+                    add_allure_attachment("定位失败", str(e))
+                except Exception:
+                    pass
 
             if self._error_count >= self._error_max:
-                raise Exception("达到最大定位失败次数") from e
+                raise Exception(f"达到最大定位失败次数：{by}={value}") from e
 
             raise
 
