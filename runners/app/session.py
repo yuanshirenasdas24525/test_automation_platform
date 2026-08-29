@@ -89,8 +89,16 @@ def _merge_device_caps(device: dict, user_caps: dict | None) -> dict:
     # automationName 默认值
     if platform_norm.lower() == "android":
         auto.setdefault("appium:automationName", "UiAutomator2")
+        # 服务端 setup 超时兜底（毫秒）：UIA2 装/起、adb 命令一旦卡住（如坏掉的
+        # UIA2 server），让 Appium 自己也别死等，配合客户端超时双保险。用户可 override。
+        auto.setdefault("appium:uiautomator2ServerLaunchTimeout", 60000)
+        auto.setdefault("appium:uiautomator2ServerInstallTimeout", 60000)
+        auto.setdefault("appium:adbExecTimeout", 40000)
+        auto.setdefault("appium:androidInstallTimeout", 90000)
     elif platform_norm.lower() == "ios":
         auto.setdefault("appium:automationName", "XCUITest")
+        auto.setdefault("appium:wdaLaunchTimeout", 120000)
+        auto.setdefault("appium:wdaConnectionTimeout", 120000)
 
     # 设备记录里用户在 DevicesPage 注册时填的 capabilities JSON 做底座
     dev_extra = device.get("capabilities") if isinstance(device.get("capabilities"), dict) else {}
@@ -131,7 +139,26 @@ def _default_driver_factory(device: dict, caps: dict):
         "creating Appium driver @ %s udid=%s platform=%s caps=%s",
         appium_url, device.get("udid"), platform or "?", list(final_caps.keys()),
     )
-    return webdriver.Remote(appium_url, options=options)
+    # 关键：给 Appium 连接加客户端超时。否则建会话（装/起 UIA2、拉 app）一旦卡住，
+    # webdriver.Remote 的 create-session HTTP 调用会**永不返回**——会话还没建成，
+    # /sessions 也看不到，任务就无限挂着（曾出现报告卡 running 8 小时）。加了超时后
+    # 建会话/命令超过阈值即抛错，由 Runner 兜底成 ERROR，报告不会再卡死。
+    # 默认 180s：足够冷启动模拟器 + 装 UIA2 + 起 app，又能挡住无限阻塞。
+    import os
+    from appium.webdriver.appium_connection import AppiumConnection
+    from selenium.webdriver.remote.client_config import ClientConfig
+
+    try:
+        client_timeout = float(os.getenv("APPIUM_CLIENT_TIMEOUT", "180"))
+    except (TypeError, ValueError):
+        client_timeout = 180.0
+    client_config = ClientConfig(
+        remote_server_addr=appium_url,
+        timeout=client_timeout,
+        keep_alive=True,
+    )
+    executor = AppiumConnection(client_config=client_config)
+    return webdriver.Remote(command_executor=executor, options=options)
 
 
 def _build_appium_url(device: dict) -> str:
