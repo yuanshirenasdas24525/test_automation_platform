@@ -86,6 +86,14 @@ def _merge_device_caps(device: dict, user_caps: dict | None) -> dict:
     # deviceName 对 Android 是"人类可读"标签，对 iOS 是真正用来选模拟器的。
     auto["appium:deviceName"] = device.get("device_name") or device.get("udid") or "device"
 
+    # 默认 noReset=true：会话结束时不 reset/卸载被测 app。
+    # 否则默认 noReset=false 会在 driver.quit() 时触发卸载/清数据——(1) 会话收尾的
+    # adb 卸载在设备上卡住时，quit 长时间不返回、报告卡在收尾（多条用例累加更久）；
+    # (2) 每跑一次就把 app 卸掉、下次又要重装。keep 已装的 app、退出不动它最稳。
+    # 需要干净状态的场景，用户可在 env/设备 caps 里显式设 fullReset/noReset override。
+    if platform_norm:
+        auto.setdefault("appium:noReset", True)
+
     # automationName 默认值
     if platform_norm.lower() == "android":
         auto.setdefault("appium:automationName", "UiAutomator2")
