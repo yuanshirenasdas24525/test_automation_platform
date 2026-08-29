@@ -133,6 +133,26 @@ class DevicePool:
                 return None
             time.sleep(poll_interval)
 
+    def acquire_by_udid(
+        self,
+        udid: str,
+        execution_id: Optional[int] = None,
+        wait_seconds: float = 0.0,
+        poll_interval: float = 1.0,
+    ) -> Optional[dict]:
+        """按 udid 锁定一台指定设备（项目「启动配置」里选的设备）。先解析成 id 再走 acquire_by_id。"""
+        with self._db() as sess:
+            row = sess.execute(
+                text("SELECT id FROM devices WHERE udid = :u"),
+                {"u": str(udid)},
+            ).mappings().first()
+        if row is None:
+            return None
+        return self.acquire_by_id(
+            int(row["id"]), execution_id=execution_id,
+            wait_seconds=wait_seconds, poll_interval=poll_interval,
+        )
+
     def _try_pick_by_id(self, device_id: int, execution_id):
         with self._db() as sess:
             row = sess.execute(
