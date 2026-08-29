@@ -29,6 +29,7 @@ import {
   Trash2,
   Upload,
   Wrench,
+  Rocket,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -93,6 +94,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AiGenerateDialog } from "./FunctionalCasesPage";
 import { UiElementLibraryWorkspace } from "./ui-recording/UiElementLibraryWorkspace";
 import { WebUiCaseGenerationDialog } from "./ui-recording/WebUiCaseGenerationDialog";
+import { LaunchConfigDialog } from "./ui-recording/LaunchConfigDialog";
 import { CaseDialog, type CaseFormValues } from "@/components/case/CaseDialog";
 import { useCaseCopyPaste } from "@/lib/use-case-copy-paste";
 
@@ -428,6 +430,7 @@ export function AutomationCasesPage({
     () => isUiPlatform(requestedUiPlatform) && caseType !== "api",
   );
   const [uiAiOpen, setUiAiOpen] = useState(false);
+  const [launchCfgOpen, setLaunchCfgOpen] = useState(false);
   const elementLibraryPlatform: UiPlatform | null = isUiPlatform(requestedUiPlatform)
     ? requestedUiPlatform
     : caseType === "api"
@@ -846,6 +849,11 @@ export function AutomationCasesPage({
               {renumbering ? <Loader2 className="h-4 w-4 animate-spin" /> : <ListOrdered className="h-4 w-4" />}
               {numbered ? "去掉编号" : "按顺序编号"}
             </Button>
+            {caseType === "android" || caseType === "ios" ? (
+              <Button variant="outline" size="sm" onClick={() => setLaunchCfgOpen(true)} title="项目级 App 启动 caps（appPackage/appActivity/noReset 等），全用例共享">
+                <Rocket className="h-4 w-4" />启动配置
+              </Button>
+            ) : null}
             <Button variant="outline" size="sm" disabled={moduleId == null} onClick={exportCases}><Download className="h-4 w-4" />导出</Button>
             {selected.size > 0 ? (
               <>
@@ -1018,6 +1026,14 @@ export function AutomationCasesPage({
           initialModuleId={moduleId}
           platform={caseType}
           onOpenChange={setUiAiOpen}
+        />
+      ) : null}
+      {caseType === "android" || caseType === "ios" ? (
+        <LaunchConfigDialog
+          open={launchCfgOpen}
+          projectId={projectId}
+          platform={caseType}
+          onOpenChange={setLaunchCfgOpen}
         />
       ) : null}
       <RecordsDialog

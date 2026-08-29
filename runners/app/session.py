@@ -384,9 +384,62 @@ def _infer_platform(case_dict: dict) -> str | None:
     return None
 
 
-def _collect_caps(case_dict: dict, env: dict) -> dict:
-    """合并 env 里的 capabilities / case 里的 variables 中带前缀 "cap." 的键。"""
+def _project_launch_caps(project_id) -> dict:
+    """读【项目配置 · app · launch 组】（前端「启动配置」按钮写入），拼成启动 caps。
+
+    这是全用例共享的 App 启动 capabilities 集中点：appPackage/appActivity/bundleId/
+    automationName/noReset/autoLaunch + extra_caps(JSON)。换被测 App 改这一处即可，
+    生成的 app_launch 步骤留空、由这里 + 设备/环境合并出最终 caps。
+    """
+    if not project_id:
+        return {}
+    try:
+        from utils.reload_config import config_center
+        # 移动执行路径没有别处 reload app 配置，这里先精准重载一次（同 web/api 的做法），
+        # 否则 config_center 里没有 app·launch 组，读出来会是空。
+        try:
+            from database.db import DB
+            _db = DB()
+            try:
+                config_center.reload(_db.sql, project_id=int(project_id), category="app")
+            finally:
+                _db.close()
+        except Exception:  # noqa: BLE001
+            pass
+        vals = config_center.get("launch", project_id=int(project_id)) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(vals, dict):
+        return {}
     caps: dict = {}
+    for key in ("appPackage", "appActivity", "bundleId", "automationName", "platformVersion"):
+        v = str(vals.get(key) or "").strip()
+        if v:
+            caps[key] = v
+    for key in ("noReset", "autoLaunch"):
+        raw = vals.get(key)
+        if raw is not None and str(raw).strip() != "":
+            caps[key] = str(raw).strip().lower() in ("1", "true", "yes", "on")
+    extra = vals.get("extra_caps")
+    if isinstance(extra, str) and extra.strip():
+        import json
+        try:
+            parsed = json.loads(extra)
+            if isinstance(parsed, dict):
+                caps.update(parsed)
+        except Exception:  # noqa: BLE001
+            pass
+    elif isinstance(extra, dict):
+        caps.update(extra)
+    return caps
+
+
+def _collect_caps(case_dict: dict, env: dict) -> dict:
+    """合并 caps，优先级：项目 launch 配置 < 环境 browser_config < 用例 cap.* 变量。"""
+    caps: dict = {}
+    # 项目级启动配置（前端「启动配置」）作为共享基线
+    caps.update(_project_launch_caps(case_dict.get("project_id")))
+
     env_caps = (env or {}).get("browser_config") or {}
     if isinstance(env_caps, dict):
         caps.update(env_caps)
