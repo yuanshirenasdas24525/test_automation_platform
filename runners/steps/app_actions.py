@@ -363,6 +363,14 @@ class AppLaunchStepRunner(BaseStepRunner):
                         result.action = f"already running {app_id} (skip relaunch)"
                         return
 
+                # force_relaunch：先 terminate 杀进程再重启，保证回到干净启动态
+                # （仅 start_activity 对 RN 等 App 未必登出/重置；kill 后重启才是干净的登录页）。
+                if _force_relaunch and app_id:
+                    try:
+                        session.driver.terminate_app(app_id)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("force_relaunch terminate 失败（忽略）：%s", exc)
+
                 launched = False
 
                 if platform == "android" and app_activity:
