@@ -25,12 +25,14 @@ import { configApi, devicesApi, appPackagesApi, type ConfigItem } from "@/lib/ap
 
 type Platform = "android" | "ios";
 
-/** 悬停 tips：一个 ⓘ 图标，鼠标指上去显示说明。 */
-function InfoTip({ text }: { text: string }) {
+/** 悬停 tips：一个 ⓘ 图标，鼠标指上去显示说明。
+ *  align="right" 让气泡向左展开（右对齐），用于靠右的图标，避免超出弹窗被裁掉。 */
+function InfoTip({ text, align = "center" }: { text: string; align?: "center" | "right" }) {
+  const pos = align === "right" ? "right-0" : "left-1/2 -translate-x-1/2";
   return (
     <span className="group relative ml-1 inline-flex align-middle">
       <Info className="h-3.5 w-3.5 cursor-help text-muted-foreground/60" />
-      <span className="pointer-events-none absolute left-1/2 top-5 z-50 w-64 -translate-x-1/2 rounded-md border bg-popover px-2.5 py-1.5 text-[11px] font-normal leading-4 text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100">
+      <span className={`pointer-events-none absolute top-5 z-50 w-56 rounded-md border bg-popover px-2.5 py-1.5 text-[11px] font-normal leading-4 text-popover-foreground opacity-0 shadow-md transition-opacity duration-100 group-hover:opacity-100 ${pos}`}>
         {text}
       </span>
     </span>
@@ -315,7 +317,7 @@ export function LaunchConfigDialog({
                               <Plus className="h-3 w-3" />
                             </button>
                             <code className="min-w-0 flex-1 truncate font-mono text-[10px]">{it.key}</code>
-                            <InfoTip text={it.desc} />
+                            <InfoTip text={it.desc} align="right" />
                           </div>
                         ))}
                       </div>
