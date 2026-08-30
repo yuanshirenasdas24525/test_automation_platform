@@ -1507,6 +1507,28 @@ def get_recording_live_screenshot(
     )
 
 
+@router.get("/ui-recordings/snapshots/{snapshot_id}/document")
+def get_snapshot_document(
+    snapshot_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+):
+    """返回该快照采集的 UI Tree 原始文档（移动=Appium page_source XML）。供前端渲染成可点选的元素树。"""
+    snapshot = db.session.get(UiPageSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="快照不存在")
+    assert_project_access(db, current_user, snapshot.project_id)
+    if not snapshot.document_uri:
+        raise HTTPException(status_code=404, detail="该快照没有采集到 UI Tree")
+    raw_path = Path(snapshot.document_uri)
+    path = raw_path if raw_path.is_absolute() else _PROJECT_ROOT / raw_path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="UI Tree 文档已丢失") from exc
+    return Response(content=text, media_type="application/xml", headers={"Cache-Control": "no-store"})
+
+
 @router.get("/ui-recordings/{session_id}/actions")
 def list_recording_actions(
     session_id: int,
