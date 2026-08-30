@@ -3163,14 +3163,17 @@ function MobileSnapshotStage({
   };
   const measureGeom = () => {
     const img = imageRef.current;
-    const stage = stageRef.current;
-    if (!img || !stage || !img.naturalWidth) return;
+    if (!img || !img.naturalWidth || !img.offsetWidth) return;
     // 把截图真实宽高比报给外层，让手机屏幕容器按它贴合，消除左右/上下黑边
     if (img.naturalHeight > 0) onAspect?.(img.naturalWidth / img.naturalHeight);
-    const ir = img.getBoundingClientRect();
-    const sr = stage.getBoundingClientRect();
-    if (ir.width <= 0) return;
-    setGeom({ scale: ir.width / img.naturalWidth, offX: ir.left - sr.left, offY: ir.top - sr.top });
+    // 用布局尺寸 offset*（不受手机 zoom 缩放影响）算几何：覆盖层的框定位在舞台本地
+    // 布局坐标系里、会被 zoom 统一缩放一次，所以 geom 必须是布局 px；若用
+    // getBoundingClientRect（已被 zoom 放大过），框会被二次缩放 → 放大后错位选错元素。
+    setGeom({
+      scale: img.offsetWidth / img.naturalWidth,
+      offX: img.offsetLeft,
+      offY: img.offsetTop,
+    });
   };
   useEffect(() => {
     measureGeom();
