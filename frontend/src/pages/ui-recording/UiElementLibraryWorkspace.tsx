@@ -1564,7 +1564,7 @@ export function UiElementLibraryWorkspace({
     setReplayInputDirty(false);
   };
 
-  // 移动录制中每 1.2s 刷新镜像实时帧（画面变了但页面树没变也能跟上）。必须在任何
+  // 移动录制中持续刷新镜像实时帧（画面变了但页面树没变也能跟上）。必须在任何
   // 提前 return 之前调用，条件内联，保证每次渲染 Hook 数量一致(React #310)。
   const mobileLiveActive =
     (platform === "android" || platform === "ios")
@@ -1572,7 +1572,8 @@ export function UiElementLibraryWorkspace({
     && ACTIVE_STATUSES.includes(session.status);
   useEffect(() => {
     if (!mobileLiveActive) return;
-    const timer = window.setInterval(() => setMobileLiveRevision((r) => r + 1), 1200);
+    // 700ms 一帧，跟得更紧；真正的丝滑视频靠 MJPEG 流（后续）。
+    const timer = window.setInterval(() => setMobileLiveRevision((r) => r + 1), 700);
     return () => window.clearInterval(timer);
   }, [mobileLiveActive]);
 
@@ -2231,10 +2232,19 @@ export function UiElementLibraryWorkspace({
                     <button type="button" className="rounded border px-1.5 leading-5 hover:bg-muted" onClick={() => setPhoneScale(1)}>复位</button>
                   </div>
                   <div
-                    className="h-[560px] w-[300px] overflow-hidden rounded-[34px] border-[7px] border-slate-800 bg-background shadow-xl dark:border-slate-700"
+                    className="relative rounded-[44px] bg-gradient-to-b from-slate-800 to-slate-950 p-[3px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] ring-1 ring-black/10"
                     style={{ transform: `scale(${phoneScale})`, transformOrigin: "top center" }}
                   >
-                    <div className="mx-auto mt-2 h-5 w-24 rounded-full bg-slate-800 dark:bg-slate-700" />
+                    {/* 侧键：静音 / 音量 / 电源 */}
+                    <div className="absolute -left-[3px] top-24 h-6 w-[3px] rounded-l bg-slate-700" />
+                    <div className="absolute -left-[3px] top-32 h-10 w-[3px] rounded-l bg-slate-700" />
+                    <div className="absolute -left-[3px] top-44 h-10 w-[3px] rounded-l bg-slate-700" />
+                    <div className="absolute -right-[3px] top-36 h-16 w-[3px] rounded-r bg-slate-700" />
+                    <div
+                      className="relative h-[560px] w-[300px] overflow-hidden rounded-[40px] bg-background"
+                    >
+                      {/* 灵动岛 */}
+                      <div className="absolute left-1/2 top-2 z-20 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-slate-950" />
                     {activeSnapshot?.has_screenshot ? (
                       <MobileSnapshotStage
                         snapshot={activeSnapshot}
@@ -2267,6 +2277,7 @@ export function UiElementLibraryWorkspace({
                         onSelect={setSelectedElementId}
                       />
                     )}
+                    </div>
                   </div>
                   </div>
                   <div className="w-64 space-y-3">
