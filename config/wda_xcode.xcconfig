@@ -1,0 +1,5 @@
+// WDA 构建兼容 Xcode 26+：旧 appium-webdriveragent 的 PrivateHeaders 里有 _XCT* 保留标识符，
+// 新 clang 的 -Werror,-Wreserved-identifier 会把它当编译错误（xcodebuild code 70）。
+// 关掉 "warnings as errors"，让其降级为警告，WDA 即可正常构建。
+// iOS 用例的启动配置里通过 appium:xcodeConfigFile 指向本文件。
+GCC_TREAT_WARNINGS_AS_ERRORS = NO

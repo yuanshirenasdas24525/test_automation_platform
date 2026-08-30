@@ -107,6 +107,13 @@ def _merge_device_caps(device: dict, user_caps: dict | None) -> dict:
         auto.setdefault("appium:automationName", "XCUITest")
         auto.setdefault("appium:wdaLaunchTimeout", 120000)
         auto.setdefault("appium:wdaConnectionTimeout", 120000)
+        # 新 Xcode/XCTest 下旧 WDA 会调不存在的 waitForQuiescenceIncludingAnimationsIdle:
+        # （unrecognized selector），关掉 quiescence 等待即可绕过；useJSONSource 让 iOS
+        # 取 source 更快更稳。纯执行期开关，不改控件事实。用户可 override。
+        auto.setdefault("appium:waitForQuiescence", False)
+        auto.setdefault("appium:reduceMotion", True)
+        auto.setdefault("appium:settings[useJSONSource]", True)
+        auto.setdefault("appium:settings[snapshotMaxDepth]", 40)
 
     # 设备记录里用户在 DevicesPage 注册时填的 capabilities JSON 做底座
     dev_extra = device.get("capabilities") if isinstance(device.get("capabilities"), dict) else {}
