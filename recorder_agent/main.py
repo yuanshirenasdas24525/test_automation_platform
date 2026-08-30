@@ -2306,6 +2306,12 @@ def _mobile_elements_from_source(
         acc = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
         txt = (attrs.get("text") or attrs.get("value") or "").strip()
         clickable = str(attrs.get("clickable") or "").lower() == "true"
+        # iOS 容器 Other 常把所有后代文字拼进自己的 name（accessibility 合并标签），
+        # 长度动辄数百字、bounds 又是整块容器。这类"有子节点 + 超长合并 name + 无 id"
+        # 不是真控件，收进库只会污染（全屏 bounds 噪声）。判为结构容器跳过；真正的叶子
+        # （无子节点）和短名节点照收。
+        if platform != "android" and has_children and not rid and len(acc) > 80:
+            return bool(txt or clickable)
         return bool(rid or acc or txt or clickable or not has_children)
 
     def walk(node: ET.Element, path: str) -> None:
@@ -2386,7 +2392,10 @@ def _mobile_options(body: MobileRecorderStartRequest):
             "appium:waitForQuiescence": False,              # 不等应用"静止"
             "appium:reduceMotion": True,
             "appium:settings[useJSONSource]": True,          # iOS page source 显著变快
-            "appium:settings[snapshotMaxDepth]": 40,
+            # RN 的 iOS 树极深，承载 testID 的 TextField/StaticText 叶子常在 40 层以下；
+            # 设 40 会把整张表单砍成一堆 XCUIElementTypeOther 容器（叶子被截断，拾取
+            # 只能选到大容器）。抬到 60（Appium 默认才 50）留足余量，代价是 source 略慢。
+            "appium:settings[snapshotMaxDepth]": 60,
         }
     for k, v in speed_defaults.items():
         caps.setdefault(k, v)
@@ -3453,7 +3462,7 @@ async def _start_mobile_runtime(body: MobileRecorderStartRequest) -> MobileRecor
                     "allowInvisibleElements": False,
                 }
                 if body.platform == "android"
-                else {"useJSONSource": True, "snapshotMaxDepth": 40}
+                else {"useJSONSource": True, "snapshotMaxDepth": 60}  # 见 _mobile_options 注释
             )
             await asyncio.to_thread(driver.update_settings, _speed_settings)
         except Exception as _exc:  # noqa: BLE001
