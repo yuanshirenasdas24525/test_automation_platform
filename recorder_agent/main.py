@@ -2150,6 +2150,8 @@ def _mobile_element_from_source(
     accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
     text = attrs.get("text") or attrs.get("label") or attrs.get("value") or ""
     semantic_name = accessibility or text or resource_id.rsplit("/", 1)[-1] or element_type
+    # xpath 兜底尽量给属性式（与 Appium Inspector 一致、更稳），没属性才用整条下标位置路径
+    xpath = _smart_mobile_xpath(attrs, element_type, xpath, platform)
     locators: list[dict[str, Any]] = []
     if platform == "android":
         if resource_id:
@@ -2194,11 +2196,47 @@ def _mobile_element_from_source(
     }
 
 
+def _xpath_attr_literal(value: str) -> str | None:
+    """把值安全地放进 xpath 属性等值里；含双引号用单引号包，两者都含则放弃(返回 None)。"""
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    return None
+
+
+def _smart_mobile_xpath(attrs: dict[str, str], element_type: str, positional_xpath: str, platform: str) -> str:
+    """优先生成属性式 xpath（//类名[@resource-id=...] 等，与 Appium Inspector 同风格、更稳）；
+    控件没有可辨识属性时才退回整条下标位置 xpath。"""
+    tag = element_type or "*"
+    if platform == "android":
+        candidates = [
+            ("resource-id", attrs.get("resource-id") or attrs.get("resourceId") or ""),
+            ("content-desc", attrs.get("content-desc") or ""),
+            ("text", (attrs.get("text") or "").strip()),
+        ]
+    else:
+        candidates = [
+            ("name", attrs.get("name") or ""),
+            ("label", attrs.get("label") or ""),
+            ("value", (attrs.get("value") or "").strip()),
+        ]
+    for attr_name, value in candidates:
+        if not value:
+            continue
+        literal = _xpath_attr_literal(value)
+        if literal is not None:
+            return f"//{tag}[@{attr_name}={literal}]"
+    return positional_xpath
+
+
 def _mobile_locators_for(attrs: dict[str, str], element_type: str, xpath: str, platform: str) -> list[dict[str, Any]]:
     """按控件属性生成移动定位器（与单元素抽取同口径）。"""
     resource_id = attrs.get("resource-id") or attrs.get("resourceId") or ""
     accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
     text = attrs.get("text") or attrs.get("value") or ""
+    # xpath 兜底也尽量给属性式（与 Inspector 一致、更稳），没属性才用整条下标位置路径
+    xpath = _smart_mobile_xpath(attrs, element_type, xpath, platform)
     locators: list[dict[str, Any]] = []
     if platform == "android":
         if resource_id:
