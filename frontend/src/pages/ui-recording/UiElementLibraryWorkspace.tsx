@@ -2250,7 +2250,8 @@ export function UiElementLibraryWorkspace({
                   </div>
                   <div
                     className="relative rounded-[44px] bg-gradient-to-b from-slate-800 to-slate-950 p-[3px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] ring-1 ring-black/10"
-                    style={{ transform: `scale(${phoneScale})`, transformOrigin: "top center" }}
+                    // 用 zoom 而非 transform:scale —— zoom 会实际占布局空间，放大后把右侧功能区推开，不再遮挡
+                    style={{ zoom: phoneScale }}
                   >
                     {/* 侧键：静音 / 音量 / 电源 */}
                     <div className="absolute -left-[3px] top-24 h-6 w-[3px] rounded-l bg-slate-700" />
