@@ -2086,29 +2086,54 @@ async def _run_ai_exploration(
 _ANDROID_BOUNDS_RE = re.compile(r"\[(?P<x1>-?\d+),(?P<y1>-?\d+)\]\[(?P<x2>-?\d+),(?P<y2>-?\d+)\]")
 
 
-def _mobile_node_bounds(attributes: dict[str, str]) -> dict[str, int] | None:
-    """兼容 Android bounds 与 iOS x/y/width/height。"""
+def _png_dimensions(data: bytes) -> tuple[int, int] | None:
+    """从 PNG 头部读出像素宽高（IHDR：签名8B + 长度4B + 'IHDR'4B + 宽4B + 高4B）。"""
+    if not data or len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    width = int.from_bytes(data[16:20], "big")
+    height = int.from_bytes(data[20:24], "big")
+    return (width, height) if width and height else None
+
+
+def _mobile_node_bounds(
+    attributes: dict[str, str], scale: float = 1.0
+) -> dict[str, int] | None:
+    """兼容 Android bounds 与 iOS x/y/width/height。
+
+    scale：把 source 坐标换算到"截图像素"空间。Android 的 source 与截图同为像素，scale=1；
+    iOS 的 source 是"点(pt)"、截图是"像素(px)"，两者差一个 Retina 缩放（2/3 倍），
+    需按 `截图像素宽 / 窗口点宽` 放大，否则前端按截图像素渲染时元素框只有 1/2~1/3 大、挤在左上角。
+    """
     match = _ANDROID_BOUNDS_RE.fullmatch(attributes.get("bounds") or "")
     if match:
         x1 = int(match.group("x1"))
         y1 = int(match.group("y1"))
         x2 = int(match.group("x2"))
         y2 = int(match.group("y2"))
+        raw = {"x": x1, "y": y1, "width": max(0, x2 - x1), "height": max(0, y2 - y1)}
+    else:
+        try:
+            raw = {
+                "x": float(attributes["x"]),
+                "y": float(attributes["y"]),
+                "width": max(0.0, float(attributes["width"])),
+                "height": max(0.0, float(attributes["height"])),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    if scale and scale != 1.0:
         return {
-            "x": x1,
-            "y": y1,
-            "width": max(0, x2 - x1),
-            "height": max(0, y2 - y1),
+            "x": round(raw["x"] * scale),
+            "y": round(raw["y"] * scale),
+            "width": max(0, round(raw["width"] * scale)),
+            "height": max(0, round(raw["height"] * scale)),
         }
-    try:
-        return {
-            "x": round(float(attributes["x"])),
-            "y": round(float(attributes["y"])),
-            "width": max(0, round(float(attributes["width"]))),
-            "height": max(0, round(float(attributes["height"]))),
-        }
-    except (KeyError, TypeError, ValueError):
-        return None
+    return {
+        "x": round(raw["x"]),
+        "y": round(raw["y"]),
+        "width": max(0, round(raw["width"])),
+        "height": max(0, round(raw["height"])),
+    }
 
 
 def _mobile_element_from_source(
@@ -2116,8 +2141,11 @@ def _mobile_element_from_source(
     x: int,
     y: int,
     platform: str,
+    scale: float = 1.0,
 ) -> dict[str, Any] | None:
-    """从当前 UI Tree 中解析坐标命中的最小元素，并生成移动定位器。"""
+    """从当前 UI Tree 中解析坐标命中的最小元素，并生成移动定位器。
+
+    x/y 为前端按截图像素给的坐标；bounds 也按 scale 换算到像素空间，命中判定才一致。"""
     try:
         root = ET.fromstring(source)
     except ET.ParseError:
@@ -2127,7 +2155,7 @@ def _mobile_element_from_source(
 
     def walk_with_path(node: ET.Element, path: str) -> None:
         attributes = {str(key): str(value) for key, value in node.attrib.items()}
-        bounds = _mobile_node_bounds(attributes)
+        bounds = _mobile_node_bounds(attributes, scale)
         if bounds:
             right = bounds["x"] + bounds["width"]
             bottom = bounds["y"] + bounds["height"]
@@ -2258,7 +2286,9 @@ def _mobile_locators_for(attrs: dict[str, str], element_type: str, xpath: str, p
     return locators
 
 
-def _mobile_elements_from_source(source: str, platform: str, *, limit: int = 800) -> list[dict[str, Any]]:
+def _mobile_elements_from_source(
+    source: str, platform: str, *, limit: int = 800, scale: float = 1.0
+) -> list[dict[str, Any]]:
     """遍历整棵 UI Tree，抽出所有"有身份/可交互"的控件（含 bounds + 定位器 + fingerprint）。
 
     与 Web 的整页 visible_elements 对齐：一抓一屏，整页控件自动进元素库，也让离线拾取
@@ -2282,7 +2312,7 @@ def _mobile_elements_from_source(source: str, platform: str, *, limit: int = 800
         if len(out) >= limit:
             return
         attrs = {str(k): str(v) for k, v in node.attrib.items()}
-        bounds = _mobile_node_bounds(attrs)
+        bounds = _mobile_node_bounds(attrs, scale)
         children = list(node)
         if bounds and _worth(attrs, bool(children)):
             node_tag = str(node.tag).split("}")[-1]
@@ -2430,6 +2460,20 @@ class MobileRecorderRuntime:
         screenshot = self.driver.get_screenshot_as_png()
         source = self.driver.page_source
         rect = self.driver.get_window_rect()
+        # 截图像素宽 / 窗口点宽 = Retina 缩放。iOS 通常 2/3；Android 两者同为像素 → 1。
+        # 仅 iOS 应用该系数（Android 保持恒等，避免动到已对齐的坐标）。
+        pixel_ratio = 1.0
+        if self.platform != "android":
+            dims = _png_dimensions(screenshot)
+            try:
+                win_w = float((rect or {}).get("width") or 0)
+            except (TypeError, ValueError):
+                win_w = 0.0
+            if dims and win_w > 0:
+                ratio = dims[0] / win_w
+                # 只在明显 >1（真有缩放）时启用，容忍小数抖动
+                if ratio > 1.05:
+                    pixel_ratio = round(ratio, 4)
         capabilities = dict(getattr(self.driver, "capabilities", {}) or {})
         current_context = str(getattr(self.driver, "current_context", "NATIVE_APP"))
         contexts = [str(item) for item in (getattr(self.driver, "contexts", []) or [])]
@@ -2465,6 +2509,7 @@ class MobileRecorderRuntime:
             "app_identifier": package,
             "activity": activity,
             "capabilities": capabilities,
+            "pixel_ratio": pixel_ratio,
         }
 
     async def capture_snapshot(self, reason: str) -> dict[str, Any] | None:
@@ -2493,7 +2538,9 @@ class MobileRecorderRuntime:
         # 整页控件：解析 UI Tree 抽出全部有身份/可交互的元素（含 bounds + 定位器），
         # 让服务端 _materialize_elements 一次把整页控件落库（对齐 Web），也支撑离线拾取。
         try:
-            visible_elements = _mobile_elements_from_source(source, self.platform)
+            visible_elements = _mobile_elements_from_source(
+                source, self.platform, scale=float(state.get("pixel_ratio") or 1.0)
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("移动整页元素抽取失败(忽略)：%s", exc)
             visible_elements = []
@@ -2546,9 +2593,14 @@ class MobileRecorderRuntime:
         async with self.driver_lock:
             source = await asyncio.to_thread(lambda: self.driver.page_source)
             state = await asyncio.to_thread(self._read_state_sync)
+            ratio = float(state.get("pixel_ratio") or 1.0)
+            # 前端坐标为"截图像素"；换算回"设备点"喂 Appium（iOS 差 Retina 缩放，Android=1）。
+            to_dev = lambda v: int(round((v or 0) / ratio))  # noqa: E731
             element = None
             if body.x is not None and body.y is not None:
-                element = _mobile_element_from_source(source, body.x, body.y, self.platform)
+                element = _mobile_element_from_source(
+                    source, body.x, body.y, self.platform, ratio
+                )
                 if element is not None:
                     self.last_element = element
             elif body.action == "input":
@@ -2565,7 +2617,7 @@ class MobileRecorderRuntime:
             if body.action == "tap" and self.pick_mode:
                 event_type = "user.pick"
             elif body.action == "tap":
-                await asyncio.to_thread(self._tap_sync, int(body.x or 0), int(body.y or 0))
+                await asyncio.to_thread(self._tap_sync, to_dev(body.x), to_dev(body.y))
             elif body.action == "input":
                 sensitive = bool(
                     element
@@ -2579,10 +2631,10 @@ class MobileRecorderRuntime:
             elif body.action == "swipe":
                 await asyncio.to_thread(
                     self.driver.swipe,
-                    int(body.x or 0),
-                    int(body.y or 0),
-                    int(body.end_x or 0),
-                    int(body.end_y or 0),
+                    to_dev(body.x),
+                    to_dev(body.y),
+                    to_dev(body.end_x),
+                    to_dev(body.end_y),
                     body.duration_ms,
                 )
                 payload.update({
