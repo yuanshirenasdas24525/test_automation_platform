@@ -2241,7 +2241,7 @@ export function UiElementLibraryWorkspace({
                     <div className="absolute -left-[3px] top-44 h-10 w-[3px] rounded-l bg-slate-700" />
                     <div className="absolute -right-[3px] top-36 h-16 w-[3px] rounded-r bg-slate-700" />
                     <div
-                      className="relative h-[560px] w-[300px] overflow-hidden rounded-[40px] bg-background"
+                      className="relative h-[560px] w-[264px] overflow-hidden rounded-[40px] bg-background"
                     >
                       {/* 灵动岛 */}
                       <div className="absolute left-1/2 top-2 z-20 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-slate-950" />
