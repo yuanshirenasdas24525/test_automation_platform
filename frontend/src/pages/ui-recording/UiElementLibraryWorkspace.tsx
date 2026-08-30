@@ -60,6 +60,7 @@ import {
   type ModulePickerNode,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { UiTreePanel } from "./UiTreePanel";
 import type {
   UiElement,
   UiAiExplorationStatus,
@@ -2312,6 +2313,15 @@ export function UiElementLibraryWorkspace({
                     )}
                     </div>
                   </div>
+                  </div>
+                  <div className="flex max-h-[640px] w-[360px] shrink-0 flex-col">
+                    <UiTreePanel
+                      snapshotId={activeSnapshot?.id ?? null}
+                      platform={platform}
+                      elements={visibleElements.length > 0 ? visibleElements : (activePage?.elements ?? [])}
+                      selectedElementId={selectedElement?.id ?? null}
+                      onSelectElement={setSelectedElementId}
+                    />
                   </div>
                   <div className="w-64 space-y-3">
                     <div className="rounded-xl border bg-background p-4">

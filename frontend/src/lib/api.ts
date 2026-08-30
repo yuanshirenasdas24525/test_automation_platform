@@ -2760,6 +2760,17 @@ export const uiRecordingsApi = {
     }
     return response.blob();
   },
+  /** 取该快照采集的 UI Tree 原始文档（移动=Appium page_source XML），前端渲染成可点选元素树。 */
+  async snapshotDocument(snapshotId: number): Promise<string> {
+    const headers = new Headers();
+    const token = getToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    const response = await fetch(`/api/ui-recordings/snapshots/${snapshotId}/document`, { headers, cache: "no-store" });
+    if (!response.ok) {
+      throw new ApiError("UI Tree 加载失败", response.status);
+    }
+    return response.text();
+  },
 };
 
 // ---------------------------------------------------------------------------
