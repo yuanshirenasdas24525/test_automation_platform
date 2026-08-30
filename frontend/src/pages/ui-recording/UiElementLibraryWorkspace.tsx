@@ -988,6 +988,8 @@ export function UiElementLibraryWorkspace({
   // 手机镜像缩放（可动态调整大小）。transform:scale 不影响点击/框的坐标映射
   // （imagePoint/geom 都用 getBoundingClientRect，已含缩放）。
   const [phoneScale, setPhoneScale] = useState(1);
+  // 手机屏幕宽高比：由镜像截图实际尺寸得出，让屏幕容器贴合、消除黑边
+  const [mirrorAspect, setMirrorAspect] = useState<number | null>(null);
   const mobileActionMutation = useMutation({
     mutationFn: ({
       sessionId,
@@ -2256,13 +2258,15 @@ export function UiElementLibraryWorkspace({
                     <div className="absolute -left-[3px] top-44 h-10 w-[3px] rounded-l bg-slate-700" />
                     <div className="absolute -right-[3px] top-36 h-16 w-[3px] rounded-r bg-slate-700" />
                     <div
-                      className="relative h-[560px] w-[264px] overflow-hidden rounded-[40px] bg-background"
+                      className="relative h-[560px] overflow-hidden rounded-[40px] bg-background"
+                      style={{ width: Math.round(560 * (mirrorAspect ?? 0.462)) }}
                     >
                       {/* 灵动岛 */}
                       <div className="absolute left-1/2 top-2 z-20 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-slate-950" />
                     {activeSnapshot?.has_screenshot ? (
                       <MobileSnapshotStage
                         snapshot={activeSnapshot}
+                        onAspect={setMirrorAspect}
                         liveSessionId={mobileLive && session ? session.id : null}
                         liveRevision={mobileLiveRevision}
                         staticPick={!mobileLive}
@@ -3061,10 +3065,12 @@ function MobileSnapshotStage({
   elements = [],
   selectedElementId = null,
   onSelectElement,
+  onAspect,
 }: {
   snapshot: UiPageSnapshot;
   disabled: boolean;
   pickMode: boolean;
+  onAspect?: (aspect: number) => void;
   onGesture: (gesture:
     | { action: "tap"; x: number; y: number }
     | { action: "swipe"; x: number; y: number; end_x: number; end_y: number; duration_ms: number }
@@ -3146,6 +3152,8 @@ function MobileSnapshotStage({
     const img = imageRef.current;
     const stage = stageRef.current;
     if (!img || !stage || !img.naturalWidth) return;
+    // 把截图真实宽高比报给外层，让手机屏幕容器按它贴合，消除左右/上下黑边
+    if (img.naturalHeight > 0) onAspect?.(img.naturalWidth / img.naturalHeight);
     const ir = img.getBoundingClientRect();
     const sr = stage.getBoundingClientRect();
     if (ir.width <= 0) return;
