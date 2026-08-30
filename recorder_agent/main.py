@@ -2306,12 +2306,17 @@ def _mobile_elements_from_source(
         acc = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
         txt = (attrs.get("text") or attrs.get("value") or "").strip()
         clickable = str(attrs.get("clickable") or "").lower() == "true"
-        # iOS 容器 Other 常把所有后代文字拼进自己的 name（accessibility 合并标签），
-        # 长度动辄数百字、bounds 又是整块容器。这类"有子节点 + 超长合并 name + 无 id"
-        # 不是真控件，收进库只会污染（全屏 bounds 噪声）。判为结构容器跳过；真正的叶子
-        # （无子节点）和短名节点照收。
-        if platform != "android" and has_children and not rid and len(acc) > 80:
-            return bool(txt or clickable)
+        # iOS：要求有身份（id/名字/文本）才入库。匿名节点（无 desc/text/id 的空
+        # XCUIElementTypeOther，哪怕是叶子）无定位价值、bounds 又常是整屏，收进来
+        # 只会让拾取"点了一大片"。另：容器 Other 常把所有后代文字拼进自己的 name
+        # （accessibility 合并标签），长度数百字、bounds 是整块——判为结构容器跳过。
+        # Android 保持原逻辑（叶子照收），不动已验证 OK 的行为。
+        if platform != "android":
+            if not (rid or acc or txt):
+                return False
+            if has_children and not rid and len(acc) > 80:
+                return bool(txt)
+            return True
         return bool(rid or acc or txt or clickable or not has_children)
 
     def walk(node: ET.Element, path: str) -> None:

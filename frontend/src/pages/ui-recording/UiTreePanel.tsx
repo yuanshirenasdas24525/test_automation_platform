@@ -212,13 +212,23 @@ export function UiTreePanel({
 
   // 仅可选：只渲染映射到元素库的节点，缩进按“有多少个已映射祖先”体现真实层级，
   // 中间那些无意义的包装容器被跳过（但仍递归其后代，好把深处的叶子提上来）。
+  // 整屏面积（树根 = Application/hierarchy），用于判定"大容器"。
+  const screenArea = tree?.bounds ? tree.bounds.w * tree.bounds.h : 0;
+  const hasMappedDescendant = (node: TreeNode): boolean =>
+    node.children.some((c) => elementFor(c) != null || hasMappedDescendant(c));
+
   const renderPickableRows = (): ReactElement[] => {
     const rows: ReactElement[] = [];
     const walk = (node: TreeNode, mappedDepth: number) => {
       const el = elementFor(node);
-      if (el) {
+      // 「仅可选」里再滤掉两类"点了一大片"的节点：①匿名节点（无 desc/text/id，无定位
+      // 价值）；②面积占屏 >55% 且内部还含可选子元素的大容器（留给里面的小元素）。
+      const label = nodeLabel(node.attrs);
+      const areaFrac = screenArea && node.bounds ? (node.bounds.w * node.bounds.h) / screenArea : 0;
+      const isBigContainer = areaFrac > 0.55 && hasMappedDescendant(node);
+      const show = el != null && label != null && !isBigContainer;
+      if (el && show) {
         const isSel = el.id === selectedElementId;
-        const label = nodeLabel(node.attrs);
         rows.push(
           <div
             key={node.key}
@@ -241,7 +251,7 @@ export function UiTreePanel({
           </div>,
         );
       }
-      node.children.forEach((c) => walk(c, el ? mappedDepth + 1 : mappedDepth));
+      node.children.forEach((c) => walk(c, show ? mappedDepth + 1 : mappedDepth));
     };
     if (tree) walk(tree, 0);
     return rows;
