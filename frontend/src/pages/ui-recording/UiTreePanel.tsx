@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronRight, Loader2, ListTree } from "lucide-react";
 
@@ -141,6 +141,15 @@ export function UiTreePanel({
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsedInit, setCollapsedInit] = useState<string | null>(null);
+  // 默认「仅可选」：RN 的 iOS 树在到达叶子前套几十层单子 Other 包装容器，全量展示时
+  // 点到的全是大容器（一点一大片）。仅可选=只显示能映射到元素库的节点、按真实层级缩进，
+  // 把结构噪声折叠掉，让每个可见节点都是能点中的真实元素。
+  const [onlyPickable, setOnlyPickable] = useState(true);
+  // 选中元素（镜像里拾取/切换）→ 让树滚到该行，别让高亮藏在视口外。
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedElementId, onlyPickable]);
   // 首次拿到树：默认展开前几层，方便浏览
   useEffect(() => {
     if (!tree || collapsedInit === docQuery.data) return;
@@ -172,6 +181,7 @@ export function UiTreePanel({
     return (
       <div key={node.key}>
         <div
+          ref={isSelected ? selectedRowRef : undefined}
           className={cn(
             "flex items-center gap-1 rounded px-1 py-0.5 text-[11px] leading-5",
             isSelected ? "bg-primary/15 text-primary ring-1 ring-primary/40" : "hover:bg-muted",
@@ -200,6 +210,43 @@ export function UiTreePanel({
     );
   };
 
+  // 仅可选：只渲染映射到元素库的节点，缩进按“有多少个已映射祖先”体现真实层级，
+  // 中间那些无意义的包装容器被跳过（但仍递归其后代，好把深处的叶子提上来）。
+  const renderPickableRows = (): ReactElement[] => {
+    const rows: ReactElement[] = [];
+    const walk = (node: TreeNode, mappedDepth: number) => {
+      const el = elementFor(node);
+      if (el) {
+        const isSel = el.id === selectedElementId;
+        const label = nodeLabel(node.attrs);
+        rows.push(
+          <div
+            key={node.key}
+            ref={isSel ? selectedRowRef : undefined}
+            className={cn(
+              "flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[11px] leading-5",
+              isSel ? "bg-primary/15 text-primary ring-1 ring-primary/40" : "hover:bg-muted",
+            )}
+            style={{ paddingLeft: Math.min(mappedDepth, 8) * 12 + 6 }}
+            onClick={() => onSelectElement(el.id)}
+            title="点击选中该元素"
+          >
+            <span className="font-mono font-medium">{shortTag(node.tag)}</span>
+            {label ? (
+              <span className="min-w-0 truncate">
+                <span className="text-muted-foreground/70">{label.kind}=</span>
+                <span>&quot;{label.value}&quot;</span>
+              </span>
+            ) : null}
+          </div>,
+        );
+      }
+      node.children.forEach((c) => walk(c, el ? mappedDepth + 1 : mappedDepth));
+    };
+    if (tree) walk(tree, 0);
+    return rows;
+  };
+
   if (platform === "web") return null;
 
   return (
@@ -207,7 +254,20 @@ export function UiTreePanel({
       <div className="flex items-center gap-1.5 border-b px-3 py-2 text-xs font-medium">
         <ListTree className="h-3.5 w-3.5 text-primary" />
         UI 树（应用源）
-        <span className="ml-auto font-normal text-muted-foreground">点节点选中元素</span>
+        <div className="ml-auto flex overflow-hidden rounded border text-[10px] font-normal">
+          <button
+            type="button"
+            onClick={() => setOnlyPickable(true)}
+            className={cn("px-2 py-0.5", onlyPickable ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}
+            title="只显示能选中的真实元素，折叠掉无意义的包装容器"
+          >仅可选</button>
+          <button
+            type="button"
+            onClick={() => setOnlyPickable(false)}
+            className={cn("px-2 py-0.5", !onlyPickable ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted")}
+            title="完整层级树（含结构容器）"
+          >全部</button>
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-1.5">
         {snapshotId == null ? (
@@ -217,7 +277,20 @@ export function UiTreePanel({
         ) : docQuery.isError ? (
           <div className="px-2 py-6 text-center text-[11px] text-red-600">该快照未采集到 UI 树</div>
         ) : tree ? (
-          <div className="min-w-max">{renderNode(tree, 0)}</div>
+          onlyPickable ? (
+            (() => {
+              const rows = renderPickableRows();
+              return rows.length > 0 ? (
+                <div className="min-w-max">{rows}</div>
+              ) : (
+                <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                  这页没有可单独选中的元素，切到「全部」看完整层级
+                </div>
+              );
+            })()
+          ) : (
+            <div className="min-w-max">{renderNode(tree, 0)}</div>
+          )
         ) : (
           <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">UI 树解析失败</div>
         )}
