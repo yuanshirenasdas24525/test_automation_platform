@@ -2284,9 +2284,10 @@ export function UiElementLibraryWorkspace({
                         liveRevision={mobileLiveRevision}
                         staticPick={!mobileLive}
                         elements={
-                          /* 离线拾取用整页元素(都带 bounds)，不受快照 visible_element_fingerprints
-                             为空的影响；live 时该 prop 不参与(走 onGesture)。 */
-                          (activePage?.elements ?? []).length > 0 ? (activePage?.elements ?? []) : visibleElements
+                          /* 离线拾取只匹配【本快照可见元素】，避免 Android 单 Activity 下别的屏幕
+                             元素(同 page_key)串进来选错；老快照没存 visible_element_fingerprints
+                             时才退回整页元素兜底。 */
+                          visibleElements.length > 0 ? visibleElements : (activePage?.elements ?? [])
                         }
                         selectedElementId={selectedElement?.id ?? null}
                         onSelectElement={setSelectedElementId}
