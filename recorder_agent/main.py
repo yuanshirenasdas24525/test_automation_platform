@@ -2512,6 +2512,12 @@ class MobileRecorderRuntime:
             "contexts": state["contexts"],
             "viewport": state["rect"],
             "visible_elements": visible_elements,
+            # 关键：本快照可见元素的指纹（与 Web 对齐）。缺了它，离线拾取只能拿"整页所有
+            # 元素"匹配 —— Android 单 Activity 下所有屏的元素都在同一 page_key，别的屏幕
+            # 元素 bounds 压在当前点上就会选错（如在 Biometrics 屏选到 Zip Code 输入框）。
+            "visible_element_fingerprints": [
+                item["fingerprint"] for item in visible_elements if item.get("fingerprint")
+            ],
         }
         await self.emit("page.snapshot", "device", payload)
         return payload
