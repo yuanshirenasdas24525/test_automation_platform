@@ -3195,7 +3195,7 @@ function MobileSnapshotStage({
   }
 
   return (
-    <div ref={stageRef} className="relative mt-2 flex h-[515px] touch-none items-center justify-center overflow-hidden bg-black">
+    <div ref={stageRef} className="relative flex h-full touch-none items-center justify-center overflow-hidden bg-black">
       {/* 离线拾取：把所有可点控件框出来，选中的高亮，让"拾取"看得见 */}
       {staticPick && geom ? (
         <div className="pointer-events-none absolute inset-0 z-10">
