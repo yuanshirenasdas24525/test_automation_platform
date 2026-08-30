@@ -132,6 +132,24 @@ export function UiTreePanel({
     return elementByBounds.get(`${node.bounds.x},${node.bounds.y},${node.bounds.w},${node.bounds.h}`) ?? null;
   };
 
+  // 「全部」模式用：折叠掉纯包装链 —— RN 的 iOS 树在到叶子前套几十层"单子 + 无身份"
+  // 的中间 Other，点上层就是一大片。把这类节点直接穿透（用其唯一子节点顶替），树立刻
+  // 变浅、每层都有意义（要么能映射到元素、要么有 desc/text/id、要么是分叉/叶子）。
+  const collapsedTree = useMemo(() => {
+    if (!tree) return null;
+    // 只认"能映射到元素库"为有意义：那些带合并 label 却选不中的包装 Other 一律穿透
+    // （单子链）。用 label 判定不行——RN 每层包装都携带合并 label，会导致几乎不折叠。
+    const mapped = (n: TreeNode) =>
+      n.bounds != null &&
+      elementByBounds.has(`${n.bounds.x},${n.bounds.y},${n.bounds.w},${n.bounds.h}`);
+    const collapse = (n: TreeNode): TreeNode => {
+      let cur = n;
+      while (cur.children.length === 1 && !mapped(cur)) cur = cur.children[0];
+      return { ...cur, children: cur.children.map(collapse) };
+    };
+    return collapse(tree);
+  }, [tree, elementByBounds]);
+
   // 选中元素 → 它对应的节点 key（用于树里高亮 + 自动展开）
   const selectedBounds = useMemo(() => {
     const el = elements.find((e) => e.id === selectedElementId);
@@ -152,16 +170,16 @@ export function UiTreePanel({
   }, [selectedElementId, onlyPickable]);
   // 首次拿到树：默认展开前几层，方便浏览
   useEffect(() => {
-    if (!tree || collapsedInit === docQuery.data) return;
+    if (!collapsedTree || collapsedInit === docQuery.data) return;
     const next = new Set<string>();
     const seed = (n: TreeNode, depth: number) => {
-      if (depth < 6) next.add(n.key);
+      if (depth < 8) next.add(n.key);
       n.children.forEach((c) => seed(c, depth + 1));
     };
-    seed(tree, 0);
+    seed(collapsedTree, 0);
     setExpanded(next);
     setCollapsedInit(docQuery.data ?? null);
-  }, [tree, docQuery.data, collapsedInit]);
+  }, [collapsedTree, docQuery.data, collapsedInit]);
 
   const toggle = (key: string) =>
     setExpanded((prev) => {
@@ -298,9 +316,9 @@ export function UiTreePanel({
                 </div>
               );
             })()
-          ) : (
-            <div className="min-w-max">{renderNode(tree, 0)}</div>
-          )
+          ) : collapsedTree ? (
+            <div className="min-w-max">{renderNode(collapsedTree, 0)}</div>
+          ) : null
         ) : (
           <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">UI 树解析失败</div>
         )}
