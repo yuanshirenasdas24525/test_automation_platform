@@ -15,8 +15,12 @@ type TreeNode = {
   children: TreeNode[];
 };
 
-/** Android bounds: "[x1,y1][x2,y2]"；iOS: x/y/width/height 属性。 */
-function nodeBounds(attrs: Record<string, string>): Bounds | null {
+/**
+ * Android bounds: "[x1,y1][x2,y2]"（像素）；iOS: x/y/width/height（点 pt）。
+ * scale：把 iOS 的"点"换算到"像素"，与元素库存的 bounds（已缩放为像素）对齐，
+ * 否则 Retina（2/3 倍）下树节点匹配不到元素、点了没反应。Android 恒为 1。
+ */
+function nodeBounds(attrs: Record<string, string>, scale = 1): Bounds | null {
   const b = attrs["bounds"];
   if (b) {
     const m = b.match(/\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]/);
@@ -26,7 +30,13 @@ function nodeBounds(attrs: Record<string, string>): Bounds | null {
     }
   }
   if (attrs["x"] != null && attrs["width"] != null) {
-    return { x: +attrs["x"], y: +attrs["y"], w: +attrs["width"], h: +attrs["height"] };
+    const s = scale || 1;
+    return {
+      x: Math.round(+attrs["x"] * s),
+      y: Math.round(+attrs["y"] * s),
+      w: Math.round(+attrs["width"] * s),
+      h: Math.round(+attrs["height"] * s),
+    };
   }
   return null;
 }
@@ -46,7 +56,7 @@ function nodeLabel(attrs: Record<string, string>): { kind: string; value: string
   return null;
 }
 
-function buildTree(xml: string): TreeNode | null {
+function buildTree(xml: string, scale = 1): TreeNode | null {
   let doc: Document;
   try {
     doc = new DOMParser().parseFromString(xml, "application/xml");
@@ -62,7 +72,7 @@ function buildTree(xml: string): TreeNode | null {
       key: `n${seq++}`,
       tag: el.tagName,
       attrs,
-      bounds: nodeBounds(attrs),
+      bounds: nodeBounds(attrs, scale),
       children: Array.from(el.children).map(walk),
     };
   };
@@ -89,7 +99,23 @@ export function UiTreePanel({
     enabled: snapshotId != null && platform !== "web",
     staleTime: 60_000,
   });
-  const tree = useMemo(() => (docQuery.data ? buildTree(docQuery.data) : null), [docQuery.data]);
+  // iOS 的元素库 bounds 已被录制器缩放为像素，但 attributes.width 仍是原始点值 ——
+  // 反推缩放比例，让树里解析出的点坐标同样换算到像素、和元素库对齐。Android 恒为 1。
+  const scale = useMemo(() => {
+    for (const el of elements) {
+      const b = el.attributes?.bounds as { width?: number } | undefined;
+      const rawW = Number(el.attributes?.width);
+      if (b?.width && rawW > 0) {
+        const r = b.width / rawW;
+        if (r > 1.05) return r;
+      }
+    }
+    return 1;
+  }, [elements]);
+  const tree = useMemo(
+    () => (docQuery.data ? buildTree(docQuery.data, scale) : null),
+    [docQuery.data, scale],
+  );
 
   // 按 bounds 把节点映射到元素库元素（点树选中、能看定位器）
   const elementByBounds = useMemo(() => {
