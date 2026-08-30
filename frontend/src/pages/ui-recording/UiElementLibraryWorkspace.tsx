@@ -2234,7 +2234,11 @@ export function UiElementLibraryWorkspace({
                     <button type="button" className="rounded border px-1.5 leading-5 hover:bg-muted" onClick={() => setPhoneScale(1)}>复位</button>
                   </div>
                   <div
-                    className="relative rounded-[44px] bg-gradient-to-b from-slate-800 to-slate-950 p-[3px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] ring-1 ring-black/10"
+                    className={cn(
+                      "relative bg-gradient-to-b from-slate-800 to-slate-950 p-[3px] shadow-[0_20px_60px_-15px_rgba(0,0,0,0.5)] ring-1 ring-black/10",
+                      // iOS 圆润大圆角；Android 方正一些
+                      platform === "ios" ? "rounded-[44px]" : "rounded-[26px]",
+                    )}
                     // 用 zoom 而非 transform:scale —— zoom 会实际占布局空间，放大后把右侧功能区推开，不再遮挡
                     style={{ zoom: phoneScale }}
                   >
@@ -2244,11 +2248,19 @@ export function UiElementLibraryWorkspace({
                     <div className="absolute -left-[3px] top-44 h-10 w-[3px] rounded-l bg-slate-700" />
                     <div className="absolute -right-[3px] top-36 h-16 w-[3px] rounded-r bg-slate-700" />
                     <div
-                      className="relative h-[560px] overflow-hidden rounded-[40px] bg-background"
+                      className={cn(
+                        "relative h-[560px] overflow-hidden bg-background",
+                        platform === "ios" ? "rounded-[40px]" : "rounded-[22px]",
+                      )}
                       style={{ width: Math.round(560 * (mirrorAspect ?? 0.462)) }}
                     >
-                      {/* 灵动岛 */}
-                      <div className="absolute left-1/2 top-2 z-20 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-slate-950" />
+                      {platform === "ios" ? (
+                        /* iOS 灵动岛 */
+                        <div className="absolute left-1/2 top-2 z-20 h-[26px] w-[92px] -translate-x-1/2 rounded-full bg-slate-950" />
+                      ) : (
+                        /* Android 居中挖孔摄像头 */
+                        <div className="absolute left-1/2 top-1.5 z-20 h-2.5 w-2.5 -translate-x-1/2 rounded-full bg-slate-950 ring-2 ring-slate-800" />
+                      )}
                     {activeSnapshot?.has_screenshot ? (
                       <MobileSnapshotStage
                         snapshot={activeSnapshot}
