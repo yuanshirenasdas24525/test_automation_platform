@@ -1219,7 +1219,26 @@ def _locator_quality_app(item: "UiElementLocator", rank: dict[str, int]) -> floa
     return q
 
 
-def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> tuple[str, str] | None:
+def _is_type_scoped_locator(item: "UiElementLocator") -> bool:
+    """定位器是否"按控件类型限定"——撞名时用它消歧。
+    ios_class_chain（`**/XCUIElementTypeButton[name==...]`）与带 tag+属性的 xpath、
+    android_uiautomator 的 className() 都把匹配锁死到某类型，天然区分 Alert/StaticText/Button。"""
+    strat = str(item.strategy or "").lower()
+    loc = str(item.locator or "")
+    if strat == "ios_class_chain":
+        return "XCUIElementType" in loc
+    if strat == "android_uiautomator":
+        return "className(" in loc
+    if strat == "xpath":
+        return bool(re.match(r"\s*//?(XCUIElementType|android\.|[A-Za-z]+\.)", loc)) and "@" in loc
+    return False
+
+
+def _preferred_locator(
+    element: UiElement,
+    platform: str = UI_PLATFORM_WEB,
+    ambiguous_names: set[str] | None = None,
+) -> tuple[str, str] | None:
     supported = _supported_locators_for(platform)
     candidates = [
         item for item in (element.locators or [])
@@ -1230,7 +1249,21 @@ def _preferred_locator(element: UiElement, platform: str = UI_PLATFORM_WEB) -> t
         return None
     if _is_mobile_platform(platform):
         rank = _app_strategy_rank(platform)
-        selected = max(candidates, key=lambda item: _locator_quality_app(item, rank))
+        name = str(getattr(element, "semantic_name", "") or "").strip().lower()
+        is_ambiguous = bool(ambiguous_names) and name in ambiguous_names
+
+        def _score(item: "UiElementLocator") -> float:
+            q = _locator_quality_app(item, rank)
+            if is_ambiguous:
+                # 撞名（如 Log Out 同时是 Alert/StaticText/Button）：裸名策略会命中错元素，
+                # 强制优先类型限定的 class_chain / typed xpath；裸名 accessibility_id/predicate 降权。
+                if _is_type_scoped_locator(item):
+                    q += 1000
+                elif str(item.strategy or "").lower() in {"accessibility_id", "ios_predicate", "name", "id"}:
+                    q -= 500
+            return q
+
+        selected = max(candidates, key=_score)
     else:
         semantic = str(getattr(element, "semantic_name", "") or "").strip()
         selected = max(candidates, key=lambda item: _locator_quality(item, semantic))
@@ -1685,6 +1718,16 @@ def compile_ai_case(
     """
     is_mobile = _is_mobile_platform(platform)
     manual_wait_step = _manual_wait_step_for(platform)
+    # 撞名集合：同名元素 ≥2 个（如 Log Out 同时是 Alert/StaticText/Button）。这类元素用裸
+    # accessibility_id 会命中错的一个，_preferred_locator 会改用类型限定的 class_chain 消歧。
+    ambiguous_names: set[str] = set()
+    if is_mobile:
+        _name_count: dict[str, int] = {}
+        for _el in element_map.values():
+            _nm = str(getattr(_el, "semantic_name", "") or "").strip().lower()
+            if _nm:
+                _name_count[_nm] = _name_count.get(_nm, 0) + 1
+        ambiguous_names = {n for n, c in _name_count.items() if c > 1}
     title = str(raw.get("title") or "").strip()
     # 登录/鉴权类移动用例：每条都要从登录页开始，App 需回到干净启动态 →
     # 给 app_launch 打开 force_relaunch（其它用例默认复用运行中的 App，不重启）。
@@ -1797,7 +1840,7 @@ def compile_ai_case(
             append(f"人工接管：{element.semantic_name}", manual_wait_step, {"seconds": 0, "manual_intervention": True, "reason": reason}, skip=True)
             continue
 
-        locator = _preferred_locator(element, platform)
+        locator = _preferred_locator(element, platform, ambiguous_names)
         if locator is None:
             reason = f"元素“{element.semantic_name}”没有可执行定位器，需返回元素库补录"
             warnings.append(reason)
