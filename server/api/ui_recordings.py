@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunsplit
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Body, HTTPException, Query, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import String, func
 from sqlalchemy.orm import selectinload
@@ -22,6 +22,7 @@ from database.models import (
     UI_RECORDING_ROLE_PRIMARY,
     UI_RECORDING_ROLE_SUPPLEMENT,
     AppPackage,
+    Module,
     DEVICE_STATUS_BUSY,
     DEVICE_STATUS_IDLE,
     Device,
@@ -84,6 +85,7 @@ from server.services.ui_recording_service import (
     serialize_snapshot,
     serialize_page_transition,
     serialize_recorded_action,
+    suggest_snapshot_modules,
     update_control_lease,
     validate_control_action,
 )
@@ -2044,6 +2046,114 @@ def delete_ui_page_group(
         db.session.delete(snapshot)
     db.session.flush()
     return {"status": "success", "data": {"page_key": page_key, "cascade_scope": scope}}
+
+
+def _get_snapshot_or_404(db: DBDep, snapshot_id: int) -> UiPageSnapshot:
+    snapshot = db.session.get(UiPageSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="画面不存在")
+    return snapshot
+
+
+@router.patch("/ui-page-snapshots/{snapshot_id}/module")
+def set_snapshot_module(
+    snapshot_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+    module_id: int | None = Body(None, embed=True),
+):
+    """手动指派/清除画面的归属模块（module_id=null 即"未分类"）。"""
+    snapshot = _get_snapshot_or_404(db, snapshot_id)
+    assert_project_access(db, current_user, snapshot.project_id)
+    if module_id is not None:
+        module = db.session.get(Module, module_id)
+        if module is None or module.project_id != snapshot.project_id:
+            raise HTTPException(status_code=422, detail="模块不存在或不属于当前项目")
+    snapshot.module_id = module_id
+    db.session.flush()
+    return {"status": "success", "data": serialize_snapshot(snapshot)}
+
+
+@router.post("/ui-page-snapshots/auto-classify")
+def auto_classify_snapshots(
+    db: DBDep,
+    current_user: CurrentUserDep,
+    project_id: int = Query(..., gt=0),
+    platform: str = Query(...),
+    only_unclassified: bool = Query(True),
+):
+    """按"用例引用 + 名称关键词"给画面自动建议归属模块。
+    only_unclassified=true 只填未分类的画面，不覆盖用户手工指派。"""
+    assert_project_access(db, current_user, project_id)
+    if platform not in ALL_UI_PLATFORMS:
+        raise HTTPException(status_code=422, detail="platform 必须是 web/android/ios")
+    suggestions = suggest_snapshot_modules(db.session, project_id=project_id, platform=platform)
+    snapshots = db.session.query(UiPageSnapshot).filter(
+        UiPageSnapshot.project_id == project_id,
+        UiPageSnapshot.platform == platform,
+    ).all()
+    applied = 0
+    for snapshot in snapshots:
+        mid = suggestions.get(snapshot.id)
+        if mid is None:
+            continue
+        if only_unclassified and snapshot.module_id is not None:
+            continue
+        if snapshot.module_id != mid:
+            snapshot.module_id = mid
+            applied += 1
+    db.session.flush()
+    return {"status": "success", "data": {"suggested": len(suggestions), "applied": applied}}
+
+
+@router.delete("/ui-page-snapshots/{snapshot_id}")
+def delete_snapshot(
+    snapshot_id: int,
+    db: DBDep,
+    current_user: CurrentUserDep,
+    confirm: bool = Query(False),
+):
+    """删除单个画面（快照）及其"独有元素"——只在这一屏出现过的元素才删，跨屏共享的保留
+    （仅移除其在本屏的出现记录）。"""
+    if not confirm:
+        raise HTTPException(status_code=422, detail="删除画面需要显式 confirm=true")
+    snapshot = _get_snapshot_or_404(db, snapshot_id)
+    assert_project_access(db, current_user, snapshot.project_id)
+    # 本屏出现的元素里，"所有出现都在本屏"的即独有元素
+    element_ids = [
+        row[0] for row in db.session.query(UiElementOccurrence.element_id)
+        .filter(UiElementOccurrence.snapshot_id == snapshot_id).distinct().all()
+    ]
+    exclusive_ids: list[int] = []
+    if element_ids:
+        rows = (
+            db.session.query(UiElementOccurrence.element_id)
+            .filter(UiElementOccurrence.element_id.in_(element_ids))
+            .group_by(UiElementOccurrence.element_id)
+            .having(func.count(func.distinct(UiElementOccurrence.snapshot_id)) == 1)
+            .all()
+        )
+        exclusive_ids = [row[0] for row in rows]
+    scope = {
+        "snapshot_id": snapshot_id,
+        "exclusive_elements_deleted": len(exclusive_ids),
+        "shared_elements_retained": len(element_ids) - len(exclusive_ids),
+    }
+    _record_deletion_audit(
+        db,
+        current_user,
+        project_id=snapshot.project_id,
+        object_type="page_snapshot",
+        object_id=str(snapshot_id),
+        object_name=snapshot.page_name,
+        cascade_scope=scope,
+    )
+    if exclusive_ids:
+        for element in db.session.query(UiElement).filter(UiElement.id.in_(exclusive_ids)).all():
+            db.session.delete(element)
+    db.session.delete(snapshot)
+    db.session.flush()
+    return {"status": "success", "data": {"snapshot_id": snapshot_id, "cascade_scope": scope}}
 
 
 @router.get("/ui-elements/{element_id}")

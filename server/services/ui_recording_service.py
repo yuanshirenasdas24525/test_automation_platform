@@ -19,6 +19,7 @@ from database.models import (
     UI_RECORDING_FAILED,
     UI_RECORDING_PAUSED,
     UI_RECORDING_RECORDING,
+    Module,
     UiElement,
     UiElementLocator,
     UiElementOccurrence,
@@ -1266,6 +1267,90 @@ def serialize_event(event: UiRecordingEvent) -> dict[str, Any]:
     }
 
 
+# 画面标签关键词 → 模块名关键词（自动建议兜底用；用例引用命中不了才走它）。
+_SCREEN_MODULE_KEYWORDS: list[tuple[tuple[str, ...], tuple[str, ...]]] = [
+    (("login", "log in", "sign in", "登录", "登入"), ("登录", "login", "鉴权")),
+    (("logout", "log out", "退出", "登出"), ("登录", "退出", "logout")),
+    (("role", "角色", "permission", "权限"), ("角色", "权限", "role")),
+    (("project", "项目"), ("项目", "project")),
+]
+
+
+def suggest_snapshot_modules(
+    db: Session, *, project_id: int, platform: str, snapshot_ids: list[int] | None = None
+) -> dict[int, int]:
+    """给画面(快照)猜"归属模块"。① 用例引用为主：画面里的元素被哪个模块的用例引用最多
+    就归哪个；② 关键词兜底：画面里的元素名(如 'login screen')映射到模块名。返回
+    {snapshot_id: module_id}（只含猜到的）。"""
+    from sqlalchemy import text as _sql
+
+    where_snap = "and o.snapshot_id = any(:sids)" if snapshot_ids else ""
+    params: dict[str, Any] = {"pid": project_id, "plat": platform}
+    if snapshot_ids:
+        params["sids"] = snapshot_ids
+
+    # ① 用例引用（element_id 是纯数字才 cast，避免脏数据报错）
+    usage: dict[int, int] = {}
+    rows = db.execute(_sql(f"""
+        select o.snapshot_id as sid, tc.module_id as mid, count(distinct tc.id) as c
+        from ui_element_occurrences o
+        join ui_page_snapshots sn on sn.id = o.snapshot_id
+        join test_steps ts on ts.config->>'element_id' ~ '^[0-9]+$'
+             and (ts.config->>'element_id')::int = o.element_id
+        join test_cases tc on tc.id = ts.case_id
+        where sn.project_id = :pid and sn.platform = :plat
+              and tc.module_id is not null {where_snap}
+        group by o.snapshot_id, tc.module_id
+    """), params).fetchall()
+    best: dict[int, tuple[int, int]] = {}
+    for sid, mid, c in rows:
+        cur = best.get(int(sid))
+        if cur is None or c > cur[1]:
+            best[int(sid)] = (int(mid), int(c))
+    for sid, (mid, _c) in best.items():
+        usage[sid] = mid
+
+    # ② 关键词兜底：只补 ① 没覆盖的画面
+    remaining = [
+        int(s) for s in (snapshot_ids or [])
+        if int(s) not in usage
+    ] if snapshot_ids else None
+    modules = {
+        int(m.id): str(m.name or "")
+        for m in db.query(Module).filter(Module.project_id == project_id).all()
+    }
+    kw_where = "and o.snapshot_id = any(:rids)" if remaining else ""
+    kw_params = dict(params)
+    if remaining:
+        kw_params["rids"] = remaining
+    elif snapshot_ids:
+        # 有 snapshot_ids 但都被 ① 覆盖了，无需兜底
+        return usage
+    name_rows = db.execute(_sql(f"""
+        select o.snapshot_id as sid, e.semantic_name as nm
+        from ui_element_occurrences o
+        join ui_page_snapshots sn on sn.id = o.snapshot_id
+        join ui_elements e on e.id = o.element_id
+        where sn.project_id = :pid and sn.platform = :plat {kw_where}
+    """), kw_params).fetchall()
+    names_by_snap: dict[int, list[str]] = {}
+    for sid, nm in name_rows:
+        names_by_snap.setdefault(int(sid), []).append(str(nm or "").lower())
+    for sid, names in names_by_snap.items():
+        if sid in usage:
+            continue
+        blob = " ".join(names)
+        for screen_kws, module_kws in _SCREEN_MODULE_KEYWORDS:
+            if not any(k in blob for k in screen_kws):
+                continue
+            hit = next((mid for mid, mname in modules.items()
+                        if any(mk in mname.lower() for mk in module_kws)), None)
+            if hit is not None:
+                usage[sid] = hit
+                break
+    return usage
+
+
 def serialize_snapshot(snapshot: UiPageSnapshot) -> dict[str, Any]:
     return {
         "id": snapshot.id,
@@ -1275,6 +1360,7 @@ def serialize_snapshot(snapshot: UiPageSnapshot) -> dict[str, Any]:
         "page_key": snapshot.page_key,
         "page_name": snapshot.page_name,
         "state_name": snapshot.state_name,
+        "module_id": snapshot.module_id,
         "url": snapshot.url,
         "snapshot_version": snapshot.snapshot_version,
         "fingerprint": snapshot.fingerprint,
