@@ -2739,6 +2739,32 @@ export const uiRecordingsApi = {
       { method: "DELETE" },
     );
   },
+  /** 手动指派/清除画面归属模块（moduleId=null → 未分类）。 */
+  setSnapshotModule(snapshotId: number, moduleId: number | null) {
+    return request<UiPageSnapshot>(`/api/ui-page-snapshots/${snapshotId}/module`, {
+      method: "PATCH",
+      body: { module_id: moduleId },
+    });
+  },
+  /** 批量按"用例引用+名称关键词"自动建议画面归属模块。 */
+  autoClassifySnapshots(args: { projectId: number; platform: UiPlatform; onlyUnclassified?: boolean }) {
+    const qs = new URLSearchParams({
+      project_id: String(args.projectId),
+      platform: args.platform,
+      only_unclassified: String(args.onlyUnclassified ?? true),
+    });
+    return request<{ suggested: number; applied: number }>(
+      `/api/ui-page-snapshots/auto-classify?${qs.toString()}`,
+      { method: "POST" },
+    );
+  },
+  /** 删除单个画面（快照）及其独有元素；跨屏共享的元素保留。 */
+  deleteSnapshot(snapshotId: number) {
+    return request<{ snapshot_id: number; cascade_scope: Record<string, unknown> }>(
+      `/api/ui-page-snapshots/${snapshotId}?confirm=true`,
+      { method: "DELETE" },
+    );
+  },
   async snapshotImage(snapshotId: number): Promise<Blob> {
     const headers = new Headers();
     const token = getToken();

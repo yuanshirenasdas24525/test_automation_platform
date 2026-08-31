@@ -449,6 +449,47 @@ export function UiElementLibraryWorkspace({
     enabled: open && Number.isFinite(projectId),
     staleTime: 30_000,
   });
+  // 页面导航按模块分类用：项目模块扁平表（id→名）。
+  const navModulesQuery = useQuery({
+    queryKey: ["ui-recording-nav-modules", projectId],
+    queryFn: () => modulesApi.listForPicker(projectId),
+    enabled: open && Number.isFinite(projectId),
+    staleTime: 60_000,
+  });
+  const navModules = useMemo<ModulePickerNode[]>(() => navModulesQuery.data ?? [], [navModulesQuery.data]);
+  const moduleName = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const item of navModules) m.set(item.id, item.name);
+    return m;
+  }, [navModules]);
+  const refreshLibrary = () => {
+    void queryClient.invalidateQueries({ queryKey: ["ui-page-snapshots", projectId, platform] });
+    void queryClient.invalidateQueries({ queryKey: ["ui-elements", projectId, platform] });
+  };
+  const setSnapshotModuleMutation = useMutation({
+    mutationFn: ({ snapshotId, moduleId }: { snapshotId: number; moduleId: number | null }) =>
+      uiRecordingsApi.setSnapshotModule(snapshotId, moduleId),
+    onSuccess: () => refreshLibrary(),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "指派模块失败"),
+  });
+  const autoClassifyMutation = useMutation({
+    mutationFn: () => uiRecordingsApi.autoClassifySnapshots({ projectId, platform, onlyUnclassified: true }),
+    onSuccess: (res) => {
+      toast.success(`自动建议完成：填充 ${res.applied} 个画面（共命中 ${res.suggested}）`);
+      refreshLibrary();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "自动建议失败"),
+  });
+  const deleteSnapshotMutation = useMutation({
+    mutationFn: (snapshotId: number) => uiRecordingsApi.deleteSnapshot(snapshotId),
+    onSuccess: (res) => {
+      const n = (res.cascade_scope?.exclusive_elements_deleted as number) ?? 0;
+      toast.success(`画面已删除${n ? `，同时清理 ${n} 个独有元素` : ""}`);
+      setSnapshotId(null);
+      refreshLibrary();
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "删除画面失败"),
+  });
   const recordingsQuery = useQuery({
     queryKey: ["ui-recordings", projectId, platform],
     queryFn: () => uiRecordingsApi.list(projectId, platform),
@@ -1772,7 +1813,19 @@ export function UiElementLibraryWorkspace({
           </div>
           <div className="flex items-center justify-between px-4 pb-2 pt-4 text-xs text-muted-foreground">
             <span>页面导航</span>
-            <span>{pages.length} 个页面</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => autoClassifyMutation.mutate()}
+                disabled={autoClassifyMutation.isPending || pages.length === 0}
+                className="flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] hover:bg-muted disabled:opacity-50"
+                title="按用例引用+名称关键词，给未分类的画面自动建议归属模块"
+              >
+                {autoClassifyMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                自动建议
+              </button>
+              <span>{pages.length} 个页面</span>
+            </div>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
             {elementsQuery.isLoading ? (
@@ -1855,30 +1908,87 @@ export function UiElementLibraryWorkspace({
                           暂无页面状态
                         </div>
                       ) : (
-                        <div className="ml-5 mb-2 grid grid-cols-3 gap-1.5 border-l pl-2 pt-1">
-                          {ordered.map((snap, idx) => {
-                            const dialog = isDialogSnapshot(snap);
-                            const label = snap.state_name
-                              || (dialog ? `弹框 ${idx + 1}` : `画面 ${idx + 1}`);
-                            const active = activePageKey === page.pageKey && activeSnapshot?.id === snap.id;
-                            return (
-                              <SnapshotThumb
-                                key={snap.id}
-                                snapshot={snap}
-                                active={active}
-                                dialog={dialog}
-                                label={label}
-                                onClick={() => {
-                                  setPageKey(page.pageKey);
-                                  setSnapshotId(snap.id);
-                                  setSelectedElementId(null);
-                                  if (embeddedReplay && session) {
-                                    replayMutation.mutate({ sessionId: session.id, snapshot: snap });
-                                  }
-                                }}
-                              />
-                            );
-                          })}
+                        <div className="ml-5 mb-2 border-l pl-2 pt-1">
+                          {(() => {
+                            // 按模块分组：真实模块在前（按名排序），未分类置底
+                            const groups = new Map<number | null, UiPageSnapshot[]>();
+                            for (const snap of ordered) {
+                              const k = snap.module_id ?? null;
+                              const arr = groups.get(k) ?? [];
+                              arr.push(snap);
+                              groups.set(k, arr);
+                            }
+                            const entries = [...groups.entries()].sort((a, b) => {
+                              if (a[0] === null) return 1;
+                              if (b[0] === null) return -1;
+                              return (moduleName.get(a[0]) ?? "").localeCompare(moduleName.get(b[0]) ?? "");
+                            });
+                            return entries.map(([mid, snaps]) => (
+                              <div key={mid ?? "none"} className="mb-1.5">
+                                <div className="flex items-center gap-1 px-0.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                  <Layers3 className="h-3 w-3 shrink-0" />
+                                  <span className="truncate">{mid == null ? "未分类" : (moduleName.get(mid) ?? `模块 ${mid}`)}</span>
+                                  <span className="text-muted-foreground/60">· {snaps.length}</span>
+                                </div>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  {snaps.map((snap) => {
+                                    const dialog = isDialogSnapshot(snap);
+                                    const label = snap.state_name || (dialog ? "弹框" : "画面");
+                                    const active = activePageKey === page.pageKey && activeSnapshot?.id === snap.id;
+                                    return (
+                                      <div key={snap.id} className="group/cell relative">
+                                        <SnapshotThumb
+                                          snapshot={snap}
+                                          active={active}
+                                          dialog={dialog}
+                                          label={label}
+                                          onClick={() => {
+                                            setPageKey(page.pageKey);
+                                            setSnapshotId(snap.id);
+                                            setSelectedElementId(null);
+                                            if (embeddedReplay && session) {
+                                              replayMutation.mutate({ sessionId: session.id, snapshot: snap });
+                                            }
+                                          }}
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (window.confirm(`删除画面「${label}」？只在这一屏出现的元素会一并删除，跨屏共享的保留。`)) {
+                                              deleteSnapshotMutation.mutate(snap.id);
+                                            }
+                                          }}
+                                          className="absolute right-1 top-1 z-10 hidden rounded bg-black/55 p-0.5 text-white hover:bg-red-600 group-hover/cell:block"
+                                          title="删除该画面"
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                        </button>
+                                        <select
+                                          value={snap.module_id ?? ""}
+                                          onChange={(e) => {
+                                            const v = e.target.value;
+                                            setSnapshotModuleMutation.mutate({
+                                              snapshotId: snap.id,
+                                              moduleId: v === "" ? null : Number(v),
+                                            });
+                                          }}
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="mt-0.5 w-full rounded border bg-background px-1 py-0.5 text-[9px] text-muted-foreground"
+                                          title="归属模块"
+                                        >
+                                          <option value="">未分类</option>
+                                          {navModules.map((m) => (
+                                            <option key={m.id} value={m.id}>{m.name}</option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            ));
+                          })()}
                         </div>
                       )
                     ) : null}
