@@ -300,6 +300,7 @@ export interface UiPageSnapshot {
   page_key: string;
   page_name: string;
   state_name: string | null;
+  module_id: number | null;
   url: string | null;
   snapshot_version: number;
   fingerprint: string;
