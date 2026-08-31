@@ -247,6 +247,7 @@ class UiPageSnapshotRead(BaseModel):
     page_key: str
     page_name: str
     state_name: str | None
+    module_id: int | None = None
     url: str | None
     snapshot_version: int
     fingerprint: str

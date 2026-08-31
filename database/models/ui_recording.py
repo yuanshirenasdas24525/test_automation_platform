@@ -253,6 +253,13 @@ class UiPageSnapshot(Base):
     page_key = Column(String(255), nullable=False, index=True)
     page_name = Column(String(200), nullable=False)
     state_name = Column(String(120), nullable=True)
+    # 画面归属的用例模块（页面导航按模块分类用）。可空=未分类；模块删了置空不牵连画面。
+    module_id = Column(
+        Integer,
+        ForeignKey("modules.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     url = Column(Text, nullable=True)
     route = Column(String(500), nullable=True)
     app_identifier = Column(String(255), nullable=True)
