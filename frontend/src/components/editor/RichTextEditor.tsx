@@ -51,7 +51,9 @@ export function RichTextEditor({
       }),
       Placeholder.configure({ placeholder }),
       Link.configure({ openOnClick: false }),
-      Image.configure({ inline: false }),
+      // allowBase64：允许内嵌 data-URI 图（否则 TipTap 解析时会把 base64 图整块剥掉，
+      // 知识库里内嵌的图/图表就会消失，只剩图注文字）。
+      Image.configure({ inline: false, allowBase64: true }),
       Highlight,
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Underline,
