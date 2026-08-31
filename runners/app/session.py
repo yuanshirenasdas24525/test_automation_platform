@@ -113,7 +113,10 @@ def _merge_device_caps(device: dict, user_caps: dict | None) -> dict:
         auto.setdefault("appium:waitForQuiescence", False)
         auto.setdefault("appium:reduceMotion", True)
         auto.setdefault("appium:settings[useJSONSource]", True)
-        auto.setdefault("appium:settings[snapshotMaxDepth]", 40)
+        # RN 的 iOS 树极深，输入框/按钮等叶子常在 40 层以下；snapshotMaxDepth 同时限制
+        # findElement 的可见范围，设 40 会让 `Username input field`（约 44~48 层）扫不到
+        # → 执行时 NoSuchElement（report 283）。与录制器一致抬到 60（Appium 默认才 50）。
+        auto.setdefault("appium:settings[snapshotMaxDepth]", 60)
 
     # 设备记录里用户在 DevicesPage 注册时填的 capabilities JSON 做底座
     dev_extra = device.get("capabilities") if isinstance(device.get("capabilities"), dict) else {}
