@@ -18,6 +18,7 @@ from database.models import (
     TestStep,
     UiAutomationCaseDraft,
     UiElement,
+    UiElementOccurrence,
     UiMockExchange,
     UiPageSnapshot,
     UiPageTransition,
@@ -711,6 +712,110 @@ def normalize_auto_source_selection(
     }
 
 
+_ICON_GLYPH_RE = re.compile(r"^[\W_]{1,2}$")
+
+
+def _is_ambiguous_mobile_identity(name: str | None) -> bool:
+    """身份是否"无定位价值"：单字符、≤2 位纯数字（购物车角标/计数器 "1"）、
+    或 1~2 个符号（字体图标字形 \\uf04a 之类）。这些做定位器歧义、不该进候选目录，
+    否则 AI 会把"用户名输入"错误接到叫 "1" 的元素上（run 248 → 输入步骤 NoSuchElement）。"""
+    n = (name or "").strip()
+    if len(n) <= 1:
+        return True
+    if n.isdigit() and len(n) <= 2:
+        return True
+    if _ICON_GLYPH_RE.match(n):
+        return True
+    return False
+
+
+def _mobile_select_by_screen(
+    db: Session,
+    elements: list[UiElement],
+    relevance_text: str,
+) -> tuple[list[UiElement], dict[int, str], dict[str, str], dict[str, int | None]]:
+    """移动端按【屏(快照)】而非 page_key 分组选元素。
+
+    iOS 的 native context 只有一个 page_key（如 bundleId:NATIVE_APP），全 App 元素挤在
+    一起，登录框会被淹没/截断，AI 就近抓垃圾元素。这里用 ui_element_occurrences 把每个
+    元素归到它"最近出现"的那一屏（快照 fingerprint 为屏 key），再按屏给预算，保证登录屏
+    的输入框/按钮成组进入上下文。同时剔除歧义身份（见 _is_ambiguous_mobile_identity）。
+    返回：选中的元素、element_id→屏key、屏key→标签、屏key→代表快照 id。
+    """
+    ids = [e.id for e in elements]
+    elem_snaps: dict[int, list[int]] = defaultdict(list)
+    if ids:
+        for eid, sid in db.query(
+            UiElementOccurrence.element_id, UiElementOccurrence.snapshot_id
+        ).filter(UiElementOccurrence.element_id.in_(ids)).all():
+            if sid:
+                elem_snaps[int(eid)].append(int(sid))
+    snap_ids = {sid for sids in elem_snaps.values() for sid in sids}
+    snaps: dict[int, UiPageSnapshot] = {}
+    if snap_ids:
+        snaps = {
+            s.id: s
+            for s in db.query(UiPageSnapshot).filter(UiPageSnapshot.id.in_(snap_ids)).all()
+        }
+
+    def screen_key(e: UiElement) -> tuple[str, int | None]:
+        sids = elem_snaps.get(e.id)
+        if not sids:
+            return (f"page::{e.page_key}", None)  # 无 occurrence 兜底：仍按 page_key
+        best = max(sids)  # 最近一次出现的快照
+        snap = snaps.get(best)
+        fp = (snap.fingerprint if snap else None) or f"snap::{best}"
+        return (fp, best)
+
+    groups: dict[str, list[UiElement]] = defaultdict(list)
+    rep_snap: dict[str, int | None] = {}
+    for e in elements:
+        if _is_ambiguous_mobile_identity(e.semantic_name):
+            continue
+        k, sid = screen_key(e)
+        groups[k].append(e)
+        rep_snap.setdefault(k, sid)
+
+    page_count = max(1, len(groups))
+    per_screen = max(
+        _PAGE_ELEMENT_FLOOR,
+        min(_PAGE_ELEMENT_CEILING, _DETAIL_ELEMENT_LIMIT // page_count),
+    )
+    _MOBILE_TARGET_TYPES = {
+        "XCUIElementTypeTextField", "XCUIElementTypeSecureTextField",
+        "XCUIElementTypeButton", "XCUIElementTypeSwitch", "XCUIElementTypeCell",
+        "android.widget.EditText", "android.widget.Button",
+    }
+    selected: list[UiElement] = []
+    for key in groups:
+        ranked = sorted(
+            groups[key],
+            key=lambda element: (
+                -int(bool(element.semantic_name and element.semantic_name.lower() in relevance_text)),
+                -int(element.element_type in _MOBILE_TARGET_TYPES),
+                -int(bool(element.locators)),
+                -int(element.last_verified_at is not None),
+                -int(element.usage_count or 0),
+                element.id,
+            ),
+        )
+        selected.extend(ranked[:per_screen])
+    selected = selected[:_DETAIL_ELEMENT_LIMIT]
+
+    labels: dict[str, str] = {}
+    for key, sid in rep_snap.items():
+        snap = snaps.get(sid) if sid else None
+        # 屏标题元素：该屏里 semantic_name 以 "screen" 结尾的（login screen / products screen …）
+        title = next(
+            (e.semantic_name for e in groups[key]
+             if e.semantic_name and e.semantic_name.lower().endswith("screen")),
+            None,
+        )
+        labels[key] = title or (snap.state_name if snap else None) or f"屏 {str(key)[:8]}"
+    screen_of = {e.id: key for key in groups for e in groups[key]}
+    return selected, screen_of, labels, rep_snap
+
+
 def build_generation_context(
     db: Session,
     *,
@@ -790,29 +895,43 @@ def build_generation_context(
     available_elements = element_query.order_by(UiElement.page_key, UiElement.id).limit(2000).all()
     if not available_elements:
         raise ValueError("当前范围没有可用于生成的该平台 UI 元素，请先完成录制或 AI 探索录制")
-    grouped_elements: dict[str, list[UiElement]] = defaultdict(list)
-    for element in available_elements:
-        grouped_elements[element.page_key].append(element)
-    page_count = max(1, len(grouped_elements))
-    per_page_limit = max(
-        _PAGE_ELEMENT_FLOOR,
-        min(_PAGE_ELEMENT_CEILING, _DETAIL_ELEMENT_LIMIT // page_count),
-    )
-    elements: list[UiElement] = []
-    for page_key in sorted(grouped_elements):
-        ranked = sorted(
-            grouped_elements[page_key],
-            key=lambda element: (
-                -int(bool(element.semantic_name and element.semantic_name.lower() in relevance_text)),
-                -int(element.element_type in {"button", "input", "select", "textarea", "link", "checkbox", "radio"}),
-                -int(bool(element.locators)),
-                -int(element.last_verified_at is not None),
-                -int(element.usage_count or 0),
-                element.id,
-            ),
+    is_mobile = _is_mobile_platform(platform)
+    # 移动端按【屏(快照)】分组，桶名 = 快照 fingerprint；Web 保持按 page_key 分组。
+    mobile_screen_of: dict[int, str] = {}
+    mobile_screen_label: dict[str, str] = {}
+    mobile_screen_snapshot: dict[str, int | None] = {}
+    if is_mobile:
+        elements, mobile_screen_of, mobile_screen_label, mobile_screen_snapshot = (
+            _mobile_select_by_screen(db, available_elements, relevance_text)
         )
-        elements.extend(ranked[:per_page_limit])
-    elements = elements[:_DETAIL_ELEMENT_LIMIT]
+        per_page_limit = max(
+            _PAGE_ELEMENT_FLOOR,
+            min(_PAGE_ELEMENT_CEILING, _DETAIL_ELEMENT_LIMIT // max(1, len(mobile_screen_label))),
+        )
+    else:
+        grouped_elements: dict[str, list[UiElement]] = defaultdict(list)
+        for element in available_elements:
+            grouped_elements[element.page_key].append(element)
+        page_count = max(1, len(grouped_elements))
+        per_page_limit = max(
+            _PAGE_ELEMENT_FLOOR,
+            min(_PAGE_ELEMENT_CEILING, _DETAIL_ELEMENT_LIMIT // page_count),
+        )
+        elements = []
+        for page_key in sorted(grouped_elements):
+            ranked = sorted(
+                grouped_elements[page_key],
+                key=lambda element: (
+                    -int(bool(element.semantic_name and element.semantic_name.lower() in relevance_text)),
+                    -int(element.element_type in {"button", "input", "select", "textarea", "link", "checkbox", "radio"}),
+                    -int(bool(element.locators)),
+                    -int(element.last_verified_at is not None),
+                    -int(element.usage_count or 0),
+                    element.id,
+                ),
+            )
+            elements.extend(ranked[:per_page_limit])
+        elements = elements[:_DETAIL_ELEMENT_LIMIT]
 
     snapshots_all = snapshot_query.order_by(
         UiPageSnapshot.page_key,
@@ -868,7 +987,9 @@ def build_generation_context(
     element_map = {item.id: item for item in elements}
     for element in elements:
         attrs = element.attributes or {}
-        by_page[element.page_key].append({
+        # 移动端桶名 = 屏 key（快照 fingerprint）；Web 仍用 page_key。
+        bucket = mobile_screen_of.get(element.id, element.page_key) if is_mobile else element.page_key
+        by_page[bucket].append({
             "element_id": element.id,
             "name": element.semantic_name,
             "page_name": element.page_name,
@@ -882,12 +1003,20 @@ def build_generation_context(
             "locator_candidates": _locator_payload(element, platform),
         })
 
+    snapshot_by_id = {s.id: s for s in snapshots_all}
     pages = []
     for key, page_elements in by_page.items():
-        snapshot = latest_snapshots.get(key)
+        if is_mobile:
+            rep_id = mobile_screen_snapshot.get(key)
+            snapshot = snapshot_by_id.get(rep_id) if rep_id else None
+            # 移动端屏名用屏标题元素/状态名（见 _mobile_select_by_screen），无 URL 语义。
+            page_name = mobile_screen_label.get(key) or (snapshot.page_name if snapshot else page_elements[0]["page_name"])
+        else:
+            snapshot = latest_snapshots.get(key)
+            page_name = snapshot.page_name if snapshot else page_elements[0]["page_name"]
         pages.append({
             "page_key": key,
-            "page_name": snapshot.page_name if snapshot else page_elements[0]["page_name"],
+            "page_name": page_name,
             "url": _safe_url(snapshot.url if snapshot else None, redact_query=True),
             "route": snapshot.route if snapshot else None,
             "snapshot_id": snapshot.id if snapshot else None,
