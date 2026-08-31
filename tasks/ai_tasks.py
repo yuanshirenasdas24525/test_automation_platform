@@ -1504,6 +1504,9 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         .all()
     }
     compiled_items: list[dict[str, Any]] = []
+    # 因 executable_only 被门禁挡下的"需人工"草稿暂存于此：若整轮下来一条可执行草稿都
+    # 没有，则把它们作为兜底草稿落库（标记需人工调整），避免"生成失败/0 产出"的死胡同。
+    manual_deferred: list[dict[str, Any]] = []
     dropped = 0
     dropped_reasons: list[str] = []
     generated_functional_ids: set[int] = set()
@@ -1670,6 +1673,11 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
             if bool(payload.get("executable_only", True)) and compiled["manual_reasons"]:
                 dropped += 1
                 dropped_reasons.append(f"用例“{compiled['title']}”需要人工处理，未纳入可执行草稿")
+                # 暂存，作为"全批皆需人工"时的兜底（去重：同标题只留一条）
+                if compiled["title"].strip().lower() not in {
+                    m["title"].strip().lower() for m in manual_deferred
+                }:
+                    manual_deferred.append(compiled)
                 continue
             existing_titles.add(normalized_title)
             if functional_case_id:
@@ -1736,11 +1744,48 @@ def _handle_web_ui_case_gen(run: "AiRun", session) -> dict:
         )
 
     if not compiled_items:
-        reason_text = "；".join(list(dict.fromkeys(dropped_reasons))[:3])
-        raise ValueError(
-            "自动筛选后没有生成通过可执行门禁的草稿。"
-            f"{reason_text or '请补录元素、定位器或功能预期后重试'}"
-        )
+        # 兜底：一条可执行草稿都没有，但有"需人工"草稿 → 落库供人工调整，别硬失败成 0 产出。
+        # 常见于负向/边界用例（该 App 无对应功能、需人工判断等），门禁挡下但仍值得保留。
+        if manual_deferred:
+            for item in manual_deferred:
+                draft = UiAutomationCaseDraft(
+                    project_id=project_id,
+                    module_id=target_module_id,
+                    functional_case_id=item["functional_case_id"],
+                    ai_run_id=run.id,
+                    batch_id=batch_id,
+                    model_label=model_label,
+                    title=item["title"],
+                    description=item["description"],
+                    priority=item["priority"],
+                    tags=item["tags"],
+                    variables=item["variables"],
+                    steps=item["steps"],
+                    evidence=item["evidence"],
+                    warnings=item["warnings"],
+                    manual_reasons=item["manual_reasons"],
+                    confidence=item["confidence"],
+                    visual_assertion=item["visual_assertion"],
+                    status=UI_AUTO_DRAFT_PENDING,
+                )
+                session.add(draft)
+                session.flush()
+                draft_ids.append(draft.id)
+            selection.setdefault("warnings", []).append(
+                f"本轮 {len(manual_deferred)} 条用例均需人工处理（如该 App 无对应功能或需人工判断），"
+                "已作为草稿保存并标记『需人工调整』；请在草稿箱补全步骤/预期后再执行。"
+            )
+            _write_web_ui_progress(
+                run, session, batch_id=batch_id, stage="generation",
+                message=f"本轮均需人工处理，已保存 {len(manual_deferred)} 条待人工调整草稿",
+                draft_ids=draft_ids, dropped_count=dropped, source_selection=selection,
+            )
+        else:
+            reason_text = "；".join(list(dict.fromkeys(dropped_reasons))[:3])
+            raise ValueError(
+                "自动筛选后没有生成通过可执行门禁的草稿。"
+                f"{reason_text or '请补录元素、定位器或功能预期后重试'}"
+            )
 
     return {
         "output": {
