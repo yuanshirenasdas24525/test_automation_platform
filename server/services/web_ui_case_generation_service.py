@@ -1211,8 +1211,12 @@ def _locator_quality_app(item: "UiElementLocator", rank: dict[str, int]) -> floa
         q -= 5  # /hierarchy/...[4]/... 这类下标 xpath 更脆
     if getattr(item, "is_primary", False):
         q += 30
+    # 唯一性是首要信号：本屏唯一强烈优先、撞名（不唯一）强烈降权。这样即使裸
+    # accessibility_id 策略分更高，只要它在本屏撞名，也会让位给类型限定且唯一的 class_chain。
     if item.is_unique is True:
-        q += 5
+        q += 60
+    elif item.is_unique is False:
+        q -= 60
     if item.last_verified_at is not None:
         q += 3
     q += min(int(item.score or 0), 100) * 0.5

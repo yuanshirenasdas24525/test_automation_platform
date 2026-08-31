@@ -2258,15 +2258,29 @@ def _smart_mobile_xpath(attrs: dict[str, str], element_type: str, positional_xpa
     return positional_xpath
 
 
-def _mobile_locators_for(attrs: dict[str, str], element_type: str, xpath: str, platform: str) -> list[dict[str, Any]]:
-    """按控件属性生成移动定位器（与单元素抽取同口径）。"""
+def _mobile_locators_for(
+    attrs: dict[str, str],
+    element_type: str,
+    xpath: str,
+    platform: str,
+    name_matches: int = 1,
+    type_matches: int = 1,
+) -> list[dict[str, Any]]:
+    """按控件属性生成移动定位器（与单元素抽取同口径）。
+
+    name_matches：本屏内"同 accessibility 名"的元素数（Appium findElement 的可见口径）；
+    type_matches：本屏内"同(类型,名)"的元素数。iOS 下 name_matches>1 即撞名 —— 裸
+    accessibility_id/predicate 会命中错元素（如 Log Out 同时是 Alert/StaticText/Button），
+    此时标 is_unique=False 并压低分，给类型限定的 class_chain 标 is_unique=True 抬到最高分，
+    使落库时 is_primary（按分排第一）自动落到唯一那条。Android 分支保持原逻辑不动。
+    """
     resource_id = attrs.get("resource-id") or attrs.get("resourceId") or ""
     accessibility = attrs.get("content-desc") or attrs.get("name") or attrs.get("label") or ""
     text = attrs.get("text") or attrs.get("value") or ""
-    # xpath 兜底也尽量给属性式（与 Inspector 一致、更稳），没属性才用整条下标位置路径
     xpath = _smart_mobile_xpath(attrs, element_type, xpath, platform)
-    locators: list[dict[str, Any]] = []
+
     if platform == "android":
+        locators: list[dict[str, Any]] = []
         if resource_id:
             locators.append({"strategy": "id", "locator": resource_id, "score": 98})
         if accessibility:
@@ -2274,16 +2288,38 @@ def _mobile_locators_for(attrs: dict[str, str], element_type: str, xpath: str, p
         if text:
             escaped = text.replace('"', '\\"')
             locators.append({"strategy": "android_uiautomator", "locator": f'new UiSelector().text("{escaped}")', "score": 82})
-    else:
-        if accessibility:
-            locators.append({"strategy": "accessibility_id", "locator": accessibility, "score": 96})
-            predicate_value = accessibility.replace("'", "\\'")
-            locators.append({"strategy": "ios_predicate", "locator": f"name == '{predicate_value}'", "score": 90})
-            locators.append({"strategy": "ios_class_chain", "locator": f"**/{element_type}[`name == '{predicate_value}'`]", "score": 86})
-    if text and not any(item["locator"] == text for item in locators):
-        locators.append({"strategy": "text", "locator": text, "score": 76})
-    locators.append({"strategy": "xpath", "locator": xpath, "score": 62})
-    return locators
+        if text and not any(item["locator"] == text for item in locators):
+            locators.append({"strategy": "text", "locator": text, "score": 76})
+        locators.append({"strategy": "xpath", "locator": xpath, "score": 62})
+        return locators
+
+    # —— iOS：唯一性感知 ——
+    name_unique = name_matches <= 1
+    type_unique = type_matches <= 1
+    ambiguous = not name_unique
+    out: list[dict[str, Any]] = []
+
+    def add(strategy: str, locator: str, base_score: int, *, scoped: bool) -> None:
+        # scoped=True：该定位器把匹配限定到了控件类型（class_chain / typed xpath）。
+        unique = type_unique if scoped else name_unique
+        matches = type_matches if scoped else name_matches
+        score = base_score
+        if ambiguous:
+            score = 99 if (scoped and type_unique) else 30
+        out.append({
+            "strategy": strategy, "locator": locator, "score": score,
+            "is_unique": unique, "match_count": matches,
+        })
+
+    if accessibility:
+        add("accessibility_id", accessibility, 96, scoped=False)
+        predicate_value = accessibility.replace("'", "\\'")
+        add("ios_predicate", f"name == '{predicate_value}'", 90, scoped=False)
+        add("ios_class_chain", f"**/{element_type}[`name == '{predicate_value}'`]", 86, scoped=True)
+    if text and not any(item["locator"] == text for item in out):
+        add("text", text, 76, scoped=False)
+    add("xpath", xpath, 62, scoped=("@" in xpath and xpath.lstrip().startswith("//")))
+    return out
 
 
 def _mobile_elements_from_source(
@@ -2300,6 +2336,19 @@ def _mobile_elements_from_source(
         return []
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
+
+    # 预统计整棵树里 accessibility 名 / (类型,名) 的出现次数 —— 与 Appium findElement 的
+    # 可见口径一致（它扫全树、不分"worth"）。用于判定裸 accessibility_id 是否本屏唯一。
+    name_counts: dict[str, int] = {}
+    type_name_counts: dict[tuple[str, str], int] = {}
+    for _node in root.iter():
+        _a = _node.attrib
+        _acc = _a.get("content-desc") or _a.get("name") or _a.get("label") or ""
+        if not _acc:
+            continue
+        _etype = _a.get("class") or _a.get("type") or str(_node.tag).split("}")[-1]
+        name_counts[_acc] = name_counts.get(_acc, 0) + 1
+        type_name_counts[(_etype, _acc)] = type_name_counts.get((_etype, _acc), 0) + 1
 
     def _worth(attrs: dict[str, str], has_children: bool) -> bool:
         rid = attrs.get("resource-id") or attrs.get("resourceId") or ""
@@ -2341,7 +2390,11 @@ def _mobile_elements_from_source(
                     "element_type": element_type[:100],
                     "fingerprint": fingerprint,
                     "attributes": {**attrs, "bounds": bounds},
-                    "locators": _mobile_locators_for(attrs, element_type, path, platform),
+                    "locators": _mobile_locators_for(
+                        attrs, element_type, path, platform,
+                        name_counts.get(accessibility, 1) if accessibility else 1,
+                        type_name_counts.get((element_type, accessibility), 1) if accessibility else 1,
+                    ),
                 })
         tag_counts: dict[str, int] = {}
         for child in children:
