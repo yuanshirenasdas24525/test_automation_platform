@@ -230,21 +230,32 @@ export function UiTreePanel({
 
   // 仅可选：只渲染映射到元素库的节点，缩进按“有多少个已映射祖先”体现真实层级，
   // 中间那些无意义的包装容器被跳过（但仍递归其后代，好把深处的叶子提上来）。
-  // 整屏面积（树根 = Application/hierarchy），用于判定"大容器"。
-  const screenArea = tree?.bounds ? tree.bounds.w * tree.bounds.h : 0;
-  const hasMappedDescendant = (node: TreeNode): boolean =>
-    node.children.some((c) => elementFor(c) != null || hasMappedDescendant(c));
+  // 每个节点"内部可选后代"的数量（后代中能映射到元素库的个数）。
+  // RN 的聚合容器（把标题+价格+星星+按钮全并进自己 desc 的那种 Other）内部含 ≥2 个
+  // 可选后代；真正的控件（如 "Add To Cart button" 只包着自己的文字）≤1。以此区分：
+  // ≥2 判为聚合容器、在「仅可选」里隐藏，点了才不会选中一大片。
+  const capturedDescCount = useMemo(() => {
+    const m = new Map<string, number>();
+    const count = (n: TreeNode): number => {
+      let c = 0;
+      for (const ch of n.children) c += (elementFor(ch) ? 1 : 0) + count(ch);
+      m.set(n.key, c);
+      return c;
+    };
+    if (tree) count(tree);
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tree, elementByBounds]);
 
   const renderPickableRows = (): ReactElement[] => {
     const rows: ReactElement[] = [];
     const walk = (node: TreeNode, mappedDepth: number) => {
       const el = elementFor(node);
-      // 「仅可选」里再滤掉两类"点了一大片"的节点：①匿名节点（无 desc/text/id，无定位
-      // 价值）；②面积占屏 >55% 且内部还含可选子元素的大容器（留给里面的小元素）。
+      // 「仅可选」再滤掉两类"点了一大片"的节点：①匿名节点（无 desc/text/id，无定位
+      // 价值）；②聚合容器（内部含 ≥2 个可选后代）—— 留给里面的具体元素。
       const label = nodeLabel(node.attrs);
-      const areaFrac = screenArea && node.bounds ? (node.bounds.w * node.bounds.h) / screenArea : 0;
-      const isBigContainer = areaFrac > 0.55 && hasMappedDescendant(node);
-      const show = el != null && label != null && !isBigContainer;
+      const isAggregator = (capturedDescCount.get(node.key) ?? 0) >= 2;
+      const show = el != null && label != null && !isAggregator;
       if (el && show) {
         const isSel = el.id === selectedElementId;
         rows.push(
