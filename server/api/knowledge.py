@@ -60,7 +60,13 @@ def _require_title(title: str) -> str:
 
 
 def _require_doc_in_project(session, doc_id: int, project_id: Optional[int] = None):
-    """取文档；不存在 404。传了 project_id 则校验归属（防 IDOR）。"""
+    """取文档；不存在 404。
+
+    说明：当前 get/update/delete 调用方都不传 project_id，故此处实际只做「存在性」
+    校验。真正的跨项目归属防护（IDOR）依赖平台统一的 assert_project_access，按项目
+    约定待「项目成员表」落地后统一开启；届时在此传入并校验 project_id 即可全局生效。
+    传了 project_id 时才比对归属（403），为将来接入预留。
+    """
     doc = knowledge_service.get_doc(session, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
@@ -123,7 +129,7 @@ def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep, current_u
 
 
 @router.delete("/{doc_id}")
-def delete_knowledge(doc_id: int, db: DBDep):
+def delete_knowledge(doc_id: int, db: DBDep, current_user: CurrentUserDep):
     doc = _require_doc_in_project(db.session, doc_id)
     knowledge_service.delete_doc(db.session, doc)
     return {"status": "success", "data": {"id": doc_id}}

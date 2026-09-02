@@ -7,6 +7,8 @@ context_type/module_id，include_in_rag = importance>0），并把**原 project_
 
 幂等：已回填过（knowledge_document_id 非空）的行跳过。
 
+须先执行 ``alembic upgrade head`` 建好表和列，再跑本脚本。
+
 跑法（先 dry-run 看数量）：
     ./venv/bin/python -m database.migrations.data_migrations.migrate_knowledge_to_dedicated_tables
 
@@ -63,7 +65,11 @@ def main():
         )
         session.add(doc)
         session.flush()                          # 拿 doc.id
-        ctx.knowledge_document_id = doc.id       # 复用旧行做投影
+        if doc.include_in_rag:
+            ctx.knowledge_document_id = doc.id   # 复用旧行做投影
+        else:
+            # 不纳入检索的文档不应有投影行（与 sync_rag_projection 的不变量一致）
+            session.delete(ctx)
         migrated += 1
         print(f"  ✓ ctx#{ctx.id} → doc#{doc.id}  {doc.title[:30]}")
 

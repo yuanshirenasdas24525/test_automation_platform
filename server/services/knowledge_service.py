@@ -98,26 +98,28 @@ def _doc_snapshot(doc: KnowledgeDocument) -> dict:
 def sync_rag_projection(session, doc: KnowledgeDocument) -> None:
     """把文档投影到 project_contexts（幂等 upsert）；不纳入检索则删除投影行。
 
-    投影是派生数据：任何异常都吞掉并记日志，绝不冒泡阻断文档保存。
+    投影是派生数据：用 SAVEPOINT 隔离，投影失败只回滚本嵌套块并记日志，
+    绝不把外层事务标脏、绝不阻断文档保存。
     """
     try:
-        row = (
-            session.query(ProjectContext)
-            .filter(ProjectContext.knowledge_document_id == doc.id)
-            .first()
-        )
-        if not doc.include_in_rag:
-            if row is not None:
-                session.delete(row)
-            return
-        fields = projection_fields(_doc_snapshot(doc))
-        if row is None:
-            row = ProjectContext(knowledge_document_id=doc.id, **fields)
-            session.add(row)
-        else:
-            for k, v in fields.items():
-                setattr(row, k, v)
-        session.flush()
+        with session.begin_nested():  # SAVEPOINT
+            row = (
+                session.query(ProjectContext)
+                .filter(ProjectContext.knowledge_document_id == doc.id)
+                .first()
+            )
+            if not doc.include_in_rag:
+                if row is not None:
+                    session.delete(row)
+            else:
+                fields = projection_fields(_doc_snapshot(doc))
+                if row is None:
+                    row = ProjectContext(knowledge_document_id=doc.id, **fields)
+                    session.add(row)
+                else:
+                    for k, v in fields.items():
+                        setattr(row, k, v)
+            session.flush()
     except Exception:  # noqa: BLE001 —— 投影失败不阻断主流程
         import logging
         logging.getLogger(__name__).exception(
