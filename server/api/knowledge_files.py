@@ -44,6 +44,11 @@ async def upload_file_doc(
 ):
     if not db.session.query(Project).filter(Project.id == project_id).first():
         raise HTTPException(status_code=404, detail=f"项目不存在：{project_id}")
+    if folder_id is not None:
+        from server.services import knowledge_folder_service as kfs
+        f = kfs.get_folder(db.session, folder_id)
+        if not f or f.project_id != project_id:
+            raise HTTPException(status_code=400, detail=f"目录不存在或不属于该项目：{folder_id}")
     data, filename, mime = await _read_validated(file)
     doc = knowledge_service.create_file_doc(
         db.session, project_id=project_id, filename=filename, data=data,
