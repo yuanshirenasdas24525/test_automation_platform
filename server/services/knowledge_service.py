@@ -234,6 +234,12 @@ def update_doc(
     tag_ids: Optional[List[int]] = None,
     editor_id: Optional[int] = None,
 ) -> KnowledgeDocument:
+    # 版本快照：标题/正文将改变时，先把当前内容存一版（阶段 2）
+    if doc.id is not None:
+        from server.services import knowledge_version_service as kvs
+        new_title_norm = title.strip()[:255] if title is not None else None
+        if kvs.content_changed(doc.title, doc.content_html, new_title_norm, content_html):
+            kvs.snapshot(session, doc, editor_id=editor_id)
     if title is not None:
         doc.title = title.strip()[:255]
     if content_html is not None:
@@ -252,6 +258,20 @@ def update_doc(
     if tag_ids is not None:
         from server.services import knowledge_tag_service as kts
         kts.set_document_tags(session, doc, tag_ids)
+    session.flush()
+    sync_rag_projection(session, doc)
+    return doc
+
+
+def restore_version(session, doc, version, *, editor_id: Optional[int] = None):
+    """把文档回滚到某个历史版本。回滚前先给当前内容存一版（便于再撤销）。"""
+    from server.services import knowledge_version_service as kvs
+    kvs.snapshot(session, doc, editor_id=editor_id)
+    doc.title = (version.title or "")[:255]
+    doc.content_html = version.content_html or ""
+    doc.content = html_to_text(doc.content_html)
+    if editor_id is not None:
+        doc.editor_id = editor_id
     session.flush()
     sync_rag_projection(session, doc)
     return doc
