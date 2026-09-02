@@ -2007,6 +2007,28 @@ export const KNOWLEDGE_CONTEXT_TYPES = [
   { value: "user_scenario", label: "用户场景" },
 ] as const;
 
+export interface KnowledgeTagLite {
+  id: number;
+  name: string;
+  color?: string | null;
+}
+
+export interface KnowledgeTag {
+  id: number;
+  project_id: number;
+  name: string;
+  color?: string | null;
+}
+
+export interface KnowledgeFolderNode {
+  id: number;
+  project_id: number;
+  parent_id: number | null;
+  name: string;
+  sort_order: number;
+  children: KnowledgeFolderNode[];
+}
+
 export interface KnowledgeDoc {
   id: number;
   project_id: number;
@@ -2020,6 +2042,9 @@ export interface KnowledgeDoc {
   content_html?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  folder_id?: number | null;
+  is_pinned?: boolean;
+  tags?: KnowledgeTagLite[];
 }
 
 export interface KnowledgeDocCreate {
@@ -2029,6 +2054,8 @@ export interface KnowledgeDocCreate {
   module_id?: number | null;
   context_type?: string;
   include_in_rag: boolean;
+  folder_id?: number | null;
+  tag_ids?: number[];
 }
 
 export interface KnowledgeDocUpdate {
@@ -2037,4 +2064,6 @@ export interface KnowledgeDocUpdate {
   module_id?: number | null;
   context_type?: string;
   include_in_rag: boolean;
+  folder_id?: number | null;
+  tag_ids?: number[];
 }

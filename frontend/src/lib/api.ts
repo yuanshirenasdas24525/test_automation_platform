@@ -118,6 +118,8 @@ import type {
   KnowledgeDoc,
   KnowledgeDocCreate,
   KnowledgeDocUpdate,
+  KnowledgeFolderNode,
+  KnowledgeTag,
 } from "@/types/domain";
 
 export class ApiError extends Error {
@@ -2803,9 +2805,15 @@ export const uiRecordingsApi = {
 // 知识库（项目管理 → 知识库 tab）
 // ---------------------------------------------------------------------------
 export const knowledgeApi = {
-  list(projectId: number, opts: { module_id?: number | null } = {}) {
+  list(
+    projectId: number,
+    opts: { module_id?: number | null; folder_id?: number | null; tag_id?: number | null; q?: string } = {},
+  ) {
     const qs = new URLSearchParams({ project_id: String(projectId) });
     if (opts.module_id != null) qs.set("module_id", String(opts.module_id));
+    if (opts.folder_id != null) qs.set("folder_id", String(opts.folder_id));
+    if (opts.tag_id != null) qs.set("tag_id", String(opts.tag_id));
+    if (opts.q && opts.q.trim()) qs.set("q", opts.q.trim());
     return request<KnowledgeDoc[]>(`/api/knowledge?${qs.toString()}`);
   },
   get(id: number) {
@@ -2817,7 +2825,40 @@ export const knowledgeApi = {
   update(id: number, body: KnowledgeDocUpdate) {
     return request<KnowledgeDoc>(`/api/knowledge/${id}`, { method: "PUT", body });
   },
+  pin(id: number, pinned: boolean) {
+    return request<KnowledgeDoc>(`/api/knowledge/${id}/pin`, { method: "PATCH", body: { pinned } });
+  },
   remove(id: number) {
     return request<{ id: number }>(`/api/knowledge/${id}`, { method: "DELETE" });
+  },
+};
+
+export const knowledgeFoldersApi = {
+  list(projectId: number) {
+    return request<KnowledgeFolderNode[]>(`/api/knowledge/folders?project_id=${projectId}`);
+  },
+  create(body: { project_id: number; name: string; parent_id?: number | null }) {
+    return request<KnowledgeFolderNode>("/api/knowledge/folders", { method: "POST", body });
+  },
+  update(id: number, body: { name?: string; parent_id?: number | null; move_to_root?: boolean }) {
+    return request<KnowledgeFolderNode>(`/api/knowledge/folders/${id}`, { method: "PUT", body });
+  },
+  remove(id: number) {
+    return request<{ id: number }>(`/api/knowledge/folders/${id}`, { method: "DELETE" });
+  },
+};
+
+export const knowledgeTagsApi = {
+  list(projectId: number) {
+    return request<KnowledgeTag[]>(`/api/knowledge/tags?project_id=${projectId}`);
+  },
+  create(body: { project_id: number; name: string; color?: string | null }) {
+    return request<KnowledgeTag>("/api/knowledge/tags", { method: "POST", body });
+  },
+  update(id: number, body: { name?: string; color?: string | null }) {
+    return request<KnowledgeTag>(`/api/knowledge/tags/${id}`, { method: "PUT", body });
+  },
+  remove(id: number) {
+    return request<{ id: number }>(`/api/knowledge/tags/${id}`, { method: "DELETE" });
   },
 };
