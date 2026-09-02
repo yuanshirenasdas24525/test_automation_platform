@@ -139,11 +139,32 @@ def sync_rag_projection(session, doc: KnowledgeDocument) -> None:
 # 查询
 # ---------------------------------------------------------------------------
 
-def list_docs(session, project_id: int, module_id: Optional[int] = None) -> List[KnowledgeDocument]:
-    q = session.query(KnowledgeDocument).filter(KnowledgeDocument.project_id == project_id)
+def list_docs(
+    session,
+    project_id: int,
+    module_id: Optional[int] = None,
+    *,
+    folder_id: Optional[int] = None,
+    tag_id: Optional[int] = None,
+    q: Optional[str] = None,
+) -> List[KnowledgeDocument]:
+    query = session.query(KnowledgeDocument).filter(KnowledgeDocument.project_id == project_id)
     if module_id is not None:
-        q = q.filter(KnowledgeDocument.module_id == module_id)
-    return q.order_by(
+        query = query.filter(KnowledgeDocument.module_id == module_id)
+    if folder_id is not None:
+        query = query.filter(KnowledgeDocument.folder_id == folder_id)
+    if tag_id is not None:
+        from database.models import KnowledgeDocumentTag
+        query = query.join(
+            KnowledgeDocumentTag, KnowledgeDocumentTag.document_id == KnowledgeDocument.id
+        ).filter(KnowledgeDocumentTag.tag_id == tag_id)
+    kw = normalize_search_query(q)
+    if kw:
+        like = f"%{kw}%"
+        query = query.filter(
+            (KnowledgeDocument.title.ilike(like)) | (KnowledgeDocument.content.ilike(like))
+        )
+    return query.order_by(
         KnowledgeDocument.is_pinned.desc(),
         KnowledgeDocument.updated_at.desc(),
         KnowledgeDocument.id.desc(),
@@ -165,14 +186,17 @@ def create_doc(
     title: str,
     content_html: str,
     module_id: Optional[int] = None,
+    folder_id: Optional[int] = None,
     context_type: Optional[str] = None,
     include_in_rag: bool = True,
+    tag_ids: Optional[List[int]] = None,
     author_id: Optional[int] = None,
 ) -> KnowledgeDocument:
     content = html_to_text(content_html)
     doc = KnowledgeDocument(
         project_id=project_id,
         module_id=module_id,
+        folder_id=folder_id,
         doc_type="rich_text",
         title=(title or "").strip()[:255],
         content=content,
@@ -184,6 +208,9 @@ def create_doc(
     )
     session.add(doc)
     session.flush()          # 拿到 doc.id 供投影关联
+    if tag_ids is not None:
+        from server.services import knowledge_tag_service as kts
+        kts.set_document_tags(session, doc, tag_ids)
     sync_rag_projection(session, doc)
     return doc
 
@@ -195,8 +222,10 @@ def update_doc(
     title: Optional[str] = None,
     content_html: Optional[str] = None,
     module_id: Optional[int] = ...,   # ... = 不改
+    folder_id: Optional[int] = ...,   # ... = 不改
     context_type: Optional[str] = None,
     include_in_rag: Optional[bool] = None,
+    tag_ids: Optional[List[int]] = None,
     editor_id: Optional[int] = None,
 ) -> KnowledgeDocument:
     if title is not None:
@@ -206,14 +235,25 @@ def update_doc(
         doc.content = html_to_text(content_html)
     if module_id is not ...:
         doc.module_id = module_id
+    if folder_id is not ...:
+        doc.folder_id = folder_id
     if context_type is not None:
         doc.context_type = _normalize_context_type(context_type)
     if include_in_rag is not None:
         doc.include_in_rag = include_in_rag
     if editor_id is not None:
         doc.editor_id = editor_id
+    if tag_ids is not None:
+        from server.services import knowledge_tag_service as kts
+        kts.set_document_tags(session, doc, tag_ids)
     session.flush()
     sync_rag_projection(session, doc)
+    return doc
+
+
+def set_pinned(session, doc: KnowledgeDocument, pinned: bool) -> KnowledgeDocument:
+    doc.is_pinned = bool(pinned)
+    session.flush()
     return doc
 
 
@@ -239,6 +279,12 @@ def serialize(doc: KnowledgeDocument, *, detail: bool = False) -> dict:
         "context_type": doc.context_type,
         "summary": (doc.content or "")[:500],
         "include_in_rag": bool(doc.include_in_rag),
+        "folder_id": doc.folder_id,
+        "is_pinned": bool(doc.is_pinned),
+        "tags": [
+            {"id": t.id, "name": t.name, "color": t.color}
+            for t in (doc.tags or [])
+        ],
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
     }

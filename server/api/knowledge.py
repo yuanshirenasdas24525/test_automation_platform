@@ -25,16 +25,20 @@ class KnowledgeCreate(pydantic.BaseModel):
     title: str
     content_html: str = ""
     module_id: Optional[int] = None
+    folder_id: Optional[int] = None
     context_type: Optional[str] = None
     include_in_rag: bool = True
+    tag_ids: Optional[list[int]] = None
 
 
 class KnowledgeUpdate(pydantic.BaseModel):
     title: str
     content_html: str = ""
     module_id: Optional[int] = None
+    folder_id: Optional[int] = None
     context_type: Optional[str] = None
     include_in_rag: bool = True
+    tag_ids: Optional[list[int]] = None
 
 
 def _require_project(session, project_id: int) -> Project:
@@ -80,9 +84,14 @@ def list_knowledge(
     db: DBDep,
     project_id: int = Query(..., description="项目 id 必填"),
     module_id: Optional[int] = Query(None, description="按模块过滤，不传=全部"),
+    folder_id: Optional[int] = Query(None, description="按文件夹过滤，不传=全部"),
+    tag_id: Optional[int] = Query(None, description="按标签过滤，不传=全部"),
+    q: Optional[str] = Query(None, description="标题/正文全文搜索"),
 ):
     _require_project(db.session, project_id)
-    docs = knowledge_service.list_docs(db.session, project_id, module_id)
+    docs = knowledge_service.list_docs(
+        db.session, project_id, module_id, folder_id=folder_id, tag_id=tag_id, q=q
+    )
     return {"status": "success", "data": [knowledge_service.serialize(d) for d in docs]}
 
 
@@ -103,8 +112,10 @@ def create_knowledge(payload: KnowledgeCreate, db: DBDep, current_user: CurrentU
         title=title,
         content_html=payload.content_html,
         module_id=payload.module_id,
+        folder_id=payload.folder_id,
         context_type=payload.context_type,
         include_in_rag=payload.include_in_rag,
+        tag_ids=payload.tag_ids,
         author_id=current_user.id,
     )
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
@@ -121,10 +132,23 @@ def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep, current_u
         title=title,
         content_html=payload.content_html,
         module_id=payload.module_id,
+        folder_id=payload.folder_id,
         context_type=payload.context_type,
         include_in_rag=payload.include_in_rag,
+        tag_ids=payload.tag_ids,
         editor_id=current_user.id,
     )
+    return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
+
+
+class PinUpdate(pydantic.BaseModel):
+    pinned: bool
+
+
+@router.patch("/{doc_id}/pin")
+def pin_knowledge(doc_id: int, payload: PinUpdate, db: DBDep, current_user: CurrentUserDep):
+    doc = _require_doc_in_project(db.session, doc_id)
+    doc = knowledge_service.set_pinned(db.session, doc, payload.pinned)
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
 
 
