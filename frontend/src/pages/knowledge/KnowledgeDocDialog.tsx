@@ -1,5 +1,5 @@
 /** 知识库文档 新建 / 编辑弹窗。 */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -9,18 +9,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { RichTextEditor } from "@/components/editor/RichTextEditor";
-import { ApiError, knowledgeApi, type ModulePickerNode } from "@/lib/api";
-import { KNOWLEDGE_CONTEXT_TYPES } from "@/types/domain";
+import { ApiError, knowledgeApi, knowledgeFoldersApi, knowledgeTagsApi, type ModulePickerNode } from "@/lib/api";
+import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeFolderNode } from "@/types/domain";
 
-const NO_MODULE = "__none__";
+const NO_FOLDER = "__root__";
 const DEFAULT_TYPE = "term_definition";
 
 export function KnowledgeDocDialog({
   open,
   projectId,
-  modules,
+  // 调用方（KnowledgeBasePanel）仍传入 modules；弹窗改用目录/标签后暂不消费，保留 prop 形状以兼容上层。
+  modules: _modules,
   editingId,
-  defaultModuleId,
+  defaultFolderId,
   onClose,
   onSaved,
 }: {
@@ -28,7 +29,7 @@ export function KnowledgeDocDialog({
   projectId: number;
   modules: ModulePickerNode[];
   editingId: number | null;
-  defaultModuleId: number | null;
+  defaultFolderId: number | null;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -37,7 +38,9 @@ export function KnowledgeDocDialog({
 
   const [title, setTitle] = useState("");
   const [contentHtml, setContentHtml] = useState("");
-  const [moduleId, setModuleId] = useState<string>(NO_MODULE);
+  const [folderId, setFolderId] = useState<string>(NO_FOLDER);
+  const [tagIds, setTagIds] = useState<number[]>([]);
+  const [newTag, setNewTag] = useState("");
   const [contextType, setContextType] = useState<string>(DEFAULT_TYPE);
   const [includeInRag, setIncludeInRag] = useState(true);
 
@@ -48,6 +51,28 @@ export function KnowledgeDocDialog({
     enabled: open && isEdit,
   });
 
+  const foldersQuery = useQuery({
+    queryKey: ["knowledge-folders", projectId],
+    queryFn: () => knowledgeFoldersApi.list(projectId),
+    enabled: open && Number.isFinite(projectId),
+  });
+  const tagsQuery = useQuery({
+    queryKey: ["knowledge-tags", projectId],
+    queryFn: () => knowledgeTagsApi.list(projectId),
+    enabled: open && Number.isFinite(projectId),
+  });
+  const flatFolders = useMemo(() => {
+    const out: { id: number; label: string }[] = [];
+    const walk = (nodes: KnowledgeFolderNode[], depth: number) => {
+      for (const n of nodes) {
+        out.push({ id: n.id, label: `${"　".repeat(depth)}${n.name}` });
+        if (n.children?.length) walk(n.children, depth + 1);
+      }
+    };
+    walk(foldersQuery.data ?? [], 0);
+    return out;
+  }, [foldersQuery.data]);
+
   // open / 目标切换时重置表单
   useEffect(() => {
     if (!open) return;
@@ -55,26 +80,31 @@ export function KnowledgeDocDialog({
       const d = detailQuery.data;
       setTitle(d.title);
       setContentHtml(d.content_html ?? "");
-      setModuleId(d.module_id != null ? String(d.module_id) : NO_MODULE);
+      setFolderId(d.folder_id != null ? String(d.folder_id) : NO_FOLDER);
+      setTagIds((d.tags ?? []).map((t) => t.id));
       setContextType(d.context_type || DEFAULT_TYPE);
       setIncludeInRag(d.include_in_rag);
+      setNewTag("");
     } else if (!isEdit) {
       setTitle("");
       setContentHtml("");
-      setModuleId(defaultModuleId != null ? String(defaultModuleId) : NO_MODULE);
+      setFolderId(defaultFolderId != null ? String(defaultFolderId) : NO_FOLDER);
+      setTagIds([]);
       setContextType(DEFAULT_TYPE);
       setIncludeInRag(true);
+      setNewTag("");
     }
-  }, [open, isEdit, detailQuery.data, defaultModuleId]);
+  }, [open, isEdit, detailQuery.data, defaultFolderId]);
 
   const save = useMutation({
     mutationFn: () => {
       const body = {
         title: title.trim(),
         content_html: contentHtml,
-        module_id: moduleId === NO_MODULE ? null : Number(moduleId),
+        folder_id: folderId === NO_FOLDER ? null : Number(folderId),
         context_type: contextType,
         include_in_rag: includeInRag,
+        tag_ids: tagIds,
       };
       return isEdit
         ? knowledgeApi.update(editingId as number, body)
@@ -108,13 +138,13 @@ export function KnowledgeDocDialog({
                   placeholder="如：登录模块接口约定" autoFocus />
               </div>
               <div className="space-y-1.5">
-                <Label>所属模块</Label>
-                <Select value={moduleId} onValueChange={setModuleId}>
+                <Label>所属目录</Label>
+                <Select value={folderId} onValueChange={setFolderId}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={NO_MODULE}>（根级 / 不指定）</SelectItem>
-                    {modules.map((m) => (
-                      <SelectItem key={m.id} value={String(m.id)}>{m.name}</SelectItem>
+                    <SelectItem value={NO_FOLDER}>（根级 / 不指定）</SelectItem>
+                    {flatFolders.map((f) => (
+                      <SelectItem key={f.id} value={String(f.id)}>{f.label}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -135,6 +165,41 @@ export function KnowledgeDocDialog({
             <div className="space-y-1.5">
               <Label>正文</Label>
               <RichTextEditor value={contentHtml} onChange={setContentHtml} height={300} toolbar="full" />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label>标签</Label>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {(tagsQuery.data ?? []).map((t) => {
+                  const on = tagIds.includes(t.id);
+                  return (
+                    <button type="button" key={t.id}
+                      className={`rounded-full border px-2.5 py-0.5 text-xs transition ${on ? "border-transparent bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+                      onClick={() => setTagIds((prev) => on ? prev.filter((x) => x !== t.id) : [...prev, t.id])}>
+                      {t.name}
+                    </button>
+                  );
+                })}
+                <input
+                  className="h-7 w-28 rounded border px-2 text-xs outline-none focus:border-primary"
+                  placeholder="+ 新标签回车"
+                  value={newTag}
+                  onChange={(e) => setNewTag(e.target.value)}
+                  onKeyDown={async (e) => {
+                    if (e.key === "Enter" && newTag.trim()) {
+                      e.preventDefault();
+                      try {
+                        const tag = await knowledgeTagsApi.create({ project_id: projectId, name: newTag.trim() });
+                        setNewTag("");
+                        await queryClient.invalidateQueries({ queryKey: ["knowledge-tags", projectId] });
+                        setTagIds((prev) => prev.includes(tag.id) ? prev : [...prev, tag.id]);
+                      } catch (err) {
+                        toast.error((err as ApiError).message);
+                      }
+                    }
+                  }}
+                />
+              </div>
             </div>
 
             <label className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
