@@ -22,6 +22,7 @@ from .config import router as config_router
 from .content import router as content_router
 from .crypto_echo import router as crypto_echo_router
 from .knowledge import router as knowledge_router
+from .knowledge_folders import router as knowledge_folders_router
 from .devices import router as devices_router
 from .functional_cases import router as functional_cases_router
 from .modules import router as modules_router
@@ -60,6 +61,7 @@ __all__ = [
     "content_router",
     "crypto_echo_router",
     "knowledge_router",
+    "knowledge_folders_router",
     "devices_router",
     "functional_cases_router",
     "modules_router",
