@@ -10,6 +10,8 @@ import { RichTextViewer } from "@/components/editor/RichTextViewer";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { ApiError, knowledgeApi } from "@/lib/api";
 import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDocVersion } from "@/types/domain";
+import { FilePreview } from "./FilePreview";
+import { AttachmentList } from "./AttachmentList";
 
 const TYPE_LABELS = new Map<string, string>(KNOWLEDGE_CONTEXT_TYPES.map((t) => [t.value, t.label]));
 const FONT_PX = [14, 15.5, 17.5];
@@ -118,7 +120,7 @@ export function KnowledgeDocViewDrawer({
             <Button variant={mode === "history" ? "secondary" : "ghost"} size="sm" onClick={() => { setMode("history"); setPreviewVersionId(null); }}>
               <History className="h-4 w-4 mr-1" />历史版本
             </Button>
-            {mode === "read" && (
+            {mode === "read" && doc?.doc_type !== "file" && (
               <Button variant="ghost" size="sm" title="字号" onClick={() => setFontIdx((i) => (i + 1) % FONT_PX.length)}>
                 <Type className="h-4 w-4 mr-1" />字号
               </Button>
@@ -134,26 +136,40 @@ export function KnowledgeDocViewDrawer({
       {detailQuery.isLoading || !doc ? (
         <div className="flex-1 py-16 text-center text-sm text-muted-foreground">加载中…</div>
       ) : mode === "read" ? (
-        <div className="flex-1 overflow-hidden flex">
-          <div ref={contentRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-4" style={{ fontSize: FONT_PX[fontIdx] }}>
+        doc.doc_type === "file" ? (
+          <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
             {metaBar}
-            <RichTextViewer source={doc.content_html ?? ""} />
+            {doc.attachments && doc.attachments.length > 0 ? (
+              <FilePreview attachment={doc.attachments[0]} />
+            ) : (
+              <div className="py-16 text-center text-sm text-muted-foreground">该文件文档暂无附件</div>
+            )}
           </div>
-          {toc.length > 0 && (
-            <nav className="w-52 shrink-0 border-l overflow-y-auto p-3">
-              <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">本页目录</div>
-              <div className="space-y-0.5">
-                {toc.map((t) => (
-                  <button key={t.id} onClick={() => scrollTo(t.id)}
-                    className="block w-full truncate text-left text-xs text-muted-foreground hover:text-foreground py-1 border-l-2 border-transparent hover:border-primary"
-                    style={{ paddingLeft: 8 + (t.level - 1) * 10 }}>
-                    {t.text}
-                  </button>
-                ))}
+        ) : (
+          <div className="flex-1 overflow-hidden flex">
+            <div ref={contentRef} className="flex-1 space-y-4 overflow-y-auto px-5 py-4" style={{ fontSize: FONT_PX[fontIdx] }}>
+              {metaBar}
+              <RichTextViewer source={doc.content_html ?? ""} />
+              <div className="pt-2 border-t">
+                <AttachmentList docId={doc.id} attachments={doc.attachments ?? []} />
               </div>
-            </nav>
-          )}
-        </div>
+            </div>
+            {toc.length > 0 && (
+              <nav className="w-52 shrink-0 border-l overflow-y-auto p-3">
+                <div className="mb-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">本页目录</div>
+                <div className="space-y-0.5">
+                  {toc.map((t) => (
+                    <button key={t.id} onClick={() => scrollTo(t.id)}
+                      className="block w-full truncate text-left text-xs text-muted-foreground hover:text-foreground py-1 border-l-2 border-transparent hover:border-primary"
+                      style={{ paddingLeft: 8 + (t.level - 1) * 10 }}>
+                      {t.text}
+                    </button>
+                  ))}
+                </div>
+              </nav>
+            )}
+          </div>
+        )
       ) : (
         <div className="flex-1 overflow-hidden flex">
           <div className="w-56 shrink-0 border-r overflow-y-auto p-2">
