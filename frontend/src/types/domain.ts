@@ -2029,6 +2029,15 @@ export interface KnowledgeFolderNode {
   children: KnowledgeFolderNode[];
 }
 
+export interface KnowledgeAttachment {
+  id: number;
+  document_id: number;
+  filename: string;
+  mime?: string | null;
+  size_bytes?: number | null;
+  created_at?: string | null;
+}
+
 export interface KnowledgeDoc {
   id: number;
   project_id: number;
@@ -2044,6 +2053,8 @@ export interface KnowledgeDoc {
   updated_at?: string | null;
   folder_id?: number | null;
   is_pinned?: boolean;
+  doc_type?: string;
+  attachments?: KnowledgeAttachment[];
   tags?: KnowledgeTagLite[];
 }
 

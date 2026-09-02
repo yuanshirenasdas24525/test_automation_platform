@@ -115,6 +115,7 @@ import type {
   WebUiCaseDraft,
   WebUiCaseGenerationPayload,
   WebUiCaseGenerationResponse,
+  KnowledgeAttachment,
   KnowledgeDoc,
   KnowledgeDocCreate,
   KnowledgeDocUpdate,
@@ -2837,6 +2838,29 @@ export const knowledgeApi = {
   },
   restoreVersion(docId: number, versionId: number) {
     return request<KnowledgeDoc>(`/api/knowledge/${docId}/versions/${versionId}/restore`, { method: "POST" });
+  },
+  uploadFileDoc(projectId: number, folderId: number | null, file: File) {
+    const fd = new FormData();
+    fd.append("project_id", String(projectId));
+    if (folderId != null) fd.append("folder_id", String(folderId));
+    fd.append("file", file);
+    return request<KnowledgeDoc>("/api/knowledge/upload", { method: "POST", body: fd });
+  },
+  addAttachment(docId: number, file: File) {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request<KnowledgeAttachment>(`/api/knowledge/${docId}/attachments`, { method: "POST", body: fd });
+  },
+  deleteAttachment(attachmentId: number) {
+    return request<{ id: number }>(`/api/knowledge/attachments/${attachmentId}`, { method: "DELETE" });
+  },
+  async fetchAttachmentBlob(attachmentId: number, disposition: "inline" | "attachment" = "inline"): Promise<Blob> {
+    const token = getToken();
+    const res = await fetch(`/api/knowledge/attachments/${attachmentId}/download?disposition=${disposition}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`下载失败（${res.status}）`);
+    return res.blob();
   },
   remove(id: number) {
     return request<{ id: number }>(`/api/knowledge/${id}`, { method: "DELETE" });
