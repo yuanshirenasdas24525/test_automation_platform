@@ -45,6 +45,14 @@ def html_to_text(html: Optional[str]) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+def normalize_search_query(q: Optional[str]) -> Optional[str]:
+    """搜索词规范化：去首尾空白；空/纯空白返回 None（表示不按关键字过滤）。"""
+    if not q:
+        return None
+    s = q.strip()
+    return s or None
+
+
 def _normalize_context_type(context_type: Optional[str]) -> str:
     if context_type and context_type in ALL_CONTEXT_TYPES:
         return context_type
