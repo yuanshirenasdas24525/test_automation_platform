@@ -45,6 +45,7 @@ import { RequirementDetailDrawer } from "./requirements/RequirementDetailDrawer"
 import { ProjectConfigTab } from "./config/ProjectConfigTab";
 import { ScriptLibraryPanel } from "./ScriptLibraryPage";
 import { KnowledgeBasePanel } from "./knowledge/KnowledgeBasePanel";
+import { KnowledgeFolderTree } from "./knowledge/KnowledgeFolderTree";
 
 const STATUS_META: Record<VersionStatus, { label: string; tone: string }> = {
   planning: { label: "规划中", tone: "text-blue-700 bg-blue-50 ring-blue-200" },
@@ -78,6 +79,7 @@ export function ProjectManagementPage() {
   const [dragModuleId, setDragModuleId] = useState<number | null>(null);
   const [dropTargetId, setDropTargetId] = useState<number | null>(null);
   const [selectedModuleId, setSelectedModuleId] = useState<number | null>(null);
+  const [selectedFolderId, setSelectedFolderId] = useState<number | null>(null);
   const [versionFilterStatus, setVersionFilterStatus] = useState<string>("all");
   const [versionFilterDates, setVersionFilterDates] = useState<{ start: string; end: string }>({ start: "", end: "" });
   const [detailReq, setDetailReq] = useState<Requirement | null>(null);
@@ -389,7 +391,15 @@ export function ProjectManagementPage() {
   return (
     <div className="flex flex-col h-[calc(100vh-120px)]">
       <div className="flex flex-1 min-h-0 gap-0">
-        {moduleTree}
+        {activeTab === "knowledge" ? (
+          <KnowledgeFolderTree
+            projectId={projectId}
+            selectedFolderId={selectedFolderId}
+            onSelect={setSelectedFolderId}
+          />
+        ) : (
+          moduleTree
+        )}
         <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setSelectedModuleId(null); }} className="flex-1 flex flex-col min-h-0">
           <div className="flex items-center justify-between px-6 pt-4 pb-2 border-b">
             <TabsList>
@@ -484,7 +494,7 @@ export function ProjectManagementPage() {
             <div className="flex-1 overflow-y-auto p-6">
               <KnowledgeBasePanel
                 projectId={projectId}
-                selectedModuleId={selectedModuleId}
+                selectedFolderId={selectedFolderId}
                 modules={modules}
                 moduleNames={moduleNames}
               />
