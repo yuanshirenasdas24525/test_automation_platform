@@ -390,7 +390,9 @@ export function CaseDialog({
     const stillExists = databaseConnections.some((item) => item.name === current);
     const next = stillExists ? current : (databaseConnections[0]?.name ?? "");
     if (next !== current) form.setValue("target_db_group", next);
-  }, [databaseConnections, databaseConnectionsQuery.isLoading, form, isApi, existing?.id]);
+    // 依赖里带上 defaults：detail 加载后表单会被 `values: defaults` 重置回空，
+    // 若不重跑这段回退，单步用例（如 0001）就会停在"未配置"。带上后每次重置都补默认连接。
+  }, [databaseConnections, databaseConnectionsQuery.isLoading, form, isApi, existing?.id, defaults]);
 
   const isStepEditorCase = category === "web" || category === "android" || category === "ios" || category === "mixed";
   const currentSteps = (form.watch("steps") as TestStepDraft[] | undefined) ?? [];
