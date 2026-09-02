@@ -163,6 +163,37 @@ def pin_knowledge(doc_id: int, payload: PinUpdate, db: DBDep, current_user: Curr
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
 
 
+@router.get("/{doc_id}/versions")
+def list_doc_versions(doc_id: int, db: DBDep):
+    doc = _require_doc_in_project(db.session, doc_id)
+    from server.services import knowledge_version_service as kvs
+    return {
+        "status": "success",
+        "data": [kvs.serialize_version(v) for v in kvs.list_versions(db.session, doc.id)],
+    }
+
+
+@router.get("/{doc_id}/versions/{version_id}")
+def get_doc_version(doc_id: int, version_id: int, db: DBDep):
+    doc = _require_doc_in_project(db.session, doc_id)
+    from server.services import knowledge_version_service as kvs
+    v = kvs.get_version(db.session, version_id)
+    if not v or v.document_id != doc.id:
+        raise HTTPException(status_code=404, detail=f"版本不存在：{version_id}")
+    return {"status": "success", "data": kvs.serialize_version(v, detail=True)}
+
+
+@router.post("/{doc_id}/versions/{version_id}/restore")
+def restore_doc_version(doc_id: int, version_id: int, db: DBDep, current_user: CurrentUserDep):
+    doc = _require_doc_in_project(db.session, doc_id)
+    from server.services import knowledge_version_service as kvs
+    v = kvs.get_version(db.session, version_id)
+    if not v or v.document_id != doc.id:
+        raise HTTPException(status_code=404, detail=f"版本不存在：{version_id}")
+    doc = knowledge_service.restore_version(db.session, doc, v, editor_id=current_user.id)
+    return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
+
+
 @router.delete("/{doc_id}")
 def delete_knowledge(doc_id: int, db: DBDep, current_user: CurrentUserDep):
     doc = _require_doc_in_project(db.session, doc_id)
