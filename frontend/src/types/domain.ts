@@ -2067,3 +2067,12 @@ export interface KnowledgeDocUpdate {
   folder_id?: number | null;
   tag_ids?: number[];
 }
+
+export interface KnowledgeDocVersion {
+  id: number;
+  document_id: number;
+  title: string;
+  editor_id?: number | null;
+  created_at?: string | null;
+  content_html?: string; // 仅详情返回
+}

@@ -118,6 +118,7 @@ import type {
   KnowledgeDoc,
   KnowledgeDocCreate,
   KnowledgeDocUpdate,
+  KnowledgeDocVersion,
   KnowledgeFolderNode,
   KnowledgeTag,
 } from "@/types/domain";
@@ -2827,6 +2828,15 @@ export const knowledgeApi = {
   },
   pin(id: number, pinned: boolean) {
     return request<KnowledgeDoc>(`/api/knowledge/${id}/pin`, { method: "PATCH", body: { pinned } });
+  },
+  versions(docId: number) {
+    return request<KnowledgeDocVersion[]>(`/api/knowledge/${docId}/versions`);
+  },
+  getVersion(docId: number, versionId: number) {
+    return request<KnowledgeDocVersion>(`/api/knowledge/${docId}/versions/${versionId}`);
+  },
+  restoreVersion(docId: number, versionId: number) {
+    return request<KnowledgeDoc>(`/api/knowledge/${docId}/versions/${versionId}/restore`, { method: "POST" });
   },
   remove(id: number) {
     return request<{ id: number }>(`/api/knowledge/${id}`, { method: "DELETE" });
