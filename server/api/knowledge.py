@@ -14,7 +14,7 @@ import pydantic
 from fastapi import APIRouter, HTTPException, Query
 
 from database.models import Module, Project
-from server.api.deps import DBDep
+from server.api.deps import DBDep, CurrentUserDep
 from server.services import knowledge_service
 
 router = APIRouter(prefix="/knowledge", tags=["knowledge"])
@@ -59,6 +59,16 @@ def _require_title(title: str) -> str:
     return t
 
 
+def _require_doc_in_project(session, doc_id: int, project_id: Optional[int] = None):
+    """取文档；不存在 404。传了 project_id 则校验归属（防 IDOR）。"""
+    doc = knowledge_service.get_doc(session, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
+    if project_id is not None and doc.project_id != project_id:
+        raise HTTPException(status_code=403, detail="无权访问该文档")
+    return doc
+
+
 @router.get("")
 def list_knowledge(
     db: DBDep,
@@ -72,14 +82,12 @@ def list_knowledge(
 
 @router.get("/{doc_id}")
 def get_knowledge(doc_id: int, db: DBDep):
-    doc = knowledge_service.get_doc(db.session, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
+    doc = _require_doc_in_project(db.session, doc_id)
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
 
 
 @router.post("")
-def create_knowledge(payload: KnowledgeCreate, db: DBDep):
+def create_knowledge(payload: KnowledgeCreate, db: DBDep, current_user: CurrentUserDep):
     _require_project(db.session, payload.project_id)
     _validate_module(db.session, payload.module_id, payload.project_id)
     title = _require_title(payload.title)
@@ -91,15 +99,14 @@ def create_knowledge(payload: KnowledgeCreate, db: DBDep):
         module_id=payload.module_id,
         context_type=payload.context_type,
         include_in_rag=payload.include_in_rag,
+        author_id=current_user.id,
     )
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
 
 
 @router.put("/{doc_id}")
-def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep):
-    doc = knowledge_service.get_doc(db.session, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
+def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep, current_user: CurrentUserDep):
+    doc = _require_doc_in_project(db.session, doc_id)
     _validate_module(db.session, payload.module_id, doc.project_id)
     title = _require_title(payload.title)
     doc = knowledge_service.update_doc(
@@ -110,14 +117,13 @@ def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep):
         module_id=payload.module_id,
         context_type=payload.context_type,
         include_in_rag=payload.include_in_rag,
+        editor_id=current_user.id,
     )
     return {"status": "success", "data": knowledge_service.serialize(doc, detail=True)}
 
 
 @router.delete("/{doc_id}")
 def delete_knowledge(doc_id: int, db: DBDep):
-    doc = knowledge_service.get_doc(db.session, doc_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail=f"知识文档不存在：{doc_id}")
+    doc = _require_doc_in_project(db.session, doc_id)
     knowledge_service.delete_doc(db.session, doc)
     return {"status": "success", "data": {"id": doc_id}}
