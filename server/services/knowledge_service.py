@@ -13,6 +13,8 @@ import html as _html
 import re
 from typing import List, Optional
 
+from sqlalchemy.orm import selectinload
+
 from database.models import (
     ALL_CONTEXT_TYPES,
     CONTEXT_SOURCE_KNOWLEDGE,
@@ -148,7 +150,11 @@ def list_docs(
     tag_id: Optional[int] = None,
     q: Optional[str] = None,
 ) -> List[KnowledgeDocument]:
-    query = session.query(KnowledgeDocument).filter(KnowledgeDocument.project_id == project_id)
+    query = (
+        session.query(KnowledgeDocument)
+        .options(selectinload(KnowledgeDocument.tags))
+        .filter(KnowledgeDocument.project_id == project_id)
+    )
     if module_id is not None:
         query = query.filter(KnowledgeDocument.module_id == module_id)
     if folder_id is not None:

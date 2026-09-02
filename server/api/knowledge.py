@@ -56,6 +56,15 @@ def _validate_module(session, module_id: Optional[int], project_id: int) -> None
         raise HTTPException(status_code=400, detail=f"模块不存在或不属于该项目：{module_id}")
 
 
+def _validate_folder(session, folder_id: Optional[int], project_id: int) -> None:
+    if folder_id is None:
+        return
+    from server.services import knowledge_folder_service as kfs
+    folder = kfs.get_folder(session, folder_id)
+    if not folder or folder.project_id != project_id:
+        raise HTTPException(status_code=400, detail=f"目录不存在或不属于该项目：{folder_id}")
+
+
 def _require_title(title: str) -> str:
     t = (title or "").strip()
     if not t:
@@ -105,6 +114,7 @@ def get_knowledge(doc_id: int, db: DBDep):
 def create_knowledge(payload: KnowledgeCreate, db: DBDep, current_user: CurrentUserDep):
     _require_project(db.session, payload.project_id)
     _validate_module(db.session, payload.module_id, payload.project_id)
+    _validate_folder(db.session, payload.folder_id, payload.project_id)
     title = _require_title(payload.title)
     doc = knowledge_service.create_doc(
         db.session,
@@ -125,6 +135,7 @@ def create_knowledge(payload: KnowledgeCreate, db: DBDep, current_user: CurrentU
 def update_knowledge(doc_id: int, payload: KnowledgeUpdate, db: DBDep, current_user: CurrentUserDep):
     doc = _require_doc_in_project(db.session, doc_id)
     _validate_module(db.session, payload.module_id, doc.project_id)
+    _validate_folder(db.session, payload.folder_id, doc.project_id)
     title = _require_title(payload.title)
     doc = knowledge_service.update_doc(
         db.session,

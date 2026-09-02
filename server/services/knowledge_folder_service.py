@@ -93,6 +93,27 @@ def create_folder(
     return folder
 
 
+def _is_self_or_descendant(session, folder_id: int, candidate_parent_id: Optional[int]) -> bool:
+    """把 folder 移到 candidate_parent 下是否会成环：candidate 是 folder 自身或其后代则 True。
+
+    从 candidate 沿 parent_id 向上走到根，途中遇到 folder_id 即成环。带 seen 兜底脏数据死循环。
+    """
+    cur = candidate_parent_id
+    seen = set()
+    while cur is not None:
+        if cur == folder_id:
+            return True
+        if cur in seen:
+            break
+        seen.add(cur)
+        cur = (
+            session.query(KnowledgeFolder.parent_id)
+            .filter(KnowledgeFolder.id == cur)
+            .scalar()
+        )
+    return False
+
+
 def update_folder(
     session,
     folder: KnowledgeFolder,
@@ -103,8 +124,8 @@ def update_folder(
     if name is not None:
         folder.name = name.strip()[:255] or folder.name
     if parent_id is not ...:
-        if parent_id == folder.id:
-            raise ValueError("目录不能移动到自身下")
+        if parent_id is not None and _is_self_or_descendant(session, folder.id, parent_id):
+            raise ValueError("目录不能移动到自身或其子目录下")
         folder.parent_id = parent_id
     session.flush()
     return folder
