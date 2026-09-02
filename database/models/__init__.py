@@ -377,6 +377,17 @@ from .project_context import (
     CONTEXT_SOURCE_PLATFORM,
     CONTEXT_SOURCE_KNOWLEDGE,
 )
+from .knowledge import (
+    KnowledgeFolder,
+    KnowledgeDocument,
+    KnowledgeTag,
+    KnowledgeDocumentTag,
+    KnowledgeAttachment,
+    KnowledgeDocumentVersion,
+    KB_DOC_TYPE_RICH_TEXT,
+    KB_DOC_TYPE_FILE,
+    ALL_KB_DOC_TYPES,
+)
 from .project_version import (
     ProjectVersion,
     VERSION_STATUS_PLANNING,
@@ -547,4 +558,8 @@ __all__ = [
     # API Key（MCP / CI 等机器调用方的长效 service token）
     "ApiKey",
     "API_KEY_SCOPE_READ", "API_KEY_SCOPE_EXECUTE", "API_KEY_SCOPE_AI", "ALL_API_KEY_SCOPES",
+    # Knowledge base（阶段 0：独立表）
+    "KnowledgeFolder", "KnowledgeDocument", "KnowledgeTag",
+    "KnowledgeDocumentTag", "KnowledgeAttachment", "KnowledgeDocumentVersion",
+    "KB_DOC_TYPE_RICH_TEXT", "KB_DOC_TYPE_FILE", "ALL_KB_DOC_TYPES",
 ]

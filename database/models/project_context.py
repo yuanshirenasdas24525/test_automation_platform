@@ -71,6 +71,10 @@ class ProjectContext(Base):
     module_id = Column(
         Integer, ForeignKey("modules.id"), nullable=True, index=True
     )
+    # 知识库投影关联：本行由某篇知识文档投影而来时，指向该文档（阶段 0 起）
+    knowledge_document_id = Column(
+        Integer, ForeignKey("knowledge_documents.id"), nullable=True, index=True
+    )
 
     # 来源
     source_type = Column(String(30), nullable=False, default=CONTEXT_SOURCE_DOCUMENT)
@@ -118,6 +122,7 @@ class ProjectContext(Base):
             "tags": self.tags or [],
             "keywords": self.keywords or [],
             "importance": self.importance,
+            "knowledge_document_id": self.knowledge_document_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
