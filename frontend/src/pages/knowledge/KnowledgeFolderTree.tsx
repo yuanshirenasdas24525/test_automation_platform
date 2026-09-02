@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, MoreHorizontal, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -22,6 +23,7 @@ export function KnowledgeFolderTree({
 }) {
   const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [pendingDelete, setPendingDelete] = useState<KnowledgeFolderNode | null>(null);
 
   const foldersQuery = useQuery({
     queryKey: ["knowledge-folders", projectId],
@@ -59,10 +61,7 @@ export function KnowledgeFolderTree({
     const name = window.prompt("重命名目录", f.name);
     if (name && name.trim()) renameFolder.mutate({ id: f.id, name: name.trim() });
   };
-  const onDelete = (f: KnowledgeFolderNode) => {
-    if (window.confirm(`删除目录「${f.name}」？其中的文档与子目录会上移到父级，不会被删除。`))
-      removeFolder.mutate(f.id);
-  };
+  const onDelete = (f: KnowledgeFolderNode) => setPendingDelete(f);
 
   const renderNode = (f: KnowledgeFolderNode, depth: number) => {
     const hasChildren = f.children.length > 0;
@@ -136,6 +135,13 @@ export function KnowledgeFolderTree({
       ) : (
         <div className="space-y-0.5">{roots.map((f) => renderNode(f, 0))}</div>
       )}
+      <ConfirmDialog
+        open={pendingDelete != null}
+        title="删除目录"
+        description={pendingDelete ? `删除目录「${pendingDelete.name}」？其中的文档与子目录会上移到父级，不会被删除。` : ""}
+        onConfirm={() => { if (pendingDelete) removeFolder.mutate(pendingDelete.id); setPendingDelete(null); }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

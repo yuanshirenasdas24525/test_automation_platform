@@ -6,12 +6,13 @@ import { BookOpen, Pin, PinOff, Pencil, Plus, Search, Sparkles, Trash2 } from "l
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, knowledgeApi, knowledgeTagsApi, type ModulePickerNode } from "@/lib/api";
 import { stripHtml } from "@/lib/utils";
-import { KNOWLEDGE_CONTEXT_TYPES } from "@/types/domain";
+import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDoc } from "@/types/domain";
 import { KnowledgeDocDialog } from "./KnowledgeDocDialog";
 import { KnowledgeDocViewDrawer } from "./KnowledgeDocViewDrawer";
 
@@ -36,6 +37,7 @@ export function KnowledgeBasePanel({
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
   const [tagFilter, setTagFilter] = useState<string>(ALL_TAGS);
+  const [pendingDelete, setPendingDelete] = useState<KnowledgeDoc | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(rawSearch), 300);
@@ -133,7 +135,7 @@ export function KnowledgeBasePanel({
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
                   <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive"
-                    onClick={() => { if (confirm(`删除知识文档「${d.title}」？`)) remove.mutate(d.id); }}>
+                    onClick={() => setPendingDelete(d)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -183,6 +185,14 @@ export function KnowledgeBasePanel({
         defaultFolderId={selectedFolderId}
         onClose={() => setDialogOpen(false)}
         onSaved={() => setDialogOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete != null}
+        title="删除知识文档"
+        description={pendingDelete ? `确定删除「${pendingDelete.title}」？此操作不可撤销。` : ""}
+        onConfirm={() => { if (pendingDelete) remove.mutate(pendingDelete.id); setPendingDelete(null); }}
+        onCancel={() => setPendingDelete(null)}
       />
     </div>
   );
