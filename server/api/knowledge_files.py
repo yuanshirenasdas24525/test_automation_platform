@@ -77,7 +77,7 @@ def download_attachment(
     return FileResponse(
         str(p),
         media_type=a.mime or "application/octet-stream",
-        headers={"Content-Disposition": cd},
+        headers={"Content-Disposition": cd, "X-Content-Type-Options": "nosniff"},
     )
 
 

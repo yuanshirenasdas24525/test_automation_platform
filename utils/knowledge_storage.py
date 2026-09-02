@@ -15,7 +15,7 @@ _DATA = _ROOT / "data"
 MAX_SIZE_BYTES = 50 * 1024 * 1024  # 50MB
 
 ALLOWED_EXTS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv",
     ".ppt", ".pptx", ".md", ".txt", ".json",
 }
