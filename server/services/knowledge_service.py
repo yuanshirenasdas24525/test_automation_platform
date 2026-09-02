@@ -221,6 +221,30 @@ def create_doc(
     return doc
 
 
+def create_file_doc(
+    session, *, project_id: int, filename: str, data: bytes, mime: Optional[str] = None,
+    folder_id: Optional[int] = None, author_id: Optional[int] = None,
+):
+    """上传文件即建一篇「文件文档」(doc_type=file)，把文件存为其附件。默认仅人读。"""
+    from server.services import knowledge_attachment_service as kas
+    doc = KnowledgeDocument(
+        project_id=project_id,
+        folder_id=folder_id,
+        doc_type="file",
+        title=(filename or "文件")[:255],
+        content="",
+        content_html="",
+        context_type="term_definition",
+        include_in_rag=False,
+        author_id=author_id,
+        editor_id=author_id,
+    )
+    session.add(doc)
+    session.flush()
+    kas.create_attachment(session, doc, filename=filename, mime=mime, data=data, uploaded_by=author_id)
+    return doc
+
+
 def update_doc(
     session,
     doc: KnowledgeDocument,
@@ -284,6 +308,9 @@ def set_pinned(session, doc: KnowledgeDocument, pinned: bool) -> KnowledgeDocume
 
 
 def delete_doc(session, doc: KnowledgeDocument) -> None:
+    from utils import knowledge_storage as storage
+    for a in list(doc.attachments or []):
+        storage.delete_file(a.storage_path)
     # 先删投影行，再删文档（附件/版本/标签关联走 ORM cascade / FK ondelete）
     session.query(ProjectContext).filter(
         ProjectContext.knowledge_document_id == doc.id
@@ -307,6 +334,7 @@ def serialize(doc: KnowledgeDocument, *, detail: bool = False) -> dict:
         "include_in_rag": bool(doc.include_in_rag),
         "folder_id": doc.folder_id,
         "is_pinned": bool(doc.is_pinned),
+        "doc_type": doc.doc_type,
         "tags": [
             {"id": t.id, "name": t.name, "color": t.color}
             for t in (doc.tags or [])
@@ -316,4 +344,8 @@ def serialize(doc: KnowledgeDocument, *, detail: bool = False) -> dict:
     }
     if detail:
         data["content_html"] = doc.content_html or ""
+        data["attachments"] = [
+            {"id": a.id, "filename": a.filename, "mime": a.mime, "size_bytes": a.size_bytes}
+            for a in (doc.attachments or [])
+        ]
     return data
