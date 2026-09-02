@@ -1,14 +1,11 @@
-"""知识库（Knowledge Base）服务层。
+"""知识库（Knowledge Base）服务层 —— 阶段 0：独立表 + RAG 单向投影。
 
-知识库文档与 AI 抽取的上下文**共用 `project_contexts` 表**，靠 ``source_type='knowledge'``
-区分（方案 A，见 docs/superpowers/specs/2026-08-11-knowledge-base-design.md）：
+写路径：CRUD 落 ``knowledge_documents``（及标签/附件/版本，后续阶段用）；每次写
+文档后调用 ``sync_rag_projection`` 幂等地把「纳入检索」的文档投影一行到
+``project_contexts``（source_type='knowledge'，knowledge_document_id 关联）。
+AI 用例生成侧 ``context_service.retrieve_context`` 照旧按 importance>0 消费，零改动。
 
-- ``content_html``：富文本原文，供人阅读/编辑
-- ``content``：去标签纯文本，供关键词检索（``context_service.retrieve_context`` 直接消费）
-- ``importance``：>0 参与 AI 检索；=0 表示「不纳入 AI 知识库」，只给人读
-
-因为用例生成已在消费 ``project_contexts``，知识文档存进来即被召回——检索零成本。
-v1 不做向量 embedding（现有检索是关键词），故也不需要异步任务。
+投影是派生数据：投影失败**不得**阻断文档保存（见 sync_rag_projection 的兜底）。
 """
 from __future__ import annotations
 
@@ -20,10 +17,10 @@ from database.models import (
     ALL_CONTEXT_TYPES,
     CONTEXT_SOURCE_KNOWLEDGE,
     CONTEXT_TYPE_TERM_DEFINITION,
+    KnowledgeDocument,
     ProjectContext,
 )
 
-# importance 约定：纳入检索用默认权重 3，关闭则 0（被 retrieve_context 的 importance>0 过滤掉）
 KNOWLEDGE_IMPORTANCE_ON = 3
 KNOWLEDGE_IMPORTANCE_OFF = 0
 
@@ -31,12 +28,12 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
-def html_to_text(html: Optional[str]) -> str:
-    """富文本 HTML → 纯文本。
+# ---------------------------------------------------------------------------
+# 纯函数（被单测覆盖）
+# ---------------------------------------------------------------------------
 
-    内容可能是正常 HTML，也可能是被转义存储的 HTML（``&lt;p&gt;…``）——反复
-    「反转义 + 去标签」直到稳定，两种情况都还原成纯文本。与前端 ``stripHtml`` 对齐。
-    """
+def html_to_text(html: Optional[str]) -> str:
+    """富文本 HTML → 纯文本；反复反转义+去标签直到稳定。"""
     if not html:
         return ""
     text = html
@@ -49,48 +46,102 @@ def html_to_text(html: Optional[str]) -> str:
 
 
 def _normalize_context_type(context_type: Optional[str]) -> str:
-    """知识文档的分类落到既有上下文类型枚举里，保证能被检索摘要正确归类。"""
     if context_type and context_type in ALL_CONTEXT_TYPES:
         return context_type
     return CONTEXT_TYPE_TERM_DEFINITION
 
 
 def _keywords_for(content: str, include_in_rag: bool) -> list:
-    """纳入检索时抽关键词，否则留空（反正不会被召回）。"""
     if not include_in_rag:
         return []
     from server.services.context_service import _extract_keywords
-
     return _extract_keywords(content)
+
+
+def projection_fields(doc: dict) -> dict:
+    """从文档快照 dict 计算写入 project_contexts 的字段（纯函数，便于单测）。
+
+    doc 需含：project_id, module_id, title, context_type, content, include_in_rag。
+    """
+    include = bool(doc.get("include_in_rag"))
+    content = doc.get("content") or ""
+    return {
+        "project_id": doc["project_id"],
+        "module_id": doc.get("module_id"),
+        "source_type": CONTEXT_SOURCE_KNOWLEDGE,
+        "context_type": _normalize_context_type(doc.get("context_type")),
+        "title": (doc.get("title") or "").strip()[:255],
+        "content": content,
+        "content_html": doc.get("content_html") or "",
+        "summary": content[:500],
+        "keywords": _keywords_for(content, include),
+        "importance": KNOWLEDGE_IMPORTANCE_ON if include else KNOWLEDGE_IMPORTANCE_OFF,
+    }
+
+
+def _doc_snapshot(doc: KnowledgeDocument) -> dict:
+    return {
+        "project_id": doc.project_id,
+        "module_id": doc.module_id,
+        "title": doc.title,
+        "context_type": doc.context_type,
+        "content": doc.content or "",
+        "content_html": doc.content_html or "",
+        "include_in_rag": bool(doc.include_in_rag),
+    }
+
+
+# ---------------------------------------------------------------------------
+# RAG 投影同步
+# ---------------------------------------------------------------------------
+
+def sync_rag_projection(session, doc: KnowledgeDocument) -> None:
+    """把文档投影到 project_contexts（幂等 upsert）；不纳入检索则删除投影行。
+
+    投影是派生数据：任何异常都吞掉并记日志，绝不冒泡阻断文档保存。
+    """
+    try:
+        row = (
+            session.query(ProjectContext)
+            .filter(ProjectContext.knowledge_document_id == doc.id)
+            .first()
+        )
+        if not doc.include_in_rag:
+            if row is not None:
+                session.delete(row)
+            return
+        fields = projection_fields(_doc_snapshot(doc))
+        if row is None:
+            row = ProjectContext(knowledge_document_id=doc.id, **fields)
+            session.add(row)
+        else:
+            for k, v in fields.items():
+                setattr(row, k, v)
+        session.flush()
+    except Exception:  # noqa: BLE001 —— 投影失败不阻断主流程
+        import logging
+        logging.getLogger(__name__).exception(
+            "sync_rag_projection failed for knowledge_document_id=%s", getattr(doc, "id", None)
+        )
 
 
 # ---------------------------------------------------------------------------
 # 查询
 # ---------------------------------------------------------------------------
 
-def list_docs(
-    session, project_id: int, module_id: Optional[int] = None
-) -> List[ProjectContext]:
-    """列某项目（可选模块）下的知识文档，按更新时间倒序。"""
-    q = session.query(ProjectContext).filter(
-        ProjectContext.project_id == project_id,
-        ProjectContext.source_type == CONTEXT_SOURCE_KNOWLEDGE,
-    )
+def list_docs(session, project_id: int, module_id: Optional[int] = None) -> List[KnowledgeDocument]:
+    q = session.query(KnowledgeDocument).filter(KnowledgeDocument.project_id == project_id)
     if module_id is not None:
-        q = q.filter(ProjectContext.module_id == module_id)
-    return q.order_by(ProjectContext.updated_at.desc(), ProjectContext.id.desc()).all()
+        q = q.filter(KnowledgeDocument.module_id == module_id)
+    return q.order_by(
+        KnowledgeDocument.is_pinned.desc(),
+        KnowledgeDocument.updated_at.desc(),
+        KnowledgeDocument.id.desc(),
+    ).all()
 
 
-def get_doc(session, doc_id: int) -> Optional[ProjectContext]:
-    """取单篇知识文档（仅限 source_type=knowledge）。"""
-    return (
-        session.query(ProjectContext)
-        .filter(
-            ProjectContext.id == doc_id,
-            ProjectContext.source_type == CONTEXT_SOURCE_KNOWLEDGE,
-        )
-        .first()
-    )
+def get_doc(session, doc_id: int) -> Optional[KnowledgeDocument]:
+    return session.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
 
 
 # ---------------------------------------------------------------------------
@@ -106,73 +157,78 @@ def create_doc(
     module_id: Optional[int] = None,
     context_type: Optional[str] = None,
     include_in_rag: bool = True,
-) -> ProjectContext:
+    author_id: Optional[int] = None,
+) -> KnowledgeDocument:
     content = html_to_text(content_html)
-    doc = ProjectContext(
+    doc = KnowledgeDocument(
         project_id=project_id,
         module_id=module_id,
-        source_type=CONTEXT_SOURCE_KNOWLEDGE,
-        context_type=_normalize_context_type(context_type),
+        doc_type="rich_text",
         title=(title or "").strip()[:255],
         content=content,
         content_html=content_html or "",
-        summary=content[:500],
-        keywords=_keywords_for(content, include_in_rag),
-        importance=KNOWLEDGE_IMPORTANCE_ON if include_in_rag else KNOWLEDGE_IMPORTANCE_OFF,
+        context_type=_normalize_context_type(context_type),
+        include_in_rag=include_in_rag,
+        author_id=author_id,
+        editor_id=author_id,
     )
     session.add(doc)
-    session.flush()
+    session.flush()          # 拿到 doc.id 供投影关联
+    sync_rag_projection(session, doc)
     return doc
 
 
 def update_doc(
     session,
-    doc: ProjectContext,
+    doc: KnowledgeDocument,
     *,
     title: Optional[str] = None,
     content_html: Optional[str] = None,
-    module_id: Optional[int] = ...,  # ... = 不改；None = 移到根级
+    module_id: Optional[int] = ...,   # ... = 不改
     context_type: Optional[str] = None,
     include_in_rag: Optional[bool] = None,
-) -> ProjectContext:
+    editor_id: Optional[int] = None,
+) -> KnowledgeDocument:
     if title is not None:
         doc.title = title.strip()[:255]
     if content_html is not None:
         doc.content_html = content_html
         doc.content = html_to_text(content_html)
-        doc.summary = doc.content[:500]
     if module_id is not ...:
         doc.module_id = module_id
     if context_type is not None:
         doc.context_type = _normalize_context_type(context_type)
     if include_in_rag is not None:
-        doc.importance = (
-            KNOWLEDGE_IMPORTANCE_ON if include_in_rag else KNOWLEDGE_IMPORTANCE_OFF
-        )
-    # 内容或开关变了都重算关键词（关闭则清空）
-    doc.keywords = _keywords_for(doc.content or "", (doc.importance or 0) > 0)
+        doc.include_in_rag = include_in_rag
+    if editor_id is not None:
+        doc.editor_id = editor_id
     session.flush()
+    sync_rag_projection(session, doc)
     return doc
 
 
-def delete_doc(session, doc: ProjectContext) -> None:
+def delete_doc(session, doc: KnowledgeDocument) -> None:
+    # 先删投影行，再删文档（附件/版本/标签关联走 ORM cascade / FK ondelete）
+    session.query(ProjectContext).filter(
+        ProjectContext.knowledge_document_id == doc.id
+    ).delete(synchronize_session=False)
     session.delete(doc)
     session.flush()
 
 
 # ---------------------------------------------------------------------------
-# 序列化
+# 序列化（阶段 0 保持与旧响应形状兼容，前端零改动）
 # ---------------------------------------------------------------------------
 
-def serialize(doc: ProjectContext, *, detail: bool = False) -> dict:
+def serialize(doc: KnowledgeDocument, *, detail: bool = False) -> dict:
     data = {
         "id": doc.id,
         "project_id": doc.project_id,
         "module_id": doc.module_id,
         "title": doc.title,
         "context_type": doc.context_type,
-        "summary": doc.summary,
-        "include_in_rag": (doc.importance or 0) > 0,
+        "summary": (doc.content or "")[:500],
+        "include_in_rag": bool(doc.include_in_rag),
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
         "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
     }
