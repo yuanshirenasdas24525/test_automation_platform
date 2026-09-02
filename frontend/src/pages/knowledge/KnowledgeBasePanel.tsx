@@ -1,8 +1,8 @@
 /** 知识库面板：目录/搜索/标签过滤 + 卡片列表 + 置顶。左侧目录树在父页。 */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BookOpen, Pin, PinOff, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { BookOpen, FileText, FileUp, Pin, PinOff, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -63,6 +63,18 @@ export function KnowledgeBasePanel({
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["knowledge", projectId] });
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadFile = useMutation({
+    mutationFn: (file: File) => knowledgeApi.uploadFileDoc(projectId, selectedFolderId, file),
+    onSuccess: () => { toast.success("已上传文件"); invalidate(); },
+    onError: (e) => toast.error((e as ApiError).message),
+  });
+  const onPickFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach((f) => uploadFile.mutate(f));
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
   const remove = useMutation({
     mutationFn: (id: number) => knowledgeApi.remove(id),
     onSuccess: () => { toast.success("已删除"); invalidate(); },
@@ -105,6 +117,10 @@ export function KnowledgeBasePanel({
           </SelectContent>
         </Select>
         <span className="flex-1" />
+        <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={uploadFile.isPending}>
+          <FileUp className="h-4 w-4 mr-1" />{uploadFile.isPending ? "上传中…" : "上传文件"}
+        </Button>
+        <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => onPickFiles(e.target.files)} />
         <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1" />新建文档</Button>
       </div>
 
@@ -125,7 +141,10 @@ export function KnowledgeBasePanel({
               onClick={() => setViewingId(d.id)}>
               <span className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ background: typeColor(d.context_type) }} />
               <div className="flex items-start gap-1">
-                <h3 className="flex-1 font-semibold text-sm leading-snug line-clamp-2">{d.title}</h3>
+                <h3 className="flex-1 font-semibold text-sm leading-snug line-clamp-2 flex items-center gap-1">
+                  {d.doc_type === "file" && <FileText className="h-3.5 w-3.5 shrink-0 text-amber-600" />}
+                  <span className="truncate">{d.title}</span>
+                </h3>
                 <div className="flex items-center opacity-0 group-hover:opacity-100" onClick={(e) => e.stopPropagation()}>
                   <Button variant="ghost" size="icon" className="h-7 w-7"
                     onClick={() => pin.mutate({ id: d.id, pinned: !d.is_pinned })} title={d.is_pinned ? "取消置顶" : "置顶"}>
@@ -145,6 +164,9 @@ export function KnowledgeBasePanel({
                 <p className="mt-1 text-xs text-muted-foreground line-clamp-2">{stripHtml(d.summary ?? "")}</p>
               ) : null}
               <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                {d.doc_type === "file" && (
+                  <span className="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">文件</span>
+                )}
                 <span className="rounded bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
                   {TYPE_LABELS.get(d.context_type) ?? d.context_type}
                 </span>
