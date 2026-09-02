@@ -453,6 +453,16 @@ async def import_test_cases(
 
     import_count = 0
 
+    # 追加语义：导入的用例接在模块现有用例之后。历史 bug 是拿 DataFrame 行号(从0)当
+    # sort_order，导进非空模块会与已有用例 sort_order 撞、导致列表排序错乱。这里加上
+    # 模块当前 max 作为基准偏移，确保导入批次整体排在已有之后、且不重叠。
+    from sqlalchemy import func as _sa_func
+    _base_order = (
+        db.session.query(_sa_func.max(TestCase.sort_order))
+        .filter(TestCase.module_id == module_id)
+        .scalar()
+    ) or 0
+
     try:
         if is_functional:
             # ───────── functional 用例：一行一条 ─────────
@@ -493,7 +503,7 @@ async def import_test_cases(
                     skip=_truthy_skip(row.get("跳过")),
                     priority=priority,
                     tags=tags,
-                    sort_order=int(index),
+                    sort_order=_base_order + int(index) + 1,
                     functional_spec={
                         "preconditions": preconditions,
                         "steps": steps_list,
@@ -561,7 +571,7 @@ async def import_test_cases(
                     skip=_truthy_skip(first_row.get("跳过")),
                     priority=priority,
                     tags=tags,
-                    sort_order=int(first_idx),
+                    sort_order=_base_order + int(first_idx) + 1,
                 )
                 db.session.add(new_case)
                 db.session.flush()  # 拿 id
