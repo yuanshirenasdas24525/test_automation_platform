@@ -6154,6 +6154,20 @@ const FIELD_LABELS: Record<string, string> = {
   expected: "预期结果", priority: "优先级", tags: "标签", module_id: "所属模块", skip: "跳过",
 };
 
+/** 历史记录里改前/改后的值安全转文本：对象（如 functional_spec = {preconditions,steps,expected}）
+ * 直接塞进 JSX 会触发 React #31「Objects are not valid as a React child」，这里统一转字符串。 */
+function histText(v: unknown): string {
+  if (v === null || v === undefined || v === "") return "空";
+  if (typeof v === "object") {
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+  return String(v);
+}
+
 function HistoryDialog({
   target,
   onClose,
@@ -6212,9 +6226,9 @@ function HistoryDialog({
                       {rec.changes.map((c, i) => (
                         <li key={i} className="break-words">
                           <span className="text-foreground">{FIELD_LABELS[c.field] ?? c.field}</span>：
-                          <span className="line-through opacity-60">{c.old || "空"}</span>
+                          <span className="line-through opacity-60">{histText(c.old)}</span>
                           {" → "}
-                          <span className="text-foreground">{c.new || "空"}</span>
+                          <span className="text-foreground">{histText(c.new)}</span>
                         </li>
                       ))}
                     </ul>
