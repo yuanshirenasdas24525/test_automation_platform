@@ -2,15 +2,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BookOpen, FileText, FileUp, Pin, PinOff, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { BookOpen, Download, FileText, FileUp, Pin, PinOff, Pencil, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ApiError, knowledgeApi, knowledgeTagsApi, type ModulePickerNode } from "@/lib/api";
+import { downloadBlob } from "@/lib/download";
 import { stripHtml } from "@/lib/utils";
 import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDoc } from "@/types/domain";
 import { KnowledgeDocDialog } from "./KnowledgeDocDialog";
@@ -62,6 +64,24 @@ export function KnowledgeBasePanel({
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["knowledge", projectId] });
+
+  const importInputRef = useRef<HTMLInputElement>(null);
+  const importFiles = useMutation({
+    mutationFn: (files: File[]) => knowledgeApi.importFiles(projectId, selectedFolderId, files),
+    onSuccess: (docs) => { toast.success(`已导入 ${docs.length} 篇`); invalidate(); },
+    onError: (e) => toast.error((e as ApiError).message),
+  });
+  const onImportPick = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    importFiles.mutate(Array.from(files));
+    if (importInputRef.current) importInputRef.current.value = "";
+  };
+  const onExportZip = async () => {
+    try {
+      const blob = await knowledgeApi.exportZip(projectId, selectedFolderId);
+      downloadBlob(blob, "knowledge-export.zip");
+    } catch (e) { toast.error((e as Error).message); }
+  };
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadFile = useMutation({
@@ -117,6 +137,20 @@ export function KnowledgeBasePanel({
           </SelectContent>
         </Select>
         <span className="flex-1" />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline">导入/导出</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => importInputRef.current?.click()}>
+              导入 MD/Word…
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onExportZip}>
+              <Download className="h-4 w-4 mr-1" />导出{selectedFolderId != null ? "当前目录" : "整库"}(Zip)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <input ref={importInputRef} type="file" multiple accept=".md,.markdown,.txt,.docx" className="hidden" onChange={(e) => onImportPick(e.target.files)} />
         <Button size="sm" variant="outline" onClick={() => fileInputRef.current?.click()} disabled={uploadFile.isPending}>
           <FileUp className="h-4 w-4 mr-1" />{uploadFile.isPending ? "上传中…" : "上传文件"}
         </Button>
