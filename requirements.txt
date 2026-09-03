@@ -50,3 +50,10 @@ pgvector>=0.2.5
 # ---- MCP server（M1 PoC）----
 # 把平台执行/报告/用例能力暴露给 coding agent；mcp_server/ 用（stdio 模式）
 mcp>=1.2
+
+# ---- 知识库导入导出（阶段 4）----
+# HTML→Markdown（导出）、Markdown→HTML（导入）、docx→HTML（导入）；
+# server/services/knowledge_io_service.py 用
+markdownify>=1.2
+markdown>=3.5
+mammoth>=1.6
