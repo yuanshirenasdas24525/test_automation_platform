@@ -4,6 +4,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronRight,
   CircleDot,
+  Maximize2,
+  Minimize2,
   Database,
   ExternalLink,
   GripVertical,
@@ -403,9 +405,87 @@ export function UiElementLibraryWorkspace({
   const [floatingVisible, setFloatingVisible] = useState(true);
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  // 窗口形态：全屏(默认) / 浮窗(可拖动+可调大小)。与「独立窗口」(popout)互不替换。
+  const [windowMode, setWindowMode] = useState<"fullscreen" | "float">(() => {
+    try { return localStorage.getItem("ui-elib-mode") === "float" ? "float" : "fullscreen"; } catch { return "fullscreen"; }
+  });
+  const [floatRect, setFloatRect] = useState<{ x: number; y: number; w: number; h: number }>(() => {
+    try {
+      const raw = localStorage.getItem("ui-elib-rect");
+      if (raw) { const r = JSON.parse(raw); if (r && typeof r.x === "number" && typeof r.w === "number") return r; }
+    } catch { /* ignore */ }
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1280;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+    const w = Math.min(1180, vw - 80), h = Math.min(800, vh - 80);
+    return { x: Math.max(24, (vw - w) / 2), y: 40, w, h };
+  });
+  const floatDragRef = useRef<{ mode: "move" | "resize"; edge?: string; sx: number; sy: number; ox: number; oy: number; ow: number; oh: number } | null>(null);
+  // 独立窗口(popout)按真实浏览器窗口尺寸判断是否收起顶部标题（浮窗走 floatRect）。
+  const [viewport, setViewport] = useState<{ w: number; h: number }>(() => ({
+    w: typeof window !== "undefined" ? window.innerWidth : 1280,
+    h: typeof window !== "undefined" ? window.innerHeight : 800,
+  }));
   const popoutWatchRef = useRef<number | null>(null);
   const lastMaterializedEventRef = useRef(0);
   const eventCursorRef = useRef(0);
+
+  // —— 浮窗：形态/位置/大小持久化 + 拖拽/缩放 ——
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+  useEffect(() => { try { localStorage.setItem("ui-elib-mode", windowMode); } catch { /* ignore */ } }, [windowMode]);
+  useEffect(() => {
+    if (windowMode === "float") { try { localStorage.setItem("ui-elib-rect", JSON.stringify(floatRect)); } catch { /* ignore */ } }
+  }, [floatRect, windowMode]);
+  // 进入浮窗 / 视口变化时把窗口钳回视口内，保证右下角缩放手柄始终在可视区。
+  useEffect(() => {
+    if (windowMode !== "float" || isPopout) return;
+    setFloatRect((r) => {
+      const w = Math.min(Math.max(980, r.w), Math.max(320, viewport.w));
+      const h = Math.min(Math.max(600, r.h), Math.max(240, viewport.h));
+      const x = Math.max(0, Math.min(r.x, viewport.w - w));
+      const y = Math.max(0, Math.min(r.y, viewport.h - h));
+      if (x === r.x && y === r.y && w === r.w && h === r.h) return r;
+      return { x, y, w, h };
+    });
+  }, [windowMode, isPopout, viewport.w, viewport.h]);
+  useEffect(() => {
+    if (windowMode !== "float") return undefined;
+    const onMove = (e: MouseEvent) => {
+      const d = floatDragRef.current;
+      if (!d) return;
+      const dx = e.clientX - d.sx, dy = e.clientY - d.sy;
+      setFloatRect((r) => {
+        if (d.mode === "move") {
+          const x = Math.min(Math.max(0, d.ox + dx), Math.max(0, window.innerWidth - 120));
+          const y = Math.min(Math.max(0, d.oy + dy), Math.max(0, window.innerHeight - 40));
+          return { ...r, x, y };
+        }
+        // 从任意角/边缩放：拖右/下改宽高，拖左/上时对角固定（宽高反向 + 位置跟随）。
+        // 元素库是三栏布局（镜像+UI树+面板），窄于 ~980 会挤坏，故设最小宽 980 / 高 600。
+        const edge = d.edge || "br";
+        let x = d.ox, y = d.oy, w = d.ow, h = d.oh;
+        if (edge.includes("r")) w = Math.max(980, Math.min(d.ow + dx, window.innerWidth - d.ox - 8));
+        if (edge.includes("b")) h = Math.max(600, Math.min(d.oh + dy, window.innerHeight - d.oy - 8));
+        if (edge.includes("l")) { w = Math.max(980, Math.min(d.ow - dx, d.ox + d.ow)); x = d.ox + d.ow - w; }
+        if (edge.includes("t")) { h = Math.max(600, Math.min(d.oh - dy, d.oy + d.oh)); y = d.oy + d.oh - h; }
+        return { x, y, w, h };
+      });
+    };
+    const onUp = () => { floatDragRef.current = null; document.body.style.userSelect = ""; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, [windowMode]);
+  // 头部拖动移动窗口（点在按钮/输入等交互元素上时不触发拖动）
+  const startFloatDrag = (e: React.MouseEvent) => {
+    if (windowMode !== "float") return;
+    if ((e.target as HTMLElement).closest("button, input, select, textarea, a, [role='button'], [data-no-drag]")) return;
+    floatDragRef.current = { mode: "move", sx: e.clientX, sy: e.clientY, ox: floatRect.x, oy: floatRect.y, ow: floatRect.w, oh: floatRect.h };
+    document.body.style.userSelect = "none";
+  };
   const [events, setEvents] = useState<UiRecordingEvent[]>([]);
   useEffect(() => {
     if (!open) return;
@@ -1646,25 +1726,61 @@ export function UiElementLibraryWorkspace({
 
   // 全屏浮层挂到 document.body：否则它作为 AutomationCasesPage `space-y-4` 容器的
   // 非首个子节点会被加上 margin-top:1rem，叠加 top:0 后顶部露出一条空隙，撑不满页面。
+  const floatMode = !isPopout && windowMode === "float";
+  // 浮窗 / 独立窗口一律收起顶部标题块（logo+标题+说明）：这两种形态是专门的元素库窗口，
+  // 标题是冗余的，收起后把垂直空间让给内容，只留小 logo。仅主界面全屏嵌入保留完整标题。
+  const compactHeader = floatMode || isPopout;
+  // 浮窗渲染尺寸/位置钳制回视口内：否则窗口偏出屏幕时，右下角的缩放手柄会跑到可视区外抓不到。
+  const _floatStyle = (() => {
+    const vw = viewport.w, vh = viewport.h;
+    const w = Math.min(Math.max(980, floatRect.w), Math.max(320, vw));
+    const h = Math.min(Math.max(600, floatRect.h), Math.max(240, vh));
+    const x = Math.max(0, Math.min(floatRect.x, vw - w));
+    const y = Math.max(0, Math.min(floatRect.y, vh - h));
+    return { left: x, top: y, width: w, height: h };
+  })();
   return createPortal(
-    <div className="fixed inset-0 z-50 flex min-w-[980px] flex-col bg-background text-foreground">
-      <header className="flex h-[72px] shrink-0 items-center justify-between border-b px-5">
+    <div
+      className={cn(
+        "fixed flex flex-col bg-background text-foreground",
+        floatMode
+          ? "z-[60] min-h-[600px] min-w-[980px] overflow-hidden rounded-xl border shadow-2xl"
+          : "inset-0 z-50 min-w-[980px]",
+      )}
+      style={floatMode ? _floatStyle : undefined}
+    >
+      <header
+        onMouseDown={startFloatDrag}
+        className={cn(
+          // 可换行：浮窗变窄时按钮不再溢出被裁（否则连切换/关闭按钮都会被挤出窗口）。
+          "flex min-h-[72px] shrink-0 flex-wrap items-center justify-between gap-y-2 border-b px-5 py-2",
+          floatMode && "cursor-move select-none",
+        )}
+      >
         <div className="flex min-w-0 items-center gap-4">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-primary text-primary-foreground">
-            <Layers3 className="h-5 w-5" />
+          <div
+            className={cn(
+              "grid shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground",
+              compactHeader ? "h-8 w-8" : "h-10 w-10",
+            )}
+          >
+            <Layers3 className={compactHeader ? "h-4 w-4" : "h-5 w-5"} />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold">{isPopout ? "录制独立控制窗口" : "可视化元素库"}</h1>
-              <span className="rounded-full border bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
-                离线业务回放 Level 3
-              </span>
+          {/* compact 时收起标题/说明/徽章，省出垂直空间；小 logo 仍可作为拖动抓取区。 */}
+          {!compactHeader && (
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-lg font-semibold">{isPopout ? "录制独立控制窗口" : "可视化元素库"}</h1>
+                <span className="rounded-full border bg-muted/60 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  离线业务回放 Level 3
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">在页面或模拟器场景中查找、验证和维护元素</p>
             </div>
-            <p className="text-xs text-muted-foreground">在页面或模拟器场景中查找、验证和维护元素</p>
-          </div>
+          )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <div className="inline-flex rounded-lg border bg-muted/50 p-1" aria-label="选择录制平台">
             {(["web", "android", "ios"] as UiPlatform[]).map((item) => (
               <button
@@ -1766,6 +1882,16 @@ export function UiElementLibraryWorkspace({
               显示录制条
             </Button>
           ) : null}
+          {!isPopout ? (
+            <Button
+              size="icon"
+              variant="ghost"
+              title={windowMode === "float" ? "切到全屏" : "切到浮窗（可拖动 / 调整大小）"}
+              onClick={() => setWindowMode((m) => (m === "float" ? "fullscreen" : "float"))}
+            >
+              {windowMode === "float" ? <Maximize2 className="h-4 w-4" /> : <Minimize2 className="h-4 w-4" />}
+            </Button>
+          ) : null}
           {isPopout ? (
             <Button size="sm" variant="outline" title="返回主窗口" onClick={returnToMainWindow}>
               <Undo2 className="h-4 w-4" />返回主窗口
@@ -1780,6 +1906,33 @@ export function UiElementLibraryWorkspace({
           </Button>
         </div>
       </header>
+
+      {floatMode ? (
+        <>
+          {([
+            { edge: "tl", cls: "left-0 top-0 cursor-nwse-resize" },
+            { edge: "tr", cls: "right-0 top-0 cursor-nesw-resize" },
+            { edge: "bl", cls: "bottom-0 left-0 cursor-nesw-resize" },
+            { edge: "br", cls: "bottom-0 right-0 cursor-nwse-resize" },
+          ] as const).map((hd) => (
+            <div
+              key={hd.edge}
+              onMouseDown={(e) => {
+                e.preventDefault(); e.stopPropagation();
+                floatDragRef.current = { mode: "resize", edge: hd.edge, sx: e.clientX, sy: e.clientY, ox: floatRect.x, oy: floatRect.y, ow: floatRect.w, oh: floatRect.h };
+                document.body.style.userSelect = "none";
+              }}
+              title="拖动调整大小"
+              className={cn("absolute z-[70] h-4 w-4", hd.cls)}
+            />
+          ))}
+          {/* 右下角斜纹提示（纯装饰，不拦事件）。 */}
+          <div
+            className="pointer-events-none absolute bottom-0 right-0 z-[69] h-5 w-5"
+            style={{ background: "linear-gradient(135deg, transparent 0 55%, var(--border, #cbd5e1) 55% 70%, transparent 70% 78%, var(--border, #cbd5e1) 78% 92%, transparent 92%)" }}
+          />
+        </>
+      ) : null}
 
       {aiExplorationRunning ? (
         <div className="flex h-10 shrink-0 items-center gap-3 border-b border-violet-200 bg-violet-50 px-5 text-xs text-violet-800">
