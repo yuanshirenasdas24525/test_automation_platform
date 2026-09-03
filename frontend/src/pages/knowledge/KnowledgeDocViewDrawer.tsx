@@ -2,13 +2,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { BookOpen, History, Pencil, RotateCcw, Sparkles, Type } from "lucide-react";
+import { BookOpen, Download, History, Pencil, RotateCcw, Sparkles, Type } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { SideDrawer } from "@/components/ui/side-drawer";
 import { RichTextViewer } from "@/components/editor/RichTextViewer";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ApiError, knowledgeApi } from "@/lib/api";
+import { downloadBlob, printHtml } from "@/lib/download";
 import { KNOWLEDGE_CONTEXT_TYPES, type KnowledgeDocVersion } from "@/types/domain";
 import { FilePreview } from "./FilePreview";
 import { AttachmentList } from "./AttachmentList";
@@ -127,6 +129,22 @@ export function KnowledgeDocViewDrawer({
             )}
           </div>
           <div className="flex gap-2">
+            {doc && doc.doc_type !== "file" && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost"><Download className="h-4 w-4 mr-1" />导出</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={async () => {
+                    try { downloadBlob(await knowledgeApi.exportDocMarkdown(doc.id), `${doc.title}.md`); }
+                    catch (e) { toast.error((e as Error).message); }
+                  }}>导出 Markdown</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => printHtml(doc.title, doc.content_html ?? "")}>
+                    导出 PDF（打印）
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <Button variant="ghost" onClick={onClose}>关闭</Button>
             <Button onClick={() => doc && onEdit(doc.id)} disabled={!doc}><Pencil className="h-4 w-4 mr-1" />编辑</Button>
           </div>
