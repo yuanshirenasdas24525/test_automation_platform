@@ -2862,6 +2862,31 @@ export const knowledgeApi = {
     if (!res.ok) throw new Error(`下载失败（${res.status}）`);
     return res.blob();
   },
+  async exportDocMarkdown(docId: number): Promise<Blob> {
+    const token = getToken();
+    const res = await fetch(`/api/knowledge/${docId}/export.md`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`导出失败（${res.status}）`);
+    return res.blob();
+  },
+  async exportZip(projectId: number, folderId: number | null): Promise<Blob> {
+    const token = getToken();
+    const qs = new URLSearchParams({ project_id: String(projectId) });
+    if (folderId != null) qs.set("folder_id", String(folderId));
+    const res = await fetch(`/api/knowledge/export.zip?${qs.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!res.ok) throw new Error(`导出失败（${res.status}）`);
+    return res.blob();
+  },
+  importFiles(projectId: number, folderId: number | null, files: File[]) {
+    const fd = new FormData();
+    fd.append("project_id", String(projectId));
+    if (folderId != null) fd.append("folder_id", String(folderId));
+    files.forEach((f) => fd.append("files", f));
+    return request<KnowledgeDoc[]>("/api/knowledge/import", { method: "POST", body: fd });
+  },
   remove(id: number) {
     return request<{ id: number }>(`/api/knowledge/${id}`, { method: "DELETE" });
   },
