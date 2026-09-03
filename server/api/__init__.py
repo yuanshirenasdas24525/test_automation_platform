@@ -25,6 +25,7 @@ from .knowledge import router as knowledge_router
 from .knowledge_folders import router as knowledge_folders_router
 from .knowledge_tags import router as knowledge_tags_router
 from .knowledge_files import router as knowledge_files_router
+from .knowledge_io import router as knowledge_io_router
 from .devices import router as devices_router
 from .functional_cases import router as functional_cases_router
 from .modules import router as modules_router
@@ -66,6 +67,7 @@ __all__ = [
     "knowledge_folders_router",
     "knowledge_tags_router",
     "knowledge_files_router",
+    "knowledge_io_router",
     "devices_router",
     "functional_cases_router",
     "modules_router",
